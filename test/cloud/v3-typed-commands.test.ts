@@ -130,9 +130,24 @@ function record(f: Fixture, key = "r1") {
 
 async function checkpoint(f: Fixture) {
   const db = writableStore(f.storage);
-  const image = viewV3(recoverV3(db)).image;
+  const { image, coveredHead: start } = viewV3(recoverV3(db));
   const { head } = image;
-  expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject({
+  let coveredHead = start;
+  let reply: Awaited<ReturnType<Fixture["send"]>>;
+  do {
+    reply = await f.send(`${probe}/checkpoint`, {});
+    expect(reply.status).toBe(200);
+    const { value } = reply.body as {
+      value: { coveredHead: number; more: boolean };
+    };
+    if (coveredHead < head)
+      expect(value.coveredHead).toBeGreaterThan(coveredHead);
+    expect(value.coveredHead).toBeLessThanOrEqual(head);
+    expect(value.coveredHead - coveredHead).toBeLessThanOrEqual(12);
+    coveredHead = value.coveredHead;
+    expect(value.more).toBe(coveredHead < head);
+  } while (coveredHead < head);
+  expect(reply).toMatchObject({
     status: 200,
     body: { value: { coveredHead: head, more: false } },
   });
