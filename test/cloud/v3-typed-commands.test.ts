@@ -4,8 +4,11 @@ import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
+import { failed } from "../../cloud/src/issue-commands.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import type { ForgeError } from "../../src/generated/types.ts";
+import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { authorityFault } from "../../cloud/src/v3-authority.ts";
 import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
@@ -61,8 +64,50 @@ const headers = (owner = "laptop", expiresAt = expiry) => ({
   "X-Forge-Owner": owner,
   "X-Forge-Owner-Expires": String(expiresAt),
 });
-const send = (f: Fixture, body: object, owner?: string) =>
-  f.send(`${probe}/command`, body, headers(owner));
+type Mode = "owner" | "token";
+const modes: Mode[] = ["owner", "token"];
+type Issued = { id: string; token: string };
+const tokens = new WeakMap<Fixture, Map<string, Issued>>();
+async function enroll(f: Fixture, mode: Mode) {
+  if (mode === "owner") return;
+  const issued = new Map<string, Issued>();
+  for (const [device, session] of [
+    ["laptop", "fixture"],
+    ["tablet", "fixture"],
+    ["laptop", "second"],
+  ] as const) {
+    const reply = await f.send("devices", {
+      device,
+      session,
+      ttlMs: 2 * ttlMs,
+    });
+    expect(reply.status).toBe(200);
+    issued.set(`${device}/${session}`, (reply.body as { value: Issued }).value);
+  }
+  tokens.set(f, issued);
+}
+const principalOf = (f: Fixture, device: string) =>
+  tokens.has(f)
+    ? (["token", tokens.get(f)!.get(`${device}/fixture`)!.id, device] as const)
+    : (["owner", device, device] as const);
+const tokenRows = (f: Fixture) =>
+  tokens.has(f)
+    ? JSON.stringify(
+        f.db.query("SELECT * FROM cloud_v3_tokens ORDER BY id").all(),
+      )
+    : "";
+const send = (
+  f: Fixture,
+  body: object,
+  owner = "laptop",
+  session = "fixture",
+) => {
+  const issued = tokens.get(f)?.get(`${owner}/${session}`);
+  if (tokens.has(f) && issued === undefined) throw new Error("no such token");
+  return issued
+    ? f.send("command", body, { authorization: `Bearer ${issued.token}` })
+    : f.send(`${probe}/command`, body, headers(owner));
+};
 const frames = ({ db }: Fixture) =>
   db
     .query<{ body: string }, []>(
@@ -74,6 +119,43 @@ const error = (status: number, code: string) => ({
   status,
   body: { ok: false, error: { code } },
 });
+
+const exits: Record<string, number> = {
+  INPUT_INVALID: 6,
+  NOT_FOUND: 3,
+  INPUT_CONFLICT: 4,
+  REVISION_CONFLICT: 4,
+  LEASE_HELD: 4,
+  LEASE_STALE: 4,
+  LEASE_NOT_HELD: 4,
+  LEASE_EXPIRED: 4,
+};
+function exited(response: { body: unknown }, code?: string) {
+  const body = response.body as { status?: string; error?: ForgeError };
+  expect(
+    exitCode(
+      "status" in body
+        ? (response.body as ReturnType<typeof failed>)
+        : failed(body.error!),
+    ),
+  ).toBe(code === undefined ? 0 : (exits[code] ?? 1));
+}
+function refused(
+  response: { status: number; body: unknown },
+  status: number,
+  code: string,
+) {
+  expect(response).toMatchObject(error(status, code));
+  exited(response, code);
+}
+function deadlines(f: Fixture, before: number) {
+  if (!tokens.has(f)) return;
+  for (const frame of frames(f).slice(before)) {
+    const outcome = frame.outcome as Json | undefined;
+    if ((outcome?.scope as Json | undefined)?.family === "command")
+      expect(outcome?.retryUntil).toBe(expiry);
+  }
+}
 
 async function provision(f: Fixture) {
   expect(await f.send(probe, {})).toMatchObject({ status: 200 });
@@ -104,9 +186,11 @@ async function oneRow(
   status = 200,
 ) {
   const before = frames(f).length;
+  const rows = tokenRows(f);
   const effects = f.observeEffects();
   const response = await run();
   const { sqlWriteAttempts, alarmWrites } = effects();
+  expect(tokenRows(f)).toBe(rows);
   const { error } = response.body as { error?: { code: string } };
   expect({
     status: response.status,
@@ -121,6 +205,10 @@ async function oneRow(
     sqlWriteAttempts: 1,
     alarmWrites: 0,
   });
+  const reply = response.body as Json;
+  if ("op" in reply || "error" in reply)
+    exited(response, status === 200 ? undefined : "INPUT_INVALID");
+  deadlines(f, before);
   return response;
 }
 
@@ -164,12 +252,13 @@ async function checkpoint(f: Fixture) {
   });
 }
 
-test(
-  "v3 typed create writes one scoped result, record and event and replays it after collection",
-  async () => {
+test.each(modes)(
+  "v3 typed create writes one scoped result, record and event and replays it after collection (%s)",
+  async (mode) => {
     const f = guardFixture(env);
     using _db = f.db;
     await provision(f);
+    await enroll(f, mode);
     const first = await oneRow(f, () => send(f, create));
     expect(first.body).toMatchObject({
       ok: true,
@@ -187,7 +276,7 @@ test(
       value: { ...initial, id: "work-2" },
     });
     for (const [i, owner] of ["laptop", "tablet"].entries()) {
-      const principal = ["owner", owner, owner] as const;
+      const principal = principalOf(f, owner);
       const frame = frames(f)[i]!;
       const scope = receiptScope(principal);
       expect(frame).toMatchObject({
@@ -235,12 +324,16 @@ test(
     const replay = f.observeEffects();
     expect(await send(f, create)).toEqual(first);
     expect(await send(f, create, "tablet")).toEqual(other);
-    expect(
+    refused(
       await send(f, { ...create, input: { title: "Changed" } }),
-    ).toMatchObject(error(409, "INPUT_CONFLICT"));
+      409,
+      "INPUT_CONFLICT",
+    );
     expect(await send(f, invalid)).toEqual(denied);
-    expect(await send(f, { ...invalid, input: create.input })).toMatchObject(
-      error(409, "INPUT_CONFLICT"),
+    refused(
+      await send(f, { ...invalid, input: create.input }),
+      409,
+      "INPUT_CONFLICT",
     );
     expect(replay()).toEqual(noWrites);
   },
@@ -355,10 +448,13 @@ async function updateRefusal(
   owner?: string,
 ) {
   const before = frames(f).length;
+  const rows = tokenRows(f);
   const effects = f.observeEffects();
   const response = await send(f, body, owner);
-  expect(response).toMatchObject(error(status, code));
+  expect(tokenRows(f)).toBe(rows);
+  refused(response, status, code);
   expect(frames(f)).toHaveLength(before + 1);
+  deadlines(f, before);
   expect(effects()).toMatchObject({ sqlWriteAttempts: 1, alarmWrites: 0 });
   expect(frames(f).at(-1)).toMatchObject({
     operation: update.op,
@@ -368,22 +464,25 @@ async function updateRefusal(
   expect(frames(f).at(-1)?.changes).toBeUndefined();
   const replay = f.observeEffects();
   expect(await send(f, body, owner)).toEqual(response);
-  expect(
+  refused(
     await send(
       f,
       { ...body, input: { ...body.input, title: "Changed" } },
       owner,
     ),
-  ).toMatchObject(error(409, "INPUT_CONFLICT"));
+    409,
+    "INPUT_CONFLICT",
+  );
   expect(replay()).toEqual(noWrites);
 }
 
-test(
-  "v3 typed update writes one row and preserves the revision and lease checks across collection",
-  async () => {
+test.each(modes)(
+  "v3 typed update writes one row and preserves the revision and lease checks across collection (%s)",
+  async (mode) => {
     const f = guardFixture(env);
     using _db = f.db;
     await provision(f);
+    await enroll(f, mode);
     await oneRow(f, () => send(f, create));
     await checkpoint(f);
     await rawClaim(f);
@@ -414,12 +513,14 @@ test(
     await checkpoint(f);
     const replay = f.observeEffects();
     expect(await send(f, update)).toEqual(first);
-    expect(
+    refused(
       await send(f, {
         ...update,
         input: { ...update.input, title: "Changed" },
       }),
-    ).toMatchObject(error(409, "INPUT_CONFLICT"));
+      409,
+      "INPUT_CONFLICT",
+    );
     expect(replay()).toEqual(noWrites);
 
     const current = { ...update.input, expectRevision: 2 };
@@ -462,7 +563,7 @@ test(
       "LEASE_EXPIRED",
     );
     const lost = f.observeEffects();
-    expect(await send(f, update)).toMatchObject(error(409, "LEASE_STALE"));
+    refused(await send(f, update), 409, "LEASE_STALE");
     expect(lost()).toEqual(noWrites);
     await checkpoint(f);
     expect(record(f)).toEqual({
@@ -473,12 +574,13 @@ test(
   timeout,
 );
 
-test(
-  "v3 typed update records only refusals for bad input, a missing issue and an absent lease",
-  async () => {
+test.each(modes)(
+  "v3 typed update records only refusals for bad input, a missing issue and an absent lease (%s)",
+  async (mode) => {
     const f = guardFixture(env);
     using _db = f.db;
     await provision(f);
+    await enroll(f, mode);
     await oneRow(f, () => send(f, create));
     const graph = { ...update.input, dependsOn: ["forge-9"] };
     await updateRefusal(
@@ -779,15 +881,16 @@ const typedClaim = {
   context: holder,
 };
 
-test(
-  "v3 typed claim writes one lease, read set, result and witness and rechecks replay",
-  async () => {
+test.each(modes)(
+  "v3 typed claim writes one lease, read set, result and witness and rechecks replay (%s)",
+  async (mode) => {
     const f = guardFixture(env);
     using _db = f.db;
     await provision(f);
+    await enroll(f, mode);
     await oneRow(f, () => send(f, create));
     const first = await oneRow(f, () => send(f, typedClaim));
-    const principal = ["owner", "laptop", "laptop"] as const;
+    const principal = principalOf(f, "laptop");
     const id = scopeRequestId("command", principal, typedClaim.requestId);
     const expiresAt = new Date(time + 60_000).toISOString();
     const result = { id: "forge-1", generation: 1, expiresAt };
@@ -829,19 +932,27 @@ test(
     await checkpoint(f);
     const replay = f.observeEffects();
     expect(await send(f, typedClaim)).toEqual(first);
-    expect(
+    refused(
       await send(f, {
         ...typedClaim,
         input: { ...typedClaim.input, ttlSeconds: 30 },
       }),
-    ).toMatchObject(error(409, "INPUT_CONFLICT"));
-    for (const changed of [
-      { ...typedClaim, input: { ...typedClaim.input, id: "forge-2" } },
-      { ...typedClaim, context: { ...holder, session: { id: "second" } } },
-    ]) {
-      expect(await send(f, changed)).toMatchObject(
-        error(409, "INPUT_CONFLICT"),
-      );
+      409,
+      "INPUT_CONFLICT",
+    );
+    for (const [changed, status, code] of [
+      [
+        { ...typedClaim, input: { ...typedClaim.input, id: "forge-2" } },
+        409,
+        "INPUT_CONFLICT",
+      ],
+      [
+        { ...typedClaim, context: { ...holder, session: { id: "second" } } },
+        mode === "token" ? 403 : 409,
+        mode === "token" ? "AUTH_DEVICE_MISMATCH" : "INPUT_CONFLICT",
+      ],
+    ] as const) {
+      refused(await send(f, changed), status, code);
     }
     expect(replay()).toEqual(noWrites);
 
@@ -853,7 +964,7 @@ test(
       ),
     );
     const released = f.observeEffects();
-    expect(await send(f, typedClaim)).toMatchObject(error(409, "LEASE_STALE"));
+    refused(await send(f, typedClaim), 409, "LEASE_STALE");
     expect(released()).toEqual(noWrites);
     expect(
       (
@@ -879,12 +990,16 @@ async function claimRefusal(
   status: number,
   code: string,
   owner?: string,
+  as?: string,
 ) {
   const before = frames(f).length;
+  const rows = tokenRows(f);
   const effects = f.observeEffects();
-  const reply = await send(f, body, owner);
-  expect(reply).toMatchObject(error(status, code));
+  const reply = await send(f, body, owner, as);
+  expect(tokenRows(f)).toBe(rows);
+  refused(reply, status, code);
   expect(frames(f)).toHaveLength(before + 1);
+  deadlines(f, before);
   expect(effects()).toMatchObject({ sqlWriteAttempts: 1, alarmWrites: 0 });
   const frame = frames(f).at(-1)!;
   expect(frame).toMatchObject({
@@ -895,7 +1010,7 @@ async function claimRefusal(
   for (const member of ["changes", "lease", "witness"])
     expect(frame[member]).toBeUndefined();
   const replay = f.observeEffects();
-  expect(await send(f, body, owner)).toEqual(reply);
+  expect(await send(f, body, owner, as)).toEqual(reply);
   expect(replay()).toEqual(noWrites);
   return reply;
 }
@@ -920,12 +1035,13 @@ async function fixtureIssue(
   ).toMatchObject({ status: 200 });
 }
 
-test(
-  "v3 typed claim records v2 refusals in check order without changing the issue or lease",
-  async () => {
+test.each(modes)(
+  "v3 typed claim records v2 refusals in check order without changing the issue or lease (%s)",
+  async (mode) => {
     const f = guardFixture(env);
     using _db = f.db;
     await provision(f);
+    await enroll(f, mode);
     const body = (name: string, ttlSeconds = 60, id = "forge-1") => ({
       ...typedClaim,
       requestId: name,
@@ -986,6 +1102,8 @@ test(
       },
       409,
       "LEASE_HELD",
+      "laptop",
+      "second",
     );
     setSystemTime(time + ttlMs);
     expect(

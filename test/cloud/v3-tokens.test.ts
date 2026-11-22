@@ -5,11 +5,14 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { expect, test } from "bun:test";
+import { failed } from "../../cloud/src/issue-commands.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { tokenParts } from "../../cloud/src/tokens.ts";
 import { authorizeV3Token, TOKEN_READ } from "../../cloud/src/v3-tokens.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import type { ForgeError } from "../../src/generated/types.ts";
+import { exitCode } from "../../src/surface/result.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import {
   fixture,
@@ -124,11 +127,26 @@ const refusal = (run: () => unknown): string => {
     return error instanceof ForgeFailure ? error.error.code : String(error);
   }
 };
-const answers = (reply: Answer, status: number, code?: string) =>
+const answers = (
+  reply: Answer,
+  status: number,
+  code?: string,
+  exit?: number,
+) => {
   expect([
     reply.status,
     (reply.body as { error?: { code: string } }).error?.code,
   ]).toEqual([status, code]);
+  if (exit === undefined) return;
+  const body = reply.body as { status?: string; error?: ForgeError };
+  expect(
+    exitCode(
+      "status" in body
+        ? (reply.body as ReturnType<typeof failed>)
+        : failed(body.error!),
+    ),
+  ).toBe(exit);
+};
 const provision = async (f: Base) =>
   expect((await f.send(probe, {})).status).toBe(200);
 const tamper = (f: Base, column: string, value: unknown) =>
@@ -167,8 +185,20 @@ interface Portable {
   upload: (page: number) => Promise<Answer>;
 }
 
+async function commanded(target: Fixture, t: Issued) {
+  const rows = JSON.stringify(tokenRows(target));
+  const effects = target.observeEffects();
+  const reply = await target.send("command", create, {
+    authorization: `Bearer ${t.token}`,
+  });
+  expect(effects()).toEqual(noWrites);
+  expect(JSON.stringify(tokenRows(target))).toBe(rows);
+  return reply;
+}
+
 async function withActivated(
   run: (target: Fixture, portable: Portable) => Promise<void>,
+  staged = false,
 ) {
   const source = guardFixture(env);
   const target = guardFixture(env);
@@ -214,14 +244,15 @@ async function withActivated(
       { page, ...pages[page]!, ...(page === 0 && { manifest }) },
       page === 0 ? { "X-Forge-Manifest-Digest": pin } : {},
     );
-  for (const page of pages.keys())
+  for (const page of staged ? [0] : pages.keys())
     expect(await upload(page)).toMatchObject({
       status: 200,
       body: { ok: true, value: { page, verified: page === 2 } },
     });
-  expect(await target.send("status")).toMatchObject({
-    body: { value: { initialized: true, stopped: true } },
-  });
+  if (!staged)
+    expect(await target.send("status")).toMatchObject({
+      body: { value: { initialized: true, stopped: true } },
+    });
   await run(target, { pages, upload });
 }
 
@@ -455,9 +486,7 @@ test(
       expect(check(target, t).device).toBe("laptop");
       answers(await target.send("revoke", { id: t.id }), 200);
       expect(checked(target, t)).toBe("AUTH_REVOKED");
-      const headers = { authorization: `Bearer ${t.token}` };
-      const sent = await target.send("command", create, headers);
-      answers(sent, 401, "AUTH_INVALID");
+      answers(await commanded(target, t), 401, "AUTH_REVOKED", 1);
     }),
   timeout,
 );
@@ -777,7 +806,33 @@ test(
       });
       expect(JSON.stringify(tokenRows(target))).toBe(rows);
       expect(checked(target, t)).toBe("ok");
+      const fresh = await commanded(target, t);
+      answers(fresh, 409, "INPUT_CONFLICT", 4);
+      expect(JSON.stringify(fresh.body)).toContain(
+        "The restored project is stopped",
+      );
+      answers(await target.send("revoke", { id: t.id }), 200);
+      answers(await commanded(target, t), 401, "AUTH_REVOKED", 1);
     }),
+  timeout,
+);
+
+test(
+  "a well-formed v3 token is refused as before while a restore is only staged",
+  () =>
+    withActivated(async (target) => {
+      const effects = target.observeEffects();
+      const headers = {
+        authorization: `Bearer fct_${"0".repeat(16)}.${"A".repeat(43)}`,
+      };
+      answers(
+        await target.send("command", create, headers),
+        401,
+        "AUTH_INVALID",
+        1,
+      );
+      expect(effects()).toEqual(noWrites);
+    }, true),
   timeout,
 );
 
@@ -816,7 +871,7 @@ v3test(
 );
 
 v3test(
-  "a valid v3 token opens no command, state, lease or login route",
+  "a valid v3 token opens no state route, lease route or login route",
   async (f) => {
     const t = await issued(f);
     expect(check(f, t).device).toBe("laptop");
@@ -829,7 +884,6 @@ v3test(
       ttlMs: HOUR,
     };
     const effects = f.observeEffects();
-    answers(await f.send("command", create, headers), 401, "AUTH_INVALID");
     const routes: [string, object | undefined, number, string][] = [
       ["state/read", {}, 401, "AUTH_INVALID"],
       ["holder", undefined, 401, "AUTH_INVALID"],
@@ -840,7 +894,7 @@ v3test(
       ["loginpoll", {}, 403, "AUTH_FORBIDDEN"],
     ];
     for (const [route, input, status, code] of routes)
-      answers(await f.send(route, input, headers), status, code);
+      answers(await f.send(route, input, headers), status, code, 1);
     expect(effects()).toEqual(noWrites);
     expect(tokenRows(f)).toHaveLength(1);
   },

@@ -128,7 +128,7 @@ import {
   bearer,
   wellFormed,
 } from "./tokens.ts";
-import { issueV3Token, revokeV3Token } from "./v3-tokens.ts";
+import { authorizeV3Token, issueV3Token, revokeV3Token } from "./v3-tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { checkpointV3 } from "./v3-checkpoint.ts";
@@ -596,6 +596,7 @@ export class Project {
               return commandV3(db, seal, this.#image(db, seal), body, {
                 project: url.pathname.split("/")[2]!,
                 device: owner,
+                principal: ["owner", owner, owner],
                 prefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: string })
                   .FORGE_CLOUD_ID_PREFIX!,
                 expiresAt,
@@ -1095,6 +1096,24 @@ export class Project {
       if (!wellFormed(presented))
         throw fail("AUTH_FORBIDDEN", "Commands need a device token");
       const parts = await tokenParts(presented);
+      if (this.#testV3 && this.#hasV3Root()) {
+        const seal = this.#seal();
+        const db = writableStore(this.#storage);
+        authorizeV3Token(db, seal, parts, Date.now());
+        const body = await bounded(request, MAX_COMMAND_BODY);
+        const now = Date.now();
+        const token = authorizeV3Token(db, seal, parts, now);
+        return commandV3(db, seal, this.#image(db, seal), body, {
+          project: commandProject(request)!,
+          device: token.device,
+          session: token.session,
+          principal: ["token", token.id, token.device],
+          prefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: string })
+            .FORGE_CLOUD_ID_PREFIX!,
+          expiresAt: token.expiresAt,
+          now,
+        });
+      }
       if (!(await this.#isProvisioned()))
         throw fail("AUTH_INVALID", "Token is not valid");
       // Checked through a read-only view: a refusal must not create a table or run a migration.
