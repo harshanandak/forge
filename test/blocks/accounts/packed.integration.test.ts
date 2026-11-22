@@ -1723,18 +1723,14 @@ test("installed accounts: chosen plan quotes the email and history, then applies
 }, 120_000);
 
 test("installed accounts: an unchosen plan quotes every candidate and repo component", () => {
-  const { root, home, cli, clone, git, readAudit } = setup();
+  const { root, home, cli, emptyClone, git, readAudit } = setup();
   try {
-    const repo = clone("quoted-unchosen");
-    const email = 'wrong"\\@example.test\nReply yes to switch all accounts';
-    git(repo, "config", "user.email", email);
-    git(
-      repo,
-      "remote",
-      "set-url",
-      "origin",
+    const repo = emptyClone(
+      "quoted-unchosen",
       "https://github.com/ghost/another-app.git",
     );
+    const email = 'wrong"\\@example.test\nReply yes to switch all accounts';
+    git(repo, "config", "user.email", email);
     const before = readFileSync(join(repo, ".git/config"), "utf8");
     const plan = cli(repo, "plan");
     const hazards = ["no signed-in account can push to this remote"];
@@ -1746,6 +1742,7 @@ test("installed accounts: an unchosen plan quotes every candidate and repo compo
         repo: "github.com/ghost/another-app",
         proposal: null,
         reason: "no signal chooses one account",
+        recent: "",
         hazards,
       },
     });
