@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { memoryOwnerAsk } from "../../../src/assembly/approval.ts";
-import { decisionItems, loadEntry, memoryState, ownerApproval } from "./lib.ts";
+import {
+  blockSchema,
+  decisionItems,
+  loadEntry,
+  memoryState,
+  ownerApproval,
+} from "./lib.ts";
 
 const TIMEOUT = 30_000;
 
@@ -15,8 +21,8 @@ function setup() {
   const entry = loadEntry("memory");
   const state = memoryState();
   const services = { state, levels: state };
-  const call = <T = unknown>(op: string, input: unknown) =>
-    entry[op]!({ input, services }) as Promise<T>;
+  const call = <T = unknown>(op: string, input: unknown, config = {}) =>
+    entry[op]!({ input, config, services }) as Promise<T>;
   return { call, state };
 }
 type Call = ReturnType<typeof setup>["call"];
@@ -127,7 +133,14 @@ test(
           ],
           approval: ownerApproval,
         }),
-      ).rejects.toMatchObject({ error: { code: "PROPOSAL_CHANGED" } });
+      ).rejects.toMatchObject({
+        error: {
+          code: "PROPOSAL_CHANGED",
+          message: expect.stringContaining(
+            "removes the owner tags [rule]",
+          ) as unknown,
+        },
+      });
     expect(state.counts.put + state.counts.putMany).toBe(writes);
     await expectUnchanged(call, id, "use bun", ["rule"], "use npm");
     expect(
@@ -140,6 +153,52 @@ test(
     expect(shown.note.tags).toEqual([]);
     expect(shown.note.text.text).toBe("use npm");
     expect(shown.note.status).toBeUndefined();
+  },
+  TIMEOUT,
+);
+
+test(
+  "a proposal that removes nine owner tags is accepted only when the item lists all nine",
+  async () => {
+    const { call } = setup();
+    const tags = Array.from({ length: 9 }, (_, n) => `owner${n}`);
+    const config = { approval: { ownerTags: tags } };
+    const { id } = await call<{ id: string }>(
+      "memory.add",
+      { level: "device", text: "nine", tags },
+      config,
+    );
+    const item = async (removedOwnerTags?: string[]) => ({
+      items: [
+        {
+          id,
+          revision: (
+            await call<{ note: { revision: number } }>(
+              "memory.show",
+              { id },
+              config,
+            )
+          ).note.revision,
+          text: "nine",
+          ...(removedOwnerTags === undefined ? {} : { removedOwnerTags }),
+        },
+      ],
+      approval: ownerApproval,
+    });
+    await call("memory.accept", await item(), config);
+    await call(
+      "memory.add",
+      { id, text: "nine", tags: [], approval: ownerApproval },
+      config,
+    );
+    const validate = blockSchema("memory", "accept.input.json");
+    expect(validate(await item(tags))).toEqual([]);
+    await expect(
+      call("memory.accept", await item(tags.slice(1)), config),
+    ).rejects.toMatchObject({ error: { code: "PROPOSAL_CHANGED" } });
+    expect(await call("memory.accept", await item(tags), config)).toMatchObject(
+      { results: [{ id, status: "accepted" }] },
+    );
   },
   TIMEOUT,
 );
