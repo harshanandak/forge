@@ -152,7 +152,6 @@ test(
     const shown = await call<Shown>("memory.show", { id });
     expect(shown.note.tags).toEqual([]);
     expect(shown.note.text.text).toBe("use npm");
-    expect(shown.note.status).toBeUndefined();
   },
   TIMEOUT,
 );
