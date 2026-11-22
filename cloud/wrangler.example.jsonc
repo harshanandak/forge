@@ -1,6 +1,4 @@
 {
-  // The standard Worker entry points refuse cloud requests until the v3 launch.
-  // Existing rehearsal and custom deployments are outside the Forge 0.0.1 support boundary.
   // Committed example only. A bare `wrangler deploy` finds no wrangler.jsonc here and stops. Copy this
   // file to cloud/wrangler.local.jsonc (git-ignored), fill every <placeholder> with your real value,
   // run scripts/preflight.mjs, and pass --config wrangler.local.jsonc to every wrangler command.

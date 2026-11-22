@@ -1,6 +1,5 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import {
-  closedOutcome,
   entries,
   inspectIngress,
   stockIngress,
@@ -695,7 +694,7 @@ test("stock Workers suspend the configured OAuth protocol from registration to r
 }, 30_000);
 
 test.each(Object.entries(entries))(
-  "%s stock Worker cancels the unread body and ignores configuration",
+  "%s stock Worker refuses other projects before reading the body or binding",
   async (_surface, worker) => {
     const f = await fixture();
     const env = {
@@ -718,13 +717,8 @@ test.each(Object.entries(entries))(
       ),
     ).toBe(200);
     const observed = [];
-    for (const settings of [
-      undefined,
-      env,
-      { ...env },
-      { ...env, FORGE_CLOUD_REHEARSAL: "false" },
-      { ...env, FORGE_CLOUD_REHEARSAL: "true" },
-    ]) {
+    for (const project of ["other", undefined]) {
+      const settings = { ...env, FORGE_CLOUD_PROJECT: project };
       const stream = { reads: 0, cancels: 0 };
       const request = new Request(issuer + "/p/a/devices", {
         method: "POST",
@@ -748,22 +742,40 @@ test.each(Object.entries(entries))(
           { highWaterMark: 0 },
         ),
       });
-      const outcome = await inspectIngress(
-        request,
-        settings,
-        worker,
-        [],
-        settings === env,
-      );
-      observed.push({ outcome, stream: { ...stream } });
+      const outcome = await inspectIngress(request, settings, worker);
+      observed.push({ status: outcome.status, stream });
+      expect(outcome.reads).not.toContain("PROJECTS");
       if (!request.bodyUsed) await request.body?.cancel();
     }
     expect(observed).toEqual(
-      Array.from({ length: 5 }, () => ({
-        outcome: closedOutcome,
+      Array.from({ length: 2 }, () => ({
+        status: 403,
         stream: { reads: 0, cancels: 1 },
       })),
     );
+  },
+  30_000,
+);
+
+test.each(Object.entries(entries))(
+  "%s stock Worker cannot resolve the test-v3 probe",
+  async (_surface, worker) => {
+    for (const suffix of [
+      "",
+      "/checkpoint",
+      "/commits",
+      "/claim",
+      "/renew",
+      "/release",
+    ]) {
+      const reply = await inspectIngress(
+        new Request(issuer + "/p/a/test-v3" + suffix),
+        { FORGE_CLOUD_PROJECT: "a" },
+        worker,
+      );
+      expect(reply.status, suffix).toBe(404);
+      expect(reply.reads).not.toContain("PROJECTS");
+    }
   },
   30_000,
 );

@@ -5,10 +5,12 @@ import type {
   ClerkResult,
   ClerkUpstream,
 } from "../../../cloud/src/adapters/workers-oauth/clerk/upstream.ts";
-import { Project } from "../../../cloud/src/project.ts";
+import { Project, STATUS } from "../../../cloud/src/project.ts";
+import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { browserStorage } from "../browser-storage.fixture.ts";
 import { stockIngress } from "../stock-ingress.fixture.ts";
 import { createWorker } from "../../../cloud/src/worker.ts";
+import { jwtFixture } from "../../adapters/clerk/jwt-fixture.ts";
 import type { IdentityClaims } from "../../../src/ports/identity.ts";
 import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
 
@@ -17,7 +19,7 @@ if (!("timingSafeEqual" in crypto.subtle))
     value: crypto.timingSafeEqual.bind(crypto),
   });
 await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
-const { createConfiguredWorker } =
+const { createConfiguredWorker, Project: DeployedProject } =
   await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
 
 const start = 1_800_000_000_000,
@@ -79,6 +81,7 @@ function fixture(
   env: Record<string, string> = vars,
   extra: Record<string, unknown> = {},
   ingress?: ReturnType<typeof stockIngress>,
+  ProjectType?: typeof DeployedProject,
 ) {
   let t = start;
   spyOn(Date, "now").mockImplementation(() => t);
@@ -140,7 +143,9 @@ function fixture(
       return Promise.resolve(true);
     },
   };
-  let project = new Project({ storage }, env, { upstream, redemption });
+  let project = ProjectType
+    ? new ProjectType({ storage }, { ...env, ...extra })
+    : new Project({ storage }, env, { upstream, redemption });
   const reached: unknown[] = [];
   const bindings = {
     ...env,
@@ -174,8 +179,9 @@ function fixture(
       headers,
       ...(payload === undefined ? {} : { body: payload }),
     });
-    await ingress?.observe(request, bindings);
-    const response = await worker.fetch(request, bindings as never);
+    const response =
+      (await ingress?.observe(request, bindings)) ??
+      (await worker.fetch(request, bindings as never));
     return {
       status: response.status,
       text: await response.text(),
@@ -234,10 +240,12 @@ function fixture(
   // The cookie a decision sets for its own callback, as the browser would send it back.
   const bindOf = (reply: Reply) =>
     (reply.headers.get("set-cookie") ?? "").split(";")[0]!;
-  const stateOf = (reply: Reply) =>
-    new URL(
+  const stateOf = (reply: Reply) => {
+    const params = new URL(
       reply.headers.get("location") ?? "https://none.example/",
-    ).searchParams.get("s") ?? "";
+    ).searchParams;
+    return params.get("s") ?? params.get("state") ?? "";
+  };
   const callback = (
     state: string,
     proof: string,
@@ -333,6 +341,7 @@ function fixture(
       worker = next;
     },
     upstream,
+    redemption,
     admin: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
     provision: () =>
       send("/p/p/devices", {
@@ -348,8 +357,8 @@ function fixture(
   };
 }
 
-test("stock Workers suspend a provisioned device login and both browser decisions", async () => {
-  const ingress = stockIngress();
+test("stock deployment serves both owner browser decisions", async () => {
+  const ingress = stockIngress("configured");
   const f = fixture(vars, {}, ingress);
   try {
     expect((await f.provision()).status).toBe(200);
@@ -380,6 +389,148 @@ test("stock Workers suspend a provisioned device login and both browser decision
     f.close();
   }
 }, 30_000);
+
+test.each([
+  "redemption",
+  "token exchange",
+  "token body",
+  "provider error",
+  "JWKS",
+  "success",
+] as const)(
+  "deployment Project handles Clerk %s on device approval",
+  async (mode) => {
+    const now = start / 1000;
+    const claims = {
+      auth_time: now - 1,
+      exp: now + 600,
+      sub: vars.FORGE_OWNER_SUBJECT,
+    };
+    const { proof, jwk } = await jwtFixture(
+      vars.CLERK_ISSUER!,
+      vars.CLERK_CLIENT_ID!,
+      { claims },
+    );
+    const failure = new Error("private provider detail");
+    const upstream = (input: Request | URL | string) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/jwks.json"))
+        return mode === "JWKS"
+          ? Promise.reject(failure)
+          : Promise.resolve(Response.json({ keys: [jwk] }));
+      expect(url).toBe(vars.CLERK_ISSUER + "/oauth/token");
+      if (mode === "token body")
+        return Promise.resolve(
+          new Response(
+            new ReadableStream(
+              {
+                start: (body) =>
+                  body.enqueue(new TextEncoder().encode('{"id_token":')),
+                pull: (body) => body.error(failure),
+              },
+              { highWaterMark: 0 },
+            ),
+          ),
+        );
+      return mode === "token exchange"
+        ? Promise.reject(failure)
+        : Promise.resolve(Response.json({ id_token: proof }));
+    };
+    const network = spyOn(globalThis, "fetch").mockImplementation(
+      Object.assign(upstream, { preconnect: fetch.preconnect }),
+    );
+    const response = new Response(null, {
+      status: mode === "redemption" ? 503 : 200,
+    });
+    const redemption = {
+      idFromName: (hash: string) => hash,
+      get: () => ({ fetch: () => Promise.resolve(response) }),
+    };
+    const f = fixture(
+      vars,
+      { CODE_REDEMPTION: redemption },
+      undefined,
+      DeployedProject,
+    );
+    try {
+      expect((await f.provision()).status).toBe(200);
+      const flow = await f.through("approve", "unused");
+      expect(flow.decision.status).toBe(302);
+      const done =
+        mode === "provider error"
+          ? await f.send(`/callback?state=${flow.state}&error=server_error`, {
+              cookie: flow.bind,
+            })
+          : await flow.done();
+      expect(done.status).toBe(mode === "success" ? 200 : 503);
+      if (mode === "success") {
+        expect(outcome(done)).toBe("approved");
+        expect((await f.poll(flow.login.device_code)).status).toBe(200);
+      } else {
+        expect(done.text).toContain("Start a new login");
+        expect(done.text).not.toContain("private provider detail");
+        expect((await flow.done()).status).toBe(400);
+        expect(await f.pending(flow.login)).toEqual([
+          400,
+          "authorization_pending",
+        ]);
+        expect(f.tokens()).toBe(1);
+      }
+    } finally {
+      network.mockRestore();
+      f.close();
+    }
+  },
+  30_000,
+);
+
+test.each([
+  ["verify", "AUTH_EXPIRED"],
+  ["claimOnce", "INPUT_CONFLICT"],
+  ["verify", ""],
+  ["claimOnce", ""],
+] as const)(
+  "bound callback preserves %s rejection (%s)",
+  async (dependency, code) => {
+    const f = fixture();
+    try {
+      expect((await f.provision()).status).toBe(200);
+      const flow = await f.through("approve", "owner");
+      expect(flow.decision.status).toBe(302);
+      const failure = code
+        ? new ForgeFailure({
+            code,
+            message: "Credential refused",
+            retry: "never",
+          })
+        : new Error("private callback dependency detail");
+      const reject = () => Promise.reject(failure);
+      if (dependency === "verify") f.upstream.verify = reject;
+      else f.redemption.claimOnce = reject;
+      const done = await flow.done();
+      expect(done.status).toBe(code ? STATUS[code]! : 503);
+      if (failure instanceof ForgeFailure)
+        expect(JSON.parse(done.text)).toEqual({
+          ok: false,
+          error: failure.error,
+        });
+      else {
+        expect(done.text).toContain(
+          "Temporarily unavailable. Start a new login.",
+        );
+        expect(done.text).not.toContain("private callback dependency detail");
+      }
+      expect(f.tokens()).toBe(1);
+      expect(await f.pending(flow.login)).toEqual([
+        400,
+        "authorization_pending",
+      ]);
+    } finally {
+      f.close();
+    }
+  },
+  30_000,
+);
 
 test("GET /device serves a page and a csrf cookie", async () => {
   const f = fixture();

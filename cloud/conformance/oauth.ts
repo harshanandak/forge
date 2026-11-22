@@ -172,11 +172,21 @@ async function main() {
         Authorization: `Bearer ${unrelated.access_token}`,
       };
       if (fault !== "write") {
-        const response = await send("/fixture/verify", { headers });
+        const response = await send("/p/oauth/holder?subject=owner", {
+          headers,
+        });
+        assert.equal(response.status, 503, "state read outage must return 503");
         assert.deepEqual(
           await response.json(),
-          { verified: false, accepts: false },
-          "state read failure must refuse access",
+          {
+            ok: false,
+            error: {
+              code: "UNAVAILABLE",
+              message: "Project temporarily unavailable",
+              retry: "safe",
+            },
+          },
+          "state read outage must preserve retry guidance",
         );
       }
       if (fault !== "read") {

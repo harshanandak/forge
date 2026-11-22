@@ -55,7 +55,10 @@ const credentialOf = (result: { body: Body }) =>
   JSON.parse(result.body.credential) as Credential;
 type Fetcher = { fetch: (request: Request, env: never) => Promise<Response> };
 
-function fixture(env: Record<string, string> = vars) {
+function fixture(
+  env: Record<string, string> = vars,
+  before = (_sql: string) => {},
+) {
   let t = start;
   spyOn(Date, "now").mockImplementation(() => t);
   const db = new Database(":memory:"),
@@ -63,6 +66,7 @@ function fixture(env: Record<string, string> = vars) {
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
+        before(sql);
         const rows = db
           .query(sql)
           .all(
@@ -287,6 +291,40 @@ test("an approval that is not the owner's mints nothing", async () => {
   }
   expect(f.tokens()).toBe(1);
 }, 30_000);
+
+test.each(["start", "poll"] as const)(
+  "login %s preserves a classified storage outage",
+  async (route) => {
+    let armed = false,
+      loginWrites = 0;
+    const f = fixture(vars, (sql) => {
+      if (!armed) return;
+      const fault =
+        route === "start"
+          ? sql.startsWith("INSERT INTO domain_cloud_login ") &&
+            ++loginWrites === 2
+          : sql.startsWith("INSERT INTO domain_cloud_tokens ");
+      if (fault)
+        throw Object.assign(new Error("private storage detail"), {
+          retryable: true,
+        });
+    });
+    await f.provision();
+    const login = route === "poll" ? (await f.begin()).body : undefined;
+    if (login) expect((await f.approve(login.user_code)).ok).toBe(true);
+    armed = true;
+    const reply = login ? await f.poll(login.device_code) : await f.begin();
+    expect(reply.status).toBe(503);
+    expect(reply.body).toMatchObject({
+      ok: false,
+      error: { code: "UNAVAILABLE", retry: "reconcile_first" },
+    });
+    expect(reply.text).toContain("Start a new login");
+    expect(reply.text).not.toContain("private storage detail");
+    expect(f.tokens()).toBe(1);
+  },
+  30_000,
+);
 
 test("a full pending store refuses a new start with capacity_exceeded", async () => {
   const f = fixture();

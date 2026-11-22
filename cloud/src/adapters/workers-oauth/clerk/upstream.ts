@@ -152,6 +152,8 @@ export function createClerkUpstream(
               response.redirected
             ) {
               void response.body?.cancel().catch(() => {});
+              if ([400, 401, 403].includes(response.status))
+                return refusal("invalid_token");
               throw new Error("Clerk unavailable");
             }
             phase = "malformed_response";
@@ -166,7 +168,9 @@ export function createClerkUpstream(
             let text = "",
               size = 0;
             for (;;) {
+              phase = "unavailable";
               const chunk = await reader.read();
+              phase = "malformed_response";
               if (chunk.done) break;
               const bytes: unknown = chunk.value;
               if (!(bytes instanceof Uint8Array))

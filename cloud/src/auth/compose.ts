@@ -62,9 +62,7 @@ export function composeAuth(
     action: string,
     authority: Auth.AuthorizationRequest["authority"] = "single-owner",
   ): Promise<Access> => {
-    const identity = await oauth
-      ?.verify(bearer(request) ?? "", resource)
-      .catch(() => null);
+    const identity = await oauth?.verify(bearer(request) ?? "", resource);
     if (!isVerifiedIdentity(identity) || identity.audience !== resource)
       throw new ForgeFailure({
         code: "AUTH_INVALID",

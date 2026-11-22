@@ -3,7 +3,7 @@
 // Every request needs a bearer token. The admin routes (devices, revoke, status, dump, restore) are checked here against the
 // ADMIN_TOKEN secret, before the project's object is touched; the others are checked by the object.
 export { Project } from "./project.ts";
-import { validateUpgrade } from "./project.ts";
+import { STATUS, validateUpgrade } from "./project.ts";
 import { storageResponse } from "./storage-failure.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
@@ -79,6 +79,7 @@ const legacyWorker = {
     env: Env,
     auth?: AuthComposition,
     forward?: ProjectForward,
+    pilot = false,
   ): Promise<Response> {
     // Commands are for a device token on the one admitted project. Refuse everything else first:
     // before owner headers are stripped, before OAuth is read and before any object is looked up.
@@ -111,17 +112,7 @@ const legacyWorker = {
           request,
         );
       } catch (error) {
-        const refusal = storageResponse(error, true);
-        if (refusal) return refusal;
-        if (state)
-          return unauthorized(
-            request,
-            "UNAVAILABLE",
-            "State routes unavailable",
-            503,
-            true,
-          );
-        return configUnavailable("PROJECTS", "Commands unavailable");
+        return storageResponse(error, true, "safe", STATUS)!;
       }
     }
     // Only an authorized forward may supply this header to the private Project binding.
@@ -158,9 +149,7 @@ const legacyWorker = {
           env.PROJECTS.idFromName(String(project)),
         ).fetch(request);
       } catch (error) {
-        const refusal = storageResponse(error);
-        if (refusal) return refusal;
-        return configUnavailable("PROJECTS", "Device login unavailable");
+        return storageResponse(error, false, "reconcile_first", STATUS)!;
       }
     }
     if (isOAuthRoute(request))
@@ -199,15 +188,11 @@ const legacyWorker = {
           request,
         );
       } catch (error) {
-        const refusal = storageResponse(error);
-        if (refusal) return refusal;
-        return Response.json(
-          { ok: false, error: "unavailable" },
-          { status: 503, headers: { "Cache-Control": "no-store" } },
-        );
+        return storageResponse(error, false, "reconcile_first", STATUS)!;
       }
     }
-    if (LEASE_ROUTES.has(match![2]!) && project !== env.FORGE_CLOUD_PROJECT)
+    const lease = LEASE_ROUTES.has(match![2]!);
+    if ((pilot || lease) && project !== env.FORGE_CLOUD_PROJECT)
       return unauthorized(request, ...NOT_ADMITTED);
     const presented = bearer(request);
     if (presented === undefined)
@@ -257,9 +242,10 @@ const legacyWorker = {
         );
       return await forward(request, project, access);
     } catch (error) {
-      const refusal = storageResponse(error);
-      if (refusal) return refusal;
-      return unauthorized(request, "AUTH_INVALID", "Token is not valid");
+      void request.body?.cancel().catch(() => undefined);
+      const retry =
+        lease || request.method === "GET" ? "safe" : "reconcile_first";
+      return storageResponse(error, false, retry, STATUS)!;
     }
   },
 };
@@ -269,10 +255,14 @@ export type ProjectForward = (
   project: string,
   access: Access,
 ) => Promise<Response>;
-export function createWorker(auth?: AuthComposition, forward?: ProjectForward) {
+export function createWorker(
+  auth?: AuthComposition,
+  forward?: ProjectForward,
+  pilot = false,
+) {
   return {
     fetch: (request: Request, env: Env) =>
-      legacyWorker.fetch(request, env, auth, forward),
+      legacyWorker.fetch(request, env, auth, forward, pilot),
   };
 }
-export { default } from "./local-only.ts";
+export default createWorker(undefined, undefined, true);

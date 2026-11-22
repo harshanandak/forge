@@ -16,6 +16,7 @@ const verifiers = new WeakMap<
 export function clerkUpstream(
   config: ReturnType<typeof readOAuthConfig>,
   dependencies: WorkerDependencies,
+  reportKeyFailure = false,
 ): ClerkUpstream {
   const clock = dependencies.clock ?? { now: Date.now },
     network = dependencies.fetch ?? fetch;
@@ -31,6 +32,7 @@ export function clerkUpstream(
         cacheTtlMs: 300_000,
         refreshIntervalMs: 1_000,
         fetchTimeoutMs: config.timeoutMs,
+        reportKeyFailure,
       },
       {
         get: async (url, signal) => {

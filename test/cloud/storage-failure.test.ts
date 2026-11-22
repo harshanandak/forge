@@ -49,9 +49,24 @@ test.each([
 ])("unknown storage cause remains unclassified: %s", (error) =>
   expect(storageFailure(error)).toBeUndefined(),
 );
-test.each(["command", "state/read", "state/commit", "loginstart", "claim"])(
-  "binding quota failure on %s retains its route envelope",
-  async (route) => {
+test.each(
+  [
+    "command",
+    "state/read",
+    "state/commit",
+    "loginstart",
+    "loginpoll",
+    "claim",
+  ].flatMap(
+    (route) =>
+      [
+        [route, true],
+        [route, false],
+      ] as const,
+  ),
+)(
+  "binding failure on %s (quota: %s) retains its route envelope",
+  async (route, quota) => {
     const typed = route === "command" || route.startsWith("state/");
     const response = await createWorker().fetch(
       new Request(`https://forge.test/p/quota/${route}`, {
@@ -70,17 +85,26 @@ test.each(["command", "state/read", "state/commit", "loginstart", "claim"])(
         PROJECTS: {
           idFromName: (name) => name,
           get: () => ({
-            fetch: () => Promise.reject(new Error(messages[0][0])),
+            fetch: () =>
+              Promise.reject(
+                new Error(quota ? messages[0][0] : "lost response"),
+              ),
           }),
         },
       },
     );
     expect(response.status).toBe(503);
     const body = (await response.json()) as {
-      error: { code: string };
+      error: { code: string; retry: string };
       status?: string;
     };
-    expect(body.error.code).toBe("QUOTA_EXHAUSTED");
+    expect(body).toMatchObject({
+      error: {
+        code: quota ? "QUOTA_EXHAUSTED" : "UNAVAILABLE",
+        retry: !quota && route.startsWith("login") ? "reconcile_first" : "safe",
+      },
+    });
     expect(body.status).toBe(typed ? "FAIL" : undefined);
   },
+  30_000,
 );

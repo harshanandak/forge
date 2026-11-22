@@ -12,6 +12,7 @@ export interface OidcConfig {
   readonly cacheTtlMs: number;
   readonly refreshIntervalMs: number;
   readonly fetchTimeoutMs: number;
+  readonly reportKeyFailure?: boolean;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -97,6 +98,7 @@ export function createOidcVerifier(
   let expiresAt = -Infinity,
     refreshedAt = -Infinity;
   let pending: Promise<void> | undefined;
+  let keyFailure = false;
   const invalid: IdentityResult = { ok: false, reason: "invalid_proof" };
   async function refresh(at: number): Promise<void> {
     if (pending) return pending;
@@ -134,6 +136,9 @@ export function createOidcVerifier(
         if (!Number.isFinite(freshUntil)) throw new Error("Invalid clock");
         keys = next;
         expiresAt = freshUntil;
+        keyFailure = false;
+      } catch {
+        keyFailure = true;
       } finally {
         clearTimeout(timer);
       }
@@ -183,8 +188,13 @@ export function createOidcVerifier(
         const at = clock.now();
         if (!Number.isFinite(at) || at < refreshedAt) return invalid;
         // One refresh site per verification, whether the cache is stale or the kid is new.
-        if (at >= expiresAt || !keys.some((key) => key.kid === header.kid))
+        if (at >= expiresAt || !keys.some((key) => key.kid === header.kid)) {
           await refresh(at);
+          if (keyFailure)
+            return config.reportKeyFailure
+              ? { ok: false, reason: "unavailable" }
+              : invalid;
+        }
         if (clock.now() >= expiresAt) return invalid;
         const matching = keys.filter((key) => key.kid === header.kid);
         if (matching.length !== 1) return invalid;

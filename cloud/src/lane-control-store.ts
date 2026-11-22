@@ -143,8 +143,6 @@ export class LaneControlStore {
       this.#owner.putMany(NS, entries, { kind: "agent", id: session });
       return readLaneControl(candidate.global, candidate.issue, target);
     } catch (error) {
-      const refusal = storageFailure(error);
-      if (refusal) throw refusal;
       if (
         error instanceof ForgeFailure &&
         error.error.code === "REVISION_CONFLICT"
@@ -153,6 +151,8 @@ export class LaneControlStore {
           "INPUT_CONFLICT",
           "Lane control changed; read again before retrying",
         );
+      const refusal = storageFailure(error);
+      if (refusal) throw refusal;
       return unavailable();
     }
   }
