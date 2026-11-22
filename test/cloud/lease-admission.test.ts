@@ -52,9 +52,9 @@ async function owner(harness: ReturnType<typeof createOAuthHarness>) {
   const callback = new Request(issuer + path, {
     headers: { cookie: jar.header() },
   });
-  const code = query(await api.callback(callback)).get("code");
+  const code = query(await api.callback(callback)).get("code")!;
   const body = new URLSearchParams(
-    `grant_type=authorization_code&client_id=${client}&redirect_uri=${redirect}&code=${code}&resource=${resource}&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk`,
+    `grant_type=authorization_code&client_id=${client}&redirect_uri=${redirect}&code=${encodeURIComponent(code)}&resource=${resource}&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk`,
   );
   const exchanged = await api.token(
     new Request(issuer + "/oauth/token", { method: "POST", body }),
