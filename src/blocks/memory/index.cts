@@ -225,6 +225,12 @@ function ownerTag(
     ),
   );
 }
+function ownerHeld(note: NoteValue, config: MemoryConfig) {
+  return (
+    note.approval?.by === "owner" ||
+    ownerTag(note.tags ?? [], config) !== undefined
+  );
+}
 function words(text: string): string[] {
   return text
     .normalize("NFKC")
@@ -691,7 +697,7 @@ function indexNotes(notes: Note[], index: Replacements = new Map()) {
 function replacers(index: Replacements, note: Target, config: MemoryConfig) {
   const candidates = index.get(note.id);
   if (!candidates) return [];
-  const owner = ownerTag(note.value.tags ?? [], config) !== undefined;
+  const owner = ownerHeld(note.value, config);
   return candidates
     .flatMap(({ id, value }) => {
       if (owner && value.approval?.by !== "owner") return [];
@@ -1693,11 +1699,15 @@ module.exports = {
         config,
       );
       // Removing one owner tag never lets changed text skip the owner while another owner tag stays.
+      const movingReplacement =
+        old.replaces?.length &&
+        input.scope !== undefined &&
+        (input.scope ?? undefined) !== old.scope;
       if (
         old.status === undefined &&
         (taggedNow !== undefined ||
-          (ownerTag(old.tags, config) !== undefined &&
-            input.text !== old.text &&
+          (ownerHeld(old, config) &&
+            (input.text !== old.text || movingReplacement) &&
             (removed === undefined || ownerTag(newTags, config) !== undefined)))
       ) {
         const scope =
@@ -1831,7 +1841,7 @@ module.exports = {
       // An owner tag never reaches the served rules on an agent's say-so: the note starts proposed
       // and only the owner's relayed memory.accept activates it, whatever approval the add carries.
       const targets = new Map<number, number>();
-      let tag = ownerTag(value.tags, config);
+      let needsOwner = ownerHeld(value, config);
       if ((input.replaces?.length ?? 0) > 8)
         fail("INPUT_INVALID", "A note can replace at most eight notes");
       for (const id of input.replaces ?? []) {
@@ -1849,14 +1859,13 @@ module.exports = {
         if (!replacementScope(value, old))
           fail("INPUT_INVALID", `Replacement target ${id} is in another scope`);
         targets.set(n, record.revision);
-        tag ??= ownerTag(old.tags, config);
+        needsOwner ||= ownerHeld(old, config);
       }
       const replaces = [...targets.keys()].map((n) => idIn(target, n));
       if (replaces.length) Object.assign(value, { replaces });
-      const twins =
-        tag === undefined
-          ? undefined
-          : twinsOf(target, value.text, value.scope, config);
+      const twins = needsOwner
+        ? twinsOf(target, value.text, value.scope, config)
+        : undefined;
       if (twins?.exact && replaces.length) {
         const { id } = twins.exact;
         const key = noteKey(parseRef(id)!.number);
@@ -1871,8 +1880,9 @@ module.exports = {
           notice: twinNotice(twins.exact),
         };
       const hint = similarity(twins?.similar ?? []);
-      const stored: NoteValue =
-        tag === undefined ? value : { ...value, status: "proposed" };
+      const stored: NoteValue = needsOwner
+        ? { ...value, status: "proposed" }
+        : value;
       const expected = canonical(stored);
       const entries: BatchEntry[] = [
         {
@@ -1914,10 +1924,10 @@ module.exports = {
           record.value as NoteValue,
           input.text,
         ),
-        ...(tag === undefined
+        ...(!needsOwner
           ? {}
           : {
-              notice: `${id} requires owner approval for the tag ${tag}, so it waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
+              notice: `${id} waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
               ...(hint.similarTo === undefined
                 ? {}
                 : { similarTo: hint.similarTo }),

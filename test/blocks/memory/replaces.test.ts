@@ -384,3 +384,73 @@ test(
   },
   timeout,
 );
+
+test(
+  "a replacement of an owner-approved untagged replacement needs acceptance",
+  async () => {
+    const { call, add, packet } = fixture();
+    const fields = { level, scope };
+    const a = await accepted<{ id: string }>(call, {
+      ...fields,
+      tags: ["rule"],
+      text: "Old falcon procedure",
+    });
+    const b = await accepted<{ id: string }>(call, {
+      ...fields,
+      text: "First falcon procedure",
+      replaces: [a.id],
+    });
+    const c = await add("Next falcon procedure", { replaces: [b.id] });
+    expect(c).toMatchObject({ note: { status: "proposed" } });
+    const ids = [a.id, b.id, c.id];
+    expect(await packet("memory.attach", { ids })).toEqual([b.id]);
+    await call("memory.accept", {
+      items: await decisionItems(call, [c.id]),
+      approval: ownerApproval,
+    });
+    expect(await packet("memory.attach", { ids })).toEqual([c.id]);
+  },
+  timeout,
+);
+
+test(
+  "an unapproved text and scope edit cannot reuse a replacer's owner approval",
+  async () => {
+    const { call, add, search } = fixture();
+    const fields = { level, scope: "alpha" };
+    const a = await accepted<{ id: string }>(call, {
+      ...fields,
+      tags: ["rule"],
+      text: "Owner heron procedure",
+    });
+    const text = "Accepted heron procedure";
+    const b = await accepted<{ id: string }>(call, {
+      ...fields,
+      text,
+      replaces: [a.id],
+    });
+    const edit = async (text: string, scope: string) => {
+      const shown = (await call("memory.show", { id: b.id })) as {
+        note: { revision: number };
+      };
+      return add(text, {
+        id: b.id,
+        scope,
+        expectRevision: shown.note.revision,
+      });
+    };
+    expect(await edit(text, "beta")).toMatchObject({
+      note: { scope: "alpha", proposal: { scope: "beta" } },
+    });
+    await call("memory.accept", {
+      items: await decisionItems(call, [b.id]),
+      approval: ownerApproval,
+    });
+    expect(await search("heron", { scope: "alpha" })).toEqual([a.id]);
+    expect(await edit("Unapproved heron procedure", "alpha")).toMatchObject({
+      note: { scope: "beta", text: { text }, proposal: { scope: "alpha" } },
+    });
+    expect(await search("heron", { scope: "alpha" })).toContain(a.id);
+  },
+  timeout,
+);
