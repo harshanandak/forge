@@ -1,165 +1,177 @@
-type Author = { login: string; type: string };
-type Message = { author: Author; body: string };
-type Comment = Message & { at: number };
-type Finding = { author: Author; at: number; reviewId?: number };
-type Review = Message & { head: string; id: number; state: string };
-export type Evidence = {
-  head: string;
-  pushedAt: number;
-  now: number;
-  comments: Comment[];
-  reviews: Review[];
-  findings: Finding[];
-  threads: boolean[];
-  truncated: boolean;
-};
-export type GateRow = {
-  head: string;
-  at: number;
-  kind: string;
-  verdict: string;
-  p1: number;
-  note: string;
-};
-export type Guard = {
-  securityPathNeedsSol: boolean;
-  securitySolPass: boolean;
-  mainRed: boolean;
-};
-const sha = /^[0-9a-f]{40}$/;
-const ledgerKinds = ["sol", "lead-check", "sonnet-temp", "review-gate"];
-const reservedMarker =
-  /<!--\s*(?:codex-pull-request-review-summary|codex-review-state|coderabbit-ai-generated)/g;
-const botRecord =
-  /<!-- (?:codex-pull-request-review-summary -->\s*<!-- codex-review-state:v1 (?<summary>.*?) -->|(?<rabbit>coderabbit-ai-generated:v1) -->(?:\s+\*\*Actionable comments posted: (?<count>\d+)\*\*)?)/s;
-const fullReviewScope = /(?:^|\s)\bscope=full\b(?=\s|$)/;
-const codexQuota =
-  /You have reached your Codex usage limits for code reviews\./;
-const bots = [
-  ["codex", "chatgpt-codex-connector[bot]", codexQuota],
-  ["coderabbit", "coderabbitai[bot]", /\breview rate limit exceeded\b/i],
-] as const;
-function failure(description: string) {
-  return { state: "failure" as const, description };
+import { isProxy } from "node:util/types";
+
+type Predicate<T> = (value: unknown, ceiling: number) => value is T;
+type Shape = Predicate<unknown> | [Shape] | { [key: string]: Shape };
+type Value<S> =
+  S extends Predicate<infer T>
+    ? T
+    : S extends [infer Item]
+      ? Value<Item>[]
+      : { [Key in keyof S]: Value<S[Key]> };
+function oneOf<const T extends (string | boolean)[]>(...items: T) {
+  return (value: unknown): value is T[number] =>
+    items.includes(value as T[number]);
 }
-
-function codexState(json: string) {
-  try {
-    const parsed = JSON.parse(json) as Record<string, Record<string, unknown>>;
-    const {
-      commit_sha: head,
-      status,
-      has_any_findings: hasFindings,
-      has_unresolved_findings: unresolved,
-    } = parsed.code_review ?? {};
-    if (typeof head !== "string" || !sha.test(head)) return;
-    if (status !== "completed" && status !== "in_progress") return;
-    if (typeof hasFindings !== "boolean" || typeof unresolved !== "boolean")
-      return;
-    return { head, completed: status === "completed", hasFindings, unresolved };
-  } catch {
-    return;
-  }
+const list = <S extends Shape>(item: S): [S] => [item];
+function nullable<T>(check: Predicate<T>): Predicate<T | null> {
+  return (value, ceiling) => value === null || check(value, ceiling);
 }
+const sha = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
+const utc = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/;
+function instant(value: unknown, ceiling: number): value is string {
+  if (typeof value !== "string" || !utc.test(value)) return false;
+  const date = new Date(value);
+  const canonical = value.length === 20 ? value.slice(0, -1) + ".000Z" : value;
+  return date.getTime() <= ceiling && date.toISOString() === canonical;
+}
+const count = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const bool = oneOf(true, false);
+const shape = {
+  version: oneOf("review-gate-input/1"),
+  prHead: sha,
+  now: instant,
+  pushedAt: instant,
+  reviews: list({
+    reviewer: oneOf("codex", "coderabbit"),
+    status: oneOf("none", "in_progress", "completed"),
+    reviewedHead: nullable(sha),
+    reviewedAt: nullable(instant),
+    quotaAt: nullable(instant),
+    findingAts: list(instant),
+  }),
+  codexFindings: oneOf("clean", "findings_resolved", "unresolved"),
+  history: list({
+    head: sha,
+    at: instant,
+    kind: oneOf("sol", "lead-check", "sonnet-temp", "review-gate"),
+    verdict: oneOf("PASS", "BLOCK"),
+    p1: count,
+    scope: oneOf("full", "findings"),
+  }),
+  guard: { mainRed: bool, securityPathNeedsSol: bool, securitySolPass: bool },
+  unresolvedThreads: count,
+  threadsComplete: oneOf(true),
+};
+export type ReviewGateInput = Value<typeof shape>;
 
-export function decide(evidence: Evidence, rows: GateRow[], guard: Guard) {
-  const { head, pushedAt, now, threads } = evidence;
-  const elapsed = now - pushedAt;
-  if (!sha.test(head)) return failure("invalid head");
-  if (!Number.isFinite(elapsed) || elapsed < 0) return failure("invalid clock");
-  if (evidence.truncated !== false) return failure("truncated threads");
-  if (!threads.every((resolved) => resolved === true))
-    return failure("open threads");
-  if (guard.mainRed !== false) return failure("main CI is red");
-
-  for (const { kind, verdict, head: reviewedHead, at, p1 } of rows) {
-    if (typeof reviewedHead !== "string") return failure("invalid ledger row");
-    if (!ledgerKinds.includes(kind) || !sha.test(reviewedHead))
-      return failure("invalid ledger row");
-    if (verdict !== "PASS" && verdict !== "BLOCK")
-      return failure("invalid ledger row");
-    if (!Number.isFinite(at) || at > now) return failure("invalid ledger row");
-    if (!Number.isInteger(p1) || p1 < 0) return failure("invalid ledger row");
+function readInput(value: unknown): ReviewGateInput | string {
+  let ceiling = Infinity;
+  function invalid(path: string): never {
+    throw new Error(path);
   }
-  const incompleteRabbit = failure("incomplete coderabbit review");
-  const rabbitFindings = evidence.findings.filter(
-    ({ author }) => author.type === "Bot" && author.login === bots[1][1],
-  );
-  let summary: ReturnType<typeof codexState>;
-  let rabbitComplete = false;
-  for (const message of [...evidence.comments, ...evidence.reviews]) {
-    const { author, body } = message;
-    if (author.type !== "Bot") continue;
-    const markers = body.match(reservedMarker)?.length ?? 0;
-    const rabbitReview = "id" in message && author.login === bots[1][1];
-    if (!markers && !rabbitReview) continue;
-    const record = botRecord.exec(body)?.groups;
-    if (rabbitReview || record?.rabbit) {
-      if (markers !== 1 || !record?.rabbit) return incompleteRabbit;
-      const reports = body.match(/Actionable comments posted/g)?.length;
-      if (reports !== (record.count ? 1 : undefined)) return incompleteRabbit;
-      if ("id" in message && !record.count) return incompleteRabbit;
-      if (!rabbitReview) continue;
-      const inline = rabbitFindings.filter(
-        ({ reviewId }) => reviewId === message.id,
-      );
-      if (Number(record.count) > inline.length) return incompleteRabbit;
-      if (message.head !== head) continue;
-      if (!["APPROVED", "COMMENTED"].includes(message.state))
-        return incompleteRabbit;
-      rabbitComplete = true;
-    } else {
-      const state = record?.summary && codexState(record.summary);
-      if (markers !== 2 || !state) return failure("unknown codex summary");
-      if ("id" in message || author.login !== bots[0][1]) continue;
-      if (summary) return failure("unknown codex summary");
-      summary = state;
+  function read(schema: Shape, item: unknown, path: string): unknown {
+    if (typeof schema === "function") {
+      if (!schema(item, ceiling)) invalid(path);
+      if (path === "now") ceiling = Date.parse(item as string);
+      return item;
     }
+    if (item === null || typeof item !== "object" || isProxy(item))
+      invalid(path);
+    const keys = Reflect.ownKeys(item);
+    function child(key: string, name: string, rule: Shape) {
+      const own = Object.getOwnPropertyDescriptor(item, key);
+      if (!own?.enumerable || !Object.hasOwn(own, "value")) invalid(name);
+      return read(rule, own.value, name);
+    }
+    if (Array.isArray(schema)) {
+      if (!Array.isArray(item)) invalid(path);
+      const items: unknown[] = [];
+      for (let i = 0; i < item.length; i++)
+        items.push(child(String(i), `${path}[${i}]`, schema[0]));
+      if (keys.length !== items.length + 1) invalid(path);
+      return items;
+    }
+    const prototype: unknown = Object.getPrototypeOf(item);
+    if (prototype !== Object.prototype && prototype !== null) invalid(path);
+    const name = (key: string) => (path === "input" ? key : `${path}.${key}`);
+    for (const key of keys)
+      if (!Object.hasOwn(schema, key))
+        invalid(typeof key === "string" ? name(key) : path);
+    const record: Record<string, unknown> = {};
+    for (const [key, rule] of Object.entries(schema))
+      record[key] = child(key, name(key), rule);
+    return record;
   }
+  try {
+    const input = read(shape, value, "input") as ReviewGateInput;
+    const [first, second] = input.reviews;
+    if (!first || !second || input.reviews.length !== 2) invalid("reviews");
+    if (first.reviewer === second.reviewer) invalid("reviews[1].reviewer");
+    const pushedAt = Date.parse(input.pushedAt);
+    for (const [i, review] of input.reviews.entries()) {
+      const { status, reviewedHead, reviewedAt } = review;
+      const path = `reviews[${i}]`;
+      const absent = status === "none";
+      const min = reviewedHead === input.prHead ? pushedAt : -Infinity;
+      const at = reviewedAt === null ? Infinity : Date.parse(reviewedAt);
+      if ((reviewedHead === null) !== absent) invalid(`${path}.reviewedHead`);
+      if ((reviewedAt === null) !== absent || at < min)
+        invalid(`${path}.reviewedAt`);
+    }
+    if (first.reviewer === "coderabbit") input.reviews.reverse();
+    return input;
+  } catch (error) {
+    return error instanceof Error ? error.message : "input";
+  }
+}
+export function validateReviewGateInput(value: unknown): string | null {
+  const input = readInput(value);
+  return typeof input === "string" ? input : null;
+}
 
+export function decide(value: unknown) {
+  const input = readInput(value);
+  const head = typeof input === "string" ? null : input.prHead;
+  function result<R extends string>(reason: R, detail: string) {
+    const state = reason === "pass" ? "success" : "failure";
+    return { state, head, reason, description: detail.slice(0, 140) } as const;
+  }
+  if (typeof input === "string") return result("invalid", `invalid ${input}`);
+  const { guard, reviews, history, unresolvedThreads } = input;
+  if (unresolvedThreads) return result("open_threads", "open threads");
+  if (guard.mainRed) return result("main_red", "main CI is red");
   let block = -Infinity;
   let checkedThrough = -Infinity;
   let exactPass = -Infinity;
   let fullPass = -Infinity;
-  for (const row of rows) {
+  for (const row of history) {
+    const at = Date.parse(row.at);
     const exactSol = row.head === head && row.kind === "sol";
     if (row.p1 > 0 || (exactSol && row.verdict !== "PASS"))
-      block = Math.max(block, row.at);
+      block = Math.max(block, at);
     if (row.kind !== "sol" || row.verdict !== "PASS" || row.p1 !== 0) continue;
-    checkedThrough = Math.max(checkedThrough, row.at);
+    checkedThrough = Math.max(checkedThrough, at);
     if (!exactSol) continue;
-    exactPass = Math.max(exactPass, row.at);
-    if (fullReviewScope.test(row.note)) fullPass = Math.max(fullPass, row.at);
+    exactPass = Math.max(exactPass, at);
+    if (row.scope === "full") fullPass = Math.max(fullPass, at);
   }
-  if (block > -Infinity && exactPass <= block) return failure("Sol blocked");
-  const securityPass = guard.securitySolPass === true && exactPass > block;
-  if (guard.securityPathNeedsSol !== false && !securityPass)
-    return failure("security path needs Sol");
-
-  const codexComplete = summary?.head === head && summary.completed;
+  if (block > -Infinity && exactPass <= block)
+    return result("sol_blocked", "Sol blocked");
+  const securityPass = guard.securitySolPass && exactPass > block;
+  if (guard.securityPathNeedsSol && !securityPass)
+    return result("security", "security path needs Sol");
+  const pushedAt = Date.parse(input.pushedAt);
+  const codex = input.codexFindings;
   const routes: string[] = [];
-  for (const [bot, login, quota] of bots) {
-    const authored = ({ author }: { author: Author }) =>
-      author.type === "Bot" && author.login === login;
-    const comments = evidence.comments.filter(authored);
-    const findings = evidence.findings.filter(authored);
-    if (findings.some((finding) => !(finding.at < checkedThrough)))
-      return failure(`unchecked ${bot} findings`);
-
-    const missingFindings = summary?.hasFindings && !findings.length;
-    if (bot === "codex" && (summary?.unresolved || missingFindings))
-      return failure("incomplete codex findings");
-    if (bot === "codex" ? codexComplete : rabbitComplete) {
-      routes.push(bot);
+  for (const review of reviews) {
+    const { reviewer, status, reviewedHead, quotaAt, findingAts } = review;
+    if (findingAts.some((time) => Date.parse(time) >= checkedThrough))
+      return result("findings", `unchecked ${reviewer} findings`);
+    const missing = codex === "findings_resolved" && !findingAts.length;
+    if (reviewer === "codex" && (codex === "unresolved" || missing))
+      return result("findings", "incomplete codex findings");
+    if (status === "completed" && reviewedHead === head) {
+      routes.push(reviewer);
       continue;
     }
-    const overQuota = comments.some(
-      (comment) => comment.at >= pushedAt && quota.test(comment.body),
-    );
-    if (!overQuota && elapsed < 600_000) return failure(`waiting for ${bot}`);
-    const reason = overQuota ? "quota" : "timeout";
-    if (fullPass <= block) return failure(`Sol needed: ${bot} ${reason}`);
-    routes.push(`sol stand-in: ${bot} ${reason}`);
+    const overQuota = quotaAt !== null && Date.parse(quotaAt) >= pushedAt;
+    if (!overQuota && Date.parse(input.now) - pushedAt < 600_000)
+      return result("waiting", `waiting for ${reviewer}`);
+    const route = `${reviewer} ${overQuota ? "quota" : "timeout"}`;
+    if (fullPass <= block) return result("sol_needed", `Sol needed: ${route}`);
+    routes.push(`sol stand-in: ${route}`);
   }
-  return { state: "success" as const, description: routes.join("; ") };
+  return result("pass", routes.join("; "));
 }
