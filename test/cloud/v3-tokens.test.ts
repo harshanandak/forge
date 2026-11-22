@@ -771,17 +771,17 @@ v3test(
     };
     const effects = f.observeEffects();
     answers(await f.send("command", create, headers), 401, "AUTH_INVALID");
-    const routes: [string, object | undefined][] = [
-      ["state/read", {}],
-      ["holder", undefined],
-      ["claim", claim],
-      ["renew", claim],
-      ["release", claim],
-      ["loginstart", {}],
-      ["loginpoll", {}],
+    const routes: [string, object | undefined, number, string][] = [
+      ["state/read", {}, 401, "AUTH_INVALID"],
+      ["holder", undefined, 401, "AUTH_INVALID"],
+      ["claim", claim, 401, "AUTH_INVALID"],
+      ["renew", claim, 401, "AUTH_INVALID"],
+      ["release", claim, 401, "AUTH_INVALID"],
+      ["loginstart", {}, 403, "AUTH_FORBIDDEN"],
+      ["loginpoll", {}, 403, "AUTH_FORBIDDEN"],
     ];
-    for (const [route, input] of routes)
-      expect((await f.send(route, input, headers)).status).toBeGreaterThan(399);
+    for (const [route, input, status, code] of routes)
+      answers(await f.send(route, input, headers), status, code);
     expect(effects()).toEqual(noWrites);
     expect(tokenRows(f)).toHaveLength(1);
   },
