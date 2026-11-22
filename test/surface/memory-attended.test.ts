@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { AGENT_MARKERS } from "../../src/assembly/identity.ts";
-import { done, openHarness, type Harness } from "../blocks/memory/lib.ts";
+import {
+  decisionItem,
+  done,
+  openHarness,
+  type Harness,
+} from "../blocks/memory/lib.ts";
 
 const MARKERS = [...AGENT_MARKERS, "FORGE_HARNESS"];
 const saved = MARKERS.map((key) => [key, process.env[key]] as const);
@@ -67,4 +72,50 @@ test("piped input, a wrong phrase or an agent session keep the existing refusal"
     error: { code: "HUMAN_REQUIRED" },
   });
   expect(shown).toMatchObject({ status: "found" });
+}, 30_000);
+
+test("attended accept and reject receive the original note text as one quoted fragment", async () => {
+  const asks: string[] = [];
+  h = await openHarness(
+    ["memory"],
+    {},
+    {
+      terminal: {
+        ...terminal(true, true),
+        confirm: (_op, ask) => {
+          asks.push(ask);
+          return Promise.resolve(true);
+        },
+      },
+    },
+  );
+  const text = 'Keep\r\nthe full text. "\\u0009\t\u{e0001}';
+  for (const [op, status] of [
+    ["memory.accept", "accepted"],
+    ["memory.reject", "rejected"],
+  ]) {
+    const { id } = done(
+      await h.call("memory.add", {
+        level: "device",
+        text: `${op}: ${text}`,
+        tags: ["rule"],
+      }),
+    ) as { id: string };
+    const item = decisionItem(
+      id,
+      done(await h.call("memory.show", { id })) as Parameters<
+        typeof decisionItem
+      >[1],
+    );
+    live.on = true;
+    expect(await h.call(op!, { items: [item] })).toMatchObject({
+      ok: true,
+      result: { results: [{ id, status }] },
+    });
+    live.on = false;
+  }
+  expect(asks.map((ask) => ask.split("\n").at(-1))).toEqual([
+    '    "memory.accept: Keep\\u000d\\u000athe full text. \\"\\\\u0009\\u0009\\udb40\\udc01"',
+    '    "memory.reject: Keep\\u000d\\u000athe full text. \\"\\\\u0009\\u0009\\udb40\\udc01"',
+  ]);
 }, 30_000);

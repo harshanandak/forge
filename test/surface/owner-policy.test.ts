@@ -8,6 +8,7 @@ import {
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -19,8 +20,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { AGENT_MARKERS } from "../../src/assembly/identity.ts";
+import { PROJECT_MANIFEST } from "../../src/assembly/project-manifest.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { dispatch, record } from "../../src/surface/dispatch.ts";
+import { exitCode } from "../../src/surface/result.ts";
 
 const MARKERS = [...AGENT_MARKERS, "FORGE_HARNESS"];
 const saved = MARKERS.map((key) => [key, process.env[key]] as const);
@@ -223,13 +226,29 @@ test("an attended approval uses the host's configured terminal, not the process'
       const admitted = await h.call("block.admit", { digest });
       if (stdin) {
         expect(admitted).toMatchObject({ ok: true });
+        const unattended = ["block.admit", "config.grant"];
+        expect(await h.call("owner.policy", { unattended })).toMatchObject({
+          ok: true,
+          result: { unattended },
+        });
+        expect(
+          await h.call("config.grant", { digest, effects: [] }),
+        ).toMatchObject({ ok: true });
+        expect(readFileSync(join(h.deviceRoot, "owner.json"), "utf8")).toBe(
+          `${JSON.stringify({ unattended })}\n`,
+        );
         await h.assembly.close();
         const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
         try {
           const rows = (await trust.open(false))?.list("forge/core-approvals");
           expect(rows?.map((row) => record(row.value)?.method)).toEqual([
             "attended",
+            "attended",
+            "attended",
           ]);
+          expect(rows?.map((row) => String(record(row.value)?.ask))).toContain(
+            `Admit block example.org/hello at ${digest} so its captured code can run. Declared effects: none.`,
+          );
         } finally {
           await trust.close();
         }
@@ -244,10 +263,91 @@ test("an attended approval uses the host's configured terminal, not the process'
       rmSync(h.work, { recursive: true, force: true });
     }
   }
-  expect(asked).toHaveLength(1);
-  expect(asked[0]?.[0]).toBe("block.admit");
-  expect(asked[0]?.[1]).toContain("Admit block");
+  expect(asked.map(([op]) => op)).toEqual([
+    "block.admit",
+    "owner.policy",
+    "config.grant",
+  ]);
+  expect(asked[0]?.[1]).toContain('Admit block "example.org/hello" at "');
+  expect(asked[1]?.[1]).toContain('"block.admit", "config.grant"');
+  expect(asked[2]?.[1]).toContain(
+    'Grant effects none to block "example.org/hello" at "',
+  );
 }, 30_000);
+
+test.each(["project.init", "store.reinit"])(
+  "%s shows the quoted root while writing to the original path",
+  async (op) => {
+    const work = mkdtempSync(join(tmpdir(), "forge-owner-root-"));
+    const root = join(work, "project\u2028\u2029\u202e");
+    const deviceRoot = join(work, "device");
+    mkdirSync(root);
+    const asks: string[] = [];
+    let attended = false;
+    const assembly = await createAssembly({
+      root,
+      deviceRoot,
+      project: true,
+      terminal: {
+        tty: () => ({ stdin: attended, stderr: attended }),
+        confirm: (_op, ask) => {
+          asks.push(ask);
+          return Promise.resolve(true);
+        },
+      },
+    });
+    const trust = new LocalState(join(deviceRoot, "trust.sqlite"));
+    try {
+      const call = () =>
+        dispatch(assembly.catalog, op, {}, localCall(assembly));
+      const pending = await call();
+      expect(pending).toMatchObject({
+        ok: false,
+        status: "FAIL",
+        error: { code: "APPROVAL_REQUIRED" },
+      });
+      expect(exitCode(pending)).toBe(1);
+      const request = record(record(pending.result)?.request);
+      const file =
+        op === "project.init" ? PROJECT_MANIFEST : ".forge/state.sqlite";
+      expect(existsSync(join(root, file))).toBe(false);
+      attended = true;
+      expect(exitCode(await call())).toBe(0);
+      expect(existsSync(join(root, file))).toBe(true);
+      const stored = (await trust.open(false))?.list("forge/core-approvals");
+      const pendingRow = stored?.find((row) => row.key === request?.id)?.value;
+      const rawAsk = (target: string) =>
+        op === "project.init"
+          ? `Create ${PROJECT_MANIFEST} with a new random project id for ${target}. The id is never changed by init.`
+          : `Start a new empty Forge store for ${target}. Existing records will not be recovered.`;
+      expect(pendingRow).toMatchObject({
+        ask: rawAsk(root),
+        binding: request?.binding,
+        status: "pending",
+      });
+      expect(stored?.map((row) => row.value)).toContainEqual(
+        expect.objectContaining({
+          ask: rawAsk(root),
+          binding: request?.binding,
+          method: "attended",
+        }),
+      );
+      const displayedRoot = JSON.stringify(root).replace(
+        "\u2028\u2029\u202e",
+        "\\u2028\\u2029\\u202e",
+      );
+      expect([request?.ask, ...asks]).toEqual([
+        rawAsk(displayedRoot),
+        rawAsk(displayedRoot),
+      ]);
+    } finally {
+      await trust.close();
+      await assembly.close();
+      rmSync(work, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
 
 // The platform-conditional tests below take the same 30 s as the rest of this file.
 setDefaultTimeout(30_000);

@@ -419,6 +419,7 @@ interface Setup {
   steps?: fx.Step[];
   config?: string;
   now?: () => number;
+  attended?: () => boolean;
   prepare?: (s: fx.Sandbox) => void | Promise<void>;
   /** False runs the real local store, for the unbound project. */
   sentinel?: boolean;
@@ -473,7 +474,10 @@ async function rig(o: Setup) {
   };
   /** A person at a terminal who is asked and declines, so an approval request is counted and nothing is approved. */
   const confirm = mock(() => Promise.resolve(false));
-  const terminal = { tty: () => ({ stdin: true, stderr: true }), confirm };
+  const terminal = {
+    tty: () => ({ stdin: o.attended?.() ?? true, stderr: true }),
+    confirm,
+  };
   const open = (root = s.root) =>
     createAssembly({
       root,
@@ -6820,3 +6824,87 @@ test(
     }),
   30_000,
 );
+
+test("local lane asks quote caller fields and still require relayed approval", async () => {
+  let attended = true;
+  await using(
+    { bind: false, creds: false, sentinel: false, attended: () => attended },
+    async (r) => {
+      r.confirm.mockResolvedValue(true);
+      writeFileSync(
+        join(r.s.deviceRoot, "owner.json"),
+        '{"unattended":["block.admit","config.grant"]}\n',
+        { mode: 0o600 },
+      );
+      const channel = {
+        harness: 'owner"\t\\',
+        thread: "thread\n\u2028\u2029\u202e",
+      };
+      const id = 'lane"\t\\\n\u202e';
+      const ownerAsk = (harness: string, thread: string) =>
+        `Make ${harness} thread ${thread} the owner channel. Replies from it become approvals for gated lane steps.`;
+      const resumeAsk = (lane: string) =>
+        `Resume lane ${lane}. Forge starts spending calls and time on it again.`;
+      const asks = [];
+      const trust = new LocalState(join(r.s.deviceRoot, "trust.sqlite"));
+      const project = new LocalState(STORE(r.s));
+      const context = localContext(r.assembly, { kind: "human", id: "owner" });
+      const call = (op: string, input: object) =>
+        r.assembly.catalog.invoke(
+          r.request(op, input, { caller: "human", context }),
+        );
+      try {
+        for (attended of [true, false]) {
+          for (const [op, input, canonical] of [
+            [
+              "lane.record",
+              { ownerChannel: channel },
+              ownerAsk(channel.harness, channel.thread),
+            ],
+            ["lane.resume", { id }, resumeAsk(id)],
+          ] as const) {
+            const pending = await call(op, input);
+            expect(failed(pending, "APPROVAL_REQUIRED")).toBe(1);
+            const approval = approvalReply(pending);
+            const { ask, binding } = (
+              pending.result as { request: { ask: string; binding: string } }
+            ).request;
+            const owner = await trust.open(false);
+            expect(
+              owner?.get("forge/core-approvals", approval.request)?.value,
+            ).toMatchObject({ ask: canonical, binding, status: "pending" });
+            asks.push(ask);
+            if (op === "lane.record") {
+              expect(
+                failed(
+                  await call(op, {
+                    ownerChannel: { ...channel, thread: "elsewhere" },
+                    approval,
+                  }),
+                  "APPROVAL_REQUIRED",
+                ),
+              ).toBe(1);
+              expect(exitCode(await call(op, { ...input, approval }))).toBe(0);
+            }
+          }
+        }
+        expect(r.confirm).not.toHaveBeenCalled();
+        const state = await project.open(false);
+        expect(
+          state?.get("forge/work", "autopilot:global")?.value,
+        ).toMatchObject({ owner: { channel } });
+        const expected = [
+          ownerAsk(
+            '"owner\\"\\u0009\\\\"',
+            '"thread\\u000a\\u2028\\u2029\\u202e"',
+          ),
+          resumeAsk('"lane\\"\\u0009\\\\\\u000a\\u202e"'),
+        ];
+        expect(asks).toEqual([...expected, ...expected]);
+      } finally {
+        await project.close();
+        await trust.close();
+      }
+    },
+  );
+}, 30_000);
