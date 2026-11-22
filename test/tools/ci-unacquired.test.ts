@@ -655,6 +655,28 @@ test("judges the matrix read through the API at the run head SHA", async () => {
   }
 }, 1000);
 
+test("judges runner allocation at the merge group head with its skipped jobs", async () => {
+  const jobs = complete.map((job) => {
+    if (job.name === "PR title" || job.name.startsWith("Comment guard ("))
+      return { ...skipped, name: job.name };
+    if (job.name === "Pack artifact") return { ...unacquired, name: job.name };
+    return job;
+  });
+  const decision = await ciUnacquired.decisionAtHead(
+    [{ jobs: [...jobs, gate] }],
+    { ...headRun, event: "merge_group" },
+    headEnv,
+    (endpoint) => {
+      expect(endpoint).toBe(
+        `repos/harshanandak/forge/contents/.github/workflows/ci.yml?ref=${headSha}`,
+      );
+      return Promise.resolve(ciWorkflow);
+    },
+  );
+  expect(decision.split("\n")).toContain("rerun=true");
+  expect(decision.split("\n")).toContain("scope=failed");
+}, 1000);
+
 test("fails closed with a clear reason when head workflow cannot be read", async () => {
   const lines = await judgeHead([unacquired, gate], () =>
     Promise.reject(new Error("HTTP 404")),
