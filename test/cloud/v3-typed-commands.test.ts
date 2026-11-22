@@ -5,6 +5,7 @@ import {
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
 import { writableStore } from "../../cloud/src/store.ts";
+import { authorityFault } from "../../cloud/src/v3-authority.ts";
 import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
 import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
 
@@ -159,7 +160,9 @@ test(
     });
     for (const [i, owner] of ["laptop", "tablet"].entries()) {
       const principal = ["owner", owner, owner] as const;
-      expect(frames(f)[i]).toMatchObject({
+      const frame = frames(f)[i]!;
+      const scope = receiptScope(principal);
+      expect(frame).toMatchObject({
         operation: create.op,
         events: [
           {
@@ -170,10 +173,19 @@ test(
         ],
         outcome: {
           id: scopeRequestId("command", principal, create.requestId),
-          scope: { family: "command", ...receiptScope(principal) },
+          scope: { family: "command", ...scope },
           status: "ok",
         },
       });
+      expect(
+        authorityFault({
+          ...frame,
+          outcome: {
+            ...(frame.outcome as Json),
+            scope: { family: "lease", ...scope },
+          },
+        }),
+      ).toBe("outcome scope");
     }
     const invalid = {
       ...create,
