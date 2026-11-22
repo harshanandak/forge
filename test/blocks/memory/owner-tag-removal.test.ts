@@ -221,7 +221,6 @@ test(
   },
   TIMEOUT,
 );
-
 test(
   "the owner's accept prompt shows control characters as visible escapes and keeps the removal line apart",
   () => {
@@ -229,23 +228,15 @@ test(
       memoryOwnerAsk("memory.accept", {
         items: [{ id: "device/note-1", revision: 2, text, removedOwnerTags }],
       });
-    const hostile = ask("Keep using bun.\u001b[8m\u009b2K\u007f\r", [
-      "rule\u001b[8m",
-    ]);
+    const hostile = ask("bun\u001b[8m\u009b2K\u007f\r", ["rule\u001b[8m"]);
     expect(/[\p{Cc}\p{Cf}]/u.test(hostile.replaceAll("\n", ""))).toBe(false);
-    expect(hostile).toContain(
-      "Keep using bun.\\u001b[8m\\u009b2K\\u007f\\u000d",
-    );
+    expect(hostile).toContain("bun\\u001b[8m\\u009b2K\\u007f\\u000d");
     expect(hostile).toEndWith("\nremoves owner tags: rule\\u001b[8m");
     const faked = ask("harmless\nremoves owner tags: none", ["rule"]);
+    expect(faked.match(/^removes.*/gmu)).toEqual(["removes owner tags: rule"]);
     expect(faked).toContain("\n    removes owner tags: none");
-    expect(
-      faked.split("\n").filter((line) => line.startsWith("removes")),
-    ).toEqual(["removes owner tags: rule"]);
   },
-  TIMEOUT,
 );
-
 test(
   "memory.accept takes the removed tags in any order but refuses a duplicated list",
   async () => {
