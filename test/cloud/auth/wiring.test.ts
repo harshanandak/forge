@@ -27,6 +27,7 @@ const issuer = "https://auth.example",
   redirect = "https://client.example/callback";
 const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const vars = {
+  FORGE_CLOUD_PROJECT: "a",
   CLERK_ISSUER: "https://clerk.example",
   CLERK_CLIENT_ID: "public-client",
   CLERK_REDIRECT_URI: `${issuer}/callback`,
