@@ -1,0 +1,990 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge Desk mock</title>
+<style>
+:root {
+  --bg: #f6f6f3;
+  --panel: #ffffff;
+  --ink: #1d1f23;
+  --muted: #6a6f78;
+  --line: #e3e3dd;
+  --soft: #f0f0ea;
+  --accent: #4b5bd6;
+  --accent-ink: #ffffff;
+  --amber: #c27a00;
+  --blue: #2563c9;
+  --green: #1f8a4c;
+  --red: #c93434;
+  --grey: #70757e;
+  --amber-bg: #fff3d9;
+  --blue-bg: #e3edfd;
+  --green-bg: #dff3e6;
+  --red-bg: #fbe3e3;
+  --grey-bg: #ececea;
+  --shadow: 0 8px 30px rgba(20, 20, 40, 0.14);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14151a;
+    --panel: #1d1f26;
+    --ink: #ecedf0;
+    --muted: #9a9fa9;
+    --line: #2d303a;
+    --soft: #252832;
+    --accent: #7c8bff;
+    --accent-ink: #11131a;
+    --amber: #f0a830;
+    --blue: #6ea2ff;
+    --green: #4ccb86;
+    --red: #ff7676;
+    --grey: #a0a5ae;
+    --amber-bg: #3b2d12;
+    --blue-bg: #1b2a4a;
+    --green-bg: #17352425;
+    --red-bg: #3d1c1c;
+    --grey-bg: #2a2c33;
+    --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+a { color: var(--accent); cursor: pointer; text-decoration: none; }
+a:hover { text-decoration: underline; }
+[hidden] { display: none !important; }
+/* top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 260px; font-size: 15px; }
+.crumbs .sep { color: var(--muted); }
+.crumbs a { color: var(--muted); }
+.crumbs .here { font-weight: 650; color: var(--ink); }
+.crumbs .off { color: var(--line); }
+.top-right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.pill {
+  border: 1px solid var(--line); background: var(--soft);
+  border-radius: 999px; padding: 6px 14px; font-size: 14px;
+  transition: background 150ms, border-color 150ms;
+}
+.pill:hover { border-color: var(--accent); }
+.pill.needs { background: var(--amber-bg); border-color: var(--amber); color: var(--ink); font-weight: 600; }
+.pill.trust { font-size: 13px; color: var(--muted); }
+/* layout */
+main { max-width: 1060px; margin: 0 auto; padding: 24px 20px 90px; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+h2 { font-size: 18px; margin: 0 0 12px; }
+h3 { font-size: 16px; margin: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.lead { margin: 0 0 20px; color: var(--muted); }
+footer { text-align: center; color: var(--muted); font-size: 13px; padding: 10px 20px 100px; }
+/* states */
+.st { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; white-space: nowrap; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.d-needs { background: var(--amber); }
+.d-work { background: var(--blue); }
+.d-done { background: var(--green); }
+.d-stuck { background: var(--red); }
+/* project rows */
+.rows { display: flex; flex-direction: column; gap: 10px; }
+.row {
+  display: grid; grid-template-columns: 120px 1fr auto; gap: 14px; align-items: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 16px 18px; cursor: pointer; text-align: left; width: 100%;
+  transition: border-color 150ms, transform 150ms;
+}
+.row:hover { border-color: var(--accent); transform: translateY(-1px); }
+.row .name { font-weight: 650; }
+.row .cnt {
+  min-width: 30px; text-align: center; border-radius: 999px; padding: 2px 10px; font-weight: 650;
+  background: var(--soft); color: var(--muted);
+}
+.row .cnt.on { background: var(--amber-bg); color: var(--amber); }
+.row .txt { display: flex; flex-direction: column; }
+.row .nm { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+/* blocks */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.block {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  padding: 16px 18px 18px; position: relative;
+}
+.block.wide { grid-column: 1 / -1; }
+.block > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.menu { position: relative; }
+.dots {
+  background: none; border: none; border-radius: 8px; padding: 2px 10px; font-size: 18px; color: var(--muted);
+  letter-spacing: 1px;
+}
+.dots:hover { background: var(--soft); }
+.menu-pop {
+  position: absolute; right: 0; top: 30px; z-index: 5; min-width: 160px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+  padding: 6px;
+}
+.menu-pop button {
+  display: block; width: 100%; text-align: left; background: none; border: none; padding: 8px 10px; border-radius: 8px;
+}
+.menu-pop button:hover { background: var(--soft); }
+.add-tile {
+  border: 2px dashed var(--line); border-radius: 16px; background: transparent; color: var(--muted);
+  min-height: 90px; font-size: 16px; transition: border-color 150ms, color 150ms;
+}
+.add-tile:hover { border-color: var(--accent); color: var(--accent); }
+/* buttons */
+.btn {
+  border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 8px 14px;
+  transition: background 150ms, border-color 150ms;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.pri { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.small { padding: 4px 10px; font-size: 13px; }
+.btn[disabled] { opacity: 0.5; cursor: default; }
+.link { background: none; border: none; padding: 0; color: var(--accent); font-size: 14px; }
+.link:hover { text-decoration: underline; }
+.tag {
+  display: inline-block; font-size: 11px; padding: 0 7px; border-radius: 999px; margin-left: 4px;
+  background: rgba(255, 255, 255, 0.28); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.btn:not(.pri) .tag { background: var(--soft); color: var(--muted); }
+/* summary, timeline */
+.sum p { margin: 0 0 8px; }
+.ev { font-size: 12px; margin-left: 6px; }
+.timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.tl {
+  display: flex; gap: 10px; align-items: baseline; padding: 7px 10px; border-radius: 10px;
+  transition: background 200ms;
+}
+.tl.hl { background: var(--amber-bg); }
+.tl.mine { background: var(--soft); }
+.badge {
+  flex: none; font-size: 11px; border-radius: 999px; padding: 1px 9px; font-weight: 600; white-space: nowrap;
+}
+.b-claimed { background: var(--grey-bg); color: var(--grey); }
+.b-ci { background: var(--blue-bg); color: var(--blue); }
+.b-merged { background: var(--green-bg); color: var(--green); }
+.b-you { background: var(--accent); color: var(--accent-ink); }
+.since { display: flex; align-items: center; gap: 10px; margin: 6px 0; color: var(--muted); font-size: 12px; }
+.since::before, .since::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
+/* threads, rules, misc lists */
+.item {
+  display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line);
+  margin-bottom: 8px; background: var(--panel); width: 100%; text-align: left;
+}
+button.item:hover { border-color: var(--accent); }
+.item .top { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; }
+.chip {
+  font-size: 12px; font-weight: 600; border-radius: 999px; padding: 1px 10px; white-space: nowrap;
+}
+.c-enforced { background: var(--green-bg); color: var(--green); }
+.c-held { background: var(--blue-bg); color: var(--blue); }
+.c-broken { background: var(--red-bg); color: var(--red); }
+.c-not { background: var(--amber-bg); color: var(--amber); }
+.rule-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+.dry { margin-top: 6px; font-size: 14px; background: var(--soft); border-radius: 8px; padding: 6px 10px; }
+/* decision cards */
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-bottom: 12px;
+  animation: pop 180ms ease;
+}
+@keyframes pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.card .q { font-weight: 600; margin-bottom: 10px; }
+.opts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.evl { margin: 6px 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
+.ifno { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.lockline { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--red); margin-top: 6px; }
+.offer {
+  background: var(--green-bg); border: 1px solid var(--green); border-radius: 14px; padding: 14px 16px; margin-bottom: 14px;
+  animation: pop 180ms ease;
+}
+.offer p { margin: 0 0 10px; }
+.offer .opts { margin: 0; }
+/* panels */
+.scrim {
+  position: fixed; inset: 0; background: rgba(10, 10, 20, 0.35); z-index: 40;
+  opacity: 0; pointer-events: none; transition: opacity 180ms;
+}
+.scrim.on { opacity: 1; pointer-events: auto; }
+.slide {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 50;
+  background: var(--bg); border-left: 1px solid var(--line); box-shadow: var(--shadow);
+  transform: translateX(105%); transition: transform 200ms ease;
+  display: flex; flex-direction: column;
+}
+.slide.on { transform: none; }
+.slide > header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.slide .body { padding: 16px 18px 40px; overflow-y: auto; flex: 1; }
+.tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+.tab { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 6px 14px; font-size: 14px; }
+.tab.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.x { background: none; border: none; font-size: 22px; line-height: 1; color: var(--muted); padding: 4px 8px; border-radius: 8px; }
+.x:hover { background: var(--soft); }
+.kind-row { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.steps { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+.step {
+  flex: 1 1 90px; border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 6px 8px;
+  font-size: 12px; transition: background 150ms;
+}
+.step.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.step[disabled] { cursor: default; }
+.step:not(.on)[disabled] { opacity: 0.55; }
+.dr-input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel); color: var(--ink); font: inherit; }
+/* blob and prompt */
+.blob {
+  position: fixed; right: 20px; bottom: 20px; z-index: 30; width: 60px; height: 60px; border-radius: 50%;
+  border: none; background: var(--accent); color: var(--accent-ink); box-shadow: var(--shadow);
+  display: grid; place-items: center; transition: transform 150ms;
+}
+.blob:hover { transform: scale(1.06); }
+.prompt {
+  position: fixed; right: 20px; bottom: 92px; z-index: 35; width: min(400px, calc(100vw - 40px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow);
+  padding: 14px; opacity: 0; transform: translateY(12px); pointer-events: none;
+  transition: opacity 180ms, transform 180ms; max-height: 560px; overflow-y: auto;
+}
+.prompt.on { opacity: 1; transform: none; pointer-events: auto; }
+.looking { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.inrow { display: flex; gap: 8px; align-items: center; }
+.inrow input {
+  flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--bg);
+  color: var(--ink); font: inherit;
+}
+.icon-btn { border: 1px solid var(--line); background: var(--soft); border-radius: 12px; width: 40px; height: 40px; display: grid; place-items: center; }
+.confirm { background: var(--soft); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; font-size: 14px; }
+.confirm label { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin: 6px 0; }
+.bar { height: 5px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 6px 0; }
+.bar i { display: block; height: 100%; width: 100%; background: var(--accent); }
+.bubble { background: var(--blue-bg); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; font-size: 14px; }
+.place { border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-bottom: 10px; font-size: 14px; }
+.place .r { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.place .lab { width: 86px; color: var(--muted); }
+.opt { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 12px; font-size: 13px; }
+.opt.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+/* toasts */
+.toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 70; display: flex; flex-direction: column; gap: 8px; align-items: center; width: max-content; max-width: calc(100vw - 100px); }
+.toast {
+  background: var(--ink); color: var(--bg); border-radius: 12px; padding: 10px 14px; font-size: 14px; display: flex; gap: 12px; align-items: center;
+  animation: pop 180ms ease; transition: opacity 200ms;
+}
+.toast.out { opacity: 0; }
+.toast button { background: none; border: none; color: var(--bg); text-decoration: underline; padding: 0; }
+.thread-lines { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 6px 18px; margin-bottom: 18px; }
+.line { display: grid; grid-template-columns: 110px 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.line:last-child { border-bottom: none; }
+.line b { color: var(--muted); font-weight: 600; font-size: 14px; }
+.sub { margin: 14px 0 0; color: var(--muted); }
+@media (max-width: 720px) {
+  .grid { grid-template-columns: 1fr; }
+  .row { grid-template-columns: 1fr auto; }
+  .row .st { grid-column: 1 / -1; }
+  .topbar { padding: 10px 14px; }
+  main { padding: 18px 14px 90px; }
+  .line { grid-template-columns: 1fr; gap: 2px; }
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <nav class="crumbs" id="crumbs" aria-label="Where you are"></nav>
+  <div class="top-right">
+    <button class="pill needs" id="needsPill" data-act="open-inbox">Needs you: 0</button>
+    <button class="pill trust" id="trustPill" data-act="open-trust">Trust</button>
+  </div>
+</div>
+<main id="app"></main>
+<footer>Mock. All data is made up.</footer>
+<button class="blob" id="blob" data-act="toggle-prompt" aria-label="Say something">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z"/></svg>
+</button>
+<div class="prompt" id="prompt">
+  <div class="looking" id="looking"></div>
+  <div id="ppDyn"></div>
+  <div class="inrow">
+    <input id="ppInput" type="text" placeholder="Say anything. Press Enter to send." autocomplete="off">
+    <button class="icon-btn" data-act="mic" aria-label="Voice, not connected in this mock">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+    </button>
+    <button class="btn pri" data-act="send">Send</button>
+  </div>
+</div>
+<div class="scrim" id="scrim" data-act="close-all"></div>
+<aside class="slide" id="inbox" aria-label="Decision inbox">
+  <header><h2 style="margin:0">Decision inbox</h2><button class="x" data-act="close-all" aria-label="Close">&times;</button></header>
+  <div class="body">
+    <div class="tabs" id="inboxTabs"></div>
+    <div id="inboxBody"></div>
+  </div>
+</aside>
+<aside class="slide" id="trust" aria-label="Trust settings">
+  <header><h2 style="margin:0">What it may do on its own</h2><button class="x" data-act="close-all" aria-label="Close">&times;</button></header>
+  <div class="body" id="trustBody"></div>
+</aside>
+<aside class="slide" id="drawer" aria-label="Blocks drawer">
+  <header><h2 style="margin:0">Blocks drawer</h2><button class="x" data-act="close-all" aria-label="Close">&times;</button></header>
+  <div class="body">
+    <p class="muted small">Hidden blocks. Show one to put it back on the page.</p>
+    <div id="drawerList"></div>
+    <h3 style="margin:18px 0 8px">Describe a block you want</h3>
+    <input class="dr-input" id="drawerInput" type="text" placeholder="For example: Open questions. Press Enter." autocomplete="off">
+  </div>
+</aside>
+<div class="toasts" id="toasts"></div>
+<script>
+(function () {
+  "use strict";
+  /* ---------- fixed vocabulary ---------- */
+  var ST = { needs: "Needs you", work: "Working", done: "Done", stuck: "Stuck" };
+  var KINDS = {
+    branch: { name: "Update the branch", irr: false },
+    review: { name: "Start another review round", irr: false },
+    deps: { name: "Update a tool version", irr: false },
+    flaky: { name: "Re-run a flaky CI job", irr: false },
+    publish: { name: "Publish the release", irr: true },
+    research: { name: "Promote a research result", irr: false }
+  };
+  var TARGETS = [
+    { n: "Forge lead thread", t: "release" },
+    { n: "Release 0.9 thread", t: "release" },
+    { n: "Faster CI thread", t: "ci" }
+  ];
+  var BADGES = {
+    claimed: ["b-claimed", "Claimed"],
+    ci: ["b-ci", "Proven by CI"],
+    merged: ["b-merged", "Merged"],
+    you: ["b-you", "You"]
+  };
+  var THREADS = [
+    { id: "release", s: "needs", n: "Release 0.9", agenda: "Get 0.9 reviewed, merged and published.",
+      step: "Final review of change 41 is running.", last: "Change 42 review blocked by 1 serious bug.",
+      next: "Fix the bug, then ask you about publishing." },
+    { id: "ci", s: "work", n: "Faster CI", agenda: "Cut the CI run from 14 minutes to under 8.",
+      step: "Measuring which jobs can run side by side.", last: "Change 44 merged. CI jobs moved off Windows.",
+      next: "Try running lint and unit tests in parallel." },
+    { id: "rules", s: "done", n: "Review rules", agenda: "Write down how many review rounds are enough.",
+      step: "Finished.", last: "Rule saved: at most 2 review rounds per design.",
+      next: "Nothing. It will be checked again in 30 days." }
+  ];
+  var PROJECTS = [
+    { n: "Forge", s: "needs", dyn: true },
+    { n: "Zwapit", s: "work", t: "Working on checkout tests. Nothing needs you.", c: 0 },
+    { n: "Score Easy", s: "stuck", t: "Stuck. The same CI test failed 3 times.", c: 0 },
+    { n: "Harnest", s: "done", t: "Done for today. 3 merges.", c: 0 }
+  ];
+  var HIDDEN_TEXT = {
+    Capacity: "3 of 5 builder slots are busy. Nothing is waiting for a slot.",
+    Memory: "12 notes are remembered for this project. 2 changed this week.",
+    "Config map": "Settings come from 2 files. No conflicts found.",
+    "Overnight contract": "Between 22:00 and 07:00 the tool may only run tests and read logs."
+  };
+  /* ---------- state ---------- */
+  var S = {
+    screen: "all", project: "Forge", thread: null, look: null,
+    inbox: false, tab: "needs", panel: null,
+    cards: [], done: [], level: { branch: "ask", review: "ask", deps: "ask", flaky: "auto", publish: "ask", research: "ask" },
+    today: { branch: 0, review: 0, deps: 0 }, weekBase: 4, offer: null, offerNo: {},
+    evOpen: {}, menuOpen: null, dry: false, researchDone: false,
+    blocks: [
+      { id: "summary", title: "Summary", hidden: false },
+      { id: "needs", title: "Needs you", hidden: false },
+      { id: "timeline", title: "Timeline", hidden: false },
+      { id: "threads", title: "Threads", hidden: false },
+      { id: "rules", title: "In force here", hidden: false },
+      { id: "overseer", title: "Overseer", hidden: false },
+      { id: "research", title: "Research", hidden: false },
+      { id: "Capacity", title: "Capacity", hidden: true },
+      { id: "Memory", title: "Memory", hidden: true },
+      { id: "Config map", title: "Config map", hidden: true },
+      { id: "Overnight contract", title: "Overnight contract", hidden: true }
+    ],
+    rules: [
+      { t: "Never use fast mode", s: "not", btn: true },
+      { t: "At most 2 review rounds per design", s: "held" },
+      { t: "Merge only with a recorded review", s: "enforced" },
+      { t: "Builders read the red log before pushing", s: "broken" },
+      { t: "Keep each change under 400 lines", s: "not", dry: true }
+    ],
+    tl: [
+      { id: 1, t: "ci", b: "merged", x: "Change 44 merged: CI jobs moved off Windows", ev: "a" },
+      { id: 2, t: "release", b: "claimed", x: "Change 41 final review started", ev: "b" },
+      { id: 3, t: "release", b: "ci", x: "Change 42 review blocked: 1 serious bug", ev: "b" },
+      { id: 4, t: "release", b: "you", mine: true, x: "You: hold dependency updates until the release ships", ev: "d" },
+      { div: true },
+      { id: 5, t: "release", b: "merged", x: "Change 43 branch updated onto main", ev: "" },
+      { id: 6, t: "release", b: "ci", x: "Review round 2 for change 41 finished with 3 fixes", ev: "b" },
+      { id: 7, t: "ci", b: "claimed", x: "A builder pushed before reading the red log", ev: "e" },
+      { id: 8, t: "release", b: "claimed", x: "Release notes draft written", ev: "" },
+      { id: 9, t: "ci", b: "merged", x: "Change 40 merged: retry logic for the upload step", ev: "" },
+      { id: 10, t: "rules", b: "claimed", x: "Research found two ways to cut CI time", ev: "" }
+    ],
+    pend: null, skip: {}, tIdx: 0, pl: null, nextId: 100, drawerSeen: 0
+  };
+  function mkCards() {
+    var evB = ["Main has 3 new changes since this branch started.", "A trial merge found no conflicts."];
+    var noB = "takes the default in 15 minutes, can be undone until merge";
+    return [
+      { id: "c1", kind: "branch", short: "change 41", q: "Change 41: update the branch because main moved?", opts: ["Update the branch", "Leave it"], def: 0, ev: evB, no: noB },
+      { id: "c2", kind: "branch", short: "change 42", q: "Change 42: update the branch because main moved?", opts: ["Update the branch", "Leave it"], def: 0, ev: evB, no: noB },
+      { id: "c3", kind: "branch", short: "change 43", q: "Change 43: update the branch because main moved?", opts: ["Update the branch", "Leave it"], def: 0, ev: evB, no: noB },
+      { id: "c4", kind: "review", short: "change 41, round 3", q: "Start a third review round for change 41?", opts: ["Start round 3", "Hold for now"], def: 1,
+        ev: ["The design rule allows at most 2 rounds.", "Round 2 ended with 3 fixes, all proven by CI."], no: "expires in 24 hours, nothing happens" },
+      { id: "c5", kind: "deps", short: "the lint tool", q: "Update the lint tool to the newest minor version?", opts: ["Update", "Skip this time"], def: 1,
+        ev: ["The new version only fixes 2 small bugs.", "You asked to hold dependency updates until the release ships."], no: "expires in 24 hours, nothing happens" },
+      { id: "c6", kind: "publish", short: "release 0.9", q: "Publish the release to npm?", opts: ["Publish now", "Not yet"], def: 1,
+        ev: ["Change 41 has no recorded final review yet.", "Publishing cannot be taken back."], no: "expires in 24 hours, nothing happens", lock: true }
+    ];
+  }
+  S.cards = mkCards();
+  S.done = [
+    { time: "08:12", what: "Re-ran the flaky upload test", why: "you chose the default 6 times", kind: "flaky" },
+    { time: "07:40", what: "Re-ran the flaky login test", why: "you chose the default 6 times", kind: "flaky" }
+  ];
+  /* ---------- helpers ---------- */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function dot(s) { return '<span class="st"><i class="dot d-' + s + '"></i>' + ST[s] + "</span>"; }
+  function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
+  function cardById(id) { return S.cards.filter(function (c) { return c.id === id; })[0]; }
+  function autoKinds() { return Object.keys(S.level).filter(function (k) { return S.level[k] === "auto"; }); }
+  function kindName(k) { return KINDS[k].name.toLowerCase(); }
+  function weekCount(k) { return S.weekBase + (S.today[k] || 0); }
+  /* ---------- toast ---------- */
+  function toast(msg, undo) {
+    var el = document.createElement("div");
+    el.className = "toast";
+    el.innerHTML = "<span>" + esc(msg) + "</span>";
+    if (undo) {
+      var b = document.createElement("button");
+      b.textContent = "Undo";
+      b.onclick = function () { undo(); kill(); };
+      el.appendChild(b);
+    }
+    $("toasts").appendChild(el);
+    var t = setTimeout(kill, 6000);
+    function kill() {
+      clearTimeout(t);
+      el.classList.add("out");
+      setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+    }
+  }
+  /* ---------- decision cards ---------- */
+  function cardHtml(c) {
+    var o = c.opts.map(function (t, i) {
+      var d = i === c.def;
+      return '<button class="btn' + (d ? " pri" : "") + '" data-act="ans" data-id="' + c.id + '" data-i="' + i + '">' + esc(t) + (d ? '<span class="tag">Default</span>' : "") + "</button>";
+    }).join("");
+    var open = S.evOpen[c.id];
+    var lockSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+    return '<div class="card" data-look="Decision: ' + esc(c.q) + '">' +
+      '<div class="q">' + esc(c.q) + "</div>" +
+      '<div class="opts">' + o + "</div>" +
+      '<button class="link" data-act="ev" data-id="' + c.id + '">' + (open ? "Hide evidence" : "Evidence") + "</button>" +
+      '<ul class="evl"' + (open ? "" : " hidden") + ">" + c.ev.map(function (e) { return "<li>" + esc(e) + "</li>"; }).join("") + "</ul>" +
+      (c.lock ? '<div class="lockline">' + lockSvg + "Always asks. Cannot be made automatic.</div>" : "") +
+      '<div class="ifno">If nobody answers: ' + esc(c.no) + (S.level[c.kind] === "batch" ? ". Batched into one daily question." : "") + "</div>" +
+      "</div>";
+  }
+  function offerHtml() {
+    var k = S.offer;
+    if (!k) return "";
+    return '<div class="offer"><p>You have taken the default for \'' + esc(kindName(k)) + "' " + S.today[k] +
+      " times today and " + weekCount(k) + " times this week. Let it happen on its own?</p>" +
+      '<div class="opts"><button class="btn pri" data-act="offer-yes">Yes, do it for me</button>' +
+      '<button class="btn" data-act="offer-no">Keep asking</button></div></div>';
+  }
+  function answer(id, i) {
+    var c = cardById(id);
+    if (!c) return;
+    var idx = S.cards.indexOf(c);
+    var isDef = i === c.def;
+    var counted = isDef && !KINDS[c.kind].irr && S.today[c.kind] !== undefined;
+    S.cards.splice(idx, 1);
+    if (counted) {
+      S.today[c.kind]++;
+      if (S.today[c.kind] === 2 && S.level[c.kind] === "ask" && !S.offerNo[c.kind]) S.offer = c.kind;
+    }
+    render();
+    toast("Answered: " + c.opts[i], function () {
+      S.cards.splice(idx, 0, c);
+      if (counted) {
+        S.today[c.kind]--;
+        if (S.offer === c.kind && S.today[c.kind] < 2) S.offer = null;
+      }
+      render();
+    });
+  }
+  function takeAllDefaults() {
+    var list = S.cards.filter(function (c) { return !c.lock; });
+    if (!list.length) { toast("Nothing to take. The locked question always asks."); return; }
+    list.forEach(function (c) {
+      var idx = S.cards.indexOf(c);
+      if (idx < 0) return;
+      S.cards.splice(idx, 1);
+      if (S.today[c.kind] !== undefined) {
+        S.today[c.kind]++;
+        if (S.today[c.kind] === 2 && S.level[c.kind] === "ask" && !S.offerNo[c.kind]) S.offer = c.kind;
+      }
+    });
+    render();
+    toast("Took " + plural(list.length, "default") + ".");
+  }
+  function makeAuto(k) {
+    if (KINDS[k].irr) return;
+    S.level[k] = "auto";
+    var mine = S.cards.filter(function (c) { return c.kind === k; });
+    mine.forEach(function (c) {
+      S.cards.splice(S.cards.indexOf(c), 1);
+      S.done.unshift({ time: "just now", what: c.opts[c.def] + " for " + c.short, why: "you chose the default " + weekCount(k) + " times", kind: k, card: c });
+    });
+    if (S.offer === k) S.offer = null;
+    render();
+    toast(mine.length ? "Done. " + plural(mine.length, "question") + " moved to Done for you." : "Done. This kind now happens on its own.");
+  }
+  function setLevel(k, lv) {
+    if (KINDS[k].irr) return;
+    if (lv === "auto") { makeAuto(k); return; }
+    S.level[k] = lv;
+    render();
+    toast(KINDS[k].name + ": " + (lv === "ask" ? "asks every time." : "asks once a day in a batch."));
+  }
+  function undoDone(i) {
+    var d = S.done[i];
+    if (!d) return;
+    S.done.splice(i, 1);
+    if (d.card) S.cards.push(d.card);
+    render();
+    toast(d.card ? "Undone. The question is back in Needs you." : "Undone.");
+  }
+  function askAgain(i) {
+    var d = S.done[i];
+    if (!d) return;
+    S.level[d.kind] = "ask";
+    S.offerNo[d.kind] = true;
+    S.done = S.done.filter(function (x, j) { return j === i ? false : true; });
+    render();
+    toast("Okay. '" + kindName(d.kind) + "' will ask you again.");
+  }
+  /* ---------- timeline ---------- */
+  function tlHtml(list) {
+    return '<ul class="timeline">' + list.map(function (e) {
+      if (e.div) return '<li class="since">since you left</li>';
+      var b = BADGES[e.b];
+      return '<li class="tl' + (e.mine ? " mine" : "") + '" data-ev="' + e.ev + '" data-look="Timeline: ' + esc(e.x) + '"><span class="badge ' + b[0] + '">' + b[1] + "</span><span>" + esc(e.x) + "</span></li>";
+    }).join("") + "</ul>";
+  }
+  function addEntry(text, t) {
+    var e = { id: S.nextId++, t: t, b: "you", mine: true, x: "You: " + text, ev: "" };
+    S.tl.unshift(e);
+    return e;
+  }
+  function highlight(keys) {
+    var nodes = document.querySelectorAll(".tl");
+    var hit = 0;
+    for (var i = 0; i < nodes.length; i++) {
+      var has = (" " + nodes[i].getAttribute("data-ev") + " ").indexOf(" " + keys + " ") >= 0;
+      if (has) { nodes[i].classList.add("hl"); hit++; }
+    }
+    if (!hit) { toast("The timeline is hidden. Open it from the drawer."); return; }
+    var first = document.querySelector(".tl.hl");
+    if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(function () {
+      var h = document.querySelectorAll(".tl.hl");
+      for (var j = 0; j < h.length; j++) h[j].classList.remove("hl");
+    }, 2600);
+  }
+  /* ---------- blocks ---------- */
+  var BODY = {
+    summary: function () {
+      return '<div class="sum"><p>The release waits on one final review.<a class="ev" data-act="hl" data-k="b">events</a></p>' +
+        "<p>CI jobs moved off Windows and change 44 merged.<a class=\"ev\" data-act=\"hl\" data-k=\"a\">events</a></p>" +
+        "<p>A builder pushed before reading a red log.<a class=\"ev\" data-act=\"hl\" data-k=\"e\">events</a></p>" +
+        '<p class="muted small" style="margin:0">Not covered: 2 research threads</p></div>';
+    },
+    needs: function () {
+      var first = S.cards.slice(0, 2);
+      return offerHtml() + (first.length ? first.map(cardHtml).join("") : '<p class="muted">Nothing needs you right now.</p>') +
+        '<a data-act="open-inbox">' + (S.cards.length > 2 ? "See all " + S.cards.length + " in the inbox" : "Open the inbox") + "</a>";
+    },
+    timeline: function () { return tlHtml(S.tl); },
+    threads: function () {
+      return THREADS.map(function (t) {
+        return '<button class="item" data-act="thread" data-id="' + t.id + '" data-look="Thread: ' + esc(t.n) + '"><div class="top"><b>' + esc(t.n) + "</b>" + dot(t.s) + "</div>" +
+          '<span class="muted small">' + esc(t.agenda) + "</span><span class=\"muted small\">sub-agents: 2</span></button>";
+      }).join("");
+    },
+    rules: function () {
+      var names = { enforced: "Enforced", held: "Held 30 days", broken: "Broken", not: "Not enforced" };
+      return S.rules.map(function (r, i) {
+        var acts = "";
+        if (r.btn && r.s === "not") acts += '<button class="btn small" data-act="enforce" data-i="' + i + '">Make it enforced</button>';
+        if (r.dry) acts += '<button class="btn small" data-act="dry">Dry run</button>';
+        return '<div class="item" data-look="Rule: ' + esc(r.t) + '"><div class="top"><span>' + esc(r.t) + '</span><span class="chip c-' + r.s + '">' + names[r.s] + "</span></div>" +
+          (acts ? '<div class="rule-actions">' + acts + "</div>" : "") +
+          (r.dry && S.dry ? '<div class="dry">Last 7 days: this would have blocked 4 changes and saved 2 review rounds</div>' : "") + "</div>";
+      }).join("");
+    },
+    overseer: function () {
+      var f = [
+        { t: "Builders pushed before reading the red log, 3 times this week", draft: "Always read the red log before pushing" },
+        { t: "Two threads asked you the same question within an hour", draft: "Never ask the same question twice in one day" }
+      ];
+      return f.map(function (x, i) {
+        return '<div class="item" data-look="Finding: ' + esc(x.t) + '"><span>' + esc(x.t) + '</span><div class="rule-actions"><button class="btn small" data-act="draft" data-i="' + i + '" data-text="' + esc(x.draft) + '">Draft a rule</button></div></div>';
+      }).join("");
+    },
+    research: function () {
+      return '<div class="item" data-look="Research: standing question"><b>Which CI jobs can run side by side safely?</b><span class="muted small">Last result: 2 hours ago. Two jobs share one cache and may clash.</span>' +
+        '<div class="rule-actions"><button class="btn small" data-act="promote"' + (S.researchDone ? " disabled" : "") + ">" + (S.researchDone ? "Promoted" : "Promote to decision") + "</button></div></div>";
+    }
+  };
+  function blockHtml(b) {
+    var body = BODY[b.id] ? BODY[b.id]() : '<p class="muted">' + esc(HIDDEN_TEXT[b.title] || "Placeholder block. Nothing here yet. It would show: " + b.title + ".") + "</p>";
+    var wide = b.id === "timeline" ? " wide" : "";
+    var menu = S.menuOpen === b.id;
+    return '<section class="block' + wide + '" data-look="Block: ' + esc(b.title) + '"><header><h3>' + esc(b.title) + "</h3>" +
+      '<div class="menu"><button class="dots" data-act="menu" data-b="' + esc(b.id) + '" aria-label="Block menu">...</button>' +
+      '<div class="menu-pop"' + (menu ? "" : " hidden") + '><button data-act="hide" data-b="' + esc(b.id) + '">Hide</button><button data-act="hide" data-b="' + esc(b.id) + '">Move to drawer</button></div></div></header>' +
+      body + "</section>";
+  }
+  /* ---------- screens ---------- */
+  function rowHtml(p) {
+    var count = p.dyn ? S.cards.length : p.c;
+    var s = p.dyn ? (count > 0 ? "needs" : "work") : p.s;
+    var txt = p.dyn
+      ? "The release waits on the final review of change 41. " + (count ? plural(count, "decision") + " for you." : "Nothing needs you.")
+      : p.t;
+    return '<button class="row" data-act="project" data-n="' + esc(p.n) + '" data-look="Project: ' + esc(p.n) + '">' + dot(s) +
+      '<span class="txt"><span class="nm"><span class="name">' + esc(p.n) + "</span></span><span class=\"muted\">" + esc(txt) + "</span></span>" +
+      '<span class="cnt' + (count ? " on" : "") + '" title="Needing you">' + count + "</span></button>";
+  }
+  function screenAll() {
+    return "<h1>All projects</h1><p class=\"lead\">What your agents are doing, and what needs you.</p>" +
+      '<div class="rows">' + PROJECTS.map(rowHtml).join("") + "</div>";
+  }
+  function screenProject() {
+    var shown = S.blocks.filter(function (b) { return !b.hidden; }).map(blockHtml).join("");
+    return "<h1>" + esc(S.project) + "</h1><p class=\"lead\">Blocks you can hide or move. Nothing here is a setting you must touch.</p>" +
+      '<div class="grid">' + shown + '<button class="add-tile" data-act="open-drawer">+ Add block</button></div>';
+  }
+  function screenThread() {
+    var t = THREADS.filter(function (x) { return x.id === S.thread; })[0];
+    var list = S.tl.filter(function (e) { return !e.div && e.t === t.id; });
+    list.splice(Math.min(1, list.length), 0, { div: true });
+    return "<h1>" + esc(t.n) + "</h1><p style=\"margin:0 0 16px\">" + dot(t.s) + "</p>" +
+      '<div class="thread-lines" data-look="Thread: ' + esc(t.n) + '">' +
+      '<div class="line"><b>Agenda</b><span>' + esc(t.agenda) + "</span></div>" +
+      '<div class="line"><b>Current step</b><span>' + esc(t.step) + "</span></div>" +
+      '<div class="line"><b>Last result</b><span>' + esc(t.last) + "</span></div>" +
+      '<div class="line"><b>Next step</b><span>' + esc(t.next) + "</span></div></div>" +
+      "<h2>Timeline</h2><div class=\"block\">" + tlHtml(list) + "</div>" +
+      '<p class="sub">Sub-agents: 2 (folded)</p>';
+  }
+  /* ---------- panels ---------- */
+  function inboxHtml() {
+    var n = S.cards.length;
+    $("inboxTabs").innerHTML =
+      '<button class="tab' + (S.tab === "needs" ? " on" : "") + '" data-act="tab" data-t="needs">Needs you (' + n + ")</button>" +
+      '<button class="tab' + (S.tab === "done" ? " on" : "") + '" data-act="tab" data-t="done">Done for you (' + S.done.length + ")</button>";
+    if (S.tab === "needs") {
+      $("inboxBody").innerHTML = offerHtml() +
+        (n ? '<div style="margin-bottom:12px"><button class="btn" data-act="all-defaults">Take all defaults</button></div>' + S.cards.map(cardHtml).join("")
+           : '<p class="muted">Nothing needs you. Enjoy the quiet.</p>');
+    } else {
+      $("inboxBody").innerHTML = S.done.length ? S.done.map(function (d, i) {
+        return '<div class="card"><div class="q">' + esc(d.what) + '</div><div class="muted small">' + esc(d.time) + " . Why: " + esc(d.why) + "</div>" +
+          '<div class="opts" style="margin:10px 0 0"><button class="btn small" data-act="undo-done" data-i="' + i + '">Undo</button>' +
+          '<button class="btn small" data-act="ask-again" data-i="' + i + '">Ask me again</button></div></div>';
+      }).join("") : '<p class="muted">Nothing done for you yet.</p>';
+    }
+  }
+  function trustHtml() {
+    var order = ["branch", "review", "deps", "flaky", "publish"];
+    var steps = [["ask", "Ask every time"], ["batch", "Ask once a day in a batch"], ["auto", "Do it and show me (with undo)"]];
+    $("trustBody").innerHTML = '<p class="muted small" style="margin-top:0">Trust is earned one kind of decision at a time. You are always in control.</p>' +
+      order.map(function (k) {
+        var locked = KINDS[k].irr;
+        return '<div class="kind-row"><b>' + esc(KINDS[k].name) + "</b>" +
+          (locked ? '<div class="muted small">Always asks. Cannot be made automatic.</div>' : "") +
+          '<div class="steps">' + steps.map(function (s) {
+            var on = S.level[k] === s[0];
+            return '<button class="step' + (on ? " on" : "") + '" data-act="level" data-k="' + k + '" data-l="' + s[0] + '"' + (locked ? " disabled" : "") + ">" + s[1] + "</button>";
+          }).join("") + "</div></div>";
+      }).join("");
+  }
+  function drawerHtml() {
+    var hid = S.blocks.filter(function (b) { return b.hidden; });
+    $("drawerList").innerHTML = hid.length ? hid.map(function (b) {
+      return '<div class="item"><div class="top"><span>' + esc(b.title) + '</span><button class="btn small" data-act="show" data-b="' + esc(b.id) + '">Show</button></div></div>';
+    }).join("") : '<p class="muted small">Nothing hidden.</p>';
+  }
+  /* ---------- top bar ---------- */
+  function crumbsHtml() {
+    var lv = S.screen;
+    var a = lv === "all" ? '<span class="here">All projects</span>' : '<a data-act="go-all">All projects</a>';
+    var p = lv === "all" ? '<span class="off">Project</span>' : lv === "project" ? '<span class="here">' + esc(S.project) + "</span>" : '<a data-act="go-project">' + esc(S.project) + "</a>";
+    var t = lv === "thread" ? '<span class="here">' + esc(THREADS.filter(function (x) { return x.id === S.thread; })[0].n) + "</span>" : '<span class="off">Thread</span>';
+    return a + '<span class="sep">&gt;</span>' + p + '<span class="sep">&gt;</span>' + t;
+  }
+  function trustLabel() {
+    var k = autoKinds().length;
+    var asked = Math.max(0, 11 - S.done.length);
+    return "Automatic: " + (k ? plural(k, "kind") : "none") + ". Asked you " + asked + " times today" + (k ? " (was 11)" : "");
+  }
+  /* ---------- render ---------- */
+  function render() {
+    $("crumbs").innerHTML = crumbsHtml();
+    $("needsPill").textContent = "Needs you: " + S.cards.length;
+    $("trustPill").textContent = "Trust: " + trustLabel();
+    $("app").innerHTML = S.screen === "all" ? screenAll() : S.screen === "project" ? screenProject() : screenThread();
+    inboxHtml();
+    trustHtml();
+    drawerHtml();
+    $("looking").textContent = "Looking at: " + lookText();
+  }
+  function lookText() {
+    if (S.look) return S.look;
+    return S.screen === "all" ? "All projects" : S.screen === "project" ? "Project " + S.project : "Thread " + THREADS.filter(function (x) { return x.id === S.thread; })[0].n;
+  }
+  /* ---------- panels open / close ---------- */
+  function openPanel(which) {
+    closeAll(true);
+    S.panel = which;
+    $(which).classList.add("on");
+    $("scrim").classList.add("on");
+  }
+  function closeAll(keepPrompt) {
+    ["inbox", "trust", "drawer"].forEach(function (id) { $(id).classList.remove("on"); });
+    $("scrim").classList.remove("on");
+    S.panel = null;
+    S.menuOpen = null;
+    if (keepPrompt !== true) { /* prompt stays unless toggled */ }
+  }
+  function go(screen, opts) {
+    S.screen = screen;
+    S.look = null;
+    if (opts && opts.thread) S.thread = opts.thread;
+    if (opts && opts.project) S.project = opts.project;
+    S.menuOpen = null;
+    closeAll();
+    render();
+    window.scrollTo(0, 0);
+  }
+  /* ---------- prompt box ---------- */
+  function ppRender() {
+    var h = "";
+    if (S.pend) {
+      var p = S.pend;
+      h += '<div class="confirm">To: <b>' + esc(TARGETS[S.tIdx].n) + "</b> . Steer " +
+        '<button class="link" data-act="change-target">Change</button>' +
+        '<div class="muted small">' + esc(p.text) + "</div>" +
+        '<label><input type="checkbox" id="skipBox"' + (p.skipTick ? " checked" : "") + '> Do not show this next time for this kind</label>' +
+        '<div class="bar"><i id="barFill"></i></div>' +
+        '<button class="btn small" data-act="undo-send">Undo</button> <span class="muted small" id="secs"></span></div>';
+    }
+    if (S.answer) h += '<div class="bubble"><b>' + esc(S.answer.q) + '</b><br>' + esc(S.answer.a) + "<br><span class=\"muted small\">Answered from the log, no agent started</span></div>";
+    if (S.pl) h += placeHtml();
+    $("ppDyn").innerHTML = h;
+  }
+  function placeHtml() {
+    var p = S.pl;
+    function chips(arr, cur, act) {
+      return arr.map(function (x) { return '<button class="opt' + (x === cur ? " on" : "") + '" data-act="' + act + '" data-v="' + x + '">' + x + "</button>"; }).join("");
+    }
+    return '<div class="place"><div><b>You said:</b> ' + esc(p.text) + "</div>" +
+      '<div class="r"><span class="lab">Kind</span>' + chips(["Note", "Rule", "Law"], p.kind, "pl-kind") + "</div>" +
+      '<div class="r"><span class="lab">Applies to</span>' + chips(["This thread", "This project", "All projects"], p.scope, "pl-scope") + "</div>" +
+      '<div class="r"><span class="lab">Enforced by</span><span>nothing yet</span> <a data-act="pl-enforce">Make it enforced</a></div>' +
+      (p.fast ? '<div class="r">This replaces an older note. <button class="opt' + (p.replace ? " on" : "") + '" data-act="pl-replace">' + (p.replace ? "Will replace" : "Replace it") + "</button></div>" : "") +
+      '<div class="r"><button class="btn pri small" data-act="pl-accept">Accept</button><button class="btn small" data-act="pl-cancel">Cancel</button></div></div>';
+  }
+  function clearDyn() { S.answer = null; S.pl = null; }
+  function sendPrompt(forced) {
+    var inp = $("ppInput");
+    var txt = (forced || inp.value).trim();
+    if (!txt) return;
+    if (S.pend) commitSend();
+    clearDyn();
+    var low = txt.toLowerCase();
+    inp.value = "";
+    if (low.indexOf("always") >= 0 || low.indexOf("never") >= 0) {
+      S.pl = { text: txt, kind: "Rule", scope: "This project", fast: low.indexOf("fast mode") >= 0, replace: false };
+      ppRender();
+      return;
+    }
+    if (/\?\s*$/.test(txt)) {
+      S.answer = { q: txt, a: "The last green run was 2 hours ago, on change 44." };
+      ppRender();
+      return;
+    }
+    if (S.skip.steer) {
+      var e = addEntry(txt, TARGETS[S.tIdx].t);
+      render();
+      toast("Sent", function () { S.tl.splice(S.tl.indexOf(e), 1); render(); });
+      return;
+    }
+    S.pend = { text: txt, start: Date.now(), skipTick: false };
+    ppRender();
+    S.pend.timer = setInterval(tick, 100);
+  }
+  function tick() {
+    if (!S.pend) return;
+    var el = (Date.now() - S.pend.start) / 1000;
+    var left = Math.max(0, 10 - el);
+    var f = $("barFill"), s = $("secs");
+    if (f) f.style.width = (left * 10) + "%";
+    if (s) s.textContent = Math.ceil(left) + "s";
+    if (left <= 0) commitSend();
+  }
+  function commitSend() {
+    var p = S.pend;
+    if (!p) return;
+    clearInterval(p.timer);
+    var box = $("skipBox");
+    if (box && box.checked) S.skip.steer = true;
+    S.pend = null;
+    addEntry(p.text, TARGETS[S.tIdx].t);
+    ppRender();
+    render();
+    toast("Sent");
+  }
+  function undoSend() {
+    if (!S.pend) return;
+    clearInterval(S.pend.timer);
+    $("ppInput").value = S.pend.text;
+    S.pend = null;
+    ppRender();
+    toast("Not sent. Your text is back in the box.");
+  }
+  /* ---------- click routing ---------- */
+  document.addEventListener("click", function (ev) {
+    var look = ev.target.closest("[data-look]");
+    if (look && !ev.target.closest(".prompt") && !ev.target.closest(".slide")) {
+      S.look = look.getAttribute("data-look");
+      var l = $("looking");
+      if (l) l.textContent = "Looking at: " + S.look;
+    }
+    var el = ev.target.closest("[data-act]");
+    if (!el) {
+      if (S.menuOpen && !ev.target.closest(".menu")) { S.menuOpen = null; render(); }
+      return;
+    }
+    var a = el.getAttribute("data-act");
+    var d = function (k) { return el.getAttribute("data-" + k); };
+    switch (a) {
+      case "go-all": go("all"); break;
+      case "go-project": go("project"); break;
+      case "project": go("project", { project: d("n") }); break;
+      case "thread": go("thread", { thread: d("id") }); break;
+      case "open-inbox": S.tab = "needs"; render(); openPanel("inbox"); break;
+      case "open-trust": render(); openPanel("trust"); break;
+      case "open-drawer": render(); openPanel("drawer"); break;
+      case "close-all": closeAll(); break;
+      case "tab": S.tab = d("t"); render(); break;
+      case "ans": answer(d("id"), parseInt(d("i"), 10)); break;
+      case "ev": S.evOpen[d("id")] = !S.evOpen[d("id")]; render(); break;
+      case "all-defaults": takeAllDefaults(); break;
+      case "offer-yes": makeAuto(S.offer); break;
+      case "offer-no": S.offerNo[S.offer] = true; S.offer = null; render(); toast("Okay. It will keep asking."); break;
+      case "undo-done": undoDone(parseInt(d("i"), 10)); break;
+      case "ask-again": askAgain(parseInt(d("i"), 10)); break;
+      case "level": setLevel(d("k"), d("l")); break;
+      case "menu": S.menuOpen = S.menuOpen === d("b") ? null : d("b"); render(); break;
+      case "hide": hideBlock(d("b")); break;
+      case "show": showBlock(d("b")); break;
+      case "hl": highlight(d("k")); break;
+      case "enforce": S.rules[parseInt(d("i"), 10)].s = "enforced"; render(); toast("Done. That rule is now enforced."); break;
+      case "dry": S.dry = !S.dry; render(); break;
+      case "draft": openPromptWith(d("text")); break;
+      case "promote": promote(); break;
+      case "toggle-prompt": togglePrompt(); break;
+      case "send": sendPrompt(); break;
+      case "mic": toast("Voice is not connected in this mock."); break;
+      case "change-target": S.tIdx = (S.tIdx + 1) % TARGETS.length; ppRender(); if (S.pend) tick(); break;
+      case "undo-send": undoSend(); break;
+      case "pl-kind": S.pl.kind = d("v"); ppRender(); break;
+      case "pl-scope": S.pl.scope = d("v"); ppRender(); break;
+      case "pl-enforce": toast("Enforcing needs a check that can run. None exists for this yet."); break;
+      case "pl-replace": S.pl.replace = !S.pl.replace; ppRender(); break;
+      case "pl-accept": acceptPlacement(); break;
+      case "pl-cancel": S.pl = null; ppRender(); break;
+    }
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && ev.target.id === "ppInput") sendPrompt();
+    if (ev.key === "Enter" && ev.target.id === "drawerInput") addCustomBlock();
+    if (ev.key === "Escape") { closeAll(); $("prompt").classList.remove("on"); }
+  });
+  document.addEventListener("change", function (ev) {
+    if (ev.target.id === "skipBox" && S.pend) S.pend.skipTick = ev.target.checked;
+  });
+  /* ---------- small actions ---------- */
+  function hideBlock(id) {
+    S.blocks.forEach(function (b) { if (b.id === id) b.hidden = true; });
+    S.menuOpen = null;
+    render();
+    toast("Moved to the drawer.", function () { showBlock(id, true); });
+  }
+  function showBlock(id, quiet) {
+    S.blocks.forEach(function (b) { if (b.id === id) b.hidden = false; });
+    render();
+    if (!quiet) toast("Block is back on the page.");
+  }
+  function addCustomBlock() {
+    var i = $("drawerInput");
+    var v = i.value.trim();
+    if (!v) return;
+    S.blocks.push({ id: "custom" + S.nextId++, title: v, hidden: false });
+    i.value = "";
+    render();
+    toast("Added a placeholder block: " + v);
+  }
+  function promote() {
+    if (S.researchDone) return;
+    S.researchDone = true;
+    S.cards.push({ id: "c7", kind: "research", short: "CI parallel run", q: "Run the two CI jobs side by side?", opts: ["Try it for a day", "Not now"], def: 1,
+      ev: ["Research says the saving is about 4 minutes.", "The two jobs share one cache and may clash."], no: "expires in 24 hours, nothing happens" });
+    render();
+    toast("Promoted. It is now a question in Needs you.");
+  }
+  function acceptPlacement() {
+    var p = S.pl;
+    if (!p) return;
+    var title = (p.kind === "Rule" ? "" : p.kind + ": ") + p.text;
+    if (p.fast && p.replace) S.rules = S.rules.filter(function (r) { return r.t !== "Never use fast mode"; });
+    S.rules.unshift({ t: title, s: "not" });
+    S.pl = null;
+    ppRender();
+    render();
+    toast("Added to In force here as Not enforced.");
+  }
+  function togglePrompt() {
+    var p = $("prompt");
+    p.classList.toggle("on");
+    if (p.classList.contains("on")) { $("looking").textContent = "Looking at: " + lookText(); setTimeout(function () { $("ppInput").focus(); }, 200); }
+  }
+  function openPromptWith(text) {
+    closeAll();
+    $("prompt").classList.add("on");
+    $("looking").textContent = "Looking at: " + lookText();
+    clearDyn();
+    sendPrompt(text);
+  }
+  render();
+})();
+</script>
+</body>
+</html>

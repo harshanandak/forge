@@ -1,0 +1,1509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge Desk mock v6</title>
+<style>
+:root {
+  --bg: #f2f2f5; --surface: #ffffff; --raised: #f7f7f9; --ink: #111114; --muted: #6e6e76; --faint: #a3a3ab; --hair: rgba(60, 60, 67, 0.14);
+  --accent: #4b55d6; --accent-ink: #ffffff; --accent-soft: rgba(75, 85, 214, 0.10);
+  --green: #24a058; --orange: #e08a12; --red: #e5484d; --red-soft: rgba(229, 72, 77, 0.10); --orange-soft: rgba(224, 138, 18, 0.12); --grey: #b9b9c0;
+  --band: rgba(17, 17, 20, 0.07); --bar: rgba(242, 242, 245, 0.78); --scrim: rgba(0, 0, 0, 0.32);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.12); --lock: #1b2233;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000; --surface: #1c1c1f; --raised: #2a2a2e; --ink: #f2f2f5; --muted: #9d9da6; --faint: #6c6c74; --hair: rgba(255, 255, 255, 0.10);
+    --accent: #8a92ff; --accent-ink: #0b0c1e; --accent-soft: rgba(138, 146, 255, 0.16);
+    --green: #3fca7a; --orange: #f2a640; --red: #ff6b6f; --red-soft: rgba(255, 107, 111, 0.14); --orange-soft: rgba(242, 166, 64, 0.15); --grey: #4a4a52;
+    --band: rgba(255, 255, 255, 0.09); --bar: rgba(22, 22, 25, 0.72); --scrim: rgba(0, 0, 0, 0.55);
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.6); --lock: #0d1220;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body { color: var(--ink); font: 15px/1.4 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+svg.i.s { width: 16px; height: 16px; }
+[hidden] { display: none !important; }
+
+/* stage */
+.stage { height: 800px; display: flex; gap: 20px; align-items: flex-start; justify-content: center; }
+.ctl { flex: 0 1 260px; min-width: 0; height: 760px; overflow-y: auto; padding: 4px 2px; }
+.ctl h2 { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 2px; }
+.ctl .note { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; }
+.scn { display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 12px; margin-bottom: 4px; }
+.scn b { display: block; font-size: 14px; font-weight: 600; }
+.scn span { display: block; font-size: 12.5px; color: var(--muted); }
+.scn:hover { background: var(--hair); }
+.scn.on { background: var(--surface); box-shadow: var(--shadow); }
+.sub { margin: 4px 0 8px 12px; display: flex; flex-direction: column; gap: 2px; }
+.sub button { text-align: left; font-size: 13px; padding: 5px 10px; border-radius: 9px; color: var(--muted); }
+.sub button.on { color: var(--ink); background: var(--hair); }
+@media (max-width: 699px) {
+  .stage { flex-direction: column; align-items: center; gap: 4px; }
+  .ctl { flex: none; width: 100%; max-width: 390px; height: 36px; overflow-x: auto; overflow-y: hidden; display: flex; gap: 6px; align-items: center; white-space: nowrap; padding: 0 2px; }
+  .ctl h2 { margin: 0 4px 0 0; font-size: 10.5px; }
+  .ctl .note, .scn span { display: none; }
+  .scn { display: inline-block; width: auto; padding: 5px 11px; margin: 0; flex: none; }
+  .scn b { font-size: 12.5px; }
+  .sub { flex-direction: row; margin: 0; }
+  .sub button { flex: none; font-size: 12px; padding: 5px 8px; }
+}
+
+/* phone */
+.phone { position: relative; width: 390px; max-width: 100%; height: 760px; flex: none; border-radius: 44px; overflow: hidden; background: var(--bg); border: 1px solid var(--hair); box-shadow: var(--shadow); isolation: isolate; }
+.sbar { position: absolute; top: 0; left: 0; right: 0; height: 44px; z-index: 40; display: flex; align-items: center; justify-content: space-between; padding: 6px 28px 0; font-size: 14px; font-weight: 600; pointer-events: none; }
+.sbar .ic { display: flex; gap: 5px; align-items: center; }
+.scroll { position: absolute; inset: 0; overflow-y: auto; padding: 50px 16px 150px; }
+.tabbar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; justify-content: space-around; padding: 7px 6px 22px; background: var(--bar); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); border-top: 1px solid var(--hair); }
+.tb { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; color: var(--faint); min-width: 0; position: relative; }
+.tb.on { color: var(--accent); }
+.tb .bd { position: absolute; top: -3px; left: calc(50% + 6px); background: var(--red); color: #fff; font-size: 10px; font-weight: 700; border-radius: 9px; padding: 0 5px; line-height: 16px; }
+.fab { position: absolute; right: 16px; bottom: 92px; z-index: 21; width: 52px; height: 52px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; box-shadow: var(--shadow); transition: transform 200ms ease; }
+.fab:active { transform: scale(0.94); }
+.capsule { position: absolute; left: 16px; right: 80px; bottom: 96px; z-index: 21; height: 44px; border-radius: 22px; background: var(--surface); box-shadow: var(--shadow); display: flex; align-items: center; gap: 10px; padding: 0 8px 0 16px; font-size: 14px; animation: rise 260ms ease; }
+.capsule b { font-weight: 650; }
+.capsule .go { margin-left: auto; background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 13px; padding: 6px 12px; border-radius: 16px; }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* type */
+.top { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin: 8px 0 14px; }
+.lt { font-size: 32px; font-weight: 750; letter-spacing: -0.02em; line-height: 1.05; margin: 0; }
+.cap { font-size: 13px; color: var(--muted); }
+.ey { font-size: 12px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 22px 4px 8px; display: flex; justify-content: space-between; align-items: baseline; }
+.ey button { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--accent); font-size: 13px; }
+.pill { font-size: 13px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 16px; padding: 6px 12px; white-space: nowrap; }
+.num { font-size: 40px; font-weight: 750; letter-spacing: -0.03em; line-height: 1; }
+.num small { font-size: 16px; font-weight: 600; color: var(--muted); letter-spacing: 0; margin-left: 3px; }
+
+/* surfaces */
+.card { background: var(--surface); border-radius: 18px; padding: 16px; margin-bottom: 12px; }
+.card.tap { cursor: pointer; transition: transform 200ms ease; }
+.card.tap:active { transform: scale(0.985); }
+.group { background: var(--surface); border-radius: 18px; overflow: hidden; margin-bottom: 12px; }
+.row { display: flex; align-items: center; gap: 12px; padding: 13px 16px; min-height: 50px; width: 100%; text-align: left; position: relative; }
+.row + .row::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--hair); }
+.row .t { flex: 1; min-width: 0; }
+.row .t b { font-weight: 600; display: block; }
+.row .t span { font-size: 13px; color: var(--muted); display: block; }
+.row .r { font-size: 13px; color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+.row.tap { cursor: pointer; }
+.row.tap:active { background: var(--raised); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+.s-done { background: var(--grey); } .s-work { background: var(--green); } .s-needs { background: var(--orange); } .s-stop { background: var(--red); } .s-idle { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); } .s-pause { background: transparent; box-shadow: inset 0 0 0 2px var(--orange); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 14px; padding: 12px 16px; font-weight: 600; font-size: 15px; background: var(--raised); }
+.btn.pri { background: var(--accent); color: var(--accent-ink); }
+.btn.red { background: var(--red); color: #fff; }
+.btn.w { width: 100%; }
+.btn.sm { padding: 8px 12px; font-size: 13.5px; border-radius: 12px; }
+.btn[disabled] { opacity: 0.4; cursor: default; }
+.link { color: var(--accent); font-weight: 500; font-size: 14px; }
+.seg { display: flex; background: var(--raised); border-radius: 11px; padding: 2px; margin: 0 0 14px; }
+.seg button { flex: 1; font-size: 13px; font-weight: 500; padding: 6px 4px; border-radius: 9px; color: var(--muted); transition: background 200ms ease; }
+.seg button.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.card .seg { background: var(--bg); }
+.card .seg button.on { background: var(--raised); }
+.choice { display: flex; flex-wrap: wrap; gap: 6px; }
+.choice button { font-size: 13px; padding: 6px 11px; border-radius: 10px; background: var(--raised); color: var(--muted); }
+.choice button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.choice button .df { opacity: 0.75; font-weight: 400; }
+
+/* home */
+.hero { display: flex; gap: 16px; align-items: center; }
+.hero .h1 { font-size: 20px; font-weight: 700; }
+.stackp { display: flex; gap: 3px; height: 8px; border-radius: 4px; overflow: hidden; margin: 14px 0 8px; }
+.stackp i { display: block; height: 100%; }
+.leg { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+.leg span { display: inline-flex; align-items: center; gap: 5px; }
+.only { background: var(--surface); border-radius: 18px; padding: 16px; margin-bottom: 12px; box-shadow: inset 0 0 0 1.5px var(--red); }
+.only .lab { font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--red); display: flex; align-items: center; gap: 6px; }
+.only .q { font-size: 21px; font-weight: 700; margin: 6px 0 2px; letter-spacing: -0.01em; }
+.only .q2 { font-size: 14px; color: var(--muted); margin-bottom: 12px; }
+.only .safe { font-size: 12.5px; color: var(--muted); margin-top: 8px; display: flex; gap: 6px; align-items: center; justify-content: center; }
+.only.flash { animation: flash 700ms ease 2; }
+@keyframes flash { 50% { box-shadow: inset 0 0 0 3px var(--red); } }
+.ba2 { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center; }
+.ba2 .bars { grid-column: 1 / -1; margin-top: 6px; }
+.bb { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin: 4px 0; }
+.bb i { display: block; height: 8px; border-radius: 4px; background: var(--grey); transition: width 300ms ease; }
+.bb.a i { background: var(--green); }
+.bb em { font-style: normal; width: 42px; flex: none; }
+.big { font-size: 26px; font-weight: 750; letter-spacing: -0.02em; }
+.big .from { font-size: 15px; color: var(--muted); font-weight: 500; text-decoration: line-through; margin-right: 6px; }
+
+/* timeline */
+.tl { position: relative; }
+.ti { display: grid; grid-template-columns: 48px 18px minmax(0, 1fr); gap: 0 8px; padding: 0 0 16px; cursor: pointer; }
+.ti .tm { font-size: 12.5px; color: var(--muted); text-align: right; padding-top: 2px; }
+.ti .rail { position: relative; display: flex; justify-content: center; }
+.ti .rail::before { content: ""; position: absolute; top: 14px; bottom: -16px; width: 2px; background: var(--hair); }
+.ti:last-child .rail::before { display: none; }
+.ti .rail .dot { margin-top: 5px; position: relative; box-shadow: 0 0 0 3px var(--bg); }
+.ti .hl { font-weight: 650; font-size: 15.5px; line-height: 1.3; }
+.ti .hl.q { font-weight: 400; color: var(--muted); }
+.ti .sl { font-size: 13.5px; color: var(--muted); margin-top: 2px; }
+.ti .src { font-size: 12.5px; color: var(--accent); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
+.ti.you .hl { font-style: italic; font-weight: 500; }
+.wk { display: flex; align-items: flex-end; gap: 8px; height: 110px; margin: 6px 0 4px; }
+.wk button { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+.wk i { display: block; width: 100%; max-width: 30px; border-radius: 6px; background: var(--grey); transition: background 200ms ease; }
+.wk button.on i { background: var(--accent); }
+.wk i.st { background: var(--red); opacity: 0.8; }
+.wk span { font-size: 11px; color: var(--muted); }
+
+/* analytics */
+.sig .q { font-weight: 650; margin-bottom: 8px; }
+.sig .meta { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.sig .nm { font-size: 12.5px; color: var(--muted); }
+.sig .mean { font-size: 13.5px; color: var(--muted); margin: 10px 0 12px; }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.tile { background: var(--surface); border-radius: 18px; padding: 14px; }
+.tile .k { font-size: 12.5px; color: var(--muted); min-height: 32px; }
+.tile .v { font-size: 26px; font-weight: 750; letter-spacing: -0.02em; margin: 4px 0 2px; }
+.tile .n { font-size: 12px; color: var(--muted); }
+.tile .n.out { color: var(--orange); font-weight: 600; }
+.vchart { display: flex; align-items: flex-end; gap: 14px; height: 140px; margin: 8px 0 4px; }
+.vchart div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; font-size: 12px; gap: 4px; }
+.vchart i { display: block; width: 100%; max-width: 40px; border-radius: 8px 8px 4px 4px; background: var(--grey); }
+.vchart div.now i { background: var(--accent); }
+.vlab { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); }
+.vlab span { flex: 1; text-align: center; }
+
+/* chain */
+.chain { display: flex; align-items: center; overflow-x: auto; padding: 4px 0 8px; }
+.cn { flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 86px; text-align: center; font-size: 12px; }
+.cn .c { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--raised); }
+.cn.me .c { box-shadow: 0 0 0 2px var(--accent); }
+.cl { flex: 1 0 18px; height: 2px; background: var(--hair); margin-bottom: 22px; }
+.parts .row .dot { margin-right: 2px; }
+
+/* sheets */
+.scrim { position: absolute; inset: 0; z-index: 50; background: var(--scrim); opacity: 0; transition: opacity 250ms ease; pointer-events: none; }
+.scrim.on { opacity: 1; pointer-events: auto; }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 60; background: var(--bg); border-radius: 20px 20px 0 0; display: flex; flex-direction: column; transform: translateY(102%); transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1); box-shadow: var(--shadow); }
+.sheet.on { transform: none; }
+.sheet .grab { flex: none; height: 22px; display: grid; place-items: center; cursor: pointer; }
+.sheet .grab i { display: block; width: 38px; height: 5px; border-radius: 3px; background: var(--faint); }
+.sheet .sh { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px 8px; }
+.sheet .sh h3 { margin: 0; font-size: 17px; font-weight: 700; }
+.sheet .sh .x { color: var(--accent); font-weight: 600; font-size: 15px; }
+.sheet .sb { flex: 1; overflow-y: auto; padding: 4px 16px 18px; }
+.sheet .sf { flex: none; padding: 10px 16px 26px; border-top: 1px solid var(--hair); background: var(--bar); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+
+/* toast */
+.toast { position: absolute; top: 50px; left: 12px; right: 12px; z-index: 95; background: var(--surface); box-shadow: var(--shadow); border-radius: 16px; padding: 12px 14px; display: flex; align-items: center; gap: 10px; font-size: 14px; animation: drop 240ms ease; }
+.toast button { color: var(--accent); font-weight: 600; margin-left: auto; }
+@keyframes drop { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+
+/* lock and call */
+.lock { position: absolute; inset: 0; z-index: 80; background: radial-gradient(120% 80% at 30% 10%, #3b4a7a 0%, var(--lock) 60%); color: #fff; display: flex; flex-direction: column; align-items: center; padding: 70px 14px 30px; animation: fade 250ms ease; }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+.lock .lk { opacity: 0.8; }
+.lock .clock { font-size: 76px; font-weight: 300; letter-spacing: -0.02em; line-height: 1; margin-top: 6px; }
+.lock .date { font-size: 16px; opacity: 0.85; margin-top: 4px; }
+.notif { width: 100%; margin-top: 30px; background: rgba(255, 255, 255, 0.18); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border-radius: 20px; padding: 12px 14px; text-align: left; color: #fff; animation: rise 280ms ease; }
+.notif .h { display: flex; justify-content: space-between; font-size: 12.5px; opacity: 0.85; margin-bottom: 3px; }
+.notif .h b { display: flex; gap: 6px; align-items: center; }
+.notif .ap { width: 18px; height: 18px; border-radius: 5px; background: var(--accent); display: inline-block; }
+.notif .t { font-weight: 650; font-size: 15px; }
+.notif .b { font-size: 14px; opacity: 0.9; }
+.lock .hint { margin-top: auto; font-size: 13px; opacity: 0.7; text-align: center; }
+.call { position: absolute; inset: 0; z-index: 85; background: linear-gradient(180deg, #232a3d 0%, #0b0d14 100%); color: #fff; display: flex; flex-direction: column; align-items: center; padding: 96px 24px 56px; text-align: center; animation: fade 250ms ease; }
+.call .who { font-size: 34px; font-weight: 600; margin-top: 18px; }
+.call .what { font-size: 16px; opacity: 0.85; margin-top: 8px; max-width: 280px; }
+.call .av { width: 92px; height: 92px; border-radius: 50%; background: rgba(255, 255, 255, 0.12); display: grid; place-items: center; animation: ring 1.4s ease-in-out infinite; }
+@keyframes ring { 50% { box-shadow: 0 0 0 14px rgba(255, 255, 255, 0.06); } }
+.call .acts { margin-top: auto; display: flex; justify-content: space-between; width: 100%; max-width: 280px; }
+.call .ab { display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 14px; color: #fff; }
+.call .ab i { width: 70px; height: 70px; border-radius: 50%; display: grid; place-items: center; }
+.call .ab.no i { background: #ff3b30; } .call .ab.yes i { background: #30c95a; }
+.call .ab.no svg { transform: rotate(135deg); }
+.dsheet { position: absolute; left: 10px; right: 10px; bottom: 24px; z-index: 90; background: rgba(40, 44, 58, 0.92); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border-radius: 18px; padding: 8px; color: #fff; animation: rise 250ms ease; }
+.dsheet p { margin: 8px 10px 10px; font-size: 13px; opacity: 0.8; text-align: center; }
+.dsheet button { display: block; width: 100%; padding: 13px; border-radius: 12px; font-size: 16px; color: #fff; }
+.dsheet button + button { border-top: 1px solid rgba(255, 255, 255, 0.1); }
+
+/* browser */
+.urlbar { display: flex; align-items: center; gap: 6px; justify-content: center; background: var(--raised); border-radius: 11px; padding: 8px; font-size: 14px; margin: 0 0 12px; }
+.site { background: var(--surface); border-radius: 18px; padding: 22px 18px; text-align: center; }
+.site .mark { width: 44px; height: 44px; border-radius: 12px; background: var(--ink); color: var(--bg); display: grid; place-items: center; margin: 0 auto 12px; font-weight: 800; font-size: 13px; }
+.okc { width: 64px; height: 64px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; margin: 8px auto 12px; animation: pop 300ms ease; }
+@keyframes pop { from { transform: scale(0.6); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* questions page */
+.qh { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin: 18px 4px 8px; }
+.qh .n { background: var(--raised); color: var(--ink); border-radius: 9px; padding: 0 7px; letter-spacing: 0; }
+.qc { background: var(--surface); border-radius: 18px; padding: 14px; margin-bottom: 10px; }
+.qc .qt { font-weight: 650; margin-bottom: 4px; }
+.qc .qm { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+.qc .viz { margin: 4px 0 12px; }
+.tick { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; flex: none; box-shadow: inset 0 0 0 1.5px var(--faint); color: transparent; transition: background 200ms ease; }
+.tick.on { background: var(--accent); box-shadow: none; color: var(--accent-ink); }
+.opt3 { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x mandatory; }
+.oc { flex: 0 0 78%; scroll-snap-align: start; background: var(--surface); border-radius: 18px; padding: 14px; }
+.oc.rec { box-shadow: inset 0 0 0 2px var(--accent); }
+.oc .tg { font-size: 11.5px; font-weight: 700; color: var(--accent); letter-spacing: 0.04em; }
+.oc h4 { margin: 2px 0 6px; font-size: 17px; }
+.oc svg.d { width: 100%; height: auto; display: block; margin: 6px 0 10px; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; font-size: 13px; }
+.kv span:nth-child(odd) { color: var(--muted); }
+.meter { display: inline-flex; gap: 3px; }
+.meter i { width: 12px; height: 6px; border-radius: 3px; background: var(--raised); }
+.meter i.f { background: var(--ink); }
+.res { text-align: center; padding: 10px 0 4px; }
+.res .num { font-size: 44px; }
+
+/* router */
+.inrow { display: flex; gap: 8px; align-items: center; }
+.inrow input { flex: 1; min-width: 0; border: 0; border-radius: 14px; padding: 12px 14px; background: var(--surface); color: var(--ink); font: inherit; }
+.ibtn { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); flex: none; }
+.ibtn.pri { background: var(--accent); color: var(--accent-ink); }
+.said { font-size: 19px; font-weight: 600; line-height: 1.3; margin: 2px 0 12px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; border-radius: 10px; padding: 6px 10px; background: var(--raised); font-size: 13.5px; font-weight: 600; }
+.flow { display: flex; align-items: center; gap: 8px; font-size: 13.5px; margin: 12px 0 4px; }
+.flow .arrow { color: var(--faint); }
+.flips { display: flex; align-items: center; margin: 10px 0 6px; }
+.flips .f { flex: none; display: flex; flex-direction: column; align-items: center; width: 70px; font-size: 11.5px; color: var(--muted); text-align: center; gap: 4px; }
+.flips .f i { width: 14px; height: 14px; border-radius: 50%; }
+.flips .f i.y { background: var(--green); } .flips .f i.n { background: var(--red); } .flips .f i.new { background: var(--accent); }
+.flips .ln { flex: 1 0 10px; height: 2px; background: var(--hair); margin-bottom: 18px; }
+.warn { background: var(--orange-soft); border-radius: 14px; padding: 12px; margin: 12px 0 4px; }
+.warn b { display: block; margin-bottom: 4px; }
+.ans { background: var(--accent-soft); border-radius: 14px; padding: 12px; font-size: 14.5px; margin-top: 10px; }
+.tries button { display: block; width: 100%; text-align: left; padding: 11px 14px; font-size: 14px; }
+.tries button span { color: var(--muted); font-size: 12px; display: block; }
+
+/* misc */
+.sw { width: 44px; height: 26px; border-radius: 13px; background: var(--raised); position: relative; flex: none; transition: background 200ms ease; box-shadow: inset 0 0 0 1px var(--hair); }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transition: transform 200ms ease; }
+.sw.on { background: var(--green); }
+.sw.on::after { transform: translateX(18px); }
+.sw[disabled] { opacity: 0.4; cursor: default; }
+.step { display: flex; align-items: center; gap: 10px; }
+.step button { width: 30px; height: 30px; border-radius: 50%; background: var(--raised); font-size: 18px; line-height: 1; }
+.step b { min-width: 64px; text-align: center; font-weight: 650; }
+.ladder { display: flex; align-items: flex-start; margin: 4px 0 6px; }
+.ladder .lg { flex: none; width: 82px; display: flex; flex-direction: column; align-items: center; gap: 5px; font-size: 12px; text-align: center; }
+.ladder .lg .c { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--raised); }
+.ladder .lg.hot .c { background: var(--red-soft); color: var(--red); }
+.ladder .lg em { font-style: normal; color: var(--muted); }
+.ladder .lgl { flex: 1 0 8px; height: 2px; background: var(--hair); margin-top: 19px; }
+.mach .row .c { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--raised); flex: none; }
+.lay [data-slot] { position: relative; outline: 1.5px dashed var(--faint); outline-offset: 3px; margin-top: 30px; }
+.lay [data-slot]::before { content: attr(data-slot); position: absolute; top: -24px; left: 4px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.lay [data-slot^="Agent"] { outline-color: var(--accent); }
+.lay [data-slot^="Agent"]::before { color: var(--accent); }
+.empty { text-align: center; color: var(--muted); padding: 30px 0; font-size: 14px; }
+.big-ok { text-align: center; padding: 30px 10px; }
+
+/* bubble scene */
+.home2 { position: absolute; inset: 0; z-index: 80; background: linear-gradient(160deg, #5b6b9a 0%, #2b3350 55%, #171b2b 100%); padding: 70px 22px 0; color: #fff; animation: fade 250ms ease; }
+.apps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px 10px; }
+.appi { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11.5px; }
+.appi i { width: 56px; height: 56px; border-radius: 15px; display: grid; place-items: center; font-style: normal; font-weight: 700; font-size: 19px; background: rgba(255, 255, 255, 0.16); }
+.hdock { position: absolute; left: 14px; right: 14px; bottom: 16px; height: 80px; border-radius: 28px; background: rgba(255, 255, 255, 0.14); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); display: flex; justify-content: space-around; align-items: center; }
+.hdock i { width: 54px; height: 54px; border-radius: 15px; background: rgba(255, 255, 255, 0.2); display: block; }
+.bscrim { position: absolute; inset: 0; z-index: 2; background: rgba(0, 0, 0, 0.38); animation: fade 200ms ease; }
+.bub { position: absolute; right: 10px; z-index: 5; width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; color: #fff; touch-action: none; cursor: grab; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); transition: background 300ms ease; user-select: none; }
+.bub.calm { background: #5d6470; } .bub.needs { background: var(--accent); color: var(--accent-ink); } .bub.snz { background: #3a3f4b; }
+.bub.urgent { background: var(--red); animation: beat 1.8s ease-in-out infinite; }
+@keyframes beat { 0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.6), 0 6px 18px rgba(0, 0, 0, 0.35); } 10% { transform: scale(1.09); } 20% { transform: scale(1); } 30% { transform: scale(1.05); } 65% { box-shadow: 0 0 0 18px rgba(229, 72, 77, 0), 0 6px 18px rgba(0, 0, 0, 0.35); } }
+.bub .cnt { font-weight: 750; font-size: 18px; }
+.bub svg.cd { position: absolute; inset: -4px; width: 64px; height: 64px; }
+.blab { position: absolute; right: 74px; z-index: 5; background: rgba(20, 22, 30, 0.85); color: #fff; font-size: 12.5px; font-weight: 600; padding: 5px 10px; border-radius: 12px; white-space: nowrap; pointer-events: none; }
+.fan { position: absolute; z-index: 4; width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 750; font-size: 15px; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35); animation: fanin 240ms ease both; }
+@keyframes fanin { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: none; } }
+.fan small { position: absolute; top: 55px; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 600; white-space: nowrap; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); }
+.fan.run { background: #5d6470; } .fan.snooze { background: #3a3f4b; } .fan.r { background: var(--red); } .fan.o { background: var(--orange); } .fan.a { background: var(--accent); color: var(--accent-ink); }
+.fan.dim { opacity: 0.4; }
+.bpop { position: absolute; left: 12px; right: 82px; z-index: 6; background: var(--surface); color: var(--ink); border-radius: 18px; padding: 14px; box-shadow: var(--shadow); animation: rise 220ms ease; }
+.bpop .ph { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.bpop .ph b { color: var(--ink); font-size: 13.5px; }
+.bpop .ph .pg { display: flex; align-items: center; gap: 6px; }
+.bpop .ph .pg button { width: 26px; height: 26px; border-radius: 50%; background: var(--raised); display: grid; place-items: center; color: var(--ink); }
+.bpop .qt { font-weight: 650; margin-bottom: 10px; font-size: 14.5px; }
+.bnote { position: absolute; left: 12px; right: 12px; bottom: 112px; z-index: 6; background: rgba(20, 22, 30, 0.9); color: #fff; border-radius: 16px; padding: 12px 14px; font-size: 13.5px; animation: rise 220ms ease; }
+.bnote b { display: block; margin-bottom: 2px; }
+.ctl .muted { font-size: 12px; color: var(--muted); margin: 2px 12px 10px; line-height: 1.35; }
+@media (max-width: 699px) { .ctl .muted { display: none; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } .bub.urgent { box-shadow: 0 0 0 5px rgba(229, 72, 77, 0.45), 0 6px 18px rgba(0, 0, 0, 0.35); } }
+</style>
+</head>
+<body>
+<div class="stage">
+  <nav class="ctl" id="ctl" aria-label="Mock controls"></nav>
+  <div class="phone" id="phone">
+    <div class="sbar" id="sbar"></div>
+    <div class="scroll" id="scroll"></div>
+    <div id="float"></div>
+    <div class="tabbar" id="tabbar"></div>
+    <div class="scrim" id="scrim" data-act="sheet-close"></div>
+    <div id="sheets"></div>
+    <div id="over"></div>
+    <div id="toast"></div>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  /* ================= icons ================= */
+  var IC = {
+    home: '<path d="M3.5 10.5 12 4l8.5 6.5V20a1 1 0 0 1-1 1H15v-6H9v6H4.5a1 1 0 0 1-1-1z"/>',
+    timeline: '<circle cx="5" cy="6" r="1.6"/><circle cx="5" cy="12" r="1.6"/><circle cx="5" cy="18" r="1.6"/><path d="M10 6h10M10 12h10M10 18h6"/>',
+    plan: '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5A8.5 8.5 0 0 1 20.5 12H12z"/>',
+    analytics: '<path d="M3 20h18"/><path d="M4 15l5-5 4 3 7-7"/>',
+    more: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+    threads: '<path d="M4 5h16v11H9l-5 4z"/>',
+    decisions: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8.5 12.5l2.5 2.5 4.5-5.5"/>',
+    rules: '<path d="M6 3h9l3 3v15H6z"/><path d="M9 10h6M9 14h6"/>',
+    ideas: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3z"/>',
+    setup: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+    machines: '<rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01M8 17h.01"/>',
+    changes: '<path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/>',
+    reach: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+    compose: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+    link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/>',
+    back: '<path d="M15 5l-7 7 7 7"/>',
+    chev: '<path d="M9 5l7 7-7 7"/>',
+    down: '<path d="M6 9l6 6 6-6"/>',
+    check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
+    mic: '<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
+    send: '<path d="M5 12h13M13 6l6 6-6 6"/>',
+    pin: '<path d="M12 16v5"/><path d="M8 3h8l-1 6 3 4H6l3-4z"/>',
+    stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>',
+    laptop: '<rect x="5" y="5" width="14" height="10" rx="1.5"/><path d="M3 19h18"/>',
+    cloud: '<path d="M7 18a4 4 0 0 1-.5-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/>',
+    msg: '<path d="M4 5h16v11H9l-5 4z"/>',
+    leave: '<path d="M14 4h5v16h-5"/><path d="M10 8l-4 4 4 4M6 12h10"/>',
+    expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>',
+    snooze: '<circle cx="12" cy="13" r="7.5"/><path d="M12 9.5V13l2 1.5M5 4L3 6M19 4l2 2"/>'
+  };
+  function ic(n, cls) { return '<svg class="i' + (cls ? " " + cls : "") + '" viewBox="0 0 24 24" aria-hidden="true">' + IC[n] + "</svg>"; }
+
+  /* ================= fixed data ================= */
+  var BLOCKS = [["home", "Home"], ["timeline", "Timeline"], ["plan", "Plan"], ["analytics", "Analytics"], ["threads", "Threads"], ["decisions", "Decisions"],
+    ["machines", "Machines"], ["rules", "Rules and memory"], ["ideas", "Ideas"], ["setup", "Setup"], ["changes", "Under the hood"]];
+  var STATE_NAME = { done: "Done", work: "Being built", needs: "Waits on you", idle: "Not started", pause: "Paused", stop: "Stopped" };
+  var WEEK = [
+    { d: "Sun", v: 1, hl: "Plan agreed: 8 features.", k: ["You chose the release scope: local only."] },
+    { d: "Mon", v: 0, st: true, hl: "Stalled 7 h on an expired sign-in code.", k: ["Now codes are asked for before you leave."] },
+    { d: "Tue", v: 2, hl: "Cloud receipts: 4 of 6 parts built.", k: ["Format, signing, storing, showing."] },
+    { d: "Wed", v: 3, hl: "Chance failures stop holding work.", k: ["Open work capped at 4, at your word."] },
+    { d: "Thu", v: 3, hl: "Only a checked package can go out.", k: ["Stopped 2 unchecked releases in a replay of 12."] },
+    { d: "Fri", v: 2, hl: "Release notes write themselves.", k: ["Cloud receipts sent back once by review."] },
+    { d: "Sat", v: 5, hl: "Checks 6 min. No false failures.", k: ["Release waits on your sign-in."] }
+  ];
+  var TL_AWAY = [
+    { id: "a0", t: "15:30", s: "needs", hl: "Release packed. Waits for your sign-in.", sl: "Everything else keeps going.", feat: "f7", thr: "release" },
+    { id: "a1", t: "15:15", s: "done", hl: "Slow machines stopped failing good work.", sl: "Last week's 9 false failures now pass.", feat: "f3", thr: "memrev" },
+    { id: "a2", t: "15:00", s: "work", hl: "Team sync question ready for you.", sl: "Has a default. Holds nothing.", feat: "f8", thr: "research" },
+    { id: "a3", t: "14:45", s: "idle", q: true, hl: "Quiet. Reviews running." },
+    { id: "a4", t: "14:30", s: "stop", hl: "Release notes cleaned up.", sl: "Hit: an old note named a dropped feature. Removed.", feat: "f5", thr: "docs" },
+    { id: "a5", t: "14:15", s: "done", hl: "Checks take 6 minutes, not 14.", sl: "Live for everyone.", feat: "f2", thr: "fast" },
+    { id: "a6", t: "14:00", s: "stop", hl: "Release reached the step only you can do.", sl: "npm needs your sign-in.", feat: "f7", thr: "release" },
+    { id: "a7", t: "13:45", s: "needs", hl: "3 pieces of work brought up to date for you.", sl: "Default taken. Each can be undone.", thr: "lead" },
+    { id: "a8", t: "13:05", s: "pause", hl: "Cloud receipts paused.", sl: "To keep the release clean. It should have said so.", feat: "f6", thr: "cloud" },
+    { id: "a9", t: "12:30", s: "idle", hl: "You left.", sl: "Moving: release, faster checks, memory check." }
+  ];
+  var TL_MORNING = { id: "am", t: "09:00", s: "done", hl: "Morning, with you here.", sl: "Package checked. You set the open-work limit at 4. You answered 3 questions." };
+  var THREADS = [
+    { id: "lead", name: "Lead", s: "work", on: "Cloud box 1", doing: "Runs the plan and the builders", sum: "Steering the release and three builders. Took 6 defaults while you were away.", tl: [["15:30", "Held the release for your sign-in."], ["14:15", "Faster checks went live."]] },
+    { id: "release", name: "Release", s: "needs", on: "Cloud box 1", doing: "Waits on your npm sign-in", sum: "Packed and checked. Needs your sign-in, then your yes.", tl: [["14:00", "Stopped for your sign-in."], ["13:40", "Package checked on a clean machine."]] },
+    { id: "cloud", name: "Cloud receipts", s: "work", paused: true, on: "VM build-2", doing: "Paused since 13:05", sum: "4 of 6 parts built. Paused so the release stays clean.", tl: [["13:05", "Paused."], ["12:40", "Four tests for the empty name case."]] },
+    { id: "research", name: "Team sync research", s: "work", on: "This laptop", doing: "Compared how 5 tools handle two editors", sum: "Turned the research into one question, with a default.", tl: [["15:00", "Sent you the question."]] },
+    { id: "fast", name: "Faster checks", s: "done", on: "Cloud box 1", doing: "Finished 14:15", sum: "Closed.", tl: [["14:15", "Closed."]] },
+    { id: "memrev", name: "Fair memory check", s: "done", on: "Cloud box 1", doing: "Finished 15:15", sum: "Closed.", tl: [["15:15", "Closed."]] },
+    { id: "docs", name: "Release notes", s: "done", on: "This laptop", doing: "Finished 14:30", sum: "Closed.", tl: [["14:30", "Closed."]] }
+  ];
+  var KINDS = {
+    branch: { name: "Bring work up to date", irr: false }, flaky: { name: "Retry a chance failure", irr: false }, review: { name: "Simplify after review 2", irr: false },
+    model: { name: "Pick the model for a task", irr: false }, keep: { name: "Keep a memory note", irr: false }, tidy: { name: "Close stale drafts", irr: false },
+    publish: { name: "Publish a release", irr: true }, account: { name: "Sign-ins, accounts, keys", irr: true }, money: { name: "Anything that costs money", irr: true }
+  };
+  var SETUP = [["Models", "Opus plans. Sol builds. Sonnet writes."], ["Open work", "At most 4 at once."], ["Tests", "In CI only, never on your laptop."], ["Home summary", "Every 30 min."], ["Timeline", "Every 15 min."], ["Away", "Take defaults. Ask about accounts, money, publishing."]];
+  var TRIES = [["Direction", "Ship the release first, then team sync."], ["New idea", "Idea: a weekly note of what shipped."], ["Rule", "From now on use Fable for the overseer reviews."], ["Correction", "The release notes have ids and jargon again."], ["Question", "By when can the release go out?"]];
+  var CLS = [["direction", "Direction"], ["idea", "New idea"], ["rule", "Rule"], ["correction", "Correction"], ["complaint", "Complaint"], ["question", "Question"], ["answer", "Answer"]];
+  var SCOPES = ["This thread", "Today only", "This project", "All projects", "This device"];
+  var BPROJ = [
+    { id: "forge", name: "Forge", items: [{ id: "b1", kind: "signin", t: "Sign in to npm. The release has been stopped 1 h 40 min." }, { id: "b2", t: "Two people edit one plan item at once. What happens?", opts: ["A", "B", "C"], def: 2, full: "brief" }] },
+    { id: "score", name: "Score Easy", items: [{ id: "b3", hold: true, t: "Show scores in dark mode by default? Holds the scoring screen.", opts: ["Yes", "No"], def: 0, full: "agent" }] },
+    { id: "suite", name: "Product Suite", items: [{ id: "b4", t: "Merge the two meeting lists into one?", opts: ["Merge", "Keep two"], def: 0, full: "agent" }] }
+  ];
+  var RUNNING = [["Forge", "Cloud receipts tests", "Cloud box 1"], ["Forge", "Release checks", "Cloud box 1"], ["Forge", "Team sync research", "This laptop"], ["Score Easy", "Scoring screen", "VM build-2"], ["Product Suite", "Meeting notes", "Cloud box 1"], ["Harnest", "Docs pass", "This laptop"]];
+
+  /* ================= state ================= */
+  var S, logN = 0;
+  function feats() {
+    return [
+      { id: "f2", name: "Faster checks", s: "done", isNew: true, sent: "Checks on new work finish in 6 minutes.", gives: "Agents learn sooner if work is good, so more finishes each hour.",
+        ba: { k: "Minutes per check", b: 14, a: 6, u: "min" }, proof: "Measured over 40 checks. Slowest: 8 min.", steps: ["Timed every step", "Cut two steps that ran twice", "Ran the rest side by side", "Measured 40 checks"],
+        parts: [["Time every step", "done"], ["Cut repeats", "done"], ["Run side by side", "done"]], deps: [], thr: ["lead", "fast"], ch: "Change 41", size: 3, tl: [["14:15", "Live for everyone."], ["12:45", "Last slow step cut."]] },
+      { id: "f3", name: "Fair memory check", s: "done", isNew: true, sent: "A slow machine no longer fails good work.", gives: "You stop being asked about failures that were never real.",
+        ba: { k: "False failures per week", b: 9, a: 0, u: "" }, proof: "Replayed last week: all 9 pass. 3 real problems still fail.", steps: ["Found why slow machines failed", "Compared each run with its own start", "Replayed last week"],
+        parts: [["Record each start", "done"], ["Compare against it", "done"]], deps: [], thr: ["memrev"], ch: "Change 44", size: 2, tl: [["15:15", "Switched on."], ["14:45", "Second review passed."]] },
+      { id: "f1", name: "Safe publishing", s: "done", sent: "Only a checked package can go out.", gives: "Nothing broken reaches people by accident.", ba: { k: "Unchecked releases in a replay of 12", b: 2, a: 0, u: "" },
+        proof: "Replayed 12 releases.", steps: ["Wrote the rule", "Made the release step refuse unchecked", "Replayed old releases"], parts: [["Check the package", "done"], ["Refuse unchecked", "done"]], deps: [], thr: ["release"], ch: "Change 42", size: 3, tl: [["Thu", "Done."]] },
+      { id: "f4", name: "Chance failures rule", s: "done", sent: "Retried once, written down, fixed at the cause.", gives: "Chance failures stop holding good work.", ba: { k: "Hours held per week", b: 5, a: 0.5, u: "h" },
+        proof: "3 chance failures this week. All cleared on retry.", steps: ["Agreed one rule", "Built retry and record"], parts: [["Retry once", "done"], ["Write it down", "done"]], deps: [], thr: ["lead"], ch: "Part of change 41", size: 1, tl: [["Wed", "Done."]] },
+      { id: "f5", name: "Readable release notes", s: "done", sent: "Written from what actually changed.", gives: "People can tell what is new without reading code.", ba: { k: "Changes missing from notes", b: 4, a: 0, u: "" },
+        proof: "Checked against the last release.", steps: ["Listed what readers need", "Wrote from the real changes"], parts: [["Collect changes", "done"], ["Plain words", "done"]], deps: [], thr: ["docs"], ch: "Change 45", size: 1, tl: [["Fri", "Done."]] },
+      { id: "f7", name: "Release 0.0.12", s: "needs", sent: "Checked. Needs your sign-in, then your yes.", gives: "Everything above reaches people.", ba: null,
+        proof: "Installed and checked on a clean machine.", steps: ["Checked the package", "Wrote the notes", "Holding the last step for you"], parts: [["Package checked", "done"], ["Notes written", "done"], ["Your npm sign-in", "stop"], ["Your yes", "needs"]], deps: [], thr: ["release"], ch: "Changes 42 and 45", size: 2, tl: [["14:00", "Stopped for your sign-in."]] },
+      { id: "f6", name: "Cloud receipts", s: "pause", sent: "Every cloud action leaves a record nobody can fake.", gives: "You can trust what an agent says it did.", ba: null,
+        proof: "", steps: ["Defined a receipt", "Built record and check", "Testing odd cases"], parts: [["Format", "done"], ["Signing", "done"], ["Storing", "done"], ["Showing", "done"], ["Check", "pause"], ["Alerts", "idle"]], deps: ["f7"], thr: ["cloud"], ch: "Change 43", size: 3, tl: [["13:05", "Paused until the release."], ["Fri", "Sent back once by review."]] },
+      { id: "f8", name: "Team sync", s: "idle", sent: "Two people on one project without overwriting.", gives: "A second person can join safely.", ba: null,
+        proof: "", steps: ["Decide two-editor rule (waits on you)", "Build shared view", "Test two people"], parts: [["Two-editor rule", "needs"], ["Shared view", "idle"], ["Test", "idle"]], deps: ["f6"], thr: ["research"], ch: "None yet", size: 3, tl: [] }
+    ];
+  }
+  function questions() {
+    return [
+      { id: "q1", g: "look", kind: "design", unb: "Team sync", feat: "Team sync", t: "Two people edit one plan item at once. What happens?", opts: ["A: later save wins", "B: lock while editing", "C: keep both, ask"], def: 2, viz: "sync", brief: true },
+      { id: "q2", g: "look", kind: "order", unb: "Cloud receipts", feat: "Cloud receipts", t: "Restart Cloud receipts now, or after the release?", opts: ["Now", "After the release"], def: 1, viz: "order" },
+      { id: "q3", g: "safe", kind: "branch", unb: "Cloud receipts", feat: "Cloud receipts", t: "Bring Cloud receipts up to date", opts: ["Yes", "Leave it"], def: 0 },
+      { id: "q4", g: "safe", kind: "flaky", unb: "Release 0.0.12", feat: "Release 0.0.12", t: "Retry the upload test once more if it fails", opts: ["Yes", "Stop and tell me"], def: 0 },
+      { id: "q5", g: "safe", kind: "model", unb: "Release 0.0.12", feat: "Release 0.0.12", t: "Who writes the 0.0.12 announcement", opts: ["Sonnet", "Opus"], def: 0 },
+      { id: "q6", g: "safe", kind: "review", unb: "Cloud receipts", feat: "Cloud receipts", t: "After review 2 on Cloud receipts", opts: ["Simplify", "Third round"], def: 0 },
+      { id: "q7", g: "safe", kind: "keep", unb: "Nothing yet", feat: "Readable release notes", t: "Keep: release notes in plain words, no ids", opts: ["This project", "All projects", "Don't keep"], def: 0 },
+      { id: "q8", g: "safe", kind: "tidy", unb: "Nothing yet", feat: "Faster checks", t: "Close 2 stale drafts", opts: ["Close", "Keep"], def: 0 },
+      { id: "q9", g: "safe", kind: "tidy", unb: "Team sync", feat: "Team sync", t: "Park the Monday note idea until team sync", opts: ["Park", "Plan now"], def: 0 }
+    ];
+  }
+  function fresh() {
+    return {
+      scn: "back", step: 0, tab: "home", block: "home", pinned: ["home", "timeline", "plan", "analytics"],
+      sheets: [], over: null, overStep: null, toast: null,
+      signin: "wait", publish: false, paused: "paused", tlZoom: "away", tlOpen: {}, weekSel: 6, aTab: "signals", aNormal: false, pTab: "features", thrSw: "needs", dTab: "waiting", rTab: "rules", featTab: "gives",
+      feats: feats(), qs: questions(), qa: {}, qtouch: {}, qGroup: "urgency", safeOpen: false, qSent: null,
+      done: [
+        { id: "d1", t: "13:45", kind: "branch", w: "Brought Faster checks up to date" }, { id: "d2", t: "13:45", kind: "branch", w: "Brought Fair memory check up to date" },
+        { id: "d3", t: "13:46", kind: "branch", w: "Brought Release notes up to date" }, { id: "d4", t: "13:30", kind: "flaky", w: "Retried a chance failure once" },
+        { id: "d5", t: "14:50", kind: "review", w: "Simplified Fair memory check after review 2" }, { id: "d6", t: "13:20", kind: "model", w: "Used Sonnet for the release notes" }
+      ],
+      level: { branch: "ask", flaky: "auto", review: "ask", model: "auto", keep: "ask", tidy: "ask", publish: "ask", account: "ask", money: "ask" },
+      offer: null, offerNo: false,
+      rules: [
+        { id: "r1", t: "Don't use Fable. It costs too much.", scope: "All projects", date: "17 Nov", key: "fable", flips: [["24 Oct", "n", "No"], ["11 Nov", "y", "Yes, overseer"], ["17 Nov", "n", "No"]] },
+        { id: "r2", t: "At most 4 pieces of open work.", scope: "This project", date: "18 Nov", key: "open" },
+        { id: "r3", t: "No tests on the laptop.", scope: "All projects", date: "3 Nov", key: "laptop" },
+        { id: "r4", t: "Throw away and redo, don't patch.", scope: "This project", date: "20 Nov", key: "patch" }
+      ],
+      laws: ["Never publish without your yes.", "Never use your accounts without you.", "Never spend money without you.", "Never delete people's data."],
+      mems: [["Plain words; ids only in brackets.", "All projects"], ["0.0.x releases are local only.", "This project"], ["Approvals by text, not by link.", "All projects"]],
+      corr: [{ key: "jargon", t: "Plain words in notes and reports, no ids.", said: ["19 Nov"] }],
+      ideas: [{ id: "i1", t: "A phone app just for answering questions.", when: "20 Nov" }, { id: "i2", t: "A Monday note: delivered, and next.", when: "18 Nov" }],
+      complaints: [], log: [], pp: null, layout: false, sugg: true, extra: false,
+      reach: { push: 30, call: 100, quiet: true, bubble: true, kinds: { signin: true, offline: true, holding: true } },
+      bub: { y: 330, open: false, pop: null, page: 0, ans: {}, snz: 0, left: 0, note: null, dragged: false },
+      mach: { vm: "offline" }, leave: { len: "night", ok: {} }, chatStep: 0
+    };
+  }
+  S = fresh();
+
+  /* ================= helpers ================= */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function feat(id) { return S.feats.filter(function (f) { return f.id === id; })[0]; }
+  function thr(id) { return THREADS.filter(function (t) { return t.id === id; })[0]; }
+  function q(id) { return S.qs.filter(function (x) { return x.id === id; })[0]; }
+  function dot(s) { return '<i class="dot s-' + s + '"></i>'; }
+  function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
+  function doneN() { return S.feats.filter(function (f) { return f.s === "done"; }).length; }
+  function blkName(id) { return BLOCKS.filter(function (b) { return b[0] === id; })[0][1]; }
+  function seg(key, list, cur) {
+    return '<div class="seg" role="tablist">' + list.map(function (x) { return '<button class="' + (x[0] === cur ? "on" : "") + '" data-act="seg" data-k="' + key + '" data-v="' + x[0] + '">' + esc(x[1]) + "</button>"; }).join("") + "</div>";
+  }
+  function slot(label, html) { return '<div data-slot="' + esc(label) + '">' + html + "</div>"; }
+  function fmtMin(m) { return m >= 60 ? Math.floor(m / 60) + " h" + (m % 60 ? " " + (m % 60) + " min" : "") : m + " min"; }
+  function pendingQ() { return S.qs.filter(function (x) { return !S.qSentIds || S.qSentIds.indexOf(x.id) < 0; }); }
+  function pendingCount() { return pendingQ().length + (S.signin !== "done" ? 1 : 0); }
+  var toastTimer;
+  function toast(msg, undo) {
+    clearTimeout(toastTimer);
+    S.toast = { msg: msg, undo: undo };
+    renderToast();
+    toastTimer = setTimeout(function () { S.toast = null; renderToast(); }, 6000);
+  }
+  function renderToast() {
+    var t = S.toast;
+    $("toast").innerHTML = t ? '<div class="toast" role="status">' + ic("check", "s") + "<span>" + esc(t.msg) + "</span>" + (t.undo ? '<button data-act="toast-undo">Undo</button>' : "") + "</div>" : "";
+  }
+
+  /* ================= visuals ================= */
+  function ring(frac, size, sw, color, label, sub) {
+    var r = (size - sw) / 2, c = 2 * Math.PI * r, h = size / 2;
+    return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + " " + size + '" role="img" aria-label="' + esc(label + " " + (sub || "")) + '" style="flex:none">' +
+      '<circle cx="' + h + '" cy="' + h + '" r="' + r + '" style="fill:none;stroke:var(--raised);stroke-width:' + sw + '"/>' +
+      '<circle cx="' + h + '" cy="' + h + '" r="' + r + '" transform="rotate(-90 ' + h + " " + h + ')" style="fill:none;stroke:' + color + ";stroke-width:" + sw + ";stroke-linecap:round;stroke-dasharray:" + (c * frac).toFixed(1) + " " + c.toFixed(1) + ';transition:stroke-dasharray 300ms ease"/>' +
+      '<text x="50%" y="' + (sub ? h - 2 : h + 6) + '" text-anchor="middle" style="fill:var(--ink);font-size:' + Math.round(size / 4.2) + 'px;font-weight:750">' + esc(label) + "</text>" +
+      (sub ? '<text x="50%" y="' + (h + 15) + '" text-anchor="middle" style="fill:var(--muted);font-size:11px">' + esc(sub) + "</text>" : "") + "</svg>";
+  }
+  function spark(vals, lo, hi, max, label) {
+    var W = 200, H = 54, n = vals.length;
+    var x = function (i) { return 4 + i * (W - 12) / (n - 1); }, y = function (v) { return H - 5 - v / max * (H - 12); };
+    var last = vals[n - 1], out = last > hi || last < lo;
+    return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(label) + '" style="max-width:100%">' +
+      '<rect x="0" y="' + y(hi).toFixed(1) + '" width="' + W + '" height="' + (y(lo) - y(hi)).toFixed(1) + '" rx="4" style="fill:var(--band)"><title>Normal: ' + lo + " to " + hi + "</title></rect>" +
+      '<polyline points="' + vals.map(function (v, i) { return x(i).toFixed(1) + "," + y(v).toFixed(1); }).join(" ") + '" style="fill:none;stroke:var(--muted);stroke-width:2;stroke-linejoin:round;stroke-linecap:round"/>' +
+      vals.map(function (v, i) { return '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="8" style="fill:transparent"><title>' + (i === n - 1 ? "Today" : (n - 1 - i) + " days ago") + ": " + v + "</title></circle>"; }).join("") +
+      '<circle cx="' + x(n - 1).toFixed(1) + '" cy="' + y(last).toFixed(1) + '" r="5" style="fill:' + (out ? "var(--orange)" : "var(--ink)") + ';stroke:var(--surface);stroke-width:2"/></svg>';
+  }
+  function baBars(b) {
+    var m = Math.max(b.b, b.a) || 1, w = function (v) { return Math.max(3, Math.round(v / m * 100)); };
+    return '<div class="bars"><div class="bb"><em>Before</em><i style="width:' + w(b.b) + '%"></i>' + b.b + (b.u ? " " + b.u : "") + '</div><div class="bb a"><em>After</em><i style="width:' + w(b.a) + '%"></i>' + b.a + (b.u ? " " + b.u : "") + "</div></div>";
+  }
+  function stackPill() {
+    var c = { done: 0, needs: 0, pause: 0, work: 0, idle: 0 };
+    S.feats.forEach(function (f) { c[f.s]++; });
+    var col = { done: "var(--grey)", needs: "var(--orange)", pause: "var(--orange)", work: "var(--green)", idle: "var(--raised)" };
+    var lab = { done: "Done", needs: "Yours", pause: "Paused", work: "Building", idle: "Not started" };
+    var keys = Object.keys(c).filter(function (k) { return c[k]; });
+    return '<div class="stackp" role="img" aria-label="Features by state">' + keys.map(function (k) { return '<i title="' + lab[k] + ": " + c[k] + '" style="flex:' + c[k] + ";background:" + col[k] + (k === "pause" ? ";opacity:0.55" : "") + '"></i>'; }).join("") + "</div>" +
+      '<div class="leg">' + keys.map(function (k) { return "<span>" + dot(k === "done" ? "done" : k) + c[k] + " " + lab[k].toLowerCase() + "</span>"; }).join("") + "</div>";
+  }
+  function syncSvg(k) {
+    var lane = function (y, who) { return '<text x="0" y="' + (y + 4) + '" style="fill:var(--muted);font-size:10px">' + who + '</text><line x1="30" y1="' + y + '" x2="196" y2="' + y + '" style="stroke:var(--hair);stroke-width:3;stroke-linecap:round"/>'; };
+    var c = function (x, y, f) { return '<circle cx="' + x + '" cy="' + y + '" r="6" style="fill:' + f + '"/>'; };
+    var s = '<svg class="d" viewBox="0 0 200 70" role="img" aria-label="Two people editing">' + lane(16, "You") + lane(44, "Sam");
+    if (k === 0) s += c(70, 16, "var(--grey)") + '<path d="M63 9l14 14M77 9L63 23" style="stroke:var(--red);stroke-width:2"/>' + c(112, 44, "var(--accent)") + '<text x="118" y="66" style="fill:var(--muted);font-size:10px">yours is lost</text>';
+    if (k === 1) s += '<rect x="58" y="10" width="64" height="12" rx="6" style="fill:var(--accent)"/>' + '<line x1="70" y1="44" x2="140" y2="44" style="stroke:var(--grey);stroke-width:3;stroke-dasharray:3 4"/>' + c(150, 44, "var(--accent)") + '<text x="76" y="66" style="fill:var(--muted);font-size:10px">Sam waits</text>';
+    if (k === 2) s += c(70, 16, "var(--accent)") + c(112, 44, "var(--accent)") + '<circle cx="150" cy="30" r="9" style="fill:var(--orange-soft)"/><text x="146" y="34" style="fill:var(--orange);font-size:12px;font-weight:700">?</text><text x="92" y="66" style="fill:var(--muted);font-size:10px">both kept, Sam asked</text>';
+    return s + "</svg>";
+  }
+  function orderSvg(sel) {
+    var bar = function (y, w, lab, on) { return '<rect x="0" y="' + y + '" width="' + w + '" height="12" rx="6" style="fill:' + (on ? "var(--accent)" : "var(--grey)") + '"/><text x="' + (w + 6) + '" y="' + (y + 10) + '" style="fill:var(--muted);font-size:10.5px">' + lab + "</text>"; };
+    return '<svg class="d" viewBox="0 0 220 44" role="img" aria-label="Release time by choice">' + bar(4, 140, "Now: release 18:30", sel === 0) + bar(26, 118, "After: release 18:00", sel === 1) + "</svg>";
+  }
+  function chain(f) {
+    var list = [], cur = f, g = 0;
+    while (cur && g++ < 5) { list.unshift(cur); cur = cur.deps.length ? feat(cur.deps[0]) : null; }
+    S.feats.forEach(function (x) { if (x.deps.indexOf(f.id) >= 0) list.push(x); });
+    if (list.length < 2) return '<div class="cap">Waits on nothing. Nothing waits on it.</div>';
+    return '<div class="chain">' + list.map(function (x, i) {
+      return (i ? '<i class="cl"></i>' : "") + '<div class="cn' + (x.id === f.id ? " me" : "") + '"><span class="c">' + dot(x.s) + "</span>" + esc(x.name) + "</div>";
+    }).join("") + "</div>";
+  }
+
+  /* ================= home ================= */
+  function homeScreen() {
+    var f7 = feat("f7"), h = "";
+    h += '<div class="top"><div><div class="cap">Back after 3 h 10 min</div><h1 class="lt">Forge</h1></div><button class="pill" data-act="leave">Leaving?</button></div>';
+    if (S.layout) h += '<div class="card" style="font-size:13.5px"><b>Grey outlines never move.</b> Blue ones the agent rewrites each time. <button class="link" data-act="layout">Done</button></div>';
+    var eta = f7.s === "done" ? "Out by 17:40" : S.signin === "done" ? "Out ~17:40" : "Out today ~18:00";
+    h += slot("Fixed: progress", '<div class="card tap" data-act="tab" data-t="plan"><div class="hero">' + ring(doneN() / S.feats.length, 92, 9, "var(--accent)", doneN() + "/" + S.feats.length, "features") +
+      '<div><div class="cap">Release 0.0.12</div><div class="h1">' + eta + '</div><div class="cap">was tomorrow</div></div></div>' + stackPill() + "</div>");
+    h += slot("Fixed: only you", onlyCard());
+    h += slot("Agent fills: new since you left", '<div class="ey"><span>New since you left</span></div><div class="group">' +
+      ["f2", "f3"].map(function (id) {
+        var f = feat(id);
+        return '<div class="row tap" data-act="feature" data-id="' + id + '"><div class="t"><b>' + esc(f.name) + '</b><div class="big"><span class="from">' + f.ba.b + "</span>" + f.ba.a + (f.ba.u ? " " + f.ba.u : "") + '</div><span>' + esc(f.ba.k.toLowerCase()) + "</span></div>" + ic("chev", "s") + "</div>";
+      }).join("") + "</div>");
+    h += slot("Fixed: wrong or paused", wrongCard());
+    var n = S.done.length;
+    h += slot("Fixed: done for you", '<div class="group"><button class="row tap" data-act="open" data-s="donefor"><span class="dot s-needs"></span><span class="t"><b>' + (n ? plural(n, "default") + " taken for you" : "Nothing decided for you") + "</b><span>Each one can be undone</span></span>" + ic("chev", "s") + "</button>" +
+      '<button class="row tap" data-act="tab" data-t="timeline"><span class="dot s-work"></span><span class="t"><b>Latest · ' + esc(S.log.length ? S.log[0].time : "15:30") + "</b><span>" + esc(S.log.length ? "You: " + S.log[0].text : TL_AWAY[0].hl) + "</span></span>" + ic("chev", "s") + "</button></div>");
+    if (S.extra) h += slot("Agent fills: your extra line", '<div class="card"><div class="cap">Usage this week</div><div class="big">61%<span class="cap" style="font-weight:400"> of the limit, normal 55%</span></div><button class="link" data-act="extra-off">Remove</button></div>');
+    if (S.sugg) h += '<div class="card" style="font-size:13.5px"><span class="cap">Suggested by the agent: one extra card for usage this week. Home only changes if you say so.</span><div style="margin-top:8px;display:flex;gap:14px"><button class="link" data-act="sugg-add">Add it</button><button class="link" style="color:var(--muted)" data-act="sugg-no">Not now</button></div></div>';
+    return h;
+  }
+  function onlyCard() {
+    var f7 = feat("f7");
+    if (S.signin !== "done") {
+      return '<div class="only" id="only"><div class="lab">' + ic("stop", "s") + "ONLY YOU · STOPPED 1 H 40 MIN</div>" +
+        '<div class="q">Sign in to npm</div><div class="q2">Only the release waits on it.</div>' +
+        '<button class="btn pri w" data-act="signin-link">' + ic("link", "s") + "Sign in on npmjs.com</button>" +
+        '<div class="safe">' + ic("lock", "s") + "You sign in on the site. Forge never sees your password.</div></div>";
+    }
+    if (S.publish && f7.s !== "done") {
+      return '<div class="only" style="box-shadow:inset 0 0 0 1.5px var(--orange)"><div class="lab" style="color:var(--orange)">ALWAYS ASKS · PUBLISH</div><div class="q">Publish 0.0.12?</div><div class="q2">Checked. 5 new features.</div>' +
+        '<div style="display:flex;gap:8px"><button class="btn pri" style="flex:1" data-act="publish-yes">Publish</button><button class="btn" style="flex:1" data-act="publish-no">Not yet</button></div></div>';
+    }
+    return '<div class="card"><div class="cap">Waiting on you</div><div class="big" style="font-size:20px">Nothing is stopped.</div></div>';
+  }
+  function wrongCard() {
+    if (S.complaints.length) return '<div class="card"><div class="cap" style="color:var(--orange)">You said</div><div style="font-weight:600">' + esc(S.complaints[0]) + '</div><div class="cap">Stays here until fixed.</div></div>';
+    if (S.paused === "paused") return '<div class="card"><div style="display:flex;gap:10px;align-items:center">' + dot("pause") + '<b>Cloud receipts paused at 13:05</b></div><div class="cap" style="margin:2px 0 10px 18px">Nobody told you. Nothing else is wrong.</div>' +
+      '<div style="display:flex;gap:8px"><button class="btn sm" style="flex:1" data-act="pause" data-v="kept">Keep paused</button><button class="btn sm" style="flex:1" data-act="pause" data-v="restarted">Restart now</button></div></div>';
+    return '<div class="card"><div style="display:flex;gap:10px;align-items:center">' + dot("work") + "<b>" + (S.paused === "kept" ? "Cloud receipts waits for the release, as you chose." : "Cloud receipts restarted.") + '</b></div><div class="cap" style="margin-left:18px">Nothing is wrong.</div></div>';
+  }
+
+  /* ================= timeline ================= */
+  function tiHtml(e) {
+    var open = S.tlOpen[e.id];
+    var src = "";
+    if (open && (e.feat || e.thr)) src = '<div class="src">' + (e.feat ? '<button data-act="feature" data-id="' + e.feat + '">' + esc(feat(e.feat).name) + "</button>" : "") + (e.thr ? '<button data-act="thread" data-id="' + e.thr + '">' + esc(thr(e.thr).name) + " thread</button>" : "") + "</div>";
+    if (open && e.dest) src = '<div class="src" style="color:var(--muted)">Went to: ' + esc(e.dest) + "</div>";
+    return '<div class="ti' + (e.you ? " you" : "") + '" data-act="tl" data-id="' + e.id + '"><div class="tm">' + esc(e.t) + '</div><div class="rail">' + dot(e.s) + '</div><div><div class="hl' + (e.q ? " q" : "") + '">' + esc(e.hl) + "</div>" + (e.sl ? '<div class="sl">' + esc(e.sl) + "</div>" : "") + src + "</div></div>";
+  }
+  function timelineScreen() {
+    var h = '<div class="top"><div><div class="cap">Every 15 min, from all threads</div><h1 class="lt">Timeline</h1></div></div>';
+    h += seg("tlZoom", [["away", "Since you left"], ["today", "Today"], ["week", "7 days"]], S.tlZoom);
+    if (S.tlZoom === "week") {
+      var w = WEEK[S.weekSel];
+      h += '<div class="card"><div class="cap">Value delivered each day</div><div class="wk">' + WEEK.map(function (d, i) {
+        return '<button class="' + (i === S.weekSel ? "on" : "") + '" data-act="wk" data-i="' + i + '" aria-label="' + d.d + '"><i class="' + (d.st ? "st" : "") + '" style="height:' + (d.st ? 10 : d.v * 16 + 8) + 'px"></i><span>' + d.d + "</span></button>";
+      }).join("") + '</div><div class="leg"><span>' + dot("stop") + "stalled on you</span></div></div>";
+      h += '<div class="card"><div class="cap">' + esc(w.d === "Sat" ? "Today" : w.d) + '</div><div style="font-weight:700;font-size:18px;margin:2px 0 6px">' + esc(w.hl) + "</div>" + w.k.map(function (k) { return '<div class="cap" style="font-size:14px">' + esc(k) + "</div>"; }).join("") +
+        (S.weekSel === 6 ? '<button class="link" style="margin-top:8px" data-act="seg" data-k="tlZoom" data-v="away">Open today by 15 min</button>' : "") + "</div>";
+      return h + '<div class="cap" style="text-align:center">After a week away, this opens first.</div>';
+    }
+    if (S.tlZoom === "away") h += '<div class="card" style="font-size:15px">2 features finished. The release reached the step only you can do. One pause went unsaid.</div>';
+    var list = S.log.map(function (l) { return { id: "y" + l.n, t: l.time, s: "work", you: true, hl: "You: " + l.text, sl: l.done, dest: l.dest }; }).concat(TL_AWAY);
+    if (S.tlZoom === "today") list = list.concat([TL_MORNING]);
+    return h + '<div class="tl">' + list.map(tiHtml).join("") + "</div>";
+  }
+
+  /* ================= plan ================= */
+  function planScreen() {
+    var h = '<div class="top"><div><div class="cap">Release 0.0.12 · about 2 days left</div><h1 class="lt">Plan</h1></div></div>';
+    h += seg("pTab", [["features", "Features"], ["board", "Board"], ["ideas", "Ideas " + S.ideas.length]], S.pTab);
+    if (S.pTab === "ideas") return h + ideasHtml();
+    if (S.pTab === "board") {
+      var parts = 0, pd = 0;
+      S.feats.forEach(function (f) { f.parts.forEach(function (p) { parts++; if (p[1] === "done") pd++; }); });
+      h += '<div class="card"><div class="hero">' + ring(pd / parts, 84, 8, "var(--green)", pd + "/" + parts, "parts") + '<div><div class="h1">' + Math.round(pd / parts * 100) + '% built</div><div class="cap">across all features</div></div></div></div>';
+      return h + [["Not started", ["idle"]], ["In progress or waiting", ["work", "needs", "pause"]], ["Done", ["done"]]].map(function (g) {
+        var l = S.feats.filter(function (f) { return g[1].indexOf(f.s) >= 0; });
+        return '<div class="ey"><span>' + g[0] + " · " + l.length + '</span></div><div class="group">' + l.map(featRow).join("") + "</div>";
+      }).join("");
+    }
+    return h + '<div class="group">' + S.feats.map(featRow).join("") + "</div>";
+  }
+  function featRow(f) {
+    var d = f.parts.filter(function (p) { return p[1] === "done"; }).length;
+    return '<button class="row tap" data-act="feature" data-id="' + f.id + '">' + dot(f.s) + '<span class="t"><b>' + esc(f.name) + "</b><span>" + esc(STATE_NAME[f.s]) + " · " + d + " of " + f.parts.length + ' parts</span></span><span class="r">' + ring(d / f.parts.length, 30, 4, f.s === "done" ? "var(--grey)" : "var(--green)", "", "") + "</span></button>";
+  }
+  function ideasHtml() {
+    if (!S.ideas.length) return '<div class="empty">No parked ideas.</div>';
+    return '<div class="group">' + S.ideas.map(function (i) {
+      return '<div class="row"><span class="t"><b>' + esc(i.t) + "</b><span>" + esc(i.when) + '</span><span style="display:flex;gap:14px;margin-top:6px"><button class="link" data-act="idea-talk" data-id="' + i.id + '">Talk it through</button><button class="link" data-act="idea-plan" data-id="' + i.id + '">Add to plan</button><button class="link" style="color:var(--muted)" data-act="idea-drop" data-id="' + i.id + '">Drop</button></span></span></div>';
+    }).join("") + "</div>";
+  }
+
+  /* ================= analytics ================= */
+  function sigs() {
+    return [
+      { q: "Waited on you", v: S.signin === "done" ? "1 h 40" : "1 h 40", u: "min", nm: "normal 40 min a day", mean: "All of it: the npm sign-in.", act: S.signin === "done" ? null : ["Sign in now", "signin-link"], d: [20, 35, 50, 30, 40, 420, 45, 30, 20, 60, 40, 35, 50, 100], lo: 20, hi: 60, max: 420 },
+      { q: "Checks failing", v: "9", u: "today", nm: "normal 3", mean: "One upload test caused 6. It fails by chance.", act: ["Fix it at the cause", "sig-fix"], d: [3, 2, 4, 3, 2, 5, 3, 4, 2, 3, 4, 3, 2, 9], lo: 1, hi: 5, max: 10 },
+      { q: "Cloud receipts duration", v: "3", u: "days", nm: "normal 1 for this size", mean: "Sent back once, then paused. Not broken.", act: ["Open feature", "sig-feat"], d: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3], lo: 0, hi: 1.2, max: 3.5 }
+    ];
+  }
+  function analyticsScreen() {
+    var h = '<div class="top"><div><div class="cap">Against this project\'s normal</div><h1 class="lt">Analytics</h1></div></div>';
+    h += seg("aTab", [["signals", "Abnormal"], ["value", "Value"], ["agents", "Agents"]], S.aTab);
+    if (S.aTab === "signals") {
+      h += sigs().map(function (s) {
+        return '<div class="card sig"><div class="q">' + esc(s.q) + '</div><div class="meta"><div><div class="num">' + esc(s.v) + "<small>" + esc(s.u) + '</small></div><div class="nm">' + esc(s.nm) + "</div></div>" + spark(s.d, s.lo, s.hi, s.max, s.q + ", last 14 days") + "</div>" +
+          '<div class="leg" style="justify-content:flex-end;margin-top:4px"><span><i style="width:12px;height:8px;background:var(--band);border-radius:2px;display:inline-block"></i>normal</span><span>14 days</span></div>' +
+          '<div class="mean">' + esc(s.mean) + "</div>" + (s.act ? '<button class="btn sm" data-act="' + s.act[1] + '">' + esc(s.act[0]) + "</button>" : "") + "</div>";
+      }).join("");
+      h += '<div class="group"><button class="row tap" data-act="a-normal"><span class="dot s-work"></span><span class="t"><b>Everything else is normal</b><span>6 signals</span></span>' + ic(S.aNormal ? "down" : "chev", "s") + "</button>" +
+        (S.aNormal ? [["Time to finish one piece", "42 min, normal 38"], ["Sent back by review", "1 in 6, normal 1 in 5"], ["Size of a change", "180 lines, normal 210"], ["Usage of weekly limit", "61%, normal 55%"], ["Features per week", "5, normal 3"], ["Open pieces of work", "3, limit 4"]].map(function (r) {
+          return '<div class="row"><span class="t"><b style="font-weight:500">' + r[0] + '</b></span><span class="r">' + r[1] + "</span></div>";
+        }).join("") : "") + "</div>";
+      return h;
+    }
+    if (S.aTab === "value") {
+      var pts = 0, done = S.feats.filter(function (f) { return f.s === "done"; });
+      done.forEach(function (f) { pts += f.size; });
+      var w = [["3 wk ago", 4], ["2 wk ago", 6], ["Last wk", 7], ["This wk", pts]], mx = Math.max(4, 6, 7, pts);
+      h += '<div class="card"><div class="cap">Points delivered this week</div><div class="num">' + pts + '<small>was 7</small></div><div class="vchart">' + w.map(function (x, i) {
+        return '<div class="' + (i === 3 ? "now" : "") + '"><span>' + x[1] + '</span><i title="' + x[0] + ": " + x[1] + '" style="height:' + Math.round(x[1] / mx * 100) + 'px"></i></div>';
+      }).join("") + '</div><div class="vlab">' + w.map(function (x) { return "<span>" + x[0] + "</span>"; }).join("") + "</div></div>";
+      h += '<div class="ey"><span>Size of each, tap to change</span></div><div class="group">' + done.map(function (f) {
+        return '<button class="row tap" data-act="size" data-id="' + f.id + '"><span class="t"><b>' + esc(f.name) + '</b></span><span class="r"><span class="meter">' + [1, 2, 3].map(function (i) { return '<i class="' + (i <= f.size ? "f" : "") + '"></i>'; }).join("") + "</span>" + ["", "S", "M", "L"][f.size] + "</span></button>";
+      }).join("") + "</div>";
+      return h;
+    }
+    var tiles = [["Finished today", "14", "normal 18", false], ["Time per piece", "42m", "normal 38m", false], ["Checks failing", "9", "normal 3", true], ["Sent back", "1 in 6", "normal 1 in 5", false], ["Held by you", "1h 40", "normal 40m", true], ["Weekly limit", "61%", "normal 55%", false]];
+    return h + '<div class="tiles">' + tiles.map(function (t) { return '<div class="tile"><div class="k">' + t[0] + '</div><div class="v">' + t[1] + '</div><div class="n' + (t[3] ? " out" : "") + '">' + t[2] + (t[3] ? " · high" : "") + "</div></div>"; }).join("") + "</div>";
+  }
+
+  /* ================= other blocks ================= */
+  function threadsScreen() {
+    var by = { needs: [], work: [], done: [] };
+    THREADS.forEach(function (t) { by[tstate(t)].push(t); });
+    var h = '<div class="top"><div><div class="cap">Where work happens</div><h1 class="lt">Threads</h1></div></div>';
+    h += seg("thrSw", [["needs", "Needs me " + by.needs.length], ["work", "Running " + by.work.length], ["done", "Closed " + by.done.length]], S.thrSw);
+    var l = by[S.thrSw];
+    return h + (l.length ? '<div class="group">' + l.map(function (t) {
+      return '<button class="row tap" data-act="thread" data-id="' + t.id + '">' + dot(t.paused && S.paused !== "restarted" ? "pause" : tstate(t)) + '<span class="t"><b>' + esc(t.name) + "</b><span>" + esc(t.doing) + " · " + esc(t.on) + "</span></span>" + ic("chev", "s") + "</button>";
+    }).join("") + "</div>" : '<div class="empty">Nothing here.</div>');
+  }
+  function tstate(t) { return t.id === "release" ? (S.signin === "done" && !S.publish ? "work" : "needs") : t.s; }
+  function decisionsScreen() {
+    var h = '<div class="top"><div><div class="cap">What asks, what runs alone</div><h1 class="lt">Decisions</h1></div></div>';
+    h += seg("dTab", [["waiting", "Waiting " + pendingCount()], ["done", "Done for you " + S.done.length], ["trust", "What asks"]], S.dTab);
+    if (S.dTab === "waiting") return h + (pendingCount() ? '<button class="btn pri w" data-act="open" data-s="questions">Answer ' + pendingCount() + " in one page</button>" : '<div class="empty">Nothing waits on you.</div>');
+    if (S.dTab === "done") return h + doneList();
+    return h + '<div class="cap" style="margin:0 4px 10px">After 5 defaults in a row it offers to stop asking. Locked kinds always ask.</div><div class="group">' + Object.keys(KINDS).map(function (k) {
+      var lk = KINDS[k].irr;
+      return '<div class="row"><span class="t"><b style="font-weight:500">' + esc(KINDS[k].name) + "</b><span>" + (lk ? "Always asks" : S.level[k] === "auto" ? "Happens on its own, listed" : "Asks you") + '</span></span><button class="sw' + (S.level[k] === "auto" ? " on" : "") + '" data-act="level" data-k="' + k + '" aria-label="Automatic"' + (lk ? " disabled" : "") + "></button></div>";
+    }).join("") + "</div>";
+  }
+  function doneList() {
+    if (!S.done.length) return '<div class="empty">Nothing was decided for you.</div>';
+    return '<div class="group">' + S.done.map(function (d) {
+      return '<div class="row"><span class="t"><b style="font-weight:500">' + esc(d.w) + "</b><span>" + esc(d.t) + " · " + (S.level[d.kind] === "auto" ? "runs on its own" : "default") + '</span></span><button class="link" data-act="undo-done" data-id="' + d.id + '">Undo</button></div>';
+    }).join("") + "</div>";
+  }
+  function machinesScreen() {
+    var vm = S.mach.vm;
+    var M = [["laptop", "This laptop", "work", "Working · 2 threads", "Light load"], ["cloud", "Cloud box 1", "work", "Working · 4 threads", "Most of the work"],
+      ["machines", "VM build-2", vm === "offline" ? "stop" : "work", vm === "offline" ? "Offline since 15:10" : "Working · 1 thread", vm === "offline" ? "Its work moved to Cloud box 1. Nothing stopped." : "Woken at 15:41"], ["laptop", "Mac mini at home", "idle", "Asleep", "Wakes when needed"]];
+    return '<div class="top"><div><div class="cap">Where your agents run</div><h1 class="lt">Machines</h1></div></div><div class="group mach">' + M.map(function (m) {
+      return '<div class="row"><span class="c">' + ic(m[0]) + '</span><span class="t"><b>' + m[1] + "</b><span>" + dot(m[2]) + " " + m[3] + "</span><span>" + m[4] + "</span></span>" + (m[1] === "VM build-2" && vm === "offline" ? '<button class="btn sm" data-act="vm-wake">Wake</button>' : "") + "</div>";
+    }).join("") + '</div><div class="cap" style="margin:0 4px">A machine going offline only reaches you if it stops work. Then it joins the calling order in How to reach me.</div>';
+  }
+  function rulesScreen() {
+    var h = '<div class="top"><div><div class="cap">Your words, with dates</div><h1 class="lt">Rules</h1></div></div>' + seg("rTab", [["rules", "Rules"], ["laws", "Laws"], ["memory", "Memory"], ["twice", "Said twice"]], S.rTab);
+    if (S.rTab === "rules") return h + '<div class="group">' + S.rules.map(function (r) { return '<div class="row"><span class="t"><b style="font-weight:500">' + esc(r.t) + "</b><span>" + esc(r.scope) + " · " + esc(r.date) + (r.flips ? " · flipped " + (r.flips.length - 1) + " times" : "") + "</span></span></div>"; }).join("") + "</div>";
+    if (S.rTab === "laws") return h + '<div class="group">' + S.laws.map(function (l) { return '<div class="row">' + ic("lock", "s") + '<span class="t"><b style="font-weight:500">' + esc(l) + "</b></span></div>"; }).join("") + '</div><div class="cap" style="margin:0 4px">No agent can break a law. None can be made automatic.</div>';
+    if (S.rTab === "memory") return h + '<div class="group">' + S.mems.map(function (m) { return '<div class="row"><span class="t"><b style="font-weight:500">' + esc(m[0]) + "</b><span>" + esc(m[1]) + "</span></span></div>"; }).join("") + "</div>";
+    return h + '<div class="group">' + S.corr.map(function (c) { return '<div class="row"><span class="t"><b style="font-weight:500">' + esc(c.t) + "</b><span>Said " + c.said.length + "x: " + esc(c.said.join(", ")) + "</span></span></div>"; }).join("") + '</div><div class="cap" style="margin:0 4px">The second time you say something, it offers a rule.</div>';
+  }
+  function setupScreen() {
+    return '<div class="top"><div><div class="cap">How Forge runs this project</div><h1 class="lt">Setup</h1></div></div><div class="group">' + SETUP.map(function (s, i) {
+      return '<button class="row tap" data-act="setup-ask" data-i="' + i + '"><span class="t"><b>' + s[0] + "</b><span>" + s[1] + '</span></span><span class="r" style="color:var(--accent)">Change</span></button>';
+    }).join("") + '</div><div class="group"><button class="row tap" data-act="open" data-s="reach">' + ic("reach") + '<span class="t"><b>How to reach me</b><span>Push after ' + fmtMin(S.reach.push) + ", call after " + fmtMin(S.reach.call) + "</span></span>" + ic("chev", "s") + "</button></div>";
+  }
+  function changesScreen() {
+    var rows = [["41", "Faster checks, retry rule", "merged"], ["42", "Safe publishing", "merged"], ["43", "Cloud receipts", "paused"], ["44", "Fair memory check", "merged 15:15"], ["45", "Release notes", "merged"]];
+    return '<div class="top"><div><div class="cap">The only place code changes are named</div><h1 class="lt">Under the hood</h1></div></div><div class="group">' + rows.map(function (r) {
+      return '<div class="row"><span class="t"><b>Change ' + r[0] + "</b><span>" + r[1] + '</span></span><span class="r">' + r[2] + "</span></div>";
+    }).join("") + "</div>";
+  }
+  function moreScreen() {
+    var h = '<div class="top"><div><div class="cap">Pin up to 4 to the tab bar</div><h1 class="lt">More</h1></div></div><div class="group">';
+    h += BLOCKS.map(function (b) {
+      var p = S.pinned.indexOf(b[0]) >= 0;
+      return '<div class="row"><button class="t" style="text-align:left;display:flex;gap:12px;align-items:center" data-act="block" data-b="' + b[0] + '">' + ic(b[0]) + "<b>" + esc(b[1]) + '</b></button><button class="link" style="' + (p ? "" : "color:var(--muted)") + '" data-act="pin" data-b="' + b[0] + '"' + (b[0] === "home" ? " disabled" : "") + ">" + (b[0] === "home" ? "Always" : p ? "Pinned" : "Pin") + "</button></div>";
+    }).join("") + "</div>";
+    h += '<div class="group"><button class="row tap" data-act="open" data-s="reach">' + ic("reach") + '<span class="t"><b>How to reach me</b><span>Push, call, quiet hours</span></span>' + ic("chev", "s") + "</button>" +
+      '<button class="row tap" data-act="layout">' + ic("setup") + '<span class="t"><b>' + (S.layout ? "Hide outlines" : "Show what is fixed") + "</b><span>And what the agent fills</span></span></button></div>";
+    return h;
+  }
+
+  /* ================= sheets ================= */
+  function sheetFrame(title, body, foot, height, right) {
+    return { title: title, body: body, foot: foot || "", height: height || "88%", right: right };
+  }
+  function featureSheet(id) {
+    var f = feat(id), h = "";
+    h += '<div class="cap">' + dot(f.s) + " " + STATE_NAME[f.s] + '</div><div style="font-size:26px;font-weight:750;letter-spacing:-0.02em;margin:2px 0 4px">' + esc(f.name) + '</div><div class="cap" style="font-size:15px;margin-bottom:14px">' + esc(f.sent) + "</div>";
+    h += seg("featTab", [["gives", "Gives"], ["built", "Built"], ["parts", "Parts"], ["tl", "Timeline"], ["hood", "Hood"]], S.featTab);
+    if (S.featTab === "gives") {
+      if (f.ba) h += '<div class="card"><div class="cap">' + esc(f.ba.k) + '</div><div class="big"><span class="from">' + f.ba.b + "</span>" + f.ba.a + (f.ba.u ? " " + f.ba.u : "") + "</div>" + baBars(f.ba) + "</div>";
+      h += '<div class="card"><div class="cap">For you</div><div>' + esc(f.gives) + "</div></div>";
+      h += '<div class="card"><div class="cap">How we know</div><div>' + esc(f.proof || "Not measured yet.") + "</div></div>";
+    } else if (S.featTab === "built") {
+      h += '<div class="group">' + f.steps.map(function (s, i) { return '<div class="row"><span class="c" style="width:26px;height:26px;border-radius:50%;background:var(--raised);display:grid;place-items:center;font-size:13px;font-weight:700;flex:none">' + (i + 1) + '</span><span class="t">' + esc(s) + "</span></div>"; }).join("") + "</div>";
+    } else if (S.featTab === "parts") {
+      h += '<div class="card"><div class="cap">Order</div>' + chain(f) + '</div><div class="group parts">' + f.parts.map(function (p) { return '<div class="row">' + dot(p[1]) + '<span class="t">' + esc(p[0]) + '</span><span class="r">' + STATE_NAME[p[1]] + "</span></div>"; }).join("") + "</div>";
+    } else if (S.featTab === "tl") {
+      h += f.tl.length ? '<div class="tl">' + f.tl.map(function (x, i) { return tiHtml({ id: f.id + i, t: x[0], s: "done", hl: x[1] }); }).join("") + "</div>" : '<div class="empty">Not started yet.</div>';
+    } else {
+      h += '<div class="group"><div class="row"><span class="t"><b>Code</b><span>' + esc(f.ch) + "</span></span></div>" + f.thr.map(function (t) { return '<button class="row tap" data-act="thread" data-id="' + t + '"><span class="t"><b>' + esc(thr(t).name) + " thread</b><span>Runs on " + esc(thr(t).on) + "</span></span>" + ic("chev", "s") + "</button>"; }).join("") + "</div>";
+    }
+    return sheetFrame("", h, '<button class="btn w" data-act="ask-here">' + ic("compose", "s") + "Say something about it</button>", "90%");
+  }
+  function threadSheet(id) {
+    var t = thr(id);
+    var h = '<div class="cap">' + dot(t.paused && S.paused !== "restarted" ? "pause" : tstate(t)) + " Runs on " + esc(t.on) + '</div><div style="font-size:26px;font-weight:750;margin:2px 0 8px">' + esc(t.name) + '</div><div class="card">' + esc(t.sum) + "</div>" +
+      '<div class="tl">' + t.tl.map(function (x, i) { return tiHtml({ id: id + i, t: x[0], s: "work", hl: x[1] }); }).join("") + "</div>";
+    return sheetFrame("", h, '<button class="btn w" data-act="ask-here">' + ic("compose", "s") + "Say something to this thread</button>", "80%");
+  }
+  function qCountSel() {
+    var n = S.signin === "done" ? 1 : 0;
+    S.qs.forEach(function (x) { if (x.g === "look" ? S.qa[x.id] !== undefined : S.qtouch[x.id]) n++; });
+    return n;
+  }
+  function qOpts(x) {
+    var sel = S.qa[x.id] !== undefined ? S.qa[x.id] : x.g === "safe" ? x.def : -1;
+    return '<div class="choice">' + x.opts.map(function (o, i) {
+      return '<button class="' + (i === sel ? "on" : "") + '" data-act="qpick" data-id="' + x.id + '" data-i="' + i + '">' + esc(o) + (i === x.def ? ' <span class="df">· default</span>' : "") + "</button>";
+    }).join("") + "</div>";
+  }
+  function lookCard(x) {
+    var sel = S.qa[x.id] !== undefined ? S.qa[x.id] : x.def;
+    var viz = x.viz === "sync" ? '<div style="display:flex;gap:8px;overflow-x:auto">' + [0, 1, 2].map(function (k) { return '<div style="flex:0 0 46%;background:var(--raised);border-radius:12px;padding:6px 8px;' + (k === sel ? "box-shadow:inset 0 0 0 2px var(--accent)" : "") + '"><div class="cap" style="font-size:11.5px">' + "ABC"[k] + "</div>" + syncSvg(k) + "</div>"; }).join("") + "</div>" : orderSvg(sel);
+    return '<div class="qc"><div class="qt">' + esc(x.t) + '</div><div class="qm">Unblocks ' + esc(x.unb) + ". If you skip: " + esc(x.opts[x.def]) + ' at 18:00.</div><div class="viz">' + viz + "</div>" + qOpts(x) +
+      (x.brief ? '<button class="link" style="margin-top:10px" data-act="open" data-s="brief">Open the full brief</button>' : "") + "</div>";
+  }
+  function questionsSheet() {
+    if (S.qSent) return resultSheet();
+    var safe = S.qs.filter(function (x) { return x.g === "safe"; }), look = S.qs.filter(function (x) { return x.g === "look"; });
+    var allTaken = safe.every(function (x) { return S.qtouch[x.id]; });
+    var h = '<div style="font-size:26px;font-weight:750;letter-spacing:-0.02em">10 questions</div><div class="cap" style="margin-bottom:12px">About 2 minutes. Answer what you want; the rest take their default at 18:00.</div>';
+    h += seg("qGroup", [["urgency", "By urgency"], ["unblocks", "By what it unblocks"]], S.qGroup);
+    if (S.qGroup === "unblocks") {
+      var groups = {};
+      S.qs.forEach(function (x) { (groups[x.unb] = groups[x.unb] || []).push(x); });
+      h += '<div class="qh">Release 0.0.12 <span class="n">' + ((groups["Release 0.0.12"] || []).length + 1) + "</span></div>" + signinQ();
+      (groups["Release 0.0.12"] || []).forEach(function (x) { h += safeRow(x); });
+      Object.keys(groups).filter(function (k) { return k !== "Release 0.0.12"; }).forEach(function (k) {
+        h += '<div class="qh">' + esc(k) + ' <span class="n">' + groups[k].length + "</span></div>" + groups[k].map(function (x) { return x.g === "look" ? lookCard(x) : safeRow(x); }).join("");
+      });
+    } else {
+      h += '<div class="qh">' + ic("stop", "s") + 'Only you <span class="n">1</span></div>' + signinQ();
+      h += '<div class="qh">Worth a look <span class="n">2</span></div>' + look.map(lookCard).join("");
+      h += '<div class="qh">Safe to take the default <span class="n">7</span></div><div class="group"><div class="row"><span class="t"><b>Take all 7 defaults</b><span>Small, reversible, each can be undone</span></span><button class="sw' + (allTaken ? " on" : "") + '" data-act="take-all" aria-label="Take all 7"></button></div>' +
+        '<button class="row tap" data-act="safe-open"><span class="t"><span style="color:var(--accent);font-size:14px">' + (S.safeOpen ? "Hide the 7" : "See and change them") + "</span></span>" + ic(S.safeOpen ? "down" : "chev", "s") + "</button></div>";
+      if (S.safeOpen) h += safe.map(safeRow).join("");
+    }
+    var n = qCountSel();
+    var foot = '<button class="btn pri w" data-act="q-send"' + (n ? "" : " disabled") + ">" + (n ? "Send " + plural(n, "answer") : "Pick answers to send") + "</button>";
+    return sheetFrame("", h, foot, "94%");
+  }
+  function signinQ() {
+    if (S.signin === "done") return '<div class="qc"><div style="display:flex;gap:10px;align-items:center"><span class="tick on">' + ic("check", "s") + '</span><b>Signed in to npm</b></div></div>';
+    return '<div class="qc" style="box-shadow:inset 0 0 0 1.5px var(--red)"><div class="qt">Sign in to npm</div><div class="qm">Stopped the release for 1 h 40 min.</div><button class="btn pri w" data-act="signin-link">' + ic("link", "s") + 'Sign in on npmjs.com</button><div class="cap" style="text-align:center;margin-top:6px">Forge never sees your password.</div></div>';
+  }
+  function safeRow(x) {
+    if (x.g === "look") return lookCard(x);
+    return '<div class="qc"><div style="display:flex;gap:10px;align-items:flex-start"><button class="tick' + (S.qtouch[x.id] ? " on" : "") + '" data-act="qtick" data-id="' + x.id + '" aria-label="Include">' + ic("check", "s") + '</button><div style="flex:1;min-width:0"><div class="qt" style="font-weight:500">' + esc(x.t) + '</div><div style="margin-top:6px">' + qOpts(x) + "</div></div></div></div>";
+  }
+  function resultSheet() {
+    var r = S.qSent;
+    var h = '<div class="res"><div class="okc">' + ic("check") + '</div><div class="num">' + r.n + '</div><div class="cap">answers sent</div></div>';
+    h += '<div class="ey"><span>What moved because of it</span></div><div class="group">' + r.moved.map(function (m) { return '<div class="row">' + dot("work") + '<span class="t"><b>' + esc(m[0]) + "</b><span>" + esc(m[1]) + "</span></span></div>"; }).join("") + "</div>";
+    if (S.offer) h += '<div class="card" style="box-shadow:inset 0 0 0 1.5px var(--accent)"><div style="font-weight:650">Stop asking about bringing work up to date?</div><div class="cap" style="margin:4px 0 10px">You took that default 5 times this week, 3 while away, and never undid one. It will still be listed with Undo.</div>' +
+      '<div style="display:flex;gap:8px"><button class="btn pri sm" style="flex:1" data-act="offer-yes">Stop asking</button><button class="btn sm" style="flex:1" data-act="offer-no">Keep asking</button></div></div>';
+    return sheetFrame("", h, '<button class="btn w" data-act="sheet-close">Done</button>', "94%");
+  }
+  function briefSheet() {
+    var x = q("q1"), sel = S.qa.q1 !== undefined ? S.qa.q1 : x.def;
+    var D = [["Later save wins", "1 day", 1, "Yes, silently", "Most note apps"], ["Lock while editing", "2 days", 2, "No", "Old file shares"], ["Keep both, ask", "3 days", 3, "No", "Code review tools"]];
+    var h = '<div class="cap">Team sync · has a default</div><div style="font-size:24px;font-weight:750;letter-spacing:-0.02em;margin:2px 0 12px">Two people, one item, same moment</div>';
+    h += '<div class="opt3">' + D.map(function (d, i) {
+      return '<div class="oc' + (i === 2 ? " rec" : "") + '">' + (i === 2 ? '<div class="tg">RECOMMENDED</div>' : '<div class="tg" style="color:var(--muted)">OPTION ' + "ABC"[i] + "</div>") + "<h4>" + d[0] + "</h4>" + syncSvg(i) +
+        '<div class="kv"><span>Build time</span><span><span class="meter">' + [1, 2, 3].map(function (k) { return '<i class="' + (k <= d[2] ? "f" : "") + '"></i>'; }).join("") + "</span> " + d[1] + "</span><span>Loses work</span><span>" + d[3] + "</span><span>Used by</span><span>" + d[4] + "</span></div></div>";
+    }).join("") + "</div>";
+    h += '<div class="card" style="margin-top:6px"><div class="cap">Why C</div>Never loses work and never makes anyone wait. Costs 1 to 2 more days, after the release.</div>';
+    var foot = '<div style="display:flex;gap:8px"><button class="btn" style="flex:1" data-act="brief-reject">Reject</button><button class="btn pri" style="flex:2" data-act="brief-accept">Accept C</button></div>';
+    return sheetFrame("", h, foot, "90%");
+  }
+  function browserSheet() {
+    var st = S.browser || "page", h = '<div class="urlbar">' + ic("lock", "s") + "npmjs.com</div>";
+    if (st === "page") h += '<div class="site"><div class="mark">npm</div><div style="font-size:19px;font-weight:700">Allow Forge release to publish?</div><div class="cap" style="margin:6px 0 16px">You are signed in on this phone as your npm account. Confirm this device code: <b>4F7K-29QD</b></div><button class="btn pri w" data-act="browser-ok">Allow</button><div class="cap" style="margin-top:10px">This page is the site itself. Forge only learns that you said yes.</div></div>';
+    else if (st === "wait") h += '<div class="site"><div class="cap">Confirming…</div></div>';
+    else h += '<div class="site"><div class="okc">' + ic("check") + '</div><div style="font-size:19px;font-weight:700">Signed in</div><div class="cap" style="margin:6px 0 16px">You can go back to Forge.</div><button class="btn pri w" data-act="browser-back">Back to Forge</button></div>';
+    return sheetFrame("Browser", h, "", "86%", '<button class="x" data-act="sheet-close">Close</button>');
+  }
+  function doneforSheet() {
+    return sheetFrame("Done for you", '<div class="cap" style="margin:0 4px 10px">Defaults taken while you were away.</div>' + doneList(), "", "70%");
+  }
+  function reachSheet() {
+    var r = S.reach;
+    var h = '<div class="cap" style="margin:0 4px 10px">Nothing calls you unless work is stopped and waiting on you.</div>';
+    h += '<div class="card"><div class="ladder"><div class="lg"><span class="c">' + ic("decisions", "s") + '</span>Card<em>at once</em></div><i class="lgl"></i><div class="lg"><span class="c">' + ic("reach", "s") + "</span>Push<em>" + fmtMin(r.push) + '</em></div><i class="lgl"></i><div class="lg hot"><span class="c">' + ic("phone", "s") + "</span>Call<em>" + fmtMin(r.call) + "</em></div></div></div>";
+    h += '<div class="group"><div class="row"><span class="t"><b>Push after</b><span>work stopped this long</span></span><span class="step"><button data-act="reach-step" data-k="push" data-d="-10" aria-label="Less">−</button><b>' + fmtMin(r.push) + '</b><button data-act="reach-step" data-k="push" data-d="10" aria-label="More">+</button></span></div>' +
+      '<div class="row"><span class="t"><b>Call after</b><span>if still unanswered</span></span><span class="step"><button data-act="reach-step" data-k="call" data-d="-10" aria-label="Less">−</button><b>' + fmtMin(r.call) + '</b><button data-act="reach-step" data-k="call" data-d="10" aria-label="More">+</button></span></div>' +
+      '<div class="row"><span class="t"><b>Quiet hours</b><span>23:00 to 08:00, push only</span></span><button class="sw' + (r.quiet ? " on" : "") + '" data-act="reach-quiet" aria-label="Quiet hours"></button></div>' +
+      '<div class="row"><span class="t"><b>Bubble on screen</b><span>Shows who needs you over other apps</span></span><button class="sw' + (r.bubble ? " on" : "") + '" data-act="reach-bubble" aria-label="Bubble"></button></div></div>';
+    h += '<div class="card" style="font-size:14px"><div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px">' + dot("stop") + '<span>On the phone with the bubble showing: urgent turns it red and it pulses. No call.</span></div><div style="display:flex;gap:10px;align-items:flex-start">' + ic("phone", "s") + '<span>A call only when the phone is locked or untouched. Never during a snooze.</span></div></div>';
+    h += '<div class="ey"><span>What may call</span></div><div class="group">' + [["signin", "A sign-in only you can do"], ["offline", "A machine offline that stops work"], ["holding", "A question that holds work"]].map(function (k) {
+      return '<div class="row"><span class="t"><b style="font-weight:500">' + k[1] + '</b></span><button class="sw' + (r.kinds[k[0]] ? " on" : "") + '" data-act="reach-kind" data-k="' + k[0] + '"></button></div>';
+    }).join("") + '<div class="row"><span class="t"><b style="font-weight:500">Questions with a default</b><span>Never call: nothing is stopped</span></span><button class="sw" disabled aria-label="Never"></button></div></div>';
+    return sheetFrame("How to reach me", h, "", "86%");
+  }
+  function routerSheet() {
+    var p = S.pp, h = '<div class="cap" style="margin:0 4px 10px">Looking at ' + esc(hereName()) + ". Works the same from any chat on your phone.</div>";
+    if (!p) {
+      h += '<div class="group tries">' + TRIES.map(function (t, i) { return '<button data-act="try" data-i="' + i + '"><span>' + t[0] + "</span>" + esc(t[1]) + "</button>"; }).join("") + "</div>";
+    } else {
+      var info = route(p);
+      h += '<div class="card"><div class="said">“' + esc(p.text) + "”</div>" +
+        '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span class="cap">Read as</span><button class="chip" data-act="pp-cls">' + esc(clsName(p.cls)) + ic("down", "s") + "</button>" +
+        (/rule|direction|correction/.test(p.cls) ? '<span class="cap">for</span><button class="chip" data-act="pp-scope">' + esc(p.scope) + ic("down", "s") + "</button>" : "") + "</div>" +
+        '<div class="flow"><span class="cap">Goes to</span><span class="arrow">' + ic("send", "s") + "</span><b>" + esc(info.dest) + "</b></div>";
+      if (info.ans) h += '<div class="ans">' + esc(info.ans) + "</div>";
+      if (info.conflict) {
+        var r = info.conflict;
+        h += '<div class="warn"><b>Clashes with an older rule</b><div class="flips">' + r.flips.map(function (f, i) { return (i ? '<i class="ln"></i>' : "") + '<div class="f"><i class="' + f[1] + '"></i>' + f[0] + "<br>" + f[2] + "</div>"; }).join("") + '<i class="ln"></i><div class="f"><i class="new"></i>Today<br>Yes, overseer</div></div>' +
+          '<div class="choice" style="margin-top:6px">' + [["narrow", "Fable only for overseer"], ["replace", "New replaces old"], ["keep", "Keep old"]].map(function (o, i) {
+            return '<button class="' + ((p.res || "narrow") === o[0] ? "on" : "") + '" data-act="pp-res" data-v="' + o[0] + '">' + o[1] + (i === 0 ? ' <span class="df">· default</span>' : "") + "</button>";
+          }).join("") + "</div></div>";
+      }
+      if (info.repeat) {
+        h += '<div class="warn"><b>Second time you said this</b><div class="cap" style="margin-bottom:8px">First on ' + esc(info.repeat.said.join(", ")) + ". Make it a rule?</div>" +
+          '<div class="choice"><button class="' + (p.mk ? "on" : "") + '" data-act="pp-mk" data-v="1">Make it a rule <span class="df">· default</span></button><button class="' + (p.mk ? "" : "on") + '" data-act="pp-mk" data-v="0">Just this time</button></div></div>';
+      }
+      if (p.cls === "idea") h += '<button class="link" style="margin-top:10px" data-act="pp-talk">Talk it through first</button>';
+      h += "</div>";
+    }
+    var foot = p ? '<div style="display:flex;gap:8px"><button class="btn" style="flex:1" data-act="pp-cancel">Edit</button><button class="btn pri" style="flex:2" data-act="pp-send">' + (p.cls === "question" ? "Done" : "Send") + "</button></div>" :
+      '<div class="inrow"><input id="ppInput" type="text" placeholder="Say anything" autocomplete="off"><button class="ibtn" data-act="mic" aria-label="Voice">' + ic("mic", "s") + '</button><button class="ibtn pri" data-act="pp-read" aria-label="Send">' + ic("send", "s") + "</button></div>";
+    return sheetFrame("Say something", h, foot, "78%");
+  }
+  function chatSheet() {
+    var c = S.chat, h = '<div class="card" style="box-shadow:inset 3px 0 0 var(--accent)">' + esc(c.text) + '</div><div class="card"><div class="cap">Agent</div>For you only, or for anyone using Forge?' +
+      (S.chatStep === 0 ? '<div class="choice" style="margin-top:10px"><button data-act="chat-pick" data-v="you">Just me</button><button data-act="chat-pick" data-v="all">Anyone</button></div>' : "") + "</div>";
+    if (S.chatStep) h += '<div class="card"><div class="cap">Agent</div>Then one small feature after team sync, not started. The release date does not move.</div>';
+    var foot = S.chatStep ? '<div style="display:flex;gap:8px"><button class="btn" style="flex:1" data-act="chat-keep">Keep as idea</button><button class="btn pri" style="flex:2" data-act="chat-plan">Add to plan</button></div>' : "";
+    return sheetFrame("Side chat · nothing running stops", h, foot, "70%");
+  }
+  function leaveSheet() {
+    var L = S.leave, items = [];
+    if (S.signin !== "done" || L.ok.g1) items.push(["g1", "npm sign-in", "Codes expire. Do it now: 1 minute.", L.ok.g1, "Sign in now", "leave-signin"]);
+    items.push(["g2", "9 questions with a default", "They take defaults at 18:00.", L.ok.g2, "Take all defaults", "leave-defaults"]);
+    items.push(["g3", "Publishing 0.0.12", "Always asks. Waits for you.", null, null, null]);
+    var h = '<div class="cap" style="margin:0 4px 10px">What would wait for you in the next 12 hours.</div><div class="group">' + items.map(function (g) {
+      return '<div class="row"><span class="tick' + (g[3] ? " on" : "") + '">' + ic("check", "s") + '</span><span class="t"><b>' + g[1] + "</b><span>" + esc(g[3] || g[2]) + "</span></span>" + (!g[3] && g[4] ? '<button class="btn sm" data-act="' + g[5] + '">' + g[4] + "</button>" : "") + "</div>";
+    }).join("") + "</div>";
+    h += '<div class="ey"><span>Away for</span></div>' + seg("leaveLen", [["few", "A few hours"], ["night", "Overnight"], ["days", "Days"]], L.len) +
+      '<div class="cap" style="margin:0 4px">' + ({ few: "Your brief will cover the gap.", night: "Overnight: finish release checks, then Cloud receipts.", days: "On return the timeline opens by day." })[L.len] + "</div>";
+    return sheetFrame("Before you go", h, '<button class="btn pri w" data-act="leave-go">Go. Keep working on defaults</button>', "80%");
+  }
+  function sheetContent(sh) {
+    switch (sh.type) {
+      case "feature": return featureSheet(sh.id);
+      case "thread": return threadSheet(sh.id);
+      case "questions": return questionsSheet();
+      case "brief": return briefSheet();
+      case "browser": return browserSheet();
+      case "donefor": return doneforSheet();
+      case "reach": return reachSheet();
+      case "router": return routerSheet();
+      case "chat": return chatSheet();
+      case "leave": return leaveSheet();
+      case "agent": return agentSheet(sh.id);
+    }
+  }
+
+  /* ================= overlays: lock, call, urgent ================= */
+  function overHtml() {
+    var o = S.over;
+    if (!o) return "";
+    if (o === "bubble") return bubbleScene();
+    if (o === "push" || o === "declined" || o === "texted" || o === "reminded") {
+      var time = o === "push" ? "14:30" : "15:41";
+      var h = '<div class="lock"><span class="lk">' + ic("lock") + '</span><div class="clock">' + time + '</div><div class="date">Saturday 21 November</div>';
+      if (o === "push") h += '<button class="notif" data-act="notif-open"><div class="h"><b><span class="ap"></span>FORGE</b><span>now</span></div><div class="t">Release stopped 30 min</div><div class="b">Only you can sign in to npm. Tap to see what is held.</div></button>';
+      if (o === "texted") h += '<button class="notif" data-act="text-open"><div class="h"><b><span class="ap"></span>MESSAGES · FORGE</b><span>now</span></div><div class="t">Sign in for release 0.0.12</div><div class="b">npmjs.com/login/device · tap to open</div></button>';
+      if (o === "reminded") h += '<div class="notif"><div class="h"><b><span class="ap"></span>FORGE</b><span>now</span></div><div class="t">Okay. Calling again at 16:10.</div><div class="b">The release stays stopped until then.</div></div>';
+      if (o === "declined") h += '<div class="dsheet"><p>Declined. The release is still stopped.</p><button data-act="dec-remind">Remind me in 30 min</button><button data-act="dec-text">Text me the link</button><button data-act="dec-open" style="opacity:0.7">Open Forge</button></div>';
+      h += '<div class="hint">' + (o === "push" ? "Not answered? Forge calls at " + fmtMin(S.reach.call) + ". Use Mock controls." : "") + "</div></div>";
+      return h;
+    }
+    if (o === "call") {
+      return '<div class="call"><div class="av">' + ic("phone") + '</div><div class="who">Forge</div><div class="what">The release has been stopped for 1 h 40 min. Only you can unblock it.</div>' +
+        '<div class="acts"><button class="ab no" data-act="call-no"><i>' + ic("phone") + '</i>Decline</button><button class="ab yes" data-act="call-yes"><i>' + ic("phone") + "</i>Answer</button></div></div>";
+    }
+    return "";
+  }
+  function urgentScreen() {
+    if (S.signin === "done") {
+      return '<div class="big-ok"><div class="okc">' + ic("check") + '</div><div class="lt" style="font-size:26px">Done.</div><div style="font-size:17px;margin:6px 0 20px">The release is moving again.</div><button class="btn pri w" data-act="urgent-home">Go to Home</button></div>';
+    }
+    var h = '<div class="top" style="margin-top:14px"><div><div class="cap" style="color:var(--red);font-weight:700">STOPPED · NEEDS YOU NOW</div><h1 class="lt">Sign in to npm</h1></div></div>';
+    h += '<div class="card"><div class="hero">' + ring(100 / 120, 88, 9, "var(--red)", "1:40", "stopped") + '<div><div class="cap">Why it is urgent</div><div style="font-weight:600">Each hour moves the release an hour. Codes expire in 10 min.</div></div></div></div>';
+    h += '<div class="ey"><span>What is stopped</span></div><div class="group">' + [["Publishing 0.0.12", "5 new features wait"], ["The announcement", "Waits on publishing"], ["Cloud receipts restart", "Waits on the release"]].map(function (s) {
+      return '<div class="row">' + dot("stop") + '<span class="t"><b>' + s[0] + "</b><span>" + s[1] + "</span></span></div>";
+    }).join("") + "</div>";
+    h += '<div class="ey"><span>What is needed</span></div><div class="card">Your npm sign-in. One minute on the site.</div>';
+    h += '<button class="btn pri w" data-act="signin-link">' + ic("link", "s") + 'Sign in on npmjs.com</button><div class="cap" style="text-align:center;margin:8px 0 12px">You sign in on the site. Forge never sees your password.</div><button class="link" style="display:block;margin:0 auto;color:var(--muted)" data-act="urgent-home">Later</button>';
+    return h;
+  }
+
+  /* ================= bubble ================= */
+  var snzTimer = null, SNZ_MS = 6000;
+  function bAnswered(i) { return i.kind === "signin" ? S.signin === "done" : !!S.bub.ans[i.id] || (i.id === "b2" && !!S.qSentIds && S.qSentIds.indexOf("q1") >= 0); }
+  function bItems(p) { return p.items.filter(function (i) { return !bAnswered(i); }); }
+  function bNeed() { return BPROJ.filter(function (p) { return bItems(p).length; }); }
+  function bState() { if (S.bub.snz) return "snz"; if (!bNeed().length) return "calm"; return S.signin !== "done" ? "urgent" : "needs"; }
+  function pColor(p) { var it = bItems(p); return it.some(function (i) { return i.kind === "signin"; }) ? "r" : it.some(function (i) { return i.hold; }) ? "o" : "a"; }
+  function clampY(y) { return Math.max(56, Math.min(y, 640)); }
+  function fanList() {
+    return [{ k: "run", label: "6 running", txt: "6" }].concat(bNeed().map(function (p) { return { k: "proj", id: p.id, label: p.name, txt: String(bItems(p).length), c: pColor(p) }; })).concat([{ k: "snooze", label: "Snooze" }]);
+  }
+  function fanPos(i, n) {
+    var a = (-70 + (n > 1 ? i * 140 / (n - 1) : 0)) * Math.PI / 180, r = 128, cy = S.bub.y + 28;
+    return { right: 38 + r * Math.cos(a) - 26, top: clampY(cy + r * Math.sin(a) - 26) };
+  }
+  function cdRing() {
+    var c = 2 * Math.PI * 29, f = S.bub.left / SNZ_MS;
+    return '<svg class="cd" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29" style="fill:none;stroke:rgba(255,255,255,0.15);stroke-width:3"/><circle id="cdArc" cx="32" cy="32" r="29" transform="rotate(-90 32 32)" style="fill:none;stroke:#fff;stroke-width:3;stroke-linecap:round;stroke-dasharray:' + (c * f).toFixed(1) + " " + c.toFixed(1) + '"/></svg>';
+  }
+  function snzLabel() { return "back in " + Math.max(1, Math.ceil(S.bub.snz * S.bub.left / SNZ_MS)) + " min"; }
+  function bubbleScene() {
+    var b = S.bub, st = bState(), h = '<div class="home2" id="home2"><div class="apps">';
+    ["Notes", "Weather", "Camera", "Clock", "Files", "Music", "Maps", "Calendar", "Reader", "Tasks", "Wallet", "Settings"].forEach(function (n) { h += '<div class="appi"><i>' + n.charAt(0) + "</i>" + n + "</div>"; });
+    h += '</div><div class="hdock"><i></i><i></i><i></i><i></i></div>';
+    if (!S.reach.bubble) return h + '<div class="bnote"><b>The bubble is off.</b>Turn it on in How to reach me.<div style="margin-top:8px"><button class="btn sm pri" data-act="bub-on">Turn it on</button></div></div></div>';
+    if (b.open || b.pop) h += '<div class="bscrim" data-act="bub-fold"></div>';
+    var inner = st === "snz" ? cdRing() + ic("snooze") : st === "urgent" ? '<span class="cnt">!</span>' : st === "needs" ? '<span class="cnt">' + bNeed().length + "</span>" : '<span class="cnt">6</span>';
+    var lab = st === "snz" ? snzLabel() : st === "urgent" ? "Release stopped" : st === "needs" ? bNeed().length + " need you" : "6 running";
+    h += '<div class="blab" id="blab" style="top:' + (b.y + 16) + 'px">' + esc(lab) + "</div>";
+    h += '<div class="bub ' + st + '" id="bubMain" role="button" tabindex="0" aria-label="Forge bubble: ' + esc(lab) + '" data-act="bub-tap" style="top:' + b.y + 'px">' + inner + "</div>";
+    if (b.open) {
+      var L = fanList();
+      L.forEach(function (it, i) {
+        var pos = fanPos(i, L.length), dim = b.pop && !(b.pop.k === it.k && (it.k !== "proj" || b.pop.id === it.id));
+        h += '<button class="fan ' + (it.k === "proj" ? it.c : it.k) + (dim ? " dim" : "") + '" style="right:' + pos.right.toFixed(0) + "px;top:" + pos.top.toFixed(0) + "px;animation-delay:" + (i * 35) + 'ms" data-act="bub-item" data-k="' + it.k + '" data-id="' + (it.id || "") + '" data-i="' + i + '">' + (it.k === "snooze" ? ic("snooze") : esc(it.txt)) + "<small>" + esc(it.label) + "</small></button>";
+      });
+    }
+    if (b.pop) h += bPop();
+    if (b.note) h += '<div class="bnote"><b>' + esc(b.note[0]) + "</b>" + esc(b.note[1]) + "</div>";
+    return h + "</div>";
+  }
+  function bPop() {
+    var b = S.bub, P = b.pop, top = clampY(P.top - 40), h;
+    if (top > 450) top = 450;
+    if (P.k === "run") {
+      h = '<div class="ph"><b>Running without you</b><span>6</span></div>' + RUNNING.map(function (r) { return '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:13px">' + dot("work") + "<span><b>" + esc(r[0]) + "</b> · " + esc(r[1]) + '<br><span class="cap" style="font-size:12px">' + esc(r[2]) + "</span></span></div>"; }).join("");
+      if (top > 330) top = 330;
+    } else if (P.k === "snooze") {
+      h = '<div class="ph"><b>Snooze</b><span>agents keep working</span></div><div class="qt">Back in</div><div style="display:flex;gap:8px">' + [5, 10, 20].map(function (m) { return '<button class="btn sm" style="flex:1" data-act="bub-snz" data-m="' + m + '">' + m + " min</button>"; }).join("") + '</div><div class="cap" style="margin-top:8px">No call while snoozed.</div>';
+    } else {
+      var p = BPROJ.filter(function (x) { return x.id === P.id; })[0], items = bItems(p);
+      if (!items.length) return "";
+      if (b.page >= items.length) b.page = 0;
+      var it = items[b.page];
+      h = '<div class="ph"><b>' + esc(p.name) + '</b><span class="pg">' + (items.length > 1 ? '<button data-act="bub-page" aria-label="Next">' + ic("chev", "s") + "</button>" : "") + "<span>" + (b.page + 1) + " of " + items.length + '</span><button data-act="bub-expand" aria-label="Open full screen">' + ic("expand", "s") + "</button></span></div>";
+      h += '<div class="qt">' + esc(it.t) + "</div>";
+      if (it.kind === "signin") h += '<button class="btn pri w sm" data-act="bub-signin">' + ic("link", "s") + 'Sign in on npmjs.com</button><div class="cap" style="font-size:12px;margin-top:6px;text-align:center">Forge never sees your password.</div>';
+      else h += '<div class="choice">' + it.opts.map(function (o, i) { return '<button class="' + (i === it.def ? "on" : "") + '" data-act="bub-ans" data-id="' + it.id + '" data-i="' + i + '">' + esc(o) + (i === it.def ? ' <span class="df">· default</span>' : "") + "</button>"; }).join("") + "</div>" +
+        (it.full === "brief" ? '<button class="link" style="margin-top:8px;font-size:13px" data-act="bub-expand">See the options side by side</button>' : "");
+    }
+    return '<div class="bpop" style="top:' + top + 'px">' + h + "</div>";
+  }
+  function bTick() {
+    var b = S.bub;
+    b.left -= 100;
+    if (b.left <= 0) {
+      clearInterval(snzTimer); snzTimer = null; b.snz = 0; b.left = 0; b.note = null;
+      render(); toast(bNeed().length ? "You are back. " + plural(bNeed().length, "project") + " still need you." : "You are back. Nothing needs you.");
+      return;
+    }
+    var arc = $("cdArc"), lab = $("blab");
+    if (arc) arc.style.strokeDasharray = (2 * Math.PI * 29 * b.left / SNZ_MS).toFixed(1) + " " + (2 * Math.PI * 29).toFixed(1);
+    if (lab) lab.textContent = snzLabel();
+  }
+  function findB(id) {
+    var r = null;
+    BPROJ.forEach(function (x) { x.items.forEach(function (i) { if (i.id === id) r = { it: i, p: x }; }); });
+    return r;
+  }
+  function agentSheet(id) {
+    var f = findB(id), it = f.it, p = f.p;
+    var viz = id === "b3" ? '<div style="display:flex;gap:10px"><div style="flex:1;border-radius:14px;background:#fff;color:#111;padding:12px;font-size:12px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)">Light<div style="font-size:24px;font-weight:750">21 : 18</div></div><div style="flex:1;border-radius:14px;background:#111;color:#fff;padding:12px;font-size:12px;box-shadow:inset 0 0 0 2px var(--accent)">Dark, proposed<div style="font-size:24px;font-weight:750">21 : 18</div></div></div><div class="cap" style="margin-top:8px">Most scoring happens outdoors at night: 7 of 10 sessions last month.</div>' :
+      '<div style="display:flex;align-items:center;gap:6px;font-size:12.5px;text-align:center"><div style="flex:1;background:var(--raised);border-radius:12px;padding:10px 4px">Team list<br><b>14</b></div><span class="cap">+</span><div style="flex:1;background:var(--raised);border-radius:12px;padding:10px 4px">Shared list<br><b>9</b></div><span class="cap">=</span><div style="flex:1;background:var(--accent-soft);border-radius:12px;padding:10px 4px;box-shadow:inset 0 0 0 2px var(--accent)">One list<br><b>21</b></div></div><div class="cap" style="margin-top:8px">2 meetings are in both; they would be joined.</div>';
+    var h = '<div class="cap">' + esc(p.name) + ' · page sent by the agent</div><div style="font-size:24px;font-weight:750;letter-spacing:-0.02em;margin:2px 0 12px">' + esc(it.t) + '</div><div class="card">' + viz + "</div>";
+    if (bAnswered(it)) h += '<div class="card">Answered. Nothing else here.</div>';
+    else h += '<div class="choice">' + it.opts.map(function (o, i) { return '<button class="' + (i === it.def ? "on" : "") + '" data-act="agent-ans" data-id="' + id + '" data-i="' + i + '">' + esc(o) + (i === it.def ? ' <span class="df">· default</span>' : "") + "</button>"; }).join("") + "</div>";
+    return sheetFrame("", h, "", "84%");
+  }
+  function bAnswer(id, i) {
+    var f = findB(id), it = f.it, p = f.p;
+    S.bub.ans[id] = true;
+    if (id === "b2") { S.qa.q1 = i; S.qSentIds = (S.qSentIds || []).concat(["q1"]); }
+    if (!bItems(p).length) S.bub.pop = null; else S.bub.page = 0;
+    render();
+    toast("Sent to " + p.name + ": " + it.opts[i] + ".", function () { delete S.bub.ans[id]; if (id === "b2" && S.qSentIds) S.qSentIds.splice(S.qSentIds.indexOf("q1"), 1); });
+  }
+  function bubPreset(v) {
+    S.bub.snz = 0; S.bub.note = null; S.bub.open = false; S.bub.pop = null;
+    if (snzTimer) { clearInterval(snzTimer); snzTimer = null; }
+    S.over = "bubble"; S.sheets = []; S.urgent = false; $("sheets").innerHTML = "";
+    if (v === "urgent") { S.signin = "wait"; S.publish = false; S.bub.ans = {}; S.qSentIds = []; }
+    if (v === "needs") { S.signin = "done"; S.publish = true; S.bub.ans = {}; S.qSentIds = []; }
+    if (v === "calm") { S.signin = "done"; S.publish = true; S.bub.ans = { b2: true, b3: true, b4: true }; }
+    S.step = v; render();
+  }
+
+  /* ================= router logic ================= */
+  function clsName(k) { return CLS.filter(function (c) { return c[0] === k; })[0][1]; }
+  function classify(t) {
+    t = t.toLowerCase().trim();
+    if (/^(a|b|c|yes|no|ok|default|defaults)[.!]?$/.test(t)) return "answer";
+    if (/(from now on|^always|^never|\bnever\b)/.test(t)) return "rule";
+    if (/(again|you keep|i told you)/.test(t)) return "correction";
+    if (/(red flag|annoying|waste|stupid|too slow|\bbad\b)/.test(t)) return "complaint";
+    if (/(^idea|what if|we could|would be nice|let'?s add)/.test(t)) return "idea";
+    if (/\?$/.test(t) || /^(how|what|when|by when|why|where|is|are|can|do|does)\b/.test(t)) return "question";
+    return "direction";
+  }
+  function defScope(c) { return c === "rule" ? "This project" : "This thread"; }
+  function hereName() {
+    var top = S.sheets.filter(function (s) { return s.type !== "router"; }).slice(-1)[0];
+    if (top && top.type === "feature") return feat(top.id).name;
+    if (top && top.type === "thread") return thr(top.id).name + " thread";
+    var id = S.tab === "more" ? S.block : S.tab;
+    return id === "more" || !id ? "More" : blkName(id);
+  }
+  function route(p) {
+    var t = p.text.toLowerCase(), info = { dest: "", conflict: null, repeat: null, ans: null };
+    if (p.cls === "answer") info.dest = "The waiting questions page";
+    else if (p.cls === "direction") info.dest = "Lead thread, now";
+    else if (p.cls === "idea") info.dest = "Plan, as an idea. Nothing stops.";
+    else if (p.cls === "rule") { info.dest = "Rules · " + p.scope; S.rules.forEach(function (r) { if (!info.conflict && r.flips && t.indexOf(r.key) >= 0) info.conflict = r; }); }
+    else if (p.cls === "correction") { info.dest = "Lead thread, now. Counted."; S.corr.forEach(function (c) { if (!info.repeat && (t.indexOf(c.key) >= 0 || /\bids\b/.test(t))) info.repeat = c; }); }
+    else if (p.cls === "complaint") info.dest = "Home, until fixed";
+    else {
+      info.dest = "Answered here";
+      info.ans = /release|when|long/.test(t) ? (S.signin === "done" ? "About 17:40 today." : "About 18:00 today, if you sign in by 16:00. Each hour later moves it an hour.") :
+        /pause/.test(t) ? "Cloud receipts paused at 13:05 to keep the release clean." : "The Lead thread will answer here within a few minutes.";
+    }
+    return info;
+  }
+  function sendRouted() {
+    var p = S.pp, info = route(p), undo = [], msg = "", done = "";
+    if (p.cls === "question") { closeSheet(); return; }
+    if (p.cls === "answer") { S.pp = null; S.sheets = S.sheets.filter(function (s) { return s.type !== "router"; }); openSheet({ type: "questions" }); return; }
+    if (p.cls === "idea") {
+      var it = { id: "i" + (++logN + 50), t: p.text.replace(/^idea:\s*/i, ""), when: "today" };
+      S.ideas.unshift(it); undo.push(function () { S.ideas.splice(S.ideas.indexOf(it), 1); });
+      msg = "Added to the plan as an idea."; done = "Added to plan, not started.";
+    } else if (p.cls === "rule") {
+      var r = info.conflict;
+      if (r) {
+        var res = p.res || "narrow", old = r.t, od = r.date;
+        if (res === "narrow") r.t = "No Fable, except overseer reviews."; else if (res === "replace") r.t = p.text;
+        if (res !== "keep") { r.date = "today"; r.flips.push(["Today", "y", res === "narrow" ? "Overseer only" : "Yes"]); }
+        undo.push(function () { r.t = old; r.date = od; if (res !== "keep") r.flips.pop(); });
+        msg = res === "keep" ? "Kept the old rule." : "Rule updated. History kept."; done = msg;
+      } else {
+        var nr = { id: "r" + (++logN + 50), t: p.text, scope: p.scope, date: "today", key: "~" };
+        S.rules.unshift(nr); undo.push(function () { S.rules.splice(S.rules.indexOf(nr), 1); });
+        msg = "Saved as a rule, " + p.scope.toLowerCase() + "."; done = msg;
+      }
+    } else if (p.cls === "correction") {
+      var rep = info.repeat;
+      if (rep) {
+        rep.said.push("today"); undo.push(function () { rep.said.pop(); });
+        if (p.mk) { var nr2 = { id: "rc" + logN, t: rep.t, scope: "This project", date: "today", key: "~" }; S.rules.unshift(nr2); undo.push(function () { S.rules.splice(S.rules.indexOf(nr2), 1); }); msg = "Fixed now, and made a rule."; }
+        else msg = "Sent to Lead.";
+      } else { var nc = { key: "~" + logN, t: p.text, said: ["today"] }; S.corr.push(nc); undo.push(function () { S.corr.splice(S.corr.indexOf(nc), 1); }); msg = "Sent to Lead. Counted once."; }
+      done = msg;
+    } else if (p.cls === "complaint") {
+      S.complaints.unshift(p.text); undo.push(function () { S.complaints.shift(); }); msg = "On Home until fixed."; done = msg;
+    } else { msg = "Sent to Lead."; done = msg; }
+    var entry = { n: ++logN, time: "15:41", text: p.text, dest: info.dest, done: done };
+    S.log.unshift(entry);
+    S.pp = null;
+    closeSheet();
+    toast(msg, function () { undo.forEach(function (f) { f(); }); S.log.splice(S.log.indexOf(entry), 1); render(); });
+  }
+
+  /* ================= render ================= */
+  function renderCtl() {
+    var SC = [["back", "Back after 3 hours", "Home, the moment he opens the app."], ["call", "It calls you", "Work stopped on him: push, then a call."], ["questions", "10 questions at once", "One page, grouped, one Send."],
+      ["feature", "Look at a feature", "What it gives, before and after, parts."], ["say", "Say something", "Routed to the right place, with a rule clash."], ["leave", "Leaving", "Settle what would wait while away."], ["bubble", "The bubble", "Over other apps: who needs you, at a glance."]];
+    var h = '<h2>Mock controls</h2><p class="note">Outside the phone. Each puts the phone into a moment.</p>';
+    h += SC.map(function (s) {
+      var on = S.scn === s[0];
+      var x = '<button class="scn' + (on ? " on" : "") + '" data-act="scn" data-v="' + s[0] + '"><b>' + s[1] + "</b><span>" + s[2] + "</span></button>";
+      if (on && s[0] === "call") x += '<div class="sub">' + [["0", "1. Card in the app"], ["1", "2. Push at " + fmtMin(S.reach.push)], ["2", "3. Call at " + fmtMin(S.reach.call)]].map(function (st) {
+        return '<button class="' + (String(S.step) === st[0] ? "on" : "") + '" data-act="ladder" data-v="' + st[0] + '">' + st[1] + "</button>";
+      }).join("") + "</div>";
+      if (on && s[0] === "bubble") x += '<div class="sub">' + [["urgent", "Urgent: release stopped"], ["needs", "Needs you"], ["calm", "Calm"]].map(function (st) {
+        return '<button class="' + (S.step === st[0] ? "on" : "") + '" data-act="bub-preset" data-v="' + st[0] + '">' + st[1] + "</button>";
+      }).join("") + '</div><div class="muted">A bubble over other apps is possible on Android. On iPhone the same thing would be a Live Activity on the lock screen and in the island.</div>';
+      return x;
+    }).join("");
+    $("ctl").innerHTML = h;
+  }
+  function renderTabbar() {
+    var cur = S.tab;
+    var badge = pendingCount();
+    $("tabbar").innerHTML = S.pinned.map(function (id) {
+      return '<button class="tb' + (cur === id ? " on" : "") + '" data-act="tab" data-t="' + id + '">' + ic(id) + "<span>" + esc({ changes: "Hood", rules: "Rules" }[id] || blkName(id)) + "</span>" + (id === "decisions" && badge ? '<span class="bd">' + badge + "</span>" : "") + "</button>";
+    }).join("") + '<button class="tb' + (cur === "more" ? " on" : "") + '" data-act="tab" data-t="more">' + ic("more") + "<span>More</span></button>";
+  }
+  function screenHtml() {
+    if (S.urgent) return urgentScreen();
+    var t = S.tab === "more" ? (S.block && S.block !== "more" ? S.block : "more") : S.tab;
+    var map = { home: homeScreen, timeline: timelineScreen, plan: planScreen, analytics: analyticsScreen, threads: threadsScreen, decisions: decisionsScreen, machines: machinesScreen, rules: rulesScreen, ideas: function () { return '<div class="top"><div><div class="cap">Parked, none started</div><h1 class="lt">Ideas</h1></div></div>' + ideasHtml(); }, setup: setupScreen, changes: changesScreen, more: moreScreen };
+    var back = S.tab === "more" && t !== "more" ? '<button class="link" style="display:flex;align-items:center;gap:2px;margin-top:4px" data-act="more-back">' + ic("back", "s") + "More</button>" : "";
+    return back + map[t]();
+  }
+  function renderSheets() {
+    var box = $("sheets"), n = S.sheets.length;
+    $("scrim").className = "scrim" + (n ? " on" : "");
+    var keep = box.children.length, tops = Array.prototype.map.call(box.querySelectorAll(".sb"), function (x) { return x.scrollTop; });
+    box.innerHTML = S.sheets.map(function (sh, i) {
+      var c = sheetContent(sh);
+      return '<section class="sheet' + (i < keep ? " on" : "") + '" style="height:' + c.height + ";z-index:" + (60 + i) + '" role="dialog" aria-label="' + esc(c.title || sh.type) + '"><div class="grab" data-act="sheet-close" aria-label="Close"><i></i></div>' +
+        '<div class="sh"><h3>' + esc(c.title) + "</h3>" + (c.right || '<button class="x" data-act="sheet-close">Done</button>') + '</div><div class="sb">' + c.body + "</div>" + (c.foot ? '<div class="sf">' + c.foot + "</div>" : "") + "</section>";
+    }).join("");
+    Array.prototype.forEach.call(box.querySelectorAll(".sb"), function (x, i) { if (tops[i]) x.scrollTop = tops[i]; });
+    var secs = box.querySelectorAll(".sheet");
+    if (secs.length > keep) { void box.offsetHeight; requestAnimationFrame(function () { for (var i = keep; i < secs.length; i++) secs[i].classList.add("on"); }); }
+    var inp = $("ppInput");
+    if (inp && !S.pp) { inp.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); A["pp-read"](); } }; }
+  }
+  function render() {
+    renderCtl();
+    $("sbar").style.color = S.over === "bubble" ? "#fff" : "";
+    $("sbar").innerHTML = S.over && S.over !== "call" && S.over !== "bubble" ? "" : "<span>15:40</span><span class=\"ic\"><svg width=\"18\" height=\"11\" viewBox=\"0 0 18 11\" aria-hidden=\"true\"><rect x=\"0\" y=\"7\" width=\"3\" height=\"4\" rx=\"1\" fill=\"currentColor\"/><rect x=\"5\" y=\"5\" width=\"3\" height=\"6\" rx=\"1\" fill=\"currentColor\"/><rect x=\"10\" y=\"2.5\" width=\"3\" height=\"8.5\" rx=\"1\" fill=\"currentColor\"/><rect x=\"15\" y=\"0\" width=\"3\" height=\"11\" rx=\"1\" fill=\"currentColor\"/></svg><svg width=\"26\" height=\"12\" viewBox=\"0 0 26 12\" aria-hidden=\"true\"><rect x=\"0.5\" y=\"0.5\" width=\"22\" height=\"11\" rx=\"3\" fill=\"none\" stroke=\"currentColor\" opacity=\"0.5\"/><rect x=\"2\" y=\"2\" width=\"15\" height=\"8\" rx=\"1.5\" fill=\"currentColor\"/></svg></span>";
+    var sc = $("scroll");
+    sc.className = "scroll" + (S.layout && S.tab === "home" && !S.urgent ? " lay" : "");
+    sc.innerHTML = screenHtml();
+    var pc = pendingCount();
+    $("float").innerHTML = (S.urgent ? "" : (pc && S.tab === "home" ? '<button class="capsule" data-act="open" data-s="questions"><b>' + plural(pc, "question") + '</b><span class="cap">about 2 min</span><span class="go">Answer</span></button>' : "") +
+      '<button class="fab" data-act="say" aria-label="Say something">' + ic("compose") + "</button>");
+    $("tabbar").style.display = S.urgent ? "none" : "";
+    renderTabbar();
+    renderSheets();
+    $("over").innerHTML = overHtml();
+    renderToast();
+  }
+  function openSheet(sh) { S.sheets.push(sh); render(); }
+  function closeSheet() {
+    var box = $("sheets"), last = box.lastElementChild, top = S.sheets[S.sheets.length - 1];
+    if (top && top.type === "router") S.pp = null;
+    if (top && top.type === "questions" && S.qSent) { S.qSentIds = (S.qSentIds || []).concat(S.qSent.ids); S.qSent = null; S.qtouch = {}; S.qa = {}; }
+    if (!last) { S.sheets.pop(); render(); return; }
+    last.classList.remove("on");
+    S.sheets.pop();
+    if (!S.sheets.length) $("scrim").className = "scrim";
+    setTimeout(render, 230);
+  }
+
+  /* ================= actions ================= */
+  function signinDone() {
+    S.signin = "done"; S.publish = true;
+    var f7 = feat("f7"); f7.parts[2][1] = "done";
+    if (S.mach) {}
+  }
+  function scenario(v) {
+    var keepReach = S ? S.reach : null, keepPin = S ? S.pinned : null;
+    if (snzTimer) { clearInterval(snzTimer); snzTimer = null; }
+    S = fresh(); S.scn = v;
+    if (keepReach) S.reach = keepReach;
+    if (keepPin) S.pinned = keepPin;
+    if (v === "call") { S.step = 1; S.over = "push"; }
+    if (v === "questions") S.sheets = [{ type: "questions" }];
+    if (v === "feature") S.sheets = [{ type: "feature", id: "f2" }];
+    if (v === "say") S.sheets = [{ type: "router" }];
+    if (v === "leave") S.sheets = [{ type: "leave" }];
+    if (v === "bubble") { S.over = "bubble"; S.step = "urgent"; }
+    $("sheets").innerHTML = "";
+    $("scroll").scrollTop = 0;
+    S.toast = null;
+    render();
+  }
+  var A = {
+    scn: function (el) { scenario(el.dataset.v); },
+    ladder: function (el) {
+      var v = +el.dataset.v; S.step = v; S.sheets = []; S.urgent = false; $("sheets").innerHTML = "";
+      S.over = v === 0 ? null : v === 1 ? "push" : "call"; S.tab = "home";
+      render();
+      if (v === 0) { var o = $("only"); if (o) o.classList.add("flash"); }
+    },
+    tab: function (el) { S.tab = el.dataset.t; if (S.tab === "more") S.block = "more"; S.urgent = false; $("scroll").scrollTop = 0; render(); },
+    block: function (el) { S.tab = "more"; S.block = el.dataset.b; if (S.pinned.indexOf(S.block) >= 0) S.tab = S.block; $("scroll").scrollTop = 0; render(); },
+    "more-back": function () { S.block = "more"; render(); },
+    pin: function (el) {
+      var b = el.dataset.b, i = S.pinned.indexOf(b), prev = S.pinned.slice();
+      if (b === "home") return;
+      if (i >= 0) S.pinned.splice(i, 1); else { if (S.pinned.length >= 4) S.pinned.pop(); S.pinned.push(b); }
+      render(); toast(i >= 0 ? blkName(b) + " unpinned." : blkName(b) + " pinned to the tab bar.", function () { S.pinned = prev; render(); });
+    },
+    layout: function () { S.layout = !S.layout; S.tab = "home"; render(); },
+    seg: function (el) { S[el.dataset.k === "leaveLen" ? "_" : el.dataset.k] = el.dataset.v; if (el.dataset.k === "leaveLen") S.leave.len = el.dataset.v; render(); },
+    tl: function (el) { S.tlOpen[el.dataset.id] = !S.tlOpen[el.dataset.id]; render(); },
+    wk: function (el) { S.weekSel = +el.dataset.i; render(); },
+    feature: function (el) { S.featTab = "gives"; openSheet({ type: "feature", id: el.dataset.id }); },
+    thread: function (el) { openSheet({ type: "thread", id: el.dataset.id }); },
+    open: function (el) { if (el.dataset.s === "questions" && S.qSent) S.qSent = null; openSheet({ type: el.dataset.s }); },
+    "sheet-close": function () { closeSheet(); },
+    "toast-undo": function () { var t = S.toast; S.toast = null; renderToast(); if (t && t.undo) { t.undo(); render(); toast("Undone."); } },
+    leave: function () { openSheet({ type: "leave" }); },
+    pause: function (el) {
+      var prev = S.paused; S.paused = el.dataset.v; var f6 = feat("f6");
+      if (S.paused === "restarted") f6.s = "work";
+      render(); toast(S.paused === "kept" ? "Stays paused until the release." : "Cloud receipts restarted.", function () { S.paused = prev; f6.s = "pause"; });
+    },
+    "signin-link": function () { S.browser = "page"; openSheet({ type: "browser" }); },
+    "browser-ok": function () { S.browser = "wait"; render(); setTimeout(function () { S.browser = "ok"; render(); }, 900); },
+    "browser-back": function () {
+      signinDone();
+      S.sheets = S.sheets.filter(function (s) { return s.type !== "browser"; });
+      $("sheets").innerHTML = "";
+      if (S.over) { S.over = null; S.urgent = true; }
+      render(); toast("Done. The release is moving again.");
+    },
+    "publish-yes": function () {
+      var f7 = feat("f7"); f7.s = "done"; f7.parts[3][1] = "done"; S.publish = false;
+      render(); toast("Publishing 0.0.12. Out by about 17:40.", function () { f7.s = "needs"; f7.parts[3][1] = "needs"; S.publish = true; });
+    },
+    "publish-no": function () { S.publish = false; render(); toast("Holding. Asks again when you are back.", function () { S.publish = true; }); },
+    "undo-done": function (el) {
+      var d = S.done.filter(function (x) { return x.id === el.dataset.id; })[0], i = S.done.indexOf(d);
+      S.done.splice(i, 1); render(); toast("Undone: " + d.w.toLowerCase() + ".", function () { S.done.splice(i, 0, d); });
+    },
+    level: function (el) {
+      var k = el.dataset.k, p = S.level[k]; if (KINDS[k].irr) return;
+      S.level[k] = p === "auto" ? "ask" : "auto"; render(); toast(KINDS[k].name + (S.level[k] === "auto" ? ": happens on its own." : ": asks you."), function () { S.level[k] = p; });
+    },
+    "sugg-add": function () { S.extra = true; S.sugg = false; render(); toast("Added one card. Nothing else moved.", function () { S.extra = false; S.sugg = true; }); },
+    "sugg-no": function () { S.sugg = false; render(); toast("Not now.", function () { S.sugg = true; }); },
+    "extra-off": function () { S.extra = false; render(); toast("Removed.", function () { S.extra = true; }); },
+    "a-normal": function () { S.aNormal = !S.aNormal; render(); },
+    "sig-fix": function () { var it = { id: "ifx", t: "Fix the chance-failing upload test at its cause.", when: "today" }; S.ideas.unshift(it); render(); toast("Filed. Starts after the release.", function () { S.ideas.splice(S.ideas.indexOf(it), 1); }); },
+    "sig-feat": function () { S.featTab = "tl"; openSheet({ type: "feature", id: "f6" }); },
+    size: function (el) { var f = feat(el.dataset.id), p = f.size; f.size = p % 3 + 1; render(); toast(f.name + " size changed.", function () { f.size = p; }); },
+    "vm-wake": function () { S.mach.vm = "on"; render(); toast("VM build-2 is waking.", function () { S.mach.vm = "offline"; }); },
+    "setup-ask": function (el) { S.pp = null; openSheet({ type: "router" }); setTimeout(function () { var i = $("ppInput"); if (i) { i.value = "Change " + SETUP[+el.dataset.i][0].toLowerCase() + ": "; i.focus(); } }, 300); },
+    "idea-talk": function (el) { var i = S.ideas.filter(function (x) { return x.id === el.dataset.id; })[0]; S.chat = { text: i.t, idea: i }; S.chatStep = 0; openSheet({ type: "chat" }); },
+    "idea-plan": function (el) { ideaToPlan(S.ideas.filter(function (x) { return x.id === el.dataset.id; })[0]); },
+    "idea-drop": function (el) { var i = S.ideas.filter(function (x) { return x.id === el.dataset.id; })[0], at = S.ideas.indexOf(i); S.ideas.splice(at, 1); render(); toast("Dropped.", function () { S.ideas.splice(at, 0, i); }); },
+    "chat-pick": function () { S.chatStep = 1; render(); },
+    "chat-plan": function () { var c = S.chat; closeSheet(); setTimeout(function () { ideaToPlan(c.idea || { t: c.text }); }, 240); },
+    "chat-keep": function () { var c = S.chat; if (!c.idea) S.ideas.unshift({ id: "ik" + (++logN), t: c.text, when: "today" }); closeSheet(); toast("Kept as an idea."); },
+    say: function () { S.pp = null; openSheet({ type: "router" }); setTimeout(function () { var i = $("ppInput"); if (i) i.focus(); }, 300); },
+    "ask-here": function () { S.pp = null; openSheet({ type: "router" }); },
+    mic: function () { toast("Voice is not connected in this mock."); },
+    "try": function (el) { var t = TRIES[+el.dataset.i][1], c = classify(t); S.pp = { text: t, cls: c, scope: defScope(c), res: null, mk: true }; render(); },
+    "pp-read": function () {
+      var i = $("ppInput"), v = i ? i.value.trim() : "";
+      if (!v) { toast("Type something, or pick an example."); return; }
+      var c = classify(v); S.pp = { text: v, cls: c, scope: defScope(c), res: null, mk: true }; render();
+    },
+    "pp-cls": function () { var i = CLS.map(function (c) { return c[0]; }).indexOf(S.pp.cls); S.pp.cls = CLS[(i + 1) % CLS.length][0]; S.pp.scope = defScope(S.pp.cls); render(); },
+    "pp-scope": function () { S.pp.scope = SCOPES[(SCOPES.indexOf(S.pp.scope) + 1) % SCOPES.length]; render(); },
+    "pp-res": function (el) { S.pp.res = el.dataset.v; render(); },
+    "pp-mk": function (el) { S.pp.mk = el.dataset.v === "1"; render(); },
+    "pp-talk": function () { var t = S.pp.text.replace(/^idea:\s*/i, ""); S.pp = null; S.sheets.pop(); S.chat = { text: t, idea: null }; S.chatStep = 0; $("sheets").innerHTML = ""; openSheet({ type: "chat" }); },
+    "pp-cancel": function () { var t = S.pp.text; S.pp = null; render(); var i = $("ppInput"); if (i) { i.value = t; i.focus(); } },
+    "pp-send": function () { sendRouted(); },
+    qpick: function (el) { var x = q(el.dataset.id); S.qa[x.id] = +el.dataset.i; if (x.g === "safe") S.qtouch[x.id] = true; render(); },
+    qtick: function (el) { S.qtouch[el.dataset.id] = !S.qtouch[el.dataset.id]; render(); },
+    "take-all": function () {
+      var safe = S.qs.filter(function (x) { return x.g === "safe"; }), all = safe.every(function (x) { return S.qtouch[x.id]; });
+      safe.forEach(function (x) { S.qtouch[x.id] = !all; }); render();
+    },
+    "safe-open": function () { S.safeOpen = !S.safeOpen; render(); },
+    "q-send": function () {
+      var n = qCountSel(), ids = [], moved = [];
+      if (S.signin === "done") moved.push(["Release 0.0.12", "Moving again. Needs your yes to publish."]);
+      S.qs.forEach(function (x) { if (x.g === "look" ? S.qa[x.id] !== undefined : S.qtouch[x.id]) ids.push(x.id); });
+      if (ids.indexOf("q2") >= 0) moved.push(["Cloud receipts", S.qa.q2 === 0 ? "Restarted now." : "Restarts the minute the release is out."]);
+      if (ids.indexOf("q1") >= 0) { moved.push(["Team sync", "Plan set: " + q("q1").opts[S.qa.q1] + "."]); feat("f8").parts[0][1] = "done"; }
+      var safeN = ids.filter(function (id) { return q(id).g === "safe"; }).length;
+      if (safeN) moved.push([plural(safeN, "small thing"), "Done now. Each in Done for you, with Undo."]);
+      if (ids.indexOf("q3") >= 0 && (S.qa.q3 === undefined || S.qa.q3 === 0) && S.level.branch === "ask" && !S.offerNo) S.offer = "branch";
+      S.qSent = { n: n, ids: ids, moved: moved };
+      ids.forEach(function (id) { var x = q(id); if (x.g === "safe") S.done.unshift({ id: "dq" + id, t: "15:41", kind: x.kind, w: x.t + ": " + x.opts[S.qa[id] !== undefined ? S.qa[id] : x.def] }); });
+      render();
+    },
+    "offer-yes": function () { S.level.branch = "auto"; S.offer = null; render(); toast("Bringing work up to date now happens on its own.", function () { S.level.branch = "ask"; }); },
+    "offer-no": function () { S.offer = null; S.offerNo = true; render(); toast("It keeps asking."); },
+    "brief-accept": function () { S.qa.q1 = 2; closeSheet(); toast("C chosen. It is in your answers; send when ready."); },
+    "brief-reject": function () { S.qa.q1 = 0; closeSheet(); toast("Rejected C. Picked A for now; change it on the page."); },
+    "reach-step": function (el) {
+      var k = el.dataset.k, d = +el.dataset.d, r = S.reach, v = r[k] + d;
+      if (k === "push") v = Math.max(10, Math.min(v, r.call - 10)); else v = Math.max(r.push + 10, Math.min(v, 240));
+      r[k] = v; render();
+    },
+    "reach-quiet": function () { S.reach.quiet = !S.reach.quiet; render(); },
+    "reach-kind": function (el) { var k = el.dataset.k; S.reach.kinds[k] = !S.reach.kinds[k]; render(); },
+    "notif-open": function () { S.over = null; S.urgent = true; render(); },
+    "call-yes": function () { S.over = null; S.urgent = true; render(); },
+    "call-no": function () { S.over = "declined"; render(); },
+    "dec-remind": function () { S.over = "reminded"; render(); },
+    "dec-text": function () { S.over = "texted"; render(); },
+    "dec-open": function () { S.over = null; S.urgent = true; render(); },
+    "text-open": function () { S.over = null; S.urgent = true; S.browser = "page"; S.sheets = [{ type: "browser" }]; $("sheets").innerHTML = ""; render(); },
+    "urgent-home": function () { S.urgent = false; S.tab = "home"; render(); },
+    "leave-signin": function () { S.leave.ok.g1 = "Sign-in opened on the site."; S.browser = "page"; openSheet({ type: "browser" }); },
+    "leave-defaults": function () {
+      S.qs.forEach(function (x) { S.qtouch[x.id] = true; S.qa[x.id] = S.qa[x.id] !== undefined ? S.qa[x.id] : x.def; });
+      S.qSentIds = S.qs.map(function (x) { return x.id; });
+      S.qs.filter(function (x) { return x.g === "safe"; }).forEach(function (x) { S.done.unshift({ id: "dl" + x.id, t: "15:41", kind: x.kind, w: x.t + ": " + x.opts[x.def] }); });
+      S.leave.ok.g2 = "Settled on defaults. Listed in Done for you."; render();
+    },
+    "bub-preset": function (el) { bubPreset(el.dataset.v); },
+    "bub-tap": function () {
+      var b = S.bub;
+      if (b.dragged) { b.dragged = false; return; }
+      if (b.snz) { toast("Snoozed, " + snzLabel() + ". Agents work on what does not need you."); return; }
+      b.open = !b.open; b.pop = null; render();
+    },
+    "bub-fold": function () { S.bub.open = false; S.bub.pop = null; render(); },
+    "bub-item": function (el) {
+      var L = fanList(), i = +el.dataset.i, pos = fanPos(i, L.length);
+      S.bub.pop = { k: el.dataset.k, id: el.dataset.id, top: pos.top }; S.bub.page = 0; render();
+    },
+    "bub-page": function () { S.bub.page++; render(); },
+    "bub-ans": function (el) { bAnswer(el.dataset.id, +el.dataset.i); },
+    "agent-ans": function (el) { var id = el.dataset.id, i = +el.dataset.i; closeSheet(); setTimeout(function () { bAnswer(id, i); }, 240); },
+    "bub-signin": function () { S.browser = "page"; S.bub.open = false; S.bub.pop = null; S.over = null; S.tab = "home"; S.sheets = [{ type: "browser" }]; $("sheets").innerHTML = ""; render(); },
+    "bub-expand": function () {
+      var P = S.bub.pop, p = BPROJ.filter(function (x) { return x.id === P.id; })[0], it = bItems(p)[S.bub.page];
+      S.bub.open = false; S.bub.pop = null; S.over = null; S.tab = "home"; $("sheets").innerHTML = "";
+      if (it.kind === "signin") { S.urgent = true; S.sheets = []; }
+      else if (it.full === "brief") S.sheets = [{ type: "questions" }, { type: "brief" }];
+      else S.sheets = [{ type: "agent", id: it.id }];
+      render();
+    },
+    "bub-snz": function (el) {
+      var m = +el.dataset.m, b = S.bub;
+      b.snz = m; b.left = SNZ_MS; b.open = false; b.pop = null;
+      b.note = ["Told the agents you are back in " + m + " min.", "They moved to work that does not need you: Cloud receipts continues, the release waits. No call until then."];
+      if (snzTimer) clearInterval(snzTimer);
+      snzTimer = setInterval(bTick, 100);
+      render();
+    },
+    "bub-on": function () { S.reach.bubble = true; render(); },
+    "reach-bubble": function () { S.reach.bubble = !S.reach.bubble; render(); toast(S.reach.bubble ? "Bubble on." : "Bubble off. Pushes and calls still follow your settings."); },
+    "leave-go": function () { S.sheets = []; $("sheets").innerHTML = ""; render(); toast("See you. Work keeps going on defaults."); }
+  };
+  function ideaToPlan(i) {
+    var at = i.id ? S.ideas.indexOf(i) : -1;
+    if (at >= 0) S.ideas.splice(at, 1);
+    var f = { id: "fn" + (++logN), name: i.t.replace(/[.?!]+$/, "").split(/\s+/).slice(0, 4).join(" "), s: "idle", sent: i.t, gives: i.t, ba: null, proof: "", steps: ["Agree what it gives", "Build", "Test"], parts: [["First part", "idle"]], deps: [], thr: [], ch: "None yet", size: 1, tl: [] };
+    S.feats.push(f); render();
+    toast("Added to the plan. Release date does not move.", function () { S.feats.splice(S.feats.indexOf(f), 1); if (at >= 0) S.ideas.splice(at, 0, i); });
+  }
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest("[data-act]");
+    if (!el || el.disabled) return;
+    var f = A[el.dataset.act];
+    if (f) { e.preventDefault(); f(el); }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (S.over === "bubble" && (S.bub.open || S.bub.pop)) { S.bub.open = false; S.bub.pop = null; render(); }
+    else if (S.sheets.length) closeSheet();
+  });
+  var drag = null;
+  document.addEventListener("pointerdown", function (e) {
+    var el = e.target.closest && e.target.closest("#bubMain");
+    if (!el) return;
+    drag = { y0: e.clientY, top0: S.bub.y, y: S.bub.y, moved: false, el: el };
+    try { el.setPointerCapture(e.pointerId); } catch (x) { drag.cap = false; }
+  });
+  document.addEventListener("pointermove", function (e) {
+    if (!drag) return;
+    var dy = e.clientY - drag.y0;
+    if (Math.abs(dy) > 5) drag.moved = true;
+    if (!drag.moved) return;
+    var y = clampY(drag.top0 + dy);
+    drag.el.style.top = y + "px";
+    var lab = $("blab"); if (lab) lab.style.top = (y + 16) + "px";
+    drag.y = y;
+  });
+  document.addEventListener("pointerup", function () {
+    if (!drag) return;
+    if (drag.moved) {
+      S.bub.y = drag.y; S.bub.dragged = true;
+      if (S.bub.open || S.bub.pop) render();
+      setTimeout(function () { S.bub.dragged = false; }, 60);
+    }
+    drag = null;
+  });
+
+  scenario("back");
+})();
+</script>
+</body>
+</html>

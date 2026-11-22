@@ -1,0 +1,1126 @@
+{
+  "runId": "ed50764f-28b8-40ac-acaf-56b956cc3cea",
+  "driverPid": 14320,
+  "pids": [
+    32692,
+    40340
+  ],
+  "before": [],
+  "after": [],
+  "remaining": [],
+  "portsReleased": [
+    18761,
+    18762
+  ],
+  "bundle": {
+    "baseline": {
+      "bytes": 2014786,
+      "gzipBytes": 401037
+    },
+    "integrated": {
+      "bytes": 3595510,
+      "gzipBytes": 725698
+    }
+  },
+  "outcomes": {
+    "Q7 packaged Slack sync hashes": {
+      "sync-slack.mjs": "db54870bd6b779db55fba5e99053743cdf700acc1ee3705b8c76287d9d4cc635",
+      "engine-C8wCzkw-.mjs": "86cce8027d49d7f81b470eac5daec3857870f083419896a96bb3217102b8e405",
+      "chat-provider-Br2RXgLV.mjs": "6aafe0e277ad49956a6ca0c05814cef145f70fcddcc603fcc436f4f0899be15e"
+    },
+    "baseline": {
+      "bytes": 2014786,
+      "gzipBytes": 401037
+    },
+    "Q1 same Worker and Durable Object": {
+      "root": "2",
+      "target": {
+        "channel": "CTRIAL01",
+        "ts": "1795290997.000001"
+      }
+    },
+    "Q7 bundle": {
+      "bytes": 1580724,
+      "gzipBytes": 324661
+    },
+    "Q2 channel mention": {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Channel question <@ULINKED01>",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    "Q2 existing DM": {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "DTRIAL01",
+        "markdown_text": "Existing DM question",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    "Q2 DM by person": {
+      "open": {
+        "method": "conversations.open",
+        "verb": "POST",
+        "path": "/api/conversations.open",
+        "fields": {
+          "users": "ULINKED01",
+          "token": "[redacted fake token]"
+        },
+        "authorized": true
+      },
+      "post": {
+        "method": "chat.postMessage",
+        "verb": "POST",
+        "path": "/api/chat.postMessage",
+        "fields": {
+          "channel": "DTRIAL01",
+          "markdown_text": "Person DM question",
+          "unfurl_links": "false",
+          "unfurl_media": "false",
+          "username": "agent"
+        },
+        "authorized": true
+      }
+    },
+    "inboundExample": {
+      "ack": {
+        "status": 200,
+        "body": "ok"
+      },
+      "root": "14",
+      "reply": {
+        "id": "18",
+        "channel": "channel/1",
+        "text": "Slack reply 1",
+        "re": "14",
+        "replyTo": null,
+        "thread": "cb2661dc-c10e-45fb-8498-46fa2f9d4930",
+        "labels": {},
+        "reactions": {},
+        "by": {
+          "actor": "slack:user:ULINKED01",
+          "principal": "slack:user:ULINKED01",
+          "profile": null
+        },
+        "noSync": false,
+        "origin": {
+          "channel": "slack:CTRIAL01",
+          "thread": "slack:CTRIAL01:1795290997.000005",
+          "subthread": null,
+          "message": "1795290997.700001",
+          "context": null
+        },
+        "from": "slack",
+        "createdAt": "2026-11-21T19:56:37.790Z",
+        "editedAt": null,
+        "deleted": false,
+        "undelivered": {},
+        "attachments": [],
+        "links": [],
+        "version": 18,
+        "revision": 18,
+        "author": {
+          "kind": "external",
+          "handle": "linked-owner",
+          "name": "Linked Owner",
+          "avatar": null,
+          "platform": "slack"
+        },
+        "blocks": []
+      }
+    },
+    "Q4 linked and unlinked": {
+      "verified": {
+        "actor": "trial:user:owner",
+        "principal": "trial:user:owner",
+        "profile": null
+      },
+      "accepted": {
+        "status": 200,
+        "body": "ok"
+      },
+      "refused": {
+        "status": 200,
+        "body": "ok"
+      },
+      "decisions": [
+        {
+          "author": "slack:user:ULINKED01",
+          "linkedPrincipal": "trial:user:owner"
+        },
+        {
+          "author": "slack:user:UUNLINKED01",
+          "linkedPrincipal": null
+        }
+      ],
+      "replies": [
+        {
+          "id": "100",
+          "channel": "identity",
+          "text": "Linked answer",
+          "re": "97",
+          "replyTo": null,
+          "thread": "dd4aaa52-b3d3-4210-95f7-51a3801d274c",
+          "labels": {},
+          "reactions": {},
+          "by": {
+            "actor": "slack:user:ULINKED01",
+            "principal": "slack:user:ULINKED01",
+            "profile": null
+          },
+          "noSync": false,
+          "origin": {
+            "channel": "slack:CTRIAL01",
+            "thread": "slack:CTRIAL01:1795291004.000025",
+            "subthread": null,
+            "message": "1795291004.700021",
+            "context": null
+          },
+          "from": "slack",
+          "createdAt": "2026-11-21T19:56:44.174Z",
+          "editedAt": null,
+          "deleted": false,
+          "undelivered": {},
+          "attachments": [],
+          "links": [],
+          "version": 100,
+          "revision": 100,
+          "author": {
+            "kind": "external",
+            "handle": "linked-owner",
+            "name": "Linked Owner",
+            "avatar": null,
+            "platform": "slack"
+          },
+          "blocks": []
+        }
+      ]
+    },
+    "Q5 edit one Slack message and post separate status": {
+      "update": {
+        "method": "chat.update",
+        "verb": "POST",
+        "path": "/api/chat.update",
+        "fields": {
+          "channel": "CTRIAL01",
+          "ts": "1795291004.000026",
+          "markdown_text": "Updated status",
+          "token": "[redacted fake token]"
+        },
+        "authorized": true
+      },
+      "separate": {
+        "method": "chat.postMessage",
+        "verb": "POST",
+        "path": "/api/chat.postMessage",
+        "fields": {
+          "channel": "CTRIAL01",
+          "thread_ts": "1795291004.000026",
+          "markdown_text": "Separate status",
+          "unfurl_links": "false",
+          "unfurl_media": "false",
+          "username": "agent"
+        },
+        "authorized": true
+      }
+    },
+    "Q6 bad signature and replay": {
+      "bad": {
+        "status": 401,
+        "body": "Invalid signature"
+      },
+      "first": {
+        "status": 200,
+        "body": "ok"
+      },
+      "second": {
+        "status": 200,
+        "body": "ok"
+      },
+      "inboxBeforeReplay": [
+        {
+          "id": "eff04069-c742-85ce-9a6d-5a831f8ac17b",
+          "text": "Exactly one stored reply"
+        }
+      ],
+      "inboxAfterReplay": [
+        {
+          "id": "eff04069-c742-85ce-9a6d-5a831f8ac17b",
+          "text": "Exactly one stored reply"
+        }
+      ],
+      "replies": [
+        {
+          "id": "110",
+          "channel": "channel/security",
+          "text": "Exactly one stored reply",
+          "re": "107",
+          "replyTo": null,
+          "thread": "e5dd19f3-5cc5-46ed-8dfc-1689a92143d0",
+          "labels": {},
+          "reactions": {},
+          "by": {
+            "actor": "slack:user:ULINKED01",
+            "principal": "slack:user:ULINKED01",
+            "profile": null
+          },
+          "noSync": false,
+          "origin": {
+            "channel": "slack:CTRIAL01",
+            "thread": "slack:CTRIAL01:1795291004.000028",
+            "subthread": null,
+            "message": "1795291004.700024",
+            "context": null
+          },
+          "from": "slack",
+          "createdAt": "2026-11-21T19:56:44.614Z",
+          "editedAt": null,
+          "deleted": false,
+          "undelivered": {},
+          "attachments": [],
+          "links": [],
+          "version": 110,
+          "revision": 110,
+          "author": {
+            "kind": "external",
+            "handle": "linked-owner",
+            "name": "Linked Owner",
+            "avatar": null,
+            "platform": "slack"
+          },
+          "blocks": []
+        }
+      ]
+    },
+    "shutdown": {
+      "remaining": [],
+      "portsReleased": [
+        18761,
+        18762
+      ]
+    }
+  },
+  "slackCalls": [
+    {
+      "method": "auth.test",
+      "verb": "POST",
+      "path": "/api/auth.test",
+      "fields": {
+        "token": "[redacted fake token]"
+      },
+      "authorized": true
+    },
+    {
+      "method": "auth.test",
+      "verb": "POST",
+      "path": "/api/auth.test",
+      "fields": {},
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Hosting smoke",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290997.000001"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Channel question <@ULINKED01>",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290997.000002"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "DTRIAL01",
+        "markdown_text": "Existing DM question",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "DTRIAL01",
+        "message_ts": "1795290997.000003"
+      },
+      "authorized": true
+    },
+    {
+      "method": "conversations.open",
+      "verb": "POST",
+      "path": "/api/conversations.open",
+      "fields": {
+        "users": "ULINKED01",
+        "token": "[redacted fake token]"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "DTRIAL01",
+        "markdown_text": "Person DM question",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "DTRIAL01",
+        "message_ts": "1795290997.000004"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 1",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290997.000005"
+      },
+      "authorized": true
+    },
+    {
+      "method": "users.info",
+      "verb": "POST",
+      "path": "/api/users.info",
+      "fields": {
+        "user": "ULINKED01",
+        "token": "[redacted fake token]"
+      },
+      "authorized": true
+    },
+    {
+      "method": "users.info",
+      "verb": "POST",
+      "path": "/api/users.info",
+      "fields": {
+        "user": "ULINKED01"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 2",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290998.000006"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 3",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290998.000007"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 4",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290999.000008"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 5",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290999.000009"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 6",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290999.000010"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 7",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795290999.000011"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 8",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291000.000012"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 9",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291000.000013"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 10",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291000.000014"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 11",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291001.000015"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 12",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291001.000016"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 13",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291001.000017"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 14",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291002.000018"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 15",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291002.000019"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 16",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291002.000020"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 17",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291002.000021"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 18",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291003.000022"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 19",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291003.000023"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 20",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291003.000024"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Identity question",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291004.000025"
+      },
+      "authorized": true
+    },
+    {
+      "method": "users.info",
+      "verb": "POST",
+      "path": "/api/users.info",
+      "fields": {
+        "user": "UUNLINKED01",
+        "token": "[redacted fake token]"
+      },
+      "authorized": true
+    },
+    {
+      "method": "users.info",
+      "verb": "POST",
+      "path": "/api/users.info",
+      "fields": {
+        "user": "UUNLINKED01"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Initial status",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291004.000026"
+      },
+      "authorized": true
+    },
+    {
+      "method": "conversations.replies",
+      "verb": "POST",
+      "path": "/api/conversations.replies",
+      "fields": {
+        "channel": "CTRIAL01",
+        "ts": "1795291004.000026",
+        "oldest": "1795291004.000026",
+        "latest": "1795291004.000026",
+        "inclusive": "true",
+        "limit": "1"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.update",
+      "verb": "POST",
+      "path": "/api/chat.update",
+      "fields": {
+        "channel": "CTRIAL01",
+        "ts": "1795291004.000026",
+        "markdown_text": "Updated status",
+        "token": "[redacted fake token]"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "thread_ts": "1795291004.000026",
+        "markdown_text": "Separate status",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Signature and replay question",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.getPermalink",
+      "verb": "POST",
+      "path": "/api/chat.getPermalink",
+      "fields": {
+        "channel": "CTRIAL01",
+        "message_ts": "1795291004.000028"
+      },
+      "authorized": true
+    }
+  ],
+  "slackFaults": [],
+  "samples": [
+    {
+      "iteration": 1,
+      "ms": 228.07250000000022
+    },
+    {
+      "iteration": 2,
+      "ms": 177.59960000000137
+    },
+    {
+      "iteration": 3,
+      "ms": 90.32850000000144
+    },
+    {
+      "iteration": 4,
+      "ms": 66.05379999999968
+    },
+    {
+      "iteration": 5,
+      "ms": 117.56990000000042
+    },
+    {
+      "iteration": 6,
+      "ms": 78.9929000000011
+    },
+    {
+      "iteration": 7,
+      "ms": 130.7462000000014
+    },
+    {
+      "iteration": 8,
+      "ms": 85.53930000000037
+    },
+    {
+      "iteration": 9,
+      "ms": 87.76230000000032
+    },
+    {
+      "iteration": 10,
+      "ms": 106.36859999999979
+    },
+    {
+      "iteration": 11,
+      "ms": 246.83420000000115
+    },
+    {
+      "iteration": 12,
+      "ms": 87.18189999999959
+    },
+    {
+      "iteration": 13,
+      "ms": 67.29339999999866
+    },
+    {
+      "iteration": 14,
+      "ms": 78.69889999999941
+    },
+    {
+      "iteration": 15,
+      "ms": 113.92489999999998
+    },
+    {
+      "iteration": 16,
+      "ms": 73.19900000000052
+    },
+    {
+      "iteration": 17,
+      "ms": 90.33569999999963
+    },
+    {
+      "iteration": 18,
+      "ms": 107.21929999999884
+    },
+    {
+      "iteration": 19,
+      "ms": 122.11330000000089
+    },
+    {
+      "iteration": 20,
+      "ms": 74.51860000000124
+    }
+  ],
+  "elapsedSeconds": 17.671489400000002
+}

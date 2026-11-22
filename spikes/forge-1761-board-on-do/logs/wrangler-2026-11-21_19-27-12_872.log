@@ -1,0 +1,170 @@
+
+--- 2026-11-21T19:27:13.179Z debug
+🪵  Writing logs to "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\logs\wrangler-2026-11-21_19-27-12_872.log"
+---
+
+--- 2026-11-21T19:27:13.179Z warn
+▲ [WARNING] Proxy environment variables detected. We'll use your proxy for fetch requests.
+
+
+---
+
+--- 2026-11-21T19:27:13.213Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:27:13.213Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env.local". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:27:13.248Z log
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+---
+
+--- 2026-11-21T19:27:13.267Z debug
+Metrics dispatcher: Dispatching disabled - would have sent {"deviceId":"89b88391-ebbe-4c13-b3f7-21ae7197ffe8","event":"wrangler command started","timestamp":1795289233267,"properties":{"amplitude_session_id":1795289233249,"amplitude_event_id":0,"wranglerVersion":"4.152.0","wranglerMajorVersion":4,"wranglerMinorVersion":152,"wranglerPatchVersion":0,"osPlatform":"Windows","osVersion":"Windows 11 Home Single Language","nodeVersion":24,"isFirstUsage":false,"configFileType":"none","isCI":false,"isPagesCI":false,"isWorkersCI":false,"isInteractive":false,"hasAssets":false,"agent":"codex","argsUsed":["compatibilityFlags","config","ip","local","persistTo","port"],"argsCombination":"compatibilityFlags, config, ip, local, persistTo, port","sanitizedCommand":"dev","sanitizedArgs":{"local":true},"currentAgentSkillsInstalled":null}}.
+---
+
+--- 2026-11-21T19:27:13.268Z debug
+setting config
+---
+
+--- 2026-11-21T19:27:13.268Z debug
+Updating config... undefined undefined
+---
+
+--- 2026-11-21T19:27:13.302Z debug
+local dev variables file not found at ".dev.vars". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:27:13.303Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:27:13.303Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env.local". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:27:13.615Z log
+Wrangler detected this dev session is running in an AI agent.
+The Local Explorer API is available at http://127.0.0.1:18761/cdn-cgi/local/explorer/api
+Useful routes:
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/workers - local Workers and bindings
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/scheduled?worker=<name> - invoke a Worker's scheduled handler; cron is required (see the OpenAPI schema for the full request)
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/storage/kv/namespaces - KV namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/d1/database - D1 databases
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/r2/buckets - R2 buckets
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workers/durable_objects/namespaces - Durable Object namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workflows - Workflows
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query - run a read-only SQL query (SELECT/WITH only) over captured request traces and console logs. Tables: spans, logs (read attributes via json(attributes)). Example:
+    curl -X POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query -H 'Content-Type: application/json' -d '{"sql":"SELECT service, name, outcome, duration_ms FROM spans WHERE parent_id IS NULL LIMIT 20"}'
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/clear - clear all captured traces and logs
+If the routes above don't cover what you need, fetch the full OpenAPI schema (large - use only as a last resort):
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api - OpenAPI schema
+---
+
+--- 2026-11-21T19:27:13.635Z debug
+RemoteRuntimeController teardown beginning...
+---
+
+--- 2026-11-21T19:27:13.635Z debug
+RemoteRuntimeController teardown complete
+---
+
+--- 2026-11-21T19:27:13.639Z log
+⎔ Starting local server...
+---
+
+--- 2026-11-21T19:27:13.653Z debug
+[InspectorProxyWorker] handleProxyControllerIncomingMessage {"type":"reloadStart"}
+---
+
+--- 2026-11-21T19:27:14.203Z debug
+[InspectorProxyWorker] handleProxyControllerIncomingMessage {"type":"reloadComplete","proxyData":{"userWorkerUrl":{"protocol":"http:","hostname":"127.0.0.1","port":"53142"},"userWorkerInspectorUrl":{"protocol":"ws:","hostname":"127.0.0.1","port":"53143","pathname":"/core:user:forge-1761-board-on-do"},"userWorkerInnerUrlOverrides":{"protocol":"http:"},"headers":{"MF-Proxy-Shared-Secret":"7b43a0c5-8c1d-4743-a069-9e21dce3e0f0"},"liveReload":false,"proxyLogsToController":false}}
+---
+
+--- 2026-11-21T19:27:14.205Z debug
+[InspectorProxyWorker] reconnectRuntimeWebSocket
+---
+
+--- 2026-11-21T19:27:14.206Z debug
+[InspectorProxyWorker] NEW RUNTIME WEBSOCKET http://127.0.0.1:53143/core:user:forge-1761-board-on-do
+---
+
+--- 2026-11-21T19:27:14.207Z debug
+[InspectorProxyWorker] SEND TO DEVTOOLS {"method":"Runtime.executionContextsCleared"}
+---
+
+--- 2026-11-21T19:27:14.209Z debug
+[InspectorProxyWorker] RUNTIME WEBSOCKET OPENED
+---
+
+--- 2026-11-21T19:27:14.210Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.enable","id":100000001}
+---
+
+--- 2026-11-21T19:27:14.211Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.executionContextCreated',
+  params: {
+    context: {
+      id: 128345889,
+      origin: '',
+      name: 'Worker',
+      uniqueId: '-9161160295169686939.1269208660028162968'
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:27:14.212Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000001, result: {} }
+---
+
+--- 2026-11-21T19:27:14.314Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.consoleAPICalled',
+  params: {
+    type: 'error',
+    args: [ [Object], [Object] ],
+    executionContextId: 128345889,
+    timestamp: 1795289234312,
+    stackTrace: { callFrames: [Array] }
+  }
+}
+---
+
+--- 2026-11-21T19:27:14.402Z error
+X [ERROR] [board] TypeError: Illegal constructor
+
+      at sqliteDb (file:///E:/Personal-Projects/forge-new/.overseer/spikes/forge-1761-board-on-do/node_modules/@vercel/board/dist/sqlite-db-DjbTlUwN.mjs:21:13)
+      at Object.memory (file:///E:/Personal-Projects/forge-new/.overseer/spikes/forge-1761-board-on-do/node_modules/@vercel/board/dist/memory-wmUDblhm.mjs:11:27)
+      at null.<anonymous> (file:///E:/Personal-Projects/forge-new/.overseer/spikes/forge-1761-board-on-do/node_modules/@vercel/board/dist/local-RoMUU6QX.mjs:10589:72)
+
+
+---
+
+--- 2026-11-21T19:27:14.405Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.consoleAPICalled',
+  params: {
+    type: 'error',
+    args: [ [Object], [Object] ],
+    executionContextId: 128345889,
+    timestamp: 1795289234324,
+    stackTrace: { callFrames: [Array] }
+  }
+}
+---
+
+--- 2026-11-21T19:27:14.468Z error
+X [ERROR] [board] TypeError: Illegal constructor
+
+      at sqliteDb (file:///E:/Personal-Projects/forge-new/.overseer/spikes/forge-1761-board-on-do/node_modules/@vercel/board/dist/sqlite-db-DjbTlUwN.mjs:21:13)
+      at Object.memory (file:///E:/Personal-Projects/forge-new/.overseer/spikes/forge-1761-board-on-do/node_modules/@vercel/board/dist/memory-wmUDblhm.mjs:11:27)
+      at null.<anonymous> (file:///E:/Personal-Projects/forge-new/.overseer/spikes/forge-1761-board-on-do/node_modules/@vercel/board/dist/local-RoMUU6QX.mjs:10589:72)
+
+
+---

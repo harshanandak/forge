@@ -1,0 +1,102 @@
+
+--- 2026-11-21T19:50:29.110Z debug
+🪵  Writing logs to "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-slack\logs\wrangler-2026-11-21_19-50-28_699.log"
+---
+
+--- 2026-11-21T19:50:29.109Z warn
+▲ [WARNING] Proxy environment variables detected. We'll use your proxy for fetch requests.
+
+
+---
+
+--- 2026-11-21T19:50:29.220Z log
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+---
+
+--- 2026-11-21T19:50:29.247Z debug
+Metrics dispatcher: Dispatching disabled - would have sent {"deviceId":"89b88391-ebbe-4c13-b3f7-21ae7197ffe8","event":"wrangler command started","timestamp":1795290629247,"properties":{"amplitude_session_id":1795290629222,"amplitude_event_id":0,"wranglerVersion":"4.152.0","wranglerMajorVersion":4,"wranglerMinorVersion":152,"wranglerPatchVersion":0,"osPlatform":"Windows","osVersion":"Windows 11 Home Single Language","nodeVersion":24,"isFirstUsage":false,"configFileType":"none","isCI":false,"isPagesCI":false,"isWorkersCI":false,"isInteractive":false,"hasAssets":false,"agent":null,"argsUsed":["config","envFile","ip","local","persistTo","port"],"argsCombination":"config, envFile, ip, local, persistTo, port","sanitizedCommand":"dev","sanitizedArgs":{"local":true},"currentAgentSkillsInstalled":null}}.
+---
+
+--- 2026-11-21T19:50:29.250Z debug
+setting config
+---
+
+--- 2026-11-21T19:50:29.250Z debug
+Updating config... undefined undefined
+---
+
+--- 2026-11-21T19:50:29.297Z log
+Your Worker has access to the following bindings:
+---
+
+--- 2026-11-21T19:50:29.298Z log
+Binding                       Resource            Mode
+---
+
+--- 2026-11-21T19:50:29.298Z log
+env.BOARDS (BoardObject)      Durable Object      local
+---
+
+--- 2026-11-21T19:50:29.298Z log
+
+---
+
+--- 2026-11-21T19:50:29.732Z debug
+RemoteRuntimeController teardown beginning...
+---
+
+--- 2026-11-21T19:50:29.732Z debug
+RemoteRuntimeController teardown complete
+---
+
+--- 2026-11-21T19:50:29.738Z log
+⎔ Starting local server...
+---
+
+--- 2026-11-21T19:50:29.750Z debug
+[InspectorProxyWorker] handleProxyControllerIncomingMessage {"type":"reloadStart"}
+---
+
+--- 2026-11-21T19:50:30.496Z debug
+[InspectorProxyWorker] handleProxyControllerIncomingMessage {"type":"reloadComplete","proxyData":{"userWorkerUrl":{"protocol":"http:","hostname":"127.0.0.1","port":"55819"},"userWorkerInspectorUrl":{"protocol":"ws:","hostname":"127.0.0.1","port":"55820","pathname":"/core:user:forge-1761-board-on-do"},"userWorkerInnerUrlOverrides":{"protocol":"http:"},"headers":{"MF-Proxy-Shared-Secret":"18acc1a6-3333-43d8-8902-868e85b834c0"},"liveReload":false,"proxyLogsToController":false}}
+---
+
+--- 2026-11-21T19:50:30.498Z debug
+[InspectorProxyWorker] reconnectRuntimeWebSocket
+---
+
+--- 2026-11-21T19:50:30.501Z debug
+[InspectorProxyWorker] NEW RUNTIME WEBSOCKET http://127.0.0.1:55820/core:user:forge-1761-board-on-do
+---
+
+--- 2026-11-21T19:50:30.502Z debug
+[InspectorProxyWorker] SEND TO DEVTOOLS {"method":"Runtime.executionContextsCleared"}
+---
+
+--- 2026-11-21T19:50:30.506Z debug
+[InspectorProxyWorker] RUNTIME WEBSOCKET OPENED
+---
+
+--- 2026-11-21T19:50:30.507Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.enable","id":100000001}
+---
+
+--- 2026-11-21T19:50:30.509Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.executionContextCreated',
+  params: {
+    context: {
+      id: 186051105,
+      origin: '',
+      name: 'Worker',
+      uniqueId: '8426077716757735628.1401195699331354587'
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:50:30.511Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000001, result: {} }
+---

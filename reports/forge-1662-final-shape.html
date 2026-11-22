@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge final shape</title>
+<style>
+:root {
+  --bg: #f2f2f5; --surface: #ffffff; --raised: #f7f7f9; --ink: #111114; --muted: #6e6e76; --faint: #a3a3ab; --hair: rgba(60, 60, 67, 0.14);
+  --accent: #4b55d6; --accent-ink: #ffffff; --accent-soft: rgba(75, 85, 214, 0.10);
+  --green: #24a058; --green-soft: rgba(36, 160, 88, 0.12);
+  --orange: #e08a12; --orange-soft: rgba(224, 138, 18, 0.12);
+  --red: #e5484d; --grey: #b9b9c0;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.10);
+  --c-works: #1d8a4b; --c-works-bg: rgba(36, 160, 88, 0.13);
+  --c-off: #4b55d6; --c-off-bg: rgba(75, 85, 214, 0.11);
+  --c-trial: #b56d06; --c-trial-bg: rgba(224, 138, 18, 0.14);
+  --c-design: #55555c; --c-design-bg: rgba(60, 60, 67, 0.09);
+  --c-idea: #85858d;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000; --surface: #1c1c1f; --raised: #2a2a2e; --ink: #f2f2f5; --muted: #9d9da6; --faint: #6c6c74; --hair: rgba(255, 255, 255, 0.10);
+    --accent: #8a92ff; --accent-ink: #0b0c1e; --accent-soft: rgba(138, 146, 255, 0.16);
+    --green: #3fca7a; --green-soft: rgba(63, 202, 122, 0.15);
+    --orange: #f2a640; --orange-soft: rgba(242, 166, 64, 0.15);
+    --red: #ff6b6f; --grey: #4a4a52;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    --c-works: #4fd487; --c-works-bg: rgba(63, 202, 122, 0.15);
+    --c-off: #9aa1ff; --c-off-bg: rgba(138, 146, 255, 0.16);
+    --c-trial: #f2a640; --c-trial-bg: rgba(242, 166, 64, 0.15);
+    --c-design: #c4c4cc; --c-design-bg: rgba(255, 255, 255, 0.09);
+    --c-idea: #8d8d96;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px 48px; }
+h2 { font-size: 13px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 56px 0 6px; }
+.lead { font-size: 15px; color: var(--muted); margin: 0 0 18px; max-width: 640px; }
+p { margin: 0; }
+.card { background: var(--surface); border-radius: 18px; padding: 16px; }
+
+/* hero */
+.hero { padding: 48px 0 8px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700; letter-spacing: 0.02em; }
+.brand i { width: 26px; height: 26px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; }
+.brand i::after { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--accent-ink); transform: rotate(45deg); }
+.hero h1 { font-size: clamp(28px, 5.4vw, 48px); line-height: 1.12; letter-spacing: -0.025em; font-weight: 750; margin: 18px 0 14px; max-width: 900px; }
+.hero .sub { font-size: clamp(16px, 2.2vw, 19px); color: var(--muted); max-width: 720px; }
+
+/* chips */
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 3px 10px 3px 8px; white-space: nowrap; line-height: 1.5; }
+.chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.works { color: var(--c-works); background: var(--c-works-bg); } .works::before { background: var(--c-works); }
+.off { color: var(--c-off); background: var(--c-off-bg); } .off::before { background: transparent; box-shadow: inset 0 0 0 2px var(--c-off); }
+.trial { color: var(--c-trial); background: var(--c-trial-bg); } .trial::before { background: var(--c-trial); border-radius: 2px; transform: rotate(45deg); width: 7px; height: 7px; }
+.design { color: var(--c-design); background: var(--c-design-bg); } .design::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--c-design); }
+.idea { color: var(--c-idea); background: transparent; box-shadow: inset 0 0 0 1px var(--c-idea); } .idea::before { background: transparent; border: 1.5px dashed var(--c-idea); }
+
+/* legend */
+.legend { margin-top: 32px; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.lg { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 14px; border-radius: 14px; background: var(--surface); border: 0; font: inherit; color: inherit; text-align: left; }
+.lg span.d { font-size: 13px; color: var(--muted); }
+.js .lg { cursor: pointer; transition: box-shadow 160ms ease, opacity 160ms ease; }
+.js .lg:hover { box-shadow: inset 0 0 0 1px var(--hair); }
+.lg[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--accent) !important; }
+.filter-note { display: none; font-size: 13px; color: var(--muted); margin-top: 8px; }
+.js .filter-note { display: block; }
+.filter-note button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; }
+
+/* promises */
+.promises { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.promise b { display: block; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 4px; }
+.promise p { font-size: 14.5px; color: var(--muted); }
+.promise .n { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 700; margin-bottom: 10px; }
+
+/* map */
+.map { display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 12px; align-items: stretch; }
+.stack { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.end { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 650; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; padding: 4px 4px 10px; }
+.end.bottom { padding: 10px 4px 4px; }
+.end svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.layer { position: relative; display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 16px; background: var(--surface); border-radius: 18px; padding: 16px; }
+.layer + .layer { margin-top: 22px; }
+.layer + .layer::before { content: ""; position: absolute; top: -22px; left: 40px; width: 2px; height: 22px; background: repeating-linear-gradient(var(--faint) 0 4px, transparent 4px 7px); }
+.lh .k { font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.lh b { display: block; font-size: 19px; font-weight: 720; letter-spacing: -0.01em; line-height: 1.25; margin: 2px 0 4px; }
+.lh p { font-size: 13.5px; color: var(--muted); }
+.parts { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; align-content: start; }
+.part { background: var(--raised); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; transition: opacity 160ms ease; }
+.part .nm { font-size: 14px; line-height: 1.35; }
+.part .chip { align-self: flex-start; }
+.dim .part:not(.hit) { opacity: 0.22; }
+.l1 { box-shadow: inset 4px 0 0 var(--accent); }
+.band { background: var(--surface); border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: inset 0 0 0 1.5px var(--accent-soft); background-image: repeating-linear-gradient(135deg, transparent 0 14px, var(--accent-soft) 14px 15px); }
+.band .lh b { font-size: 18px; }
+.band .parts { grid-template-columns: 1fr; }
+.band .part { background: var(--surface); box-shadow: 0 0 0 1px var(--hair); }
+
+/* day */
+.flag { display: flex; gap: 10px; align-items: flex-start; background: var(--orange-soft); color: var(--ink); border-radius: 14px; padding: 12px 14px; font-size: 14.5px; margin-bottom: 18px; max-width: 720px; }
+.flag b { color: var(--c-trial); }
+.day { list-style: none; margin: 0; padding: 0; max-width: 760px; }
+.mo { display: grid; grid-template-columns: 56px 88px minmax(0, 1fr); gap: 14px; align-items: start; position: relative; padding-bottom: 22px; }
+.mo::before { content: ""; position: absolute; left: 27px; top: 26px; bottom: 0; width: 2px; background: var(--hair); }
+.mo:last-child::before { display: none; }
+.mo .tm { font-size: 15px; font-weight: 700; padding-top: 2px; position: relative; z-index: 1; background: var(--bg); text-align: center; line-height: 1.6; }
+.mo .txt { padding-top: 2px; }
+.mo .txt .where { font-size: 12px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.mo .txt p { font-size: 15.5px; margin-top: 2px; }
+.mo .txt p + p { color: var(--muted); font-size: 14.5px; }
+.mini { width: 88px; height: 150px; border-radius: 16px; background: var(--surface); border: 1px solid var(--hair); box-shadow: var(--shadow); padding: 14px 7px 7px; position: relative; overflow: hidden; }
+.mini::before { content: ""; position: absolute; top: 5px; left: 50%; width: 26px; height: 5px; margin-left: -13px; border-radius: 3px; background: var(--hair); }
+.mini .ln { height: 5px; border-radius: 3px; background: var(--hair); margin: 5px 0; }
+.mini .ln.s { width: 60%; }
+.mini .tt { font-size: 9px; font-weight: 700; line-height: 1.2; margin: 2px 0 4px; }
+.mini .nt { background: var(--raised); border-radius: 7px; padding: 5px; margin-bottom: 4px; }
+.mini .nt .ln { margin: 3px 0; }
+.mini .bt { height: 14px; border-radius: 6px; background: var(--accent); margin-top: 4px; }
+.mini .bt.g { background: var(--raised); }
+.mini .row2 { display: flex; gap: 3px; }
+.mini .row2 .bt { flex: 1; }
+.mini .lock { width: 30px; height: 30px; margin: 10px auto 6px; border-radius: 50%; background: var(--accent-soft); display: grid; place-items: center; }
+.mini .lock svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.mini.night { background: #10121c; border-color: rgba(255,255,255,0.08); }
+.mini.night .moon { width: 34px; height: 34px; margin: 26px auto 10px; border-radius: 50%; box-shadow: inset -9px -3px 0 0 #c9cdf5; transform: rotate(-20deg); }
+.mini.night .ln { background: rgba(255,255,255,0.10); }
+.chat { width: 88px; height: 150px; border-radius: 12px; background: var(--surface); border: 1px solid var(--hair); box-shadow: var(--shadow); padding: 8px 7px; }
+.chat .hd { display: flex; gap: 4px; align-items: center; font-size: 9px; font-weight: 700; margin-bottom: 7px; color: var(--muted); }
+.chat .hd i { width: 9px; height: 9px; border-radius: 2px; background: var(--orange); }
+.chat .msg { display: flex; gap: 4px; margin-bottom: 6px; }
+.chat .av { width: 12px; height: 12px; border-radius: 3px; flex: none; background: var(--grey); }
+.chat .av.me { background: var(--accent); }
+.chat .bub { flex: 1; }
+.chat .bub .ln { height: 4px; border-radius: 2px; background: var(--hair); margin: 2px 0 3px; }
+.chat .hand { font-size: 8.5px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 3px 4px; text-align: center; margin-top: 4px; }
+
+/* path */
+.path { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.step .k { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.step .k::before { content: ""; width: 10px; height: 10px; border-radius: 50%; }
+.step.now .k { color: var(--c-works); } .step.now .k::before { background: var(--c-works); }
+.step.next .k { color: var(--c-off); } .step.next .k::before { box-shadow: inset 0 0 0 2px var(--c-off); }
+.step.later .k { color: var(--c-idea); } .step.later .k::before { border: 1.5px dashed var(--c-idea); }
+.step ul { margin: 0; padding-left: 18px; font-size: 15px; }
+.step li + li { margin-top: 6px; }
+
+/* not / open */
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.nots { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.nots li { background: var(--raised); border-radius: 12px; padding: 10px 12px; font-size: 15px; font-weight: 600; }
+.nots li span { color: var(--muted); font-weight: 400; }
+.open { margin: 0; padding: 0; list-style: none; counter-reset: q; }
+.open li { counter-increment: q; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 8px; font-size: 15px; }
+.open li + li { margin-top: 12px; }
+.open li::before { content: counter(q); display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--raised); font-size: 12px; font-weight: 700; color: var(--muted); margin-top: 1px; }
+
+footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--muted); }
+
+@media (max-width: 899px) {
+  .map { grid-template-columns: minmax(0, 1fr); }
+  .layer { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .band { order: 2; }
+  .two { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 699px) {
+  .hero { padding-top: 32px; }
+  h2 { margin-top: 44px; }
+  .parts { grid-template-columns: minmax(0, 1fr); }
+  .path { grid-template-columns: minmax(0, 1fr); }
+  .mo { grid-template-columns: 50px minmax(0, 1fr); gap: 4px 12px; }
+  .mo::before { left: 24px; }
+  .mo .ill { grid-column: 2; grid-row: 2; margin-top: 10px; }
+  .mo .txt { grid-column: 2; grid-row: 1; }
+  .mini, .chat { width: 76px; height: 128px; }
+  .nots { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="brand"><i aria-hidden="true"></i>Forge</div>
+  <h1>Forge is where you hand work to coding agents and stay in charge without sitting at the laptop.</h1>
+  <p class="sub">The agents work on your machines with your subscriptions. Forge keeps the record, runs the checks, and brings you only the decisions that need a person, wherever you are.</p>
+
+  <div class="legend" id="legend" role="group" aria-label="What the status labels mean">
+    <button type="button" class="lg" data-s="works" aria-pressed="false"><span class="chip works">Works today</span><span class="d">On the main branch now.</span></button>
+    <button type="button" class="lg" data-s="off" aria-pressed="false"><span class="chip off">Built, switched off</span><span class="d">The code exists. It is not turned on.</span></button>
+    <button type="button" class="lg" data-s="trial" aria-pressed="false"><span class="chip trial">Proven in a trial</span><span class="d">Ran on the laptop as an experiment. Not product code.</span></button>
+    <button type="button" class="lg" data-s="design" aria-pressed="false"><span class="chip design">Designed</span><span class="d">Decided on paper, an issue exists. Not built.</span></button>
+    <button type="button" class="lg" data-s="idea" aria-pressed="false"><span class="chip idea">Idea</span><span class="d">Parked, or not yet designed.</span></button>
+  </div>
+  <p class="filter-note" id="filter-note">Tap a status to light up only those parts on the map. <button type="button" id="clear" hidden>Show all</button></p>
+</header>
+
+<section>
+  <h2>Four promises</h2>
+  <div class="promises">
+    <div class="card promise"><span class="n">1</span><b>Nothing goes missing.</b><p>Every task, claim, decision and answer is on record.</p></div>
+    <div class="card promise"><span class="n">2</span><b>Nothing ships unchecked.</b><p>Every change has a receipt saying what was checked.</p></div>
+    <div class="card promise"><span class="n">3</span><b>Nothing waits on you silently.</b><p>A stopped agent reaches you, on a ladder you set.</p></div>
+    <div class="card promise"><span class="n">4</span><b>Nothing happens in your name without you.</b><p>Publish, merge and deploy need the real, signed-in you.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>The map</h2>
+  <p class="lead">Five layers, from you at the top down to the machines that do the work. The band on the side runs through all of them: every part is a block that can be swapped.</p>
+
+  <div class="map" id="map">
+    <div class="stack">
+      <div class="end"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4.5-6 8-6s7 2 8 6"/></svg>You</div>
+
+      <div class="layer l1">
+        <div class="lh"><span class="k">Layer 1</span><b>Where you are</b><p>How Forge reaches you.</p></div>
+        <ul class="parts">
+          <li class="part" data-s="works"><span class="nm">Terminal and agent tools</span><span class="chip works">Works today</span></li>
+          <li class="part" data-s="design"><span class="nm">Phone app (questions, brief, all projects)</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="trial"><span class="nm">Slack and other chat apps</span><span class="chip trial">Proven in a trial</span></li>
+          <li class="part" data-s="design"><span class="nm">Web home for all projects</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="design"><span class="nm">Any screen you or the community build on Forge's open data</span><span class="chip design">Designed</span></li>
+        </ul>
+      </div>
+
+      <div class="layer">
+        <div class="lh"><span class="k">Layer 2</span><b>The owner layer</b><p>What reaches a person, when, and whose answer counts.</p></div>
+        <ul class="parts">
+          <li class="part" data-s="design"><span class="nm">Questions with who may answer</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="design"><span class="nm">Reminder ladder at 0, 5, 15 and 30 minutes, one notification that updates</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="design"><span class="nm">Snooze and sleep window</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="design"><span class="nm">Handoff ("I'm busy, ask someone else")</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="design"><span class="nm">Catch-me-up brief, written by your own agent</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="design"><span class="nm">Protected actions always need your sign-in</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="trial"><span class="nm">The mailbox underneath (stores questions and replies)</span><span class="chip trial">Proven in a trial</span></li>
+          <li class="part" data-s="idea"><span class="nm">A real phone call, a small decision model that sorts questions</span><span class="chip idea">Idea</span></li>
+        </ul>
+      </div>
+
+      <div class="layer">
+        <div class="lh"><span class="k">Layer 3</span><b>The record</b><p>The single source of truth.</p></div>
+        <ul class="parts">
+          <li class="part" data-s="works"><span class="nm">Work: issues, claims, lanes (46 commands)</span><span class="chip works">Works today</span></li>
+          <li class="part" data-s="works"><span class="nm">Checks and receipts (6 commands)</span><span class="chip works">Works today</span></li>
+          <li class="part" data-s="works"><span class="nm">Memory and decisions (18 commands)</span><span class="chip works">Works today</span></li>
+          <li class="part" data-s="off"><span class="nm">Sharing the record across machines</span><span class="chip off">Built, switched off</span></li>
+        </ul>
+      </div>
+
+      <div class="layer">
+        <div class="lh"><span class="k">Layer 4</span><b>The workflow</b><p>The steps your agents follow.</p></div>
+        <ul class="parts">
+          <li class="part" data-s="works"><span class="nm">Delivery workflow: intake, cut, build, review, land</span><span class="chip works">Works today</span></li>
+          <li class="part" data-s="works"><span class="nm">Agent setups for Claude, Codex and T3</span><span class="chip works">Works today</span></li>
+          <li class="part" data-s="design"><span class="nm">Your own workflow as data, for any kind of work (writing, research)</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="design"><span class="nm">Flow map that draws where each piece of work is</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="idea"><span class="nm">A gallery of community workflows and layouts</span><span class="chip idea">Idea</span></li>
+        </ul>
+      </div>
+
+      <div class="layer">
+        <div class="lh"><span class="k">Layer 5</span><b>Where the work runs</b><p>Your machines, your subscriptions.</p></div>
+        <ul class="parts">
+          <li class="part" data-s="works"><span class="nm">Your laptop</span><span class="chip works">Works today</span></li>
+          <li class="part" data-s="off"><span class="nm">Forge cloud that joins your machines (one small store per project)</span><span class="chip off">Built, switched off</span></li>
+          <li class="part" data-s="off"><span class="nm">Sign-in</span><span class="chip off">Built, switched off</span></li>
+          <li class="part" data-s="design"><span class="nm">Teams</span><span class="chip design">Designed</span></li>
+          <li class="part" data-s="idea"><span class="nm">Agents running on cloud boxes while the laptop is closed</span><span class="chip idea">Idea</span></li>
+        </ul>
+      </div>
+
+      <div class="end bottom"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="11" rx="2"/><path d="M2 20h20"/></svg>The machines</div>
+    </div>
+
+    <aside class="band">
+      <div class="lh"><span class="k">Runs through every layer</span><b>Everything is a swappable block</b><p>How Forge is customised, and how it borrows instead of building.</p></div>
+      <ul class="parts">
+        <li class="part" data-s="works"><span class="nm">Blocks: 8 today, 82 commands. Each command becomes a terminal command and an agent tool.</span><span class="chip works">Works today</span></li>
+        <li class="part" data-s="works"><span class="nm">Adapters that wrap outside packages (11 today)</span><span class="chip works">Works today</span></li>
+        <li class="part" data-s="works"><span class="nm">Interfaces that different blocks can provide (1 today, the tracker)</span><span class="chip works">Works today</span></li>
+        <li class="part" data-s="works"><span class="nm">Templates that carry settings and workflows (1 today)</span><span class="chip works">Works today</span></li>
+        <li class="part" data-s="design"><span class="nm">A check kit so a replacement part can prove it behaves the same</span><span class="chip design">Designed</span></li>
+        <li class="part" data-s="trial"><span class="nm">Borrowed parts, for example Vercel Board's engine and Slack connection behind the mailbox</span><span class="chip trial">Proven in a trial</span></li>
+      </ul>
+    </aside>
+  </div>
+</section>
+
+<section>
+  <h2>A day with the finished Forge</h2>
+  <div class="flag"><b>Note.</b> How it will feel when finished. None of this day works yet except the record underneath.</div>
+  <ol class="day">
+    <li class="mo">
+      <div class="tm">7:40</div>
+      <div class="ill" aria-hidden="true"><div class="mini"><div class="tt">3 projects need you</div><div class="nt"><div class="ln"></div><div class="ln s"></div></div><div class="nt"><div class="ln"></div><div class="ln s"></div></div><div class="nt"><div class="ln"></div><div class="ln s"></div></div></div></div>
+      <div class="txt"><span class="where">Phone</span><p>"3 projects need you."</p><p>One brief per project says what changed overnight.</p></div>
+    </li>
+    <li class="mo">
+      <div class="tm">7:45</div>
+      <div class="ill" aria-hidden="true"><div class="mini"><div class="tt">Question</div><div class="ln"></div><div class="ln"></div><div class="ln s"></div><div class="row2"><div class="bt"></div><div class="bt g"></div></div><div class="tt" style="margin-top:10px">Question</div><div class="ln"></div><div class="ln s"></div><div class="row2"><div class="bt"></div><div class="bt g"></div></div></div></div>
+      <div class="txt"><span class="where">Phone</span><p>You answer two questions with a tap.</p><p>The stopped agents carry on.</p></div>
+    </li>
+    <li class="mo">
+      <div class="tm">11:10</div>
+      <div class="ill" aria-hidden="true"><div class="chat"><div class="hd"><i></i>Slack</div><div class="msg"><span class="av"></span><div class="bub"><div class="ln"></div><div class="ln"></div></div></div><div class="msg"><span class="av me"></span><div class="bub"><div class="ln"></div></div></div><div class="hand">Handed off</div></div></div>
+      <div class="txt"><span class="where">Slack</span><p>A teammate is asked something only you can answer. You hand it to them.</p><p>Forge records that you did.</p></div>
+    </li>
+    <li class="mo">
+      <div class="tm">16:30</div>
+      <div class="ill" aria-hidden="true"><div class="mini"><div class="lock"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></div><div class="tt" style="text-align:center">Publish?</div><div class="ln"></div><div class="ln s" style="margin:5px auto"></div><div class="bt"></div></div></div>
+      <div class="txt"><span class="where">Phone</span><p>An agent wants to publish.</p><p>That one opens Forge and needs your sign-in.</p></div>
+    </li>
+    <li class="mo">
+      <div class="tm">23:00</div>
+      <div class="ill" aria-hidden="true"><div class="mini night"><div class="moon"></div><div class="ln"></div><div class="ln s" style="margin:5px auto"></div></div></div>
+      <div class="txt"><span class="where">Sleep window on</span><p>Nothing calls you.</p><p>A work-stopping question waits for your wake time.</p></div>
+    </li>
+  </ol>
+</section>
+
+<section>
+  <h2>The path</h2>
+  <div class="path">
+    <div class="card step now"><div class="k">Now</div><ul><li>A terminal tool that tracks work, runs checks and keeps memory, on one laptop.</li></ul></div>
+    <div class="card step next"><div class="k">Next</div><ul><li>The cloud switches on.</li><li>Then the question loop: an agent asks, your phone or Slack shows it, your answer goes back.</li><li>Then the catch-me-up brief and the all-projects home.</li></ul></div>
+    <div class="card step later"><div class="k">Later</div><ul><li>Teams and handoff.</li><li>Your own workflows and the flow map.</li><li>Community blocks and templates.</li><li>Agents that run with the laptop closed.</li></ul></div>
+  </div>
+</section>
+
+<section class="two">
+  <div>
+    <h2>What Forge is not</h2>
+    <div class="card">
+      <ul class="nots">
+        <li>It is not an agent.</li>
+        <li>It is not a model.</li>
+        <li>It is not a chat app.</li>
+        <li>It does not store your code.</li>
+      </ul>
+      <p>It does not replace Claude or Codex. It is the layer above them that you stay in charge through.</p>
+    </div>
+  </div>
+  <div>
+    <h2>Still open</h2>
+    <div class="card">
+      <ol class="open">
+        <li><span>The phone app's form: an installable web app first, or a store app.</span></li>
+        <li><span>Who runs the cloud: a service Forge runs, or each person's own account.</span></li>
+        <li><span>Names. "Owner layer", "block" and "layout" are working words.</span></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<footer>Status as of 2026-11-21, from Forge's main branch and the trials recorded on forge-1761. Counts: 8 blocks, 82 commands, 11 adapters, 1 interface, 1 template.</footer>
+
+</div>
+<script>
+(function () {
+  document.documentElement.classList.add('js');
+  var map = document.getElementById('map');
+  var btns = document.querySelectorAll('#legend .lg');
+  var clear = document.getElementById('clear');
+  var active = null;
+  function apply() {
+    btns.forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.s === active)); });
+    map.querySelectorAll('.part').forEach(function (p) { p.classList.toggle('hit', p.dataset.s === active); });
+    map.classList.toggle('dim', !!active);
+    clear.hidden = !active;
+  }
+  btns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      active = active === b.dataset.s ? null : b.dataset.s;
+      apply();
+      if (active) map.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+  clear.addEventListener('click', function () { active = null; apply(); });
+})();
+</script>
+</body>
+</html>

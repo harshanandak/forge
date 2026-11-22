@@ -1,0 +1,1221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge Desk mock v4</title>
+<style>
+:root {
+  --bg: #faf9f7; --ink: #1c1b1a; --muted: #6b6862; --hair: #e6e3dd; --surface: #ffffff;
+  --accent: #b4540a; --accent-ink: #ffffff; --green: #5b7f5a; --red: #b3261e; --grey: #8a8680;
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151412; --ink: #ecebe8; --muted: #9a968f; --hair: #2c2a27; --surface: #1d1c1a;
+    --accent: #e08a45; --accent-ink: #1a1209; --green: #86a884; --red: #e5776f; --grey: #7d7972;
+    --shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body { color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; cursor: pointer; }
+a { color: var(--muted); cursor: pointer; text-decoration: none; }
+a:hover { color: var(--ink); text-decoration: underline; }
+[hidden] { display: none !important; }
+.mu { color: var(--muted); }
+.sm { font-size: 13px; }
+.grow { flex: 1 1 auto; }
+.serif { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; }
+.ul { text-decoration: underline; }
+
+/* frame */
+.app { position: relative; width: 100%; height: 800px; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border: 1px solid var(--hair); border-radius: 8px; }
+.topbar { flex: none; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; padding: 10px 16px; border-bottom: 1px solid var(--hair); }
+.brand { font-weight: 600; background: none; border: 0; padding: 0; }
+.crumb { font-size: 13px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb a { color: var(--muted); }
+.crumb .cur { color: var(--ink); }
+.tbr { font: inherit; font-size: 13px; color: var(--muted); white-space: nowrap; background: none; border: 0; padding: 0; cursor: pointer; }
+.tbr:hover { color: var(--ink); text-decoration: underline; }
+@media (max-width: 460px) { .crumb { order: 3; flex-basis: 100%; } }
+.content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 18px 16px 28px; }
+.dock { flex: none; position: relative; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--hair); background: var(--bg); }
+.dock.bare { position: absolute; right: 12px; bottom: 12px; left: auto; padding: 0; border: 0; background: transparent; }
+.dgrp { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 16px; overflow-x: auto; padding: 4px 4px; }
+.db { flex: none; background: none; border: 0; border-bottom: 2px solid transparent; padding: 2px 0; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.db:hover { color: var(--ink); }
+.db.on { color: var(--ink); border-bottom-color: var(--ink); }
+@media (max-width: 460px) { .dgrp { gap: 12px; } .dock { padding: 8px 8px; } }
+.blob { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--ink); color: var(--bg); display: grid; place-items: center; }
+
+/* popovers */
+.pop { position: absolute; z-index: 30; background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; box-shadow: var(--shadow); padding: 6px; }
+.more { left: 12px; bottom: calc(100% + 6px); width: min(320px, calc(100% - 24px)); }
+.mrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 4px 3px 8px; border-radius: 6px; font-size: 13px; }
+.mrow:hover { background: var(--bg); }
+.mrow .open { background: none; border: 0; padding: 4px 0; text-align: left; flex: 1; font-size: 13px; }
+.mrow .pin { background: none; border: 0; padding: 4px 6px; font-size: 12px; color: var(--muted); text-decoration: underline; }
+.mrow .pin[disabled] { opacity: 0.35; text-decoration: none; cursor: default; }
+.mlab { padding: 6px 8px 2px; font-size: 12px; color: var(--muted); }
+.tray { flex: none; position: relative; z-index: 1; border-top: 1px solid var(--hair); background: var(--surface); padding: 10px 16px; max-height: 360px; overflow-y: auto; }
+.tray:empty { display: none; }
+.tray.empty { background: var(--bg); padding: 6px 16px; border-top: 0; }
+.tcard { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; min-height: 62px; }
+.tcard.slide { animation: slidein 200ms ease; }
+@keyframes slidein { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+.tmain { flex: 1 1 260px; min-width: 0; }
+.tmain .q { font-weight: 600; font-size: 13.5px; line-height: 1.35; }
+.tmain .kl { margin-bottom: 2px; }
+.topts { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.tnav { display: flex; gap: 10px; align-items: center; margin-left: auto; font-size: 13px; white-space: nowrap; }
+.thead { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-start; margin-bottom: 8px; }
+.prompt { position: absolute; right: 12px; bottom: 70px; z-index: 35; width: min(380px, calc(100% - 24px)); max-height: 520px; overflow-y: auto; background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; box-shadow: var(--shadow); padding: 14px; opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity 160ms, transform 160ms; }
+.prompt.on { opacity: 1; transform: none; pointer-events: auto; }
+.toasts { position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%); z-index: 70; display: flex; flex-direction: column; gap: 8px; align-items: center; width: max-content; max-width: calc(100% - 24px); pointer-events: none; }
+.toast { pointer-events: auto; background: var(--ink); color: var(--bg); border-radius: 8px; padding: 9px 14px; font-size: 13px; display: flex; gap: 12px; align-items: center; animation: pop 160ms ease; transition: opacity 200ms; }
+.toast.out { opacity: 0; }
+.toast button { background: none; border: 0; color: var(--bg); text-decoration: underline; padding: 0; }
+
+/* text pieces */
+h1 { font-size: 24px; line-height: 1.2; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+h2.bt { font-size: 13px; font-weight: 600; margin: 0 0 12px; }
+.lede { font-size: 19px; line-height: 1.4; max-width: 48ch; margin: 0 0 20px; }
+.lab { color: var(--muted); font-size: 12.5px; margin-right: 8px; }
+.label { font-size: 12.5px; color: var(--muted); margin: 0 0 10px; }
+.sec { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--hair); }
+.sec:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.sh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-bottom: 12px; }
+.sh h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.tbtn { background: none; border: 0; padding: 0; font-size: 13px; color: var(--ink); }
+.tbtn:hover { text-decoration: underline; }
+.tbtn.mu { color: var(--muted); }
+.tbtn.u { text-decoration: underline; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 14px; }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 2px; font-size: 13px; color: var(--muted); }
+.tab.on { color: var(--ink); border-bottom-color: var(--ink); }
+.prose { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 16.5px; line-height: 1.55; max-width: 62ch; margin: 0 0 10px; }
+.prose.lines { font-size: 15.5px; margin: 0 0 6px; }
+.prose b { font-weight: 700; }
+
+/* state */
+.st { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.st.s-needs { color: var(--accent); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.d-needs { background: var(--accent); }
+.d-work { background: var(--green); }
+.d-done { background: var(--grey); }
+.d-stuck { background: var(--red); }
+.d-idle { background: transparent; border: 1px solid var(--grey); }
+
+/* switch */
+.sw { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0 0 6px; }
+.swb { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 3px; font-size: 14px; color: var(--muted); }
+.swb.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
+.quiet { margin: 16px 0 0; font-size: 13px; color: var(--muted); }
+
+/* rows */
+.pr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 14px; align-items: baseline; padding: 14px 0; border-bottom: 1px solid var(--hair); cursor: pointer; width: 100%; background: none; border-left: 0; border-right: 0; border-top: 0; text-align: left; }
+.pr:first-child { border-top: 1px solid var(--hair); }
+.pr:hover .pn { text-decoration: underline; }
+.pn { font-weight: 600; font-size: 16px; margin-right: 8px; }
+.pr .cn { color: var(--accent); font-size: 13px; white-space: nowrap; }
+.pr .top { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+.trow { display: grid; grid-template-columns: 7px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.trow:first-child { border-top: 1px solid var(--hair); }
+.trow:hover .tn { text-decoration: underline; }
+.trow .dot { transform: translateY(-1px); }
+.tn { font-weight: 600; margin-right: 8px; }
+.tsz { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.rrow { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--hair); font-size: 13.5px; }
+.wrow { padding: 8px 0; border-bottom: 1px solid var(--hair); font-size: 13.5px; }
+.fi { padding: 8px 0; border-bottom: 1px solid var(--hair); }
+.fl { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.stw { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.stw.s-broken { color: var(--red); }
+.why { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.fi .acts { margin-top: 3px; display: flex; gap: 14px; }
+.fi .acts .tbtn, .dr .acts .tbtn { text-decoration: underline; }
+.dry { margin-top: 4px; font-size: 13px; color: var(--muted); }
+
+/* plan strip */
+.plan { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; margin: 0 0 16px; align-items: center; }
+.pi { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+/* cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.grid.one { grid-template-columns: minmax(0, 1fr); }
+.card { background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; animation: pop 160ms ease; min-width: 0; }
+.card.wide { grid-column: 1 / -1; }
+@keyframes pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.kl { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.card .q { font-weight: 600; margin-bottom: 10px; }
+.opts { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 8px; }
+.btn { border: 1px solid var(--hair); background: var(--surface); border-radius: 8px; padding: 5px 11px; font-size: 13px; }
+.btn:hover { border-color: var(--muted); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.dark { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.lockline { font-size: 12.5px; color: var(--red); margin-top: 8px; }
+.ask { margin: 4px 0 6px; }
+.tb { border-collapse: collapse; width: 100%; font-size: 13px; margin: 2px 0 10px; }
+.tb td { padding: 5px 0; border-bottom: 1px solid var(--hair); vertical-align: top; }
+.tb td:first-child { color: var(--muted); width: 42%; padding-right: 10px; }
+.ck { list-style: none; margin: 2px 0 10px; padding: 0; font-size: 13px; }
+.ck li { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+.ck li.left { color: var(--muted); }
+.ck .dot { transform: translateY(-1px); }
+.pbar { height: 6px; background: var(--hair); margin: 4px 0 10px; display: flex; }
+.pbar i { display: block; height: 100%; background: var(--ink); }
+.offer { border: 1px solid var(--accent); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.offer p { margin: 0 0 10px; }
+.dr { padding: 9px 0; border-bottom: 1px solid var(--hair); }
+.dr .acts { display: flex; gap: 16px; margin-top: 4px; }
+.kind-row { padding: 12px 0; border-bottom: 1px solid var(--hair); }
+.steps3 { display: flex; gap: 14px; margin-top: 6px; flex-wrap: wrap; }
+.step { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 2px; font-size: 13px; color: var(--muted); }
+.step.on { color: var(--ink); border-bottom-color: var(--ink); }
+.step[disabled] { cursor: default; }
+.step:not(.on)[disabled] { opacity: 0.5; }
+
+/* timeline */
+.te { display: grid; grid-template-columns: 124px minmax(0, 1fr) auto; gap: 2px 14px; padding: 10px 0; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.te:first-child { border-top: 1px solid var(--hair); }
+.te .tt { color: var(--muted); font-size: 13px; }
+.te .tt .live { color: var(--green); margin-left: 4px; }
+.te .tline { font-size: 13.5px; margin-bottom: 3px; }
+.te .tc { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.te .tx { grid-column: 2 / -1; padding: 4px 0 2px; }
+.te.sub { border-bottom: 0; border-top: 1px solid var(--hair); padding: 8px 0; cursor: pointer; grid-template-columns: 110px minmax(0, 1fr) auto; }
+.te.sub:first-child { border-top: 0; }
+.tx .who { font-size: 13px; color: var(--muted); }
+@media (max-width: 520px) {
+  .te, .te.sub { grid-template-columns: minmax(0, 1fr); }
+  .te .tx { grid-column: 1; }
+}
+
+/* board, chart */
+.stack { display: flex; height: 10px; margin: 10px 0 6px; }
+.stack i { display: block; height: 100%; }
+.nums { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+.cols3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 520px) { .cols3 { grid-template-columns: minmax(0, 1fr); } }
+.cols3 h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.ic { padding: 6px 0; border-bottom: 1px solid var(--hair); font-size: 13px; }
+.chart { display: flex; align-items: flex-end; gap: 12px; height: 140px; margin: 16px 0 6px; }
+.bc { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; min-width: 0; }
+.bc .v { font-size: 12.5px; margin-bottom: 3px; }
+.bc .b { width: 100%; max-width: 44px; background: var(--ink); }
+.days { display: flex; gap: 12px; font-size: 12.5px; color: var(--muted); margin-bottom: 20px; }
+.days span { flex: 1; text-align: center; }
+
+/* features and plan */
+.hrow { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 8px; }
+.hrow b { font-weight: 600; font-size: 16px; }
+.pseg { display: flex; gap: 3px; height: 6px; max-width: 420px; margin: 0 0 18px; }
+.pseg i { flex: 1; background: var(--hair); }
+.pseg i.d { background: var(--ink); }
+.pseg i.h { background: var(--grey); opacity: 0.6; }
+.frow { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.frow:first-child { border-top: 1px solid var(--hair); }
+.frow:hover .fnm { text-decoration: underline; }
+.frow .dot { transform: translateY(-1px); }
+.fnm { font-weight: 600; }
+.fsn { font-size: 13px; color: var(--muted); margin-top: 1px; }
+.frt { font-size: 12.5px; color: var(--muted); white-space: nowrap; text-align: right; }
+@media (max-width: 460px) { .frow { grid-template-columns: 7px minmax(0, 1fr); } .frt { grid-column: 2; text-align: left; white-space: normal; } }
+.ptree, .ptree ul { list-style: none; margin: 0; padding: 0; }
+.ptree ul { padding-left: 20px; }
+.ptree li { padding: 3px 0; font-size: 13.5px; }
+.ptree li > span.n { margin-left: 8px; }
+.ptree .dot { margin-right: 8px; transform: translateY(-1px); }
+.ba { border-collapse: collapse; width: 100%; font-size: 14px; }
+.ba td { padding: 6px 0; border-bottom: 1px solid var(--hair); vertical-align: top; }
+.ba td:first-child { width: 70px; color: var(--muted); font-size: 13px; }
+.fsec { margin-top: 22px; }
+.fsec h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.steps { margin: 0; padding-left: 20px; font-size: 14px; }
+.hoodln { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.cols3b { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 520px) { .cols3b { grid-template-columns: minmax(0, 1fr); } }
+.cols3b h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+/* analytics, drawer */
+.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: min(380px, 100%); z-index: 45; background: var(--bg); border-left: 1px solid var(--hair); box-shadow: var(--shadow); transform: translateX(105%); transition: transform 180ms ease; display: flex; flex-direction: column; visibility: hidden; }
+.drawer.on { transform: none; visibility: visible; }
+.drawer > header { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--hair); }
+.drawer > header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.drawer .body { flex: 1; overflow-y: auto; padding: 14px 16px; }
+.drawer footer { padding: 10px 16px; border-top: 1px solid var(--hair); display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.x { background: none; border: 0; font-size: 22px; line-height: 1; color: var(--muted); padding: 2px 6px; }
+.msg { margin-bottom: 12px; font-size: 13.5px; }
+.msg.me { border-left: 2px solid var(--ink); padding-left: 10px; }
+.msg .who2 { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.stt { font-size: 12.5px; color: var(--muted); }
+.stt.out { color: var(--accent); }
+.mval { font-size: 20px; font-weight: 600; line-height: 1.2; margin-bottom: 2px; }
+.sugg { margin-top: 24px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
+/* prompt internals */
+.looking { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.inrow { display: flex; gap: 8px; align-items: center; }
+.inrow input { flex: 1; min-width: 0; border: 1px solid var(--hair); border-radius: 8px; padding: 8px 10px; background: var(--bg); color: var(--ink); font: inherit; }
+.icon-btn { border: 1px solid var(--hair); background: var(--surface); border-radius: 8px; width: 36px; height: 36px; display: grid; place-items: center; }
+.confirm { border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; font-size: 13px; }
+.confirm label { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin: 6px 0; }
+.bar { height: 3px; background: var(--hair); overflow: hidden; margin: 6px 0; }
+.bar i { display: block; height: 100%; width: 100%; background: var(--ink); }
+.bubble { border-left: 2px solid var(--ink); padding: 2px 0 2px 10px; margin-bottom: 10px; font-size: 13.5px; }
+.place { border: 1px solid var(--hair); border-radius: 8px; padding: 12px; margin-bottom: 10px; font-size: 13.5px; }
+.place .r { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.place .lab { width: 84px; }
+.opt { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 1px; font-size: 13px; color: var(--muted); }
+.opt.on { color: var(--ink); border-bottom-color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="app" id="appBox">
+  <header class="topbar">
+    <button class="brand" data-act="go-all">Forge Desk</button>
+    <span class="crumb" id="crumb"></span>
+    <span class="grow"></span>
+    <button class="tbr" id="tbr" data-act="block" data-b="decisions"></button>
+  </header>
+  <div class="content" id="content"></div>
+  <div class="tray" id="tray"></div>
+  <div class="dock" id="dock"></div>
+  <div class="prompt" id="prompt">
+    <div class="looking" id="looking"></div>
+    <div id="ppDyn"></div>
+    <div class="inrow">
+      <input id="ppInput" type="text" placeholder="Say anything. Press Enter to send." autocomplete="off">
+      <button class="icon-btn" data-act="mic" aria-label="Voice, not connected in this mock">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <button class="btn dark" data-act="send">Send</button>
+    </div>
+  </div>
+  <aside class="drawer" id="chat" aria-label="Side chat"></aside>
+  <div class="toasts" id="toasts"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+  /* ---------- vocabulary ---------- */
+  var ST = { needs: "Needs me", work: "Running", done: "Closed", stuck: "Stuck" };
+  var KINDS = {
+    branch: { name: "Bring a feature up to date", irr: false },
+    review: { name: "Start another review round", irr: false },
+    deps: { name: "Update a tool version", irr: false },
+    flaky: { name: "Re-run a flaky CI job", irr: false },
+    publish: { name: "Publish the release", irr: true },
+    research: { name: "Promote a research result", irr: false }
+  };
+  var BLOCKS = [["home", "Home"], ["plan", "Plan"], ["analytics", "Analytics"], ["threads", "Threads"], ["decisions", "Decisions"], ["prs", "Pull requests"],
+    ["rules", "Rules and laws"], ["memory", "Memory"], ["research", "Research"], ["watch", "Watch"], ["cost", "Cost"]];
+  var THREADS = [
+    { id: "lead", name: "Lead", s: "work", doing: "Merging changes and steering three builders", size: "512 changes merged this week · 3 builders under it · running 6 days",
+      sum: ["Lead has merged 512 changes this week and is still running after 6 days.", "Three builders work under it: the release, cloud receipts and the memory budget review.", "Three questions and one memory note wait on you.", "Nothing is stuck."],
+      more: [["Release", "Held for your publish decision."], ["Cloud receipts", "The fix is on its second try after one failed review."], ["Memory budget", "The second review is running."]],
+      tl: [
+        { id: "l0", t: "Now · 14:30", live: true, lines: [["Happening", "Steering the cloud receipts fix and the memory budget review."]], counts: "", thr: [] },
+        { id: "l1", t: "14:15 to 14:30", lines: [["Closed", "2 changes merged (41, 43). 1 issue closed."], ["Faced", "Main moved again. It asked you about two branches."]], counts: "2 merged · 1 issue", thr: ["release"] },
+        { id: "l2", t: "14:00 to 14:15", lines: [["Closed", "3 changes merged. 2 issues closed."]], counts: "3 merged · 2 issues", thr: ["memrev"] }
+      ] },
+    { id: "release", name: "Release", s: "needs", doing: "Waits on your publish decision", size: "9 steps · 7 done · 1 builder",
+      sum: ["Release 0.0.12 is 7 of 9 steps along.", "The package check passed and the notes are written.", "Publishing waits on you, and it always asks.", "Once you say yes, three paused updates reopen."],
+      more: [["Done", "Build, package check, notes, three merges, tag."], ["Left", "Publish to npm, then promote."]],
+      tl: [
+        { id: "r0", t: "Now · 14:30", live: true, lines: [["Happening", "Holding the package, ready to publish."]], counts: "", thr: [] },
+        { id: "r1", t: "14:15 to 14:30", lines: [["Happening", "Release notes written."], ["Closed", "1 change merged (41)."]], counts: "1 merged", thr: [] },
+        { id: "r2", t: "14:00 to 14:15", lines: [["Happening", "Package check ran on main."]], counts: "", thr: [] }
+      ] },
+    { id: "cloud", name: "Cloud receipts builder", s: "work", doing: "Fixing the empty subject case", size: "second try · 4 tests added",
+      sum: ["The first review sent the cloud receipt fix back because an empty subject passed the check.", "The builder wrote four tests first.", "The fix itself is in progress.", "A second review follows."],
+      more: [["Done", "Four tests that fail on an empty subject."], ["Next", "The fix, then the second review."], ["Problem", "The first review failed once."]],
+      tl: [
+        { id: "c0", t: "Now · 14:30", live: true, lines: [["Happening", "Writing the fix for the empty subject case."]], counts: "", thr: [] },
+        { id: "c1", t: "14:15 to 14:30", lines: [["Happening", "Four tests written before the fix."], ["Faced", "Review found that an empty subject passes the check."]], counts: "", thr: [] },
+        { id: "c2", t: "14:00 to 14:15", lines: [["Happening", "Read the first review notes."]], counts: "", thr: [] }
+      ] },
+    { id: "memrev", name: "Memory budget review", s: "work", doing: "Second review of the memory budget", size: "review round 2 · 1 reviewer",
+      sum: ["The memory budget now compares each run against its own base run.", "The second review started a few minutes ago.", "The first review found nothing blocking.", "One flaky upload test was filed and rerun."],
+      more: [["Done", "Round 1 finished with no blockers."], ["Next", "Round 2 result, then merge."]],
+      tl: [
+        { id: "m0", t: "Now · 14:30", live: true, lines: [["Happening", "Second review is running."]], counts: "", thr: [] },
+        { id: "m1", t: "14:00 to 14:15", lines: [["Closed", "1 change merged."], ["Faced", "One upload test failed once. Filed as flaky, rerun once, passed."]], counts: "1 merged", thr: [] }
+      ] }
+  ];
+  [["flake", "Flake policy builder", "Wrote the flake policy"], ["pkg", "Package check", "Checked the package on main"], ["upd", "Update branches", "Updated three branches"], ["docs", "Docs refresh", "Refreshed the release docs"]].forEach(function (x) {
+    THREADS.push({ id: x[0], name: x[1], s: "done", doing: x[2], size: "closed this morning · 1 builder",
+      sum: ["This thread is closed.", x[2] + ".", "Nothing is left open."], more: [["Done", x[2] + "."]],
+      tl: [{ id: x[0] + "0", t: "09:00 to 13:00", lines: [["Closed", x[2] + "."]], counts: "", thr: [] }] });
+  });
+  var TL = [
+    { id: "e0", t: "Now · 14:30", live: true, lines: [["Building", "The receipt check now refuses an empty name. It is being tested."]], counts: "", feat: ["f6"], thr: ["cloud"] },
+    { id: "e1", t: "14:15 to 14:30", lines: [["Finished", "Release notes for 0.0.12, written from what actually changed."], ["Found", "An empty name got past the receipt check. Caught before release; a fix started."]], counts: "", feat: ["f5", "f6"], thr: ["release", "cloud"] },
+    { id: "e2", t: "14:00 to 14:15", lines: [["Finished", "The release package was installed and checked on a clean machine, start to end."]], counts: "", feat: ["f1", "f7"], thr: ["release", "pkg"] },
+    { id: "e3", t: "13:45 to 14:00", muted: "Nothing new.", counts: "", feat: [], thr: [] },
+    { id: "r1", t: "13:00 to 13:45", plain: "Fair memory check finished. Good work no longer fails on a slow machine.", counts: "", feat: ["f3"], thr: [], kids: [
+      { id: "r1c", t: "13:30 to 13:45", lines: [["Finished", "Fair memory check finished and switched on."]], counts: "", feat: ["f3"], thr: ["memrev"] },
+      { id: "r1b", t: "13:15 to 13:30", lines: [["Building", "Last checks on the fair memory check."], ["Found", "A slow machine still failed one good piece of work. Fixed by judging it against its own start."]], counts: "", feat: ["f3"], thr: ["memrev", "lead"] },
+      { id: "r1a", t: "13:00 to 13:15", lines: [["Building", "Fair memory check: comparing each piece of work with its own starting point."]], counts: "", feat: ["f3"], thr: ["memrev"] }
+    ] },
+    { id: "r2", t: "This morning, 09:00 to 13:00", plain: "Two features finished: faster checks, and one rule for chance failures.", counts: "", feat: ["f2", "f4"], thr: [], kids: [
+      { id: "r2d", t: "12:00 to 13:00", lines: [["Finished", "Faster checks: new work now checks in about 6 minutes."]], counts: "", feat: ["f2"], thr: ["lead", "pkg"] },
+      { id: "r2c", t: "11:00 to 12:00", lines: [["Building", "Faster checks: the last slow step was cut."]], counts: "", feat: ["f2"], thr: ["lead"] },
+      { id: "r2b", t: "10:00 to 11:00", lines: [["Finished", "One rule for chance failures: a test that fails by chance is retried once and written down."], ["Found", "A login test failed by chance. It was written down and retried."]], counts: "", feat: ["f4"], thr: ["flake"] },
+      { id: "r2a", t: "09:00 to 10:00", lines: [["Building", "Both features started from the morning plan."]], counts: "", feat: ["f2", "f4"], thr: ["lead"] }
+    ] }
+  ];
+  var STF = { done: "Done", work: "Being built", needs: "Waits on you", idle: "Not started" };
+  var FEATS = [
+    { id: "f1", name: "Safe publishing", s: "done", sent: "A release can only go out if that exact package was checked first.", right: "", line: "Done. Only a checked package can go out.",
+      bef: "A release could go out with an unchecked package.", aft: "Only the exact package that passed its check can go out.", proof: ["Tried on the last 12 releases. None went out unchecked."],
+      steps: ["We wrote the rule down in plain words.", "We made the release step refuse anything unchecked.", "We tried it on old releases to see it hold."],
+      parts: [{ n: "Check the exact package", s: "done" }, { n: "Refuse anything unchecked", s: "done" }], thr: ["release", "pkg"], ch: "3 changes" },
+    { id: "f2", name: "Faster checks", s: "done", sent: "Checks on new work finish in about 6 minutes, down from 14.", right: "", line: "Done. Checks take about 6 minutes, not 14.",
+      bef: "A check took about 14 minutes.", aft: "It takes about 6.", proof: ["Measured over the last 40 checks."],
+      steps: ["We timed where the 14 minutes went.", "We cut the slow steps and ran the rest side by side.", "We measured 40 checks to confirm."],
+      parts: [{ n: "Time every step", s: "done" }, { n: "Cut the slow steps", s: "done" }, { n: "Run the rest side by side", s: "done" }], thr: ["lead", "pkg"], ch: "6 changes" },
+    { id: "f3", name: "Fair memory check", s: "done", sent: "Work is judged against its own starting point, so a slow machine no longer fails good work.", right: "", line: "Done. A slow machine no longer fails good work.",
+      bef: "9 good pieces of work failed last week on a slow machine.", aft: "None this week.", proof: ["Compared with last week. No slow-machine failures since it went live."],
+      steps: ["We found why slow machines failed good work.", "We changed the check to compare with each piece's own start.", "We watched a full week to confirm."],
+      parts: [{ n: "Record each starting point", s: "done" }, { n: "Compare against it", s: "done" }], thr: ["memrev", "lead"], ch: "4 changes (43)" },
+    { id: "f4", name: "One rule for chance failures", s: "done", sent: "A test that fails by chance is retried once, written down, and fixed at the cause.", right: "", line: "Done. Chance failures are retried once and written down.",
+      bef: "A test that failed by chance blocked good work.", aft: "It is retried once, written down, and fixed at the cause.", proof: ["Used on 3 chance failures this week. All cleared on the retry."],
+      steps: ["We agreed one rule for every chance failure.", "We built the retry and the written record.", "We tried it on this week's failures."],
+      parts: [{ n: "Retry once", s: "done" }, { n: "Write it down", s: "done" }], thr: ["flake"], ch: "2 changes" },
+    { id: "f5", name: "Readable release notes", s: "done", sent: "Release notes are written from what actually changed, in plain words.", right: "", line: "Done. Release notes are written from what actually changed.",
+      bef: "Release notes were written by hand and missed things.", aft: "They are written from what actually changed, in plain words.", proof: ["Checked against the last release. Nothing was missing."],
+      steps: ["We listed what a reader needs to know.", "We wrote the notes from the real list of changes.", "We read them against the last release."],
+      parts: [{ n: "Collect what changed", s: "done" }, { n: "Write it in plain words", s: "done" }], thr: ["docs", "release"], ch: "1 change (41)" },
+    { id: "f6", name: "Cloud receipts", s: "work", sent: "Every action in the cloud leaves a record that cannot be forged.", right: "4 of 6 parts", line: "Being built, 4 of 6 parts. An empty name got past the check; the fix is being tested.",
+      bef: "A cloud action left no trace you could trust.", aft: "Each one leaves a record that cannot be forged. Not finished yet.", proof: [], unmeasured: "Not measured yet. It is still being built.",
+      steps: ["We define what a receipt must contain.", "We build the record and the check that refuses bad ones.", "We test it with odd cases, such as an empty name."],
+      parts: [{ n: "Receipt format", s: "done" }, { n: "Signing each receipt", s: "done" }, { n: "Storing receipts", s: "done" }, { n: "Showing receipts to you", s: "done" },
+        { n: "Receipt check", s: "work", kids: [{ n: "Refuse a changed receipt", s: "done" }, { n: "Refuse an empty name", s: "work" }] },
+        { n: "Alerts on bad receipts", s: "idle", dep: "Receipt check" }], thr: ["cloud", "lead"], ch: "5 changes so far (42, 45)" },
+    { id: "f7", name: "Send out release 0.0.12", s: "needs", sent: "Everything is checked. It needs your yes.", right: "", line: "Waits on you. Everything is checked.",
+      bef: "Releases went out whenever someone pressed the button.", aft: "Release 0.0.12 goes out only after your yes.", proof: ["Every earlier step is done and checked."],
+      steps: ["We checked the package on a clean machine.", "We wrote the release notes.", "We hold the last step for your yes."],
+      parts: [{ n: "Package checked", s: "done" }, { n: "Notes written", s: "done" }, { n: "Your yes", s: "needs" }], thr: ["release"], ch: "1 change (41)" },
+    { id: "f8", name: "Team sync", s: "idle", sent: "Two people can work on the same project without overwriting each other.", right: "depends on Cloud receipts", line: "Not started. It depends on Cloud receipts.",
+      bef: "Two people could overwrite each other's work.", aft: "They work side by side without overwriting. Not started yet.", proof: [], unmeasured: "Not measured yet. It has not started.",
+      steps: ["We decide how two people share one project.", "We build the shared view.", "We test two people working at once."],
+      parts: [{ n: "Shared view of the project", s: "idle", dep: "Cloud receipts" }, { n: "Safe joining of two people's work", s: "idle" }], thr: [], ch: "none yet" }
+  ];
+  function doneN() { return FEATS.filter(function (f) { return f.s === "done"; }).length; }
+  function fcount() { return doneN() + " of " + FEATS.length + " features done"; }
+  function feat(id) { return FEATS.filter(function (f) { return f.id === id; })[0]; }
+  var WATCH = {
+    going: [["Patched the same design a third time. Stopped at round 2 and asked you.", "lead"], ["Pushed before reading the red log, three times this week. Rule marked broken.", "cloud"]],
+    corrected: [["Asked the same question twice in an hour. Merged into one card.", "lead"], ["Skipped one flaky test without a note. Filed it and reran once.", "memrev"], ["Began a fourth edit pass. Stopped at the round limit.", "cloud"]]
+  };
+  /* ---------- state ---------- */
+  var S = {
+    screen: "project", block: "home", feature: null, ftabF: "all", ptab: "tree", pexp: {}, hood: {}, thread: null, pinned: ["home", "plan", "analytics", "threads"], more: false,
+    sw: { proj: "needs", thr: "needs" }, dtab: "waiting", sumMore: false, tmore: {}, exp: {}, tlOpen: {},
+    cards: [], done: [], mem: [],
+    level: { branch: "ask", review: "ask", deps: "ask", flaky: "auto", publish: "ask", research: "ask" },
+    today: { branch: 0, review: 0, deps: 0 }, weekBase: 4, offer: null, offerNo: {},
+    dry: false, resDone: false, rtab: "running", ftab: "laws", wtab: "going", reset: false,
+    lists: {
+      laws: [{ t: "Never publish without a recorded review", s: "enforced" }, { t: "Never delete a branch with unmerged work", s: "enforced" }, { t: "Never touch another project's files", s: "held" }],
+      rules: [{ t: "At most 2 review rounds per design", s: "held" }, { t: "Merge only with a recorded review", s: "enforced" },
+        { t: "Builders read the red log before pushing", s: "broken", why: "Skipped 3 times this week. Two pushes failed CI." }, { t: "Keep each change under 400 lines", s: "not", dry: true }],
+      notes: [{ t: "Never use fast mode", s: "not", btn: true }, { t: "Release notes go in the changelog", s: "held" }]
+    },
+    atab: "signals", sizes: { f2: 3, f3: 2, f1: 3, f4: 1, f5: 1 }, sugg: true, usage: false, chat: null, idea: null, forceIdea: false, ctxLine: null, prevTid: null, fseq: 8,
+    ideas: [{ id: "i1", name: "Weekly delivery note", text: "Send a short Monday note that says what was delivered and what is next." },
+      { id: "i2", name: "Cost per feature", text: "Let the team see, at a glance, what each feature cost them to build." }],
+    ti: 0, texp: {}, lastN: null, nothing: false, tanim: false, offerThread: null, pend: null, skip: {}, tid: "lead", pl: null, answer: null, log: [], look: null
+  };
+  var MEMS = [["Release notes go in the changelog", "this project"], ["Ask before publishing anything", "all projects"], ["The Lead thread owns the release order", "this thread"], ["Answer in plain words, no file names", "all projects"]];
+  S.mem = MEMS.map(function (m) { return { t: m[0], s: m[1] }; });
+  (function seed() {
+    var det = function (k) { return { rows: [["How far behind", k + " updates"], ["Trial update", "No conflicts found"], ["Tests after the update", "Not run yet"]] }; };
+    S.cards = [
+      { id: "c1", kind: "branch", ctx: "Decision · Cloud receipts", thread: "lead", short: "Cloud receipts", q: "Cloud receipts has fallen behind the latest work. Bring it up to date?", opts: ["Bring it up to date", "Leave it"], def: 0, det: det(3) },
+      { id: "c2", kind: "branch", ctx: "Decision · Readable release notes", thread: "lead", short: "Readable release notes", q: "Readable release notes has fallen behind the latest work. Bring it up to date?", opts: ["Bring it up to date", "Leave it"], def: 0, det: det(2) },
+      { id: "c3", kind: "placement", ctx: "Placement · your prompt", thread: "lead", q: "You said: never use the fast tier. Where should it apply?", opts: ["This thread", "This project", "All projects"], def: 1,
+        det: { rows: [["Stored as", "A rule"], ["Default scope", "This project"], ["Enforced by", "Nothing yet"]], note: "Dry run. Would have stopped 2 actions this week." } },
+      { id: "c4", kind: "memory", ctx: "Memory · Lead thread", thread: "lead", q: "Keep this for later? 'Hosted CI is the only test gate. No tests on the laptop.'", opts: ["Keep for this project", "Keep for all projects", "Do not keep"], def: 0,
+        det: { check: [["Not already saved", 1], ["Short enough to reuse", 1], ["Contains no secrets", 1]] } },
+      { id: "c5", kind: "publish", ctx: "Decision · Send out release 0.0.12", thread: "release", short: "release 0.0.12", q: "Release 0.0.12 is ready. Send it out to everyone?", opts: ["Review"], def: 0, lock: true, always: true,
+        det: { dyn: true } }
+    ];
+    S.exp.c5 = "ready";
+    S.done = [
+      { time: "08:12", what: "Re-ran the flaky upload test", why: "you chose the default 6 times", kind: "flaky" },
+      { time: "07:40", what: "Re-ran the flaky login test", why: "you chose the default 6 times", kind: "flaky" }
+    ];
+  })();
+  /* ---------- helpers ---------- */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function dot(s) { return '<span class="st s-' + s + '"><i class="dot d-' + s + '"></i>' + ST[s] + "</span>"; }
+  function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
+  function thr(id) { return THREADS.filter(function (t) { return t.id === id; })[0]; }
+  function cardById(id) { return S.cards.filter(function (c) { return c.id === id; })[0]; }
+  function kindName(k) { return KINDS[k].name.toLowerCase(); }
+  function weekCount(k) { return S.weekBase + (S.today[k] || 0); }
+  function tnm(id) { return id === "newt" ? "A new thread" : id === "idea" ? "Park it as an idea" : thr(id).name; }
+  function tName() { return tnm(S.tid); }
+  function nCards() { return S.cards.length; }
+  function total() { return nCards() + 1; }
+  function blkName(id, cnt) {
+    var n = BLOCKS.filter(function (b) { return b[0] === id; })[0][1];
+    return cnt && id === "decisions" ? n + " (" + nCards() + ")" : n;
+  }
+  function tstate(t) { return t.id === "release" ? (S.cards.some(function (c) { return c.thread === "release"; }) ? "needs" : "work") : t.s; }
+  function tabsHtml(sid, tabs, cur) {
+    return '<div class="tabs" role="tablist">' + tabs.map(function (t) {
+      return '<button class="tab' + (t[0] === cur ? " on" : "") + '" role="tab" data-act="stab" data-s="' + sid + '" data-t="' + t[0] + '">' + esc(t[1]) + (t[2] ? " " + esc(t[2]) : "") + "</button>";
+    }).join("") + "</div>";
+  }
+  function swHtml(key, counts, cur, when) {
+    var lab = { needs: "Needs me", work: "Running", done: "Closed" };
+    var ph = { needs: function (n) { return n + " need me"; }, work: function (n) { return n + " running without you"; }, done: function (n) { return n + " closed " + when; } };
+    var h = '<div class="sw" role="tablist">' + ["needs", "work", "done"].map(function (k) {
+      return '<button class="swb' + (k === cur ? " on" : "") + '" data-act="sw" data-k="' + key + '" data-v="' + k + '">' + lab[k] + " (" + counts[k] + ")</button>";
+    }).join("") + "</div>";
+    return { head: h, quiet: function () {
+      return '<p class="quiet">' + ["needs", "work", "done"].filter(function (k) { return k !== cur; }).map(function (k) {
+        return '<a data-act="sw" data-k="' + key + '" data-v="' + k + '">' + ph[k](counts[k]) + "</a>";
+      }).join(" · ") + "</p>";
+    } };
+  }
+  /* ---------- toast ---------- */
+  function toast(msg, undo) {
+    var el = document.createElement("div");
+    el.className = "toast";
+    el.innerHTML = "<span>" + esc(msg) + "</span>";
+    var t;
+    function kill() { clearTimeout(t); el.classList.add("out"); setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 220); }
+    if (undo) { var b = document.createElement("button"); b.textContent = "Undo"; b.onclick = function () { undo(); kill(); }; el.appendChild(b); }
+    $("toasts").appendChild(el);
+    t = setTimeout(kill, 6000);
+  }
+  /* ---------- cards ---------- */
+  function detHtml(c) {
+    var d = c.det, h = "";
+    if (d.rows) h += '<table class="tb">' + d.rows.map(function (r) { return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td></tr>"; }).join("") + "</table>";
+    var chk = d.dyn ? FEATS.map(function (f) { return [f.name, f.s === "done" ? 1 : 0, STF[f.s].toLowerCase()]; }) : d.check;
+    if (chk) h += '<ul class="ck">' + chk.map(function (r) { return '<li class="' + (r[1] ? "" : "left") + '"><i class="dot ' + (r[1] ? "d-done" : "d-idle") + '"></i><span>' + esc(r[0]) + (r[1] ? "" : (r[2] ? " · " + r[2] : " (left)")) + "</span></li>"; }).join("") + "</ul>";
+    var ln = d.dyn ? fcount() + "." : d.line, bw = d.dyn ? Math.round(doneN() / FEATS.length * 100) : d.bar;
+    if (ln) h += '<div class="sm">' + esc(ln) + '</div><div class="pbar"><i style="width:' + bw + '%"></i></div>';
+    if (d.note) h += '<div class="sm mu" style="margin-bottom:10px">' + esc(d.note) + "</div>";
+    return h;
+  }
+  function cardHtml(c) {
+    var st = S.exp[c.id], h = '<div class="card' + (st ? " wide" : "") + '"><div class="kl">' + esc(c.ctx) + '</div><div class="q">' + esc(c.q) + "</div>";
+    if (st === "loading") h += '<div class="mu sm ask">Asking the agent…</div>';
+    else if (st === "ready") {
+      h += detHtml(c);
+      if (c.lock) h += '<div class="lockline" style="margin:0 0 10px">Always asks. Cannot be made automatic.</div>';
+      h += '<div class="opts"><button class="btn pri" data-act="accept" data-id="' + c.id + '">Accept</button><button class="btn" data-act="reject" data-id="' + c.id + '">Reject</button>' +
+        (c.always ? "" : '<button class="tbtn mu" data-act="less" data-id="' + c.id + '">Less detail</button>') + "</div>";
+    } else {
+      h += '<div class="opts">' + c.opts.map(function (t, i) {
+        return '<button class="' + (i === c.def ? "btn pri" : "tbtn") + '" data-act="ans" data-id="' + c.id + '" data-i="' + i + '">' + esc(t) + "</button>";
+      }).join("") + "</div>";
+      h += '<div style="margin-top:auto"><button class="tbtn mu" data-act="more-detail" data-id="' + c.id + '">More detail</button></div>';
+    }
+    return h + "</div>";
+  }
+  function offerHtml() {
+    var k = S.offer;
+    if (!k) return "";
+    return '<div class="offer"><p>You took the default for \'' + esc(kindName(k)) + "' " + S.today[k] + " times today and " + weekCount(k) +
+      ' times this week. Let it happen on its own?</p><div class="opts" style="margin:0"><button class="btn pri" data-act="offer-yes">Yes, do it for me</button><button class="tbtn" data-act="offer-no">Keep asking</button></div></div>';
+  }
+  function waitingHtml(list, one) {
+    if (!list.length) return '<p class="mu sm" style="margin:0">Nothing waits on you here.</p>';
+    return '<div class="grid' + (one ? " one" : "") + '">' + list.map(cardHtml).join("") + "</div>";
+  }
+  function answer(id, i) {
+    var c = cardById(id);
+    if (!c) return;
+    var idx = S.cards.indexOf(c), prevExp = S.exp[id];
+    var counted = i === c.def && !c.lock && S.today[c.kind] !== undefined;
+    var memAdd = null, ruleAdd = null;
+    S.cards.splice(idx, 1);
+    delete S.exp[id]; delete S.texp[id]; S.tanim = true;
+    if (c.kind === "memory" && i >= 0 && i < 2) { memAdd = { t: "Hosted CI is the only test gate. No tests on the laptop.", s: i === 0 ? "this project" : "all projects" }; S.mem.push(memAdd); }
+    if (c.kind === "placement" && i >= 0) { ruleAdd = { t: "Never use the fast tier", s: "not" }; S.lists.rules.unshift(ruleAdd); }
+    if (counted) {
+      S.today[c.kind]++;
+      if (S.today[c.kind] === 2 && S.level[c.kind] === "ask" && !S.offerNo[c.kind]) S.offer = c.kind; S.offerThread = c.thread; S.ti = 0;
+    }
+    render();
+    var msg = i < 0 ? "Rejected." : c.lock ? "Accepted. Publishing started (mock)." : "Answered: " + c.opts[i];
+    toast(msg, function () {
+      S.cards.splice(idx, 0, c);
+      if (prevExp) S.exp[id] = prevExp;
+      if (memAdd) S.mem.splice(S.mem.indexOf(memAdd), 1);
+      if (ruleAdd) S.lists.rules.splice(S.lists.rules.indexOf(ruleAdd), 1);
+      if (counted) { S.today[c.kind]--; if (S.offer === c.kind && S.today[c.kind] < 2) S.offer = null; }
+      render();
+    });
+  }
+  function moreDetail(id) {
+    S.exp[id] = "loading";
+    render();
+    setTimeout(function () { if (S.exp[id] === "loading" && cardById(id)) { S.exp[id] = "ready"; render(); } }, 1200);
+  }
+  function makeAuto(k) {
+    if (KINDS[k].irr) return;
+    S.level[k] = "auto";
+    var mine = S.cards.filter(function (c) { return c.kind === k; });
+    mine.forEach(function (c) {
+      S.cards.splice(S.cards.indexOf(c), 1);
+      S.done.unshift({ time: "just now", what: c.opts[c.def] + " for " + c.short, why: "you chose the default " + weekCount(k) + " times", kind: k, card: c });
+    });
+    if (S.offer === k) S.offer = null;
+    render();
+    toast(mine.length ? "Done. " + plural(mine.length, "question") + " moved to Done for you." : "Done. This kind now happens on its own.");
+  }
+  function setLevel(k, lv) {
+    if (KINDS[k].irr) return;
+    if (lv === "auto") { makeAuto(k); return; }
+    S.level[k] = lv;
+    render();
+    toast(KINDS[k].name + ": " + (lv === "ask" ? "asks every time." : "asks once a day in a batch."));
+  }
+  function undoDone(i) {
+    var d = S.done[i];
+    if (!d) return;
+    S.done.splice(i, 1);
+    if (d.card) S.cards.push(d.card);
+    render();
+    toast(d.card ? "Undone. The question is back in Waiting on you." : "Undone.");
+  }
+  function askAgain(i) {
+    var d = S.done[i];
+    if (!d) return;
+    S.level[d.kind] = "ask";
+    S.offerNo[d.kind] = true;
+    S.done.splice(i, 1);
+    render();
+    toast("Okay. '" + kindName(d.kind) + "' will ask you again.");
+  }
+  /* ---------- timeline ---------- */
+  function logEntries(onlyThread) {
+    return S.log.filter(function (l) { return !onlyThread || l.t === onlyThread; }).map(function (l, i) {
+      return { id: "lg" + l.n, t: "Just now", lines: [["You", l.text]], counts: "sent to " + tnm(l.t), thr: [] };
+    });
+  }
+  function teHtml(e, cur, sub) {
+    var open = S.tlOpen[e.id];
+    var lines = e.muted ? '<div class="tline mu">' + esc(e.muted) + "</div>" : e.plain ? '<div class="tline">' + esc(e.plain) + "</div>" :
+      e.lines.map(function (l) { return '<div class="tline"><span class="lab">' + esc(l[0]) + "</span>" + esc(l[1]) + "</div>"; }).join("");
+    var time = e.live ? '<i class="dot d-work"></i> ' + esc(e.t) + ' <span class="live">live</span>' : esc(e.t);
+    var x = "";
+    if (open) {
+      if (e.kids) x = e.kids.map(function (k) { return teHtml(k, cur, true); }).join("");
+      else if (e.feat) x = featReveal(e);
+      else {
+        var ids = (e.thr || []).filter(function (id) { return id !== cur; });
+        x = ids.length ? '<div class="who">Threads that contributed: ' + ids.map(function (id) { return '<a data-act="thread" data-id="' + id + '">' + esc(thr(id).name) + "</a>"; }).join(" · ") + "</div>" :
+          '<div class="who">All of this came from ' + (cur ? "this thread" : "one thread") + ".</div>";
+      }
+    }
+    return '<div class="te' + (sub ? " sub" : "") + '" data-act="tl" data-id="' + e.id + '"><div class="tt">' + time + "</div><div>" + lines + '</div><div class="tc">' + esc(e.counts || "") + "</div>" + (x ? '<div class="tx">' + x + "</div>" : "") + "</div>";
+  }
+  function tlHtml(entries, cur) { return '<div>' + entries.map(function (e) { return teHtml(e, cur, false); }).join("") + "</div>"; }
+  /* ---------- blocks ---------- */
+  var SUM = [["Where we are.", function () { return "Release 0.0.12 has " + fcount() + " and is one decision from going out."; }],
+    ["New today.", "Checks on new work finish in 6 minutes instead of 14. Good work no longer fails just because a machine was slow."],
+    ["Next.", "Sending the release out, which waits on you. Then team sync."],
+    ["Problem.", "One. An empty name got past the receipt check. It was caught before release and the fix is being tested."]];
+  function fdot(s) { return '<i class="dot d-' + s + '"></i>'; }
+  function homeBlock() {
+    var h = '<p class="label">Home · updated 12 min ago · refreshes every 30 min</p>';
+    h += '<div class="hrow"><b>Release 0.0.12</b><span class="mu sm">' + fcount() + '</span></div>';
+    h += psegHtml();
+    if (S.sumMore) h += FEATS.map(function (f) { return '<p class="prose lines"><b>' + esc(f.name) + ".</b> " + esc(f.line) + "</p>"; }).join("") + '<p style="margin:6px 0 0"><button class="tbtn u" data-act="sum-more">Less</button></p>';
+    else h += SUM.map(function (p) { return '<p class="prose" style="margin-bottom:6px"><b>' + esc(p[0]) + "</b> " + esc(typeof p[1] === "function" ? p[1]() : p[1]) + "</p>"; }).join("") + '<p style="margin:8px 0 0"><button class="tbtn u" data-act="sum-more">More</button></p>';
+    if (S.usage) h += '<div style="max-width:260px;margin:14px 0 0">' + metricTile(AM[5]) + "</div>";
+    var cnt = function (st) { return FEATS.filter(function (f) { return f.s === st; }).length; };
+    var tabs = [["all", "All", "(" + FEATS.length + ")"], ["done", "Done", "(" + cnt("done") + ")"], ["work", "Being built", "(" + cnt("work") + ")"], ["needs", "Waits on you", "(" + cnt("needs") + ")"], ["idle", "Not started", "(" + cnt("idle") + ")"]];
+    var list = FEATS.filter(function (f) { return S.ftabF === "all" || f.s === S.ftabF; });
+    h += '<section class="sec"><div class="sh"><h3>Features</h3></div>' + tabsHtml("feat", tabs, S.ftabF) +
+      list.map(function (f) {
+        return '<div class="frow" data-act="feature" data-id="' + f.id + '">' + fdot(f.s) + '<div><span class="fnm">' + esc(f.name) + '</span><div class="fsn">' + esc(f.sent) + '</div></div><span class="frt">' + esc(f.right) + "</span></div>";
+      }).join("") + "</section>";
+    h += '<section class="sec"><div class="sh"><h3>Timeline · live · one entry every 15 minutes</h3></div>' + tlHtml(logEntries(null).concat(TL), null) + "</section>";
+    if (S.sugg) h += suggHtml();
+    return h;
+  }
+  function partsHtml(parts) {
+    return '<ul class="ptree">' + parts.map(function (p) {
+      return "<li>" + fdot(p.s) + esc(p.n) + '<span class="mu sm n">' + esc(STF[p.s].toLowerCase()) + (p.dep ? " · depends on " + esc(p.dep) : "") + "</span>" + (p.kids ? partsHtml(p.kids) : "") + "</li>";
+    }).join("") + "</ul>";
+  }
+  function featReveal(e) {
+    var fs = (e.feat || []).map(function (id) { return '<a data-act="feature" data-id="' + id + '">' + esc(feat(id).name) + "</a>"; }).join(" · ");
+    var ts = (e.thr || []).map(function (id) { return '<a data-act="thread" data-id="' + id + '">' + esc(thr(id).name) + "</a>"; }).join(" · ");
+    return (fs ? '<div class="who">Feature: ' + fs + "</div>" : '<div class="who">No feature moved.</div>') + (ts ? '<div class="hoodln">Under the hood: ' + ts + "</div>" : "");
+  }
+  function screenFeature() {
+    var f = feat(S.feature), open = S.hood[f.id];
+    var h = '<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px"><h1>' + esc(f.name) + '</h1><span class="st">' + fdot(f.s) + STF[f.s] + "</span></div>" +
+      '<p class="prose" style="margin:0">' + esc(f.sent) + "</p>";
+    h += '<div class="fsec"><h3>What changes for you</h3><table class="ba"><tr><td>Before</td><td>' + esc(f.bef) + "</td></tr><tr><td>After</td><td>" + esc(f.aft) + "</td></tr></table></div>";
+    h += '<div class="fsec"><h3>How we know</h3>' + (f.proof.length ? f.proof.map(function (x) { return '<div class="sm">' + esc(x) + "</div>"; }).join("") : '<div class="sm mu">' + esc(f.unmeasured) + "</div>") + "</div>";
+    h += '<div class="fsec"><h3>How it was built</h3><ol class="steps">' + f.steps.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ol></div>";
+    h += '<div class="fsec"><h3>Parts</h3>' + partsHtml(f.parts) + (f.id === "f8" ? '<div class="sm mu" style="margin-top:6px">Depends on Cloud receipts.</div>' : "") + "</div>";
+    h += '<div class="fsec"><h3><button class="tbtn" style="font-weight:600" data-act="hood" data-id="' + f.id + '">Under the hood ' + (open ? "(hide)" : "(show)") + "</button></h3>";
+    if (open) h += '<div class="sm mu">Threads that worked on it: ' + (f.thr.length ? f.thr.map(function (id) { return '<a data-act="thread" data-id="' + id + '">' + esc(thr(id).name) + "</a>"; }).join(" · ") : "none yet") + '</div><div class="sm mu">Changes: ' + esc(f.ch) + "</div>";
+    return h + "</div>";
+  }
+  function trow(t) {
+    return '<div class="trow" data-act="thread" data-id="' + t.id + '"><i class="dot d-' + tstate(t) + '"></i><div><div><span class="tn">' + esc(t.name) + "</span><span>" +
+      esc(t.id === "release" && tstate(t) !== "needs" ? "Publish decision answered" : t.doing) + '</span></div><div class="tsz">' + esc(t.size) + "</div></div></div>";
+  }
+  function threadsBlock() {
+    var by = { needs: [], work: [], done: [] };
+    THREADS.forEach(function (t) { by[tstate(t)].push(t); });
+    var counts = { needs: by.needs.length, work: by.work.length, done: 12 };
+    var cur = S.sw.thr, sw = swHtml("thr", counts, cur, "this week");
+    var rows = by[cur].map(trow).join("");
+    if (cur === "done") rows += '<div class="trow" style="cursor:default"><i></i><div class="mu sm">8 more</div></div>';
+    if (!rows) rows = '<p class="mu sm">Nothing here.</p>';
+    return sw.head + '<div style="margin-top:12px">' + rows + "</div>" + sw.quiet();
+  }
+  function decisionsBlock() {
+    var tabs = [["waiting", "Waiting", "(" + nCards() + ")"], ["done", "Done for you", "(" + S.done.length + ")"], ["trust", "Trust"]];
+    var h = tabsHtml("decisions", tabs, S.dtab);
+    if (S.dtab === "waiting") return h + offerHtml() + waitingHtml(S.cards, true);
+    if (S.dtab === "done") {
+      return h + (S.done.length ? S.done.map(function (d, i) {
+        return '<div class="dr"><div>' + esc(d.what) + ' <span class="mu sm">' + esc(d.time) + '</span></div><div class="mu sm">Why: ' + esc(d.why) + "</div>" +
+          '<div class="acts"><button class="tbtn" data-act="undo-done" data-i="' + i + '">Undo</button><button class="tbtn" data-act="ask-again" data-i="' + i + '">Ask me again</button></div></div>';
+      }).join("") : '<p class="mu">Nothing done for you yet.</p>');
+    }
+    var steps = [["ask", "Ask every time"], ["batch", "Ask once a day in a batch"], ["auto", "Do it and show me"]];
+    return h + '<p class="mu sm" style="margin-top:0">Trust is earned one kind of decision at a time. You are always in control.</p>' + ["branch", "review", "deps", "flaky", "publish"].map(function (k) {
+      var locked = KINDS[k].irr;
+      return '<div class="kind-row"><b>' + esc(KINDS[k].name) + "</b>" + (locked ? '<div class="mu sm">Always asks. Cannot be made automatic.</div>' : "") +
+        '<div class="steps3">' + steps.map(function (s) {
+          return '<button class="step' + (S.level[k] === s[0] ? " on" : "") + '" data-act="level" data-k="' + k + '" data-l="' + s[0] + '"' + (locked ? " disabled" : "") + ">" + s[1] + "</button>";
+        }).join("") + "</div></div>";
+    }).join("");
+  }
+  /* ---------- analytics, ideas, chat ---------- */
+  var AM = [["Time from start to done, per change", "42 min", "38 min", "normal"], ["Size of each change", "180 lines", "210", "better"], ["Checks failing", "9 today", "3", "outside normal"],
+    ["Work sent back by review", "1 in 6", "1 in 5", "normal"], ["Time waiting on you", "2 h 10 min", "40 min", "slower"], ["Usage per feature", "9% of the week", "12%", "better"]];
+  var SIZEW = { 1: "Small", 2: "Medium", 3: "Large" };
+  var VAL = [["f2", "Faster"], ["f3", "Fewer false failures"], ["f1", "Safer"], ["f4", "Less noise"], ["f5", "Clearer"]];
+  function pts() { return VAL.reduce(function (a, v) { return a + S.sizes[v[0]]; }, 0); }
+  function psegHtml() {
+    var n = FEATS.length, d = doneN(), h = '<div class="pseg">';
+    for (var i = 0; i < n; i++) h += '<i class="' + (i < d ? "d" : i === d && FEATS.some(function (f) { return f.s === "work"; }) ? "h" : "") + '"></i>';
+    return h + "</div>";
+  }
+  function metricTile(m) {
+    return '<div class="card"><div class="kl">' + esc(m[0]) + '</div><div class="mval">' + esc(m[1]) + '</div><div class="mu sm">normal: ' + esc(m[2]) + '</div><div class="stt' + (m[3] === "outside normal" ? " out" : "") + '">' + esc(m[3]) + "</div></div>";
+  }
+  function suggHtml() {
+    return '<div class="sugg"><span>The agent suggests adding \'Usage per feature\' to Home.</span><button class="tbtn u" data-act="sugg-add">Add</button><button class="tbtn mu" data-act="sugg-no">Not now</button></div>';
+  }
+  function analyticsBlock() {
+    var h = tabsHtml("an", [["signals", "Signals"], ["value", "Value"], ["agents", "Agents"]], S.atab);
+    h += '<p class="label">Every number is compared with what is normal for this project: the median of the last 4 weeks.</p>';
+    if (S.atab === "signals") {
+      var sig = [["Checks are failing more than usual.", "9 failed today. A normal day is 3. One upload test caused 6 of them.", "Have an agent fix the cause", "asig-fix"],
+        ["Cloud receipts is taking longer than features this size usually do.", "3 days so far. Normal is 1. It was sent back once.", "See why", "asig-why"],
+        ["The longest wait today was on you.", "Send out release 0.0.12 has waited 3 h 10 min.", "Answer now", "asig-ans"]];
+      h += sig.map(function (x) {
+        return '<div class="card" style="margin-bottom:10px"><div class="q" style="margin-bottom:4px">' + esc(x[0]) + '</div><div class="mu sm" style="margin-bottom:10px">' + esc(x[1]) + '</div><div class="opts" style="margin:0"><button class="btn" data-act="' + x[3] + '">' + esc(x[2]) + "</button></div></div>";
+      }).join("") + '<p class="quiet">Everything else is inside its normal range.</p>';
+    } else if (S.atab === "value") {
+      var w = [["3 weeks ago", 4], ["2 weeks ago", 6], ["Last week", 7], ["This week", pts()]];
+      h += '<p class="prose">This week: 5 features delivered, worth ' + pts() + ' points. Last week: 3 features, 7 points.</p>' +
+        '<div class="chart">' + w.map(function (x) { return '<div class="bc"><span class="v">' + x[1] + '</span><div class="b" style="height:' + (x[1] * 8) + 'px"></div></div>'; }).join("") + "</div>" +
+        '<div class="days">' + w.map(function (x) { return "<span>" + x[0] + "</span>"; }).join("") + "</div>" +
+        VAL.map(function (v) {
+          return '<div class="rrow"><span>' + esc(feat(v[0]).name) + '</span><span class="mu"><button class="tbtn mu u" data-act="size" data-id="' + v[0] + '">' + SIZEW[S.sizes[v[0]]] + "</button> · " + esc(v[1]) + "</span></div>";
+        }).join("") + '<p class="quiet">Sizes are proposed by the agent. Click one to change it.</p>';
+    } else {
+      h += '<div class="grid">' + AM.map(metricTile).join("") + "</div>";
+      h += '<section class="sec"><div class="sh"><h3>Taking longer than normal</h3></div>' +
+        '<div class="rrow"><a data-act="feature" data-id="f6">Cloud receipts · 3 days so far, normal 1</a></div>' +
+        '<div class="rrow"><a data-act="feature" data-id="f7">Send out release 0.0.12 · waiting 3 h 10 min, normal 40 min</a></div></section>';
+      h += '<section class="sec"><div class="sh"><h3>Failing again and again</h3></div><div class="rrow"><span>The same upload test, 6 times this week.</span><button class="tbtn u" data-act="thread" data-id="memrev">Open the thread</button></div></section>';
+    }
+    if (S.sugg) h += suggHtml();
+    return h;
+  }
+  function ideasHtml() {
+    if (!S.ideas.length) return '<p class="mu sm">No parked ideas.</p>';
+    return S.ideas.map(function (i) {
+      return '<div class="dr"><div>' + esc(i.text) + '</div><div class="acts"><button class="tbtn" data-act="idea-talk" data-id="' + i.id + '">Talk it through</button><button class="tbtn" data-act="idea-feat" data-id="' + i.id + '">Turn into a feature</button><button class="tbtn" data-act="idea-drop" data-id="' + i.id + '">Drop</button></div></div>';
+    }).join("");
+  }
+  var ideaN = 10;
+  function mkIdea(text) {
+    var w = text.trim().replace(/[.?!]+$/, "").split(/\s+/).slice(0, 6).join(" ");
+    return { id: "i" + (++ideaN), name: w.charAt(0).toUpperCase() + w.slice(1), text: text.trim() };
+  }
+  function addFeatureFromIdea(i) {
+    FEATS.push({ id: "f" + (++S.fseq), name: i.name, s: "idle", sent: i.text, right: "", line: "Not started.",
+      bef: "Today this is only an idea.", aft: i.text, proof: [], unmeasured: "Not measured yet. It has not started.",
+      steps: ["We agree what it should give you.", "We build it.", "We test it."], parts: [{ n: "First part", s: "idle" }], thr: [], ch: "none yet" });
+  }
+  function parkIdea(text) {
+    var it = mkIdea(text);
+    S.ideas.push(it);
+    render();
+    toast("Parked as an idea.", function () { S.ideas.splice(S.ideas.indexOf(it), 1); render(); });
+  }
+  function removeIdea(id) { S.ideas = S.ideas.filter(function (i) { return i.id !== id; }); }
+  function renderChat() {
+    var el = $("chat"), c = S.chat;
+    if (!c) { el.className = "drawer"; el.innerHTML = ""; return; }
+    var h = '<header><h2>Side chat · nothing running is touched</h2><button class="x" data-act="chat-close" aria-label="Close">&times;</button></header><div class="body">' +
+      '<div class="msg me"><div class="who2">The idea</div>' + esc(c.idea.text) + "</div>" +
+      '<div class="msg"><div class="who2">Agent</div>One question first: who is this for?' +
+      (c.step === 0 ? '<div class="opts" style="margin-top:8px"><button class="btn" data-act="chat-pick" data-v="just you">Just me</button><button class="btn" data-act="chat-pick" data-v="the whole team">The whole team</button></div>' : "") + "</div>";
+    if (c.step >= 1) {
+      h += '<div class="msg me"><div class="who2">You</div>' + (c.pick === "just you" ? "Just me" : "The whole team") + "</div>" +
+        '<div class="msg"><div class="who2">Agent</div>Here is a proposal:<br>1. We build it for ' + esc(c.pick) + ".<br>2. It appears as one new feature in the plan, not started.<br>3. Nothing running changes until you say go.</div>";
+    }
+    h += "</div>";
+    if (c.step >= 1) h += '<footer><button class="btn pri" data-act="chat-plan">Add to the plan</button><button class="tbtn" data-act="chat-keep">Keep as idea</button><button class="tbtn" data-act="chat-drop">Drop</button></footer>';
+    el.className = "drawer on"; el.innerHTML = h;
+  }
+  function chatDone(kind) {
+    var c = S.chat;
+    if (!c) return;
+    if (kind === "plan") { addFeatureFromIdea(c.idea); if (c.inList) removeIdea(c.idea.id); }
+    else if (kind === "keep") { if (!c.inList) S.ideas.push(c.idea); }
+    else if (c.inList) removeIdea(c.idea.id);
+    S.chat = null;
+    render();
+    toast(kind === "plan" ? "Added to the plan as not started." : kind === "keep" ? "Kept as an idea." : "Dropped.");
+  }
+  function openChat(idea, inList) { S.chat = { idea: idea, inList: inList, step: 0, pick: null }; $("prompt").classList.remove("on"); render(); }
+  /* ---------- analytics end ---------- */
+  function planBlock() {
+    var h = '<p class="prose">Release 0.0.12: ' + fcount() + '. At today\'s pace the rest take about 2 days (estimate).</p>' + tabsHtml("plan", [["tree", "Tree"], ["board", "Board"], ["ideas", "Ideas", "(" + S.ideas.length + ")"]], S.ptab);
+    if (S.ptab === "ideas") return h + ideasHtml();
+    if (S.ptab === "board") {
+      var col = function (n, st) {
+        var l = FEATS.filter(function (f) { return st.indexOf(f.s) >= 0; });
+        return "<div><h4>" + n + "</h4>" + l.map(function (f) { return '<div class="ic">' + esc(f.name) + (f.s === "needs" ? ' <span class="mu">· waits on you</span>' : "") + "</div>"; }).join("") + "</div>";
+      };
+      return h + '<div class="cols3b">' + col("Not started", ["idle"]) + col("Being built", ["work", "needs"]) + col("Done", ["done"]) + "</div>";
+    }
+    h += '<div class="hrow" style="margin-top:6px">' + fdot("work") + "<b>Forge · Release 0.0.12</b></div>";
+    return h + FEATS.map(function (f) {
+      var open = S.pexp[f.id];
+      return '<div class="frow" data-act="pexp" data-id="' + f.id + '">' + fdot(f.s) + '<div><span class="fnm">' + esc(f.name) + "</span>" +
+        (open ? '<div style="margin-top:6px">' + partsHtml(f.parts) + '<div style="margin-top:4px"><a data-act="feature" data-id="' + f.id + '" class="sm">Open feature</a></div></div>' : "") + '</div><span class="frt">' + esc(f.right) + "</span></div>";
+    }).join("");
+  }
+  function prsBlock() {
+    var d = [["Sat", 61], ["Sun", 78], ["Mon", 83], ["Tue", 72], ["Wed", 90], ["Thu", 114], ["Fri", 14]];
+    var open = [["Change 42", "In second review", "work"], ["Change 44", "Branch behind main", "needs"], ["Change 45", "Checks running", "work"]];
+    return '<p class="prose" style="font-size:15px">Merged today 14 · this week 512 · open 3</p>' +
+      '<div class="chart">' + d.map(function (x) { return '<div class="bc"><span class="v">' + x[1] + '</span><div class="b" style="height:' + Math.round(x[1] / 114 * 100) + 'px"></div></div>'; }).join("") + "</div>" +
+      '<div class="days">' + d.map(function (x) { return "<span>" + x[0] + "</span>"; }).join("") + "</div>" +
+      open.map(function (o) { return '<div class="rrow"><span>' + o[0] + "</span>" + dot(o[2]).replace(ST[o[2]], o[1]) + "</div>"; }).join("");
+  }
+  function rulesBlock() {
+    var L = S.lists, tab = S.ftab;
+    var names = { enforced: "enforced", held: "held", broken: "broken", not: "not enforced" };
+    var arr = L[tab].map(function (r, i) { return { r: r, i: i }; });
+    arr.sort(function (a, b) { return (b.r.s === "broken") - (a.r.s === "broken") || a.i - b.i; });
+    return tabsHtml("rules", [["laws", "Laws", "(" + L.laws.length + ")"], ["rules", "Rules", "(" + L.rules.length + ")"], ["notes", "Notes", "(" + L.notes.length + ")"]], tab) + arr.map(function (x) {
+      var r = x.r, acts = "";
+      if (r.btn && r.s === "not") acts += '<button class="tbtn" data-act="enforce" data-l="' + tab + '" data-i="' + x.i + '">Make it enforced</button>';
+      if (r.dry) acts += '<button class="tbtn" data-act="dry">Dry run</button>';
+      return '<div class="fi"><div class="fl"><span>' + esc(r.t) + '</span><span class="stw s-' + r.s + '">' + names[r.s] + "</span></div>" +
+        (r.why ? '<div class="why">' + esc(r.why) + "</div>" : "") + (acts ? '<div class="acts">' + acts + "</div>" : "") +
+        (r.dry && S.dry ? '<div class="dry">Last 7 days: this would have blocked 4 changes and saved 2 review rounds.</div>' : "") + "</div>";
+    }).join("");
+  }
+  function memoryBlock() {
+    return '<p class="label">' + S.mem.length + " saved notes</p>" + S.mem.map(function (m) { return '<div class="rrow"><span>' + esc(m.t) + '</span><span class="mu">' + esc(m.s) + "</span></div>"; }).join("");
+  }
+  function researchBlock() {
+    var body;
+    if (S.rtab === "running") body = '<div class="rrow"><span>Which CI jobs share one cache?</span><span class="mu">running 14 min</span></div>';
+    else body = '<div class="rrow"><span>Two ways to cut CI time found</span><span class="mu">finished 2 h ago <button class="tbtn u" style="color:var(--ink);margin-left:8px" data-act="promote"' + (S.resDone ? " disabled" : "") + ">" + (S.resDone ? "Promoted" : "Promote to decision") + "</button></span></div>";
+    return tabsHtml("research", [["running", "Running", "(1)"], ["fin", "Finished", "(1)"]], S.rtab) + body;
+  }
+  function watchBlock() {
+    var cur = S.wtab;
+    return tabsHtml("watch", [["going", "Going wrong", "(" + WATCH.going.length + ")"], ["corrected", "Corrected", "(" + WATCH.corrected.length + ")"]], cur) +
+      WATCH[cur].map(function (w) { return '<div class="wrow">' + esc(w[0]) + ' <a data-act="thread" data-id="' + w[1] + '" class="sm">Open thread</a></div>'; }).join("");
+  }
+  function costBlock() {
+    return '<p class="mu" style="margin:0 0 6px">Placeholder for Cost. Nothing is tracked here yet.</p><p class="mu" style="margin:0">The real block would show what each thread spent this week.</p>';
+  }
+  var BODY = { home: homeBlock, plan: planBlock, threads: threadsBlock, decisions: decisionsBlock, analytics: analyticsBlock, prs: prsBlock, rules: rulesBlock, memory: memoryBlock, research: researchBlock, watch: watchBlock, cost: costBlock };
+  /* ---------- screens ---------- */
+  function screenAll() {
+    var fN = nCards();
+    var needs = [], work = [{ n: "Score Easy", t: "Scoring now works without a network. One more screen to go." }, { n: "Harnest", t: "Saved handoffs now open in any tool. The guide is being written." }], done = [{ n: "Product Suite", t: "Meeting notes and the roadmap now share one login. Nothing left open." }];
+    if (fN) needs.push("forge");
+    needs.push("zw");
+    if (!fN) work.unshift({ n: "Forge", forge: true, t: "Release 0.0.12 is going out. " + fcount() + "." });
+    var counts = { needs: needs.length, work: work.length, done: done.length };
+    var cur = S.sw.proj, sw = swHtml("proj", counts, cur, "today");
+    var line = "You were away 3 h 10 min. " + total() + (total() === 1 ? " thing waits" : " things wait") + " on you across " + needs.length + (needs.length === 1 ? " project." : " projects.");
+    var rows;
+    if (cur === "needs") rows = needs.map(function (k) {
+      if (k === "forge") {
+        var tc = S.cards.filter(function (c) { return c.lock; })[0] || S.cards[0], top = tc.lock ? "Send out release 0.0.12?" : tc.q;
+        return '<button class="pr" data-act="project"><span><span class="pn">Forge</span><span class="mu">Release 0.0.12 is one decision from going out. ' + fcount() + '.</span></span><span class="cn">' + fN + ' waiting</span><span class="top">Top: ' + esc(top) + "</span></button>";
+      }
+      return '<button class="pr" data-act="other"><span><span class="pn">Zwapit</span><span class="mu">Two new ticket prices need your yes.</span></span><span class="cn">1 waiting</span><span class="top">Top: Approve the new price for two tickets?</span></button>';
+    }).join("");
+    else rows = (cur === "work" ? work : done).map(function (p) {
+      return '<button class="pr" data-act="' + (p.forge ? "project" : "other") + '"><span><span class="pn">' + esc(p.n) + '</span><span class="mu">' + esc(p.t) + '</span></span><span class="cn mu"></span></button>';
+    }).join("");
+    return '<p class="lede serif">' + esc(line) + "</p>" + sw.head + '<div style="margin-top:12px">' + rows + "</div>" + sw.quiet();
+  }
+  function screenProject() { return BODY[S.block](); }
+  function screenThread() {
+    var t = thr(S.thread);
+    var more = S.tmore[t.id], st = tstate(t);
+    var h = '<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px"><h1>' + esc(t.name) + "</h1>" + dot(st) + '<button class="tbtn u" data-act="new-idea">New idea</button></div>' +
+      '<p class="mu sm" style="margin:0 0 16px">' + esc(t.size) + "</p>" +
+      '<p class="label">Summary · updated 12 min ago · refreshes every 30 min</p>';
+    if (more) h += t.more.map(function (p) { return '<p class="prose lines"><b>' + esc(p[0]) + ".</b> " + esc(p[1]) + "</p>"; }).join("") + '<p style="margin:6px 0 0"><button class="tbtn u" data-act="tmore">Less</button></p>';
+    else h += '<p class="prose">' + esc(t.sum.join(" ")) + '</p><p style="margin:0"><button class="tbtn u" data-act="tmore">More</button></p>';
+    h += '<section class="sec"><div class="sh"><h3>Timeline · live · one entry every 15 minutes</h3></div>' + tlHtml(logEntries(t.id).concat(t.tl), t.id) + "</section>";
+    return h;
+  }
+  /* ---------- tray ---------- */
+  function trayScope() {
+    if (S.screen === "project" && S.block === "home") return { th: null };
+    if (S.screen === "thread") return { th: S.thread };
+    return null;
+  }
+  function trayItems(sc) {
+    var it = [];
+    if (S.offer && (!sc.th || S.offerThread === sc.th)) it.push({ offer: true });
+    S.cards.forEach(function (c) { if (!sc.th || c.thread === sc.th) it.push(c); });
+    return it;
+  }
+  function renderTray() {
+    var t = $("tray"), sc = trayScope();
+    if (!sc) { t.className = "tray"; t.innerHTML = ""; S.lastN = null; return; }
+    var it = trayItems(sc), n = it.length;
+    if (S.lastN > 0 && n === 0) {
+      S.nothing = true; clearTimeout(S.nt);
+      S.nt = setTimeout(function () { S.nothing = false; render(); }, 3000);
+    }
+    S.lastN = n;
+    if (n === 0) {
+      if (S.nothing) { t.className = "tray empty"; t.innerHTML = '<span class="mu sm">Nothing waits on you.</span>'; } else { t.className = "tray"; t.innerHTML = ""; }
+      return;
+    }
+    S.nothing = false;
+    if (S.ti >= n) S.ti = n - 1;
+    if (S.ti < 0) S.ti = 0;
+    var c = it[S.ti], st = c.offer ? null : S.texp[c.id];
+    var nav = '<span class="tnav"><span class="mu">' + (S.ti + 1) + " of " + n + '</span><button class="tbtn mu" data-act="tprev">Prev</button><button class="tbtn mu" data-act="tnext">Next</button></span>';
+    var anim = S.tanim ? " slide" : "";
+    S.tanim = false;
+    var h;
+    if (c.offer) {
+      var k = S.offer;
+      h = '<div class="tcard' + anim + '"><div class="tmain"><div class="kl">Offer · ' + esc(kindName(k)) + '</div><div class="q">You took the default ' + S.today[k] + " times today and " + weekCount(k) + ' times this week. Let it happen on its own?</div></div>' +
+        '<div class="topts"><button class="btn pri" data-act="offer-yes">Yes, do it for me</button><button class="tbtn" data-act="offer-no">Keep asking</button></div>' + nav + "</div>";
+    } else if (st) {
+      h = '<div class="tcard' + anim + '" style="display:block"><div class="thead"><div class="tmain"><div class="kl">' + esc(c.ctx) + '</div><div class="q">' + esc(c.q) + "</div></div>" + nav + "</div>";
+      if (st === "loading") h += '<div class="mu sm ask">Asking the agent…</div>';
+      else {
+        h += detHtml(c);
+        if (c.lock) h += '<div class="lockline" style="margin:0 0 10px">Always asks. Cannot be made automatic.</div>';
+        h += '<div class="opts"><button class="btn pri" data-act="accept" data-id="' + c.id + '">Accept</button><button class="btn" data-act="reject" data-id="' + c.id + '">Reject</button><button class="tbtn mu" data-act="tclose" data-id="' + c.id + '">Close</button></div>';
+      }
+      h += "</div>";
+    } else {
+      h = '<div class="tcard' + anim + '"><div class="tmain"><div class="kl">' + esc(c.ctx) + '</div><div class="q">' + esc(c.q) + "</div>" + (c.lock ? '<div class="mu sm">Always asks. Cannot be made automatic.</div>' : "") + "</div>";
+      if (c.lock) h += '<div class="topts"><button class="btn pri" data-act="tmore" data-id="' + c.id + '">Review</button></div>';
+      else h += '<div class="topts">' + c.opts.map(function (o, i) { return '<button class="' + (i === c.def ? "btn pri" : "tbtn") + '" data-act="ans" data-id="' + c.id + '" data-i="' + i + '">' + esc(o) + "</button>"; }).join("") +
+        '<button class="tbtn mu" data-act="tmore" data-id="' + c.id + '">More detail</button></div>';
+      h += nav + "</div>";
+    }
+    t.className = "tray"; t.innerHTML = h;
+  }
+  function trayMore(id) {
+    var c = cardById(id);
+    if (!c) return;
+    if (c.lock) { S.texp[id] = "ready"; render(); return; }
+    S.texp[id] = "loading";
+    render();
+    setTimeout(function () { if (S.texp[id] === "loading" && cardById(id)) { S.texp[id] = "ready"; render(); } }, 1200);
+  }
+  function trayNav(d) {
+    var sc = trayScope();
+    if (!sc) return;
+    var it = trayItems(sc);
+    it.forEach(function (c) { if (c.id) delete S.texp[c.id]; });
+    S.ti = (S.ti + d + it.length) % it.length;
+    S.tanim = true;
+    render();
+  }
+  function placePopovers() {
+    var th = $("tray").offsetHeight, bare = S.screen === "all", dk = $("dock").offsetHeight;
+    var base = bare ? 70 : dk + th + 8, p = $("prompt");
+    p.style.bottom = base + "px";
+    p.style.maxHeight = Math.min(520, $("appBox").clientHeight - base - 8) + "px";
+    var m = document.querySelector(".more");
+    if (m) m.style.bottom = "calc(100% + " + (th + 6) + "px)";
+  }
+  /* ---------- dock ---------- */
+  function dockHtml() {
+    if (S.screen === "all") return '<button class="blob" data-act="toggle-prompt" aria-label="Say something">' + BLOBSVG + "</button>";
+    var act = S.screen === "project" ? S.block : null;
+    var h = '<div class="dgrp">' + S.pinned.map(function (id) {
+      return '<button class="db' + (act === id ? " on" : "") + '" data-act="block" data-b="' + id + '">' + esc(blkName(id, true)) + "</button>";
+    }).join("") + '<button class="db' + (act && S.pinned.indexOf(act) < 0 ? " on" : "") + '" data-act="more">More</button></div>' +
+      '<button class="blob" data-act="toggle-prompt" aria-label="Say something">' + BLOBSVG + "</button>";
+    if (S.more) {
+      var full = S.pinned.length >= 4;
+      var rest = BLOCKS.filter(function (b) { return S.pinned.indexOf(b[0]) < 0; });
+      h += '<div class="pop more">' + (S.pinned.length ? '<div class="mlab">Pinned</div>' : "") + S.pinned.map(function (id) {
+        return '<div class="mrow"><button class="open" data-act="block" data-b="' + id + '">' + esc(blkName(id, true)) + '</button><button class="pin" data-act="unpin" data-b="' + id + '">Unpin</button></div>';
+      }).join("") + '<div class="mlab">More blocks</div>' + rest.map(function (b) {
+        return '<div class="mrow"><button class="open" data-act="block" data-b="' + b[0] + '">' + esc(b[1]) + '</button><button class="pin" data-act="pin" data-b="' + b[0] + '"' + (full ? " disabled" : "") + ">Pin</button></div>";
+      }).join("") + (full && rest.length ? '<div class="mlab">Unpin one first</div>' : "") + '<div class="mlab" style="border-top:1px solid var(--hair);margin-top:4px">Blocks stay where you put them. Agents fill them; they do not move them.</div></div>';
+    }
+    return h;
+  }
+  var BLOBSVG = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z"/></svg>';
+  function crumbHtml() {
+    if (S.screen === "all") return '<span class="cur">All projects</span>';
+    if (S.screen === "project") return '<a data-act="go-all">All projects</a> / <span class="cur">Forge</span>';
+    if (S.screen === "feature") return '<a data-act="go-all">All projects</a> / <a data-act="go-project">Forge</a> / <span class="cur">' + esc(feat(S.feature).name) + "</span>";
+    return '<a data-act="go-all">All projects</a> / <a data-act="go-project">Forge</a> / <span class="cur">' + esc(thr(S.thread).name) + "</span>";
+  }
+  function lookText() {
+    if (S.look) return S.look;
+    return S.screen === "all" ? "All projects" : S.screen === "project" ? "Project Forge" : S.screen === "feature" ? "Feature " + feat(S.feature).name : "Thread " + thr(S.thread).name;
+  }
+  function render() {
+    var c = $("content"), top = c.scrollTop;
+    $("crumb").innerHTML = crumbHtml();
+    $("tbr").textContent = total() === 1 ? "1 thing waits on you" : total() + " things wait on you";
+    c.innerHTML = S.screen === "all" ? screenAll() : S.screen === "project" ? screenProject() : S.screen === "feature" ? screenFeature() : screenThread();
+    c.scrollTop = S.reset ? 0 : top;
+    S.reset = false;
+    renderTray();
+    $("dock").className = "dock" + (S.screen === "all" ? " bare" : "");
+    $("dock").innerHTML = dockHtml();
+    $("looking").textContent = "Looking at: " + lookText() + " · To: " + tName();
+    renderChat();
+    placePopovers();
+  }
+  function go(screen, opts) {
+    S.screen = screen; S.look = null; S.more = false; S.reset = true; S.lastN = null; S.ti = 0;
+    if (opts && opts.thread) { S.thread = opts.thread; if (thr(opts.thread).s !== "done") S.tid = opts.thread; }
+    if (opts && opts.block) S.block = opts.block;
+    if (opts && opts.feature) S.feature = opts.feature;
+    render();
+  }
+  /* ---------- prompt ---------- */
+  function ppRender() {
+    var h = "";
+    if (S.ctxLine) h += '<div class="mu sm" style="margin-bottom:8px">' + esc(S.ctxLine) + "</div>";
+    if (S.pend) {
+      h += '<div class="confirm">To: <b>' + esc(tName()) + '</b> · <button class="tbtn u" data-act="change-target">Change</button>' +
+        '<div class="mu" style="margin-top:4px">' + esc(S.pend.text) + "</div>" +
+        '<label><input type="checkbox" id="skipBox"' + (S.pend.skipTick ? " checked" : "") + "> Do not show this next time for this kind</label>" +
+        '<div class="bar"><i id="barFill"></i></div><button class="btn" data-act="undo-send">Undo</button> <span class="mu sm" id="secs"></span></div>';
+    }
+    if (S.answer) h += '<div class="bubble"><b>' + esc(S.answer.q) + "</b><br>" + esc(S.answer.a) + '<br><span class="mu sm">Answered from the log, no agent started</span></div>';
+    if (S.pl) h += placeHtml();
+    if (S.idea) h += '<div class="place"><div><b>This looks like a new idea.</b> Nothing running will be interrupted.</div><div class="mu sm" style="margin:6px 0">' + esc(S.idea.text) + '</div><div class="opts" style="margin:0"><button class="btn pri" data-act="idea-park">Park it as an idea</button><button class="tbtn" data-act="idea-plan">Add to the plan as a feature</button><button class="tbtn" data-act="idea-talkp">Talk it through first</button><button class="tbtn" data-act="idea-send">Send to the current thread anyway</button></div></div>';
+    $("ppDyn").innerHTML = h;
+  }
+  function placeHtml() {
+    var p = S.pl;
+    function chips(arr, cur, act) { return arr.map(function (x) { return '<button class="opt' + (x === cur ? " on" : "") + '" data-act="' + act + '" data-v="' + x + '">' + x + "</button>"; }).join(""); }
+    return '<div class="place"><div><b>You said:</b> ' + esc(p.text) + "</div>" +
+      '<div class="r"><span class="lab">Kind</span>' + chips(["Note", "Rule", "Law"], p.kind, "pl-kind") + "</div>" +
+      '<div class="r"><span class="lab">Applies to</span>' + chips(["This thread", "This project", "All projects"], p.scope, "pl-scope") + "</div>" +
+      '<div class="r"><span class="lab">Enforced by</span><span>nothing yet</span> <a data-act="pl-enforce">Make it enforced</a></div>' +
+      (p.fast ? '<div class="r">This replaces an older note. <button class="opt' + (p.replace ? " on" : "") + '" data-act="pl-replace">' + (p.replace ? "Will replace" : "Replace it") + "</button></div>" : "") +
+      '<div class="r"><button class="btn dark" data-act="pl-accept">Accept</button><button class="tbtn" data-act="pl-cancel">Cancel</button></div></div>';
+  }
+  var logN = 0;
+  function addLog(text, tid) { var e = { n: ++logN, t: tid, text: text }; S.log.unshift(e); return e; }
+  function sendPrompt() {
+    var inp = $("ppInput"), txt = inp.value.trim();
+    if (!txt) return;
+    if (S.pend) commitSend();
+    S.answer = null; S.pl = null; S.idea = null;
+    var low = txt.toLowerCase();
+    inp.value = "";
+    if (low.indexOf("always") >= 0 || low.indexOf("never") >= 0) {
+      S.pl = { text: txt, kind: "Rule", scope: "This project", fast: low.indexOf("fast mode") >= 0, replace: false };
+      ppRender(); return;
+    }
+    if (S.forceIdea || /\b(idea|what if|we should|later|someday)\b/i.test(txt)) { S.forceIdea = false; S.idea = { text: txt }; ppRender(); return; }
+    if (/\?\s*$/.test(txt)) { S.answer = { q: txt, a: "The last green run was 2 hours ago, on change 44." }; ppRender(); return; }
+    if (S.skip.steer && S.tid !== "idea") {
+      var e = addLog(txt, S.tid);
+      render();
+      toast("Sent", function () { S.log.splice(S.log.indexOf(e), 1); render(); });
+      return;
+    }
+    S.pend = { text: txt, start: Date.now(), skipTick: false };
+    ppRender();
+    S.pend.timer = setInterval(tick, 100);
+  }
+  function tick() {
+    if (!S.pend) return;
+    var left = Math.max(0, 10 - (Date.now() - S.pend.start) / 1000);
+    var f = $("barFill"), s = $("secs");
+    if (f) f.style.width = (left * 10) + "%";
+    if (s) s.textContent = Math.ceil(left) + "s";
+    if (left <= 0) commitSend();
+  }
+  function commitSend() {
+    var p = S.pend;
+    if (!p) return;
+    clearInterval(p.timer);
+    var box = $("skipBox");
+    if (box && box.checked) S.skip.steer = true;
+    S.pend = null;
+    if (S.tid === "idea") { S.tid = S.prevTid || "lead"; parkIdea(p.text); ppRender(); return; }
+    addLog(p.text, S.tid);
+    ppRender(); render();
+    toast("Sent");
+  }
+  function undoSend() {
+    if (!S.pend) return;
+    clearInterval(S.pend.timer);
+    $("ppInput").value = S.pend.text;
+    S.pend = null;
+    ppRender();
+    toast("Not sent. Your text is back in the box.");
+  }
+  function openPrompt() {
+    S.more = false; render();
+    ppRender();
+    $("prompt").classList.add("on");
+    setTimeout(function () { $("ppInput").focus(); }, 180);
+  }
+  function acceptPlacement() {
+    var p = S.pl;
+    if (!p) return;
+    var key = { Note: "notes", Rule: "rules", Law: "laws" }[p.kind];
+    if (p.fast && p.replace) S.lists.notes = S.lists.notes.filter(function (r) { return r.t !== "Never use fast mode"; });
+    S.lists[key].unshift({ t: p.text, s: "not" });
+    S.ftab = key;
+    S.pl = null;
+    ppRender(); render();
+    toast("Added to Rules and laws as not enforced.");
+  }
+  function promote() {
+    if (S.resDone) return;
+    S.resDone = true;
+    S.cards.push({ id: "c7", kind: "research", ctx: "Decision · Research", thread: "lead", short: "Side-by-side checks", q: "Run the two check jobs side by side?", opts: ["Try it for a day", "Not now"], def: 1,
+      det: { rows: [["Saving", "About 4 minutes a run"], ["Risk", "The two jobs share one cache and may clash"]] } });
+    render();
+    toast("Promoted. It is now a question in Waiting on you.");
+  }
+  /* ---------- click routing ---------- */
+  document.addEventListener("click", function (ev) {
+    if (S.more && !ev.target.closest(".more") && !ev.target.closest('[data-act="more"]')) { S.more = false; render(); }
+    var el = ev.target.closest("[data-act]");
+    if (!el) return;
+    var a = el.getAttribute("data-act");
+    var d = function (k) { return el.getAttribute("data-" + k); };
+    switch (a) {
+      case "go-all": go("all"); break;
+      case "go-project": go("project"); break;
+      case "project": go("project"); break;
+      case "other": toast("Mock: only Forge is built out."); break;
+      case "thread": go("thread", { thread: d("id") }); break;
+      case "feature": go("feature", { feature: d("id") }); break;
+      case "pexp": S.pexp[d("id")] = !S.pexp[d("id")]; render(); break;
+      case "hood": S.hood[d("id")] = !S.hood[d("id")]; render(); break;
+      case "sugg-add": S.sugg = false; S.usage = true; render(); toast("Added. It stays where you put it."); break;
+      case "sugg-no": S.sugg = false; render(); break;
+      case "size": S.sizes[d("id")] = S.sizes[d("id")] % 3 + 1; render(); break;
+      case "asig-fix": S.tid = "newt"; openPrompt(); $("ppInput").value = "Find why the upload test keeps failing and fix the cause."; break;
+      case "asig-why": go("feature", { feature: "f6" }); break;
+      case "asig-ans": go("project", { block: "decisions" }); break;
+      case "new-idea": S.tid = S.thread; S.forceIdea = true; S.ctxLine = "From: " + thr(S.thread).name + ". The thread keeps working."; openPrompt(); break;
+      case "idea-park": var t1 = S.idea.text; S.idea = null; S.ctxLine = null; ppRender(); parkIdea(t1); break;
+      case "idea-plan": addFeatureFromIdea(mkIdea(S.idea.text)); S.idea = null; S.ctxLine = null; ppRender(); render(); toast("Added to the plan as not started."); break;
+      case "idea-talkp": var i2 = mkIdea(S.idea.text); S.idea = null; S.ctxLine = null; ppRender(); openChat(i2, false); break;
+      case "idea-send":
+        var t3 = S.idea.text; S.idea = null; S.ctxLine = null;
+        if (S.tid === "idea") S.tid = S.prevTid || "lead";
+        S.pend = { text: t3, start: Date.now(), skipTick: false }; ppRender(); S.pend.timer = setInterval(tick, 100); break;
+      case "idea-talk": openChat(S.ideas.filter(function (i) { return i.id === d("id"); })[0], true); break;
+      case "idea-feat": addFeatureFromIdea(S.ideas.filter(function (i) { return i.id === d("id"); })[0]); removeIdea(d("id")); render(); toast("Added to the plan as not started."); break;
+      case "idea-drop": removeIdea(d("id")); render(); toast("Dropped."); break;
+      case "chat-close": S.chat = null; render(); break;
+      case "chat-pick": S.chat.pick = d("v"); S.chat.step = 1; render(); break;
+      case "chat-plan": chatDone("plan"); break;
+      case "chat-keep": chatDone("keep"); break;
+      case "chat-drop": chatDone("drop"); break;
+      case "block": go("project", { block: d("b") }); break;
+      case "more": S.more = !S.more; render(); break;
+      case "pin": if (S.pinned.length < 4) { S.pinned.push(d("b")); } render(); break;
+      case "unpin": S.pinned.splice(S.pinned.indexOf(d("b")), 1); render(); break;
+      case "sw": S.sw[d("k")] = d("v"); render(); break;
+      case "stab":
+        var s = d("s"), t = d("t");
+        if (s === "decisions") S.dtab = t; else if (s === "rules") S.ftab = t; else if (s === "research") S.rtab = t; else if (s === "watch") S.wtab = t; else if (s === "feat") S.ftabF = t; else if (s === "an") S.atab = t; else if (s === "plan") S.ptab = t;
+        render(); break;
+      case "sum-more": S.sumMore = !S.sumMore; render(); break;
+      case "tmore": S.tmore[S.thread] = !S.tmore[S.thread]; render(); break;
+      case "tl": S.tlOpen[d("id")] = !S.tlOpen[d("id")]; render(); break;
+      case "ans": answer(d("id"), parseInt(d("i"), 10)); break;
+      case "accept": answer(d("id"), cardById(d("id")).def); break;
+      case "reject": answer(d("id"), -1); break;
+      case "tprev": trayNav(-1); break;
+      case "tnext": trayNav(1); break;
+      case "tmore": trayMore(d("id")); break;
+      case "tclose": delete S.texp[d("id")]; render(); break;
+      case "more-detail": moreDetail(d("id")); break;
+      case "less": delete S.exp[d("id")]; render(); break;
+      case "offer-yes": makeAuto(S.offer); break;
+      case "offer-no": S.offerNo[S.offer] = true; S.offer = null; render(); toast("Okay. It will keep asking."); break;
+      case "undo-done": undoDone(parseInt(d("i"), 10)); break;
+      case "ask-again": askAgain(parseInt(d("i"), 10)); break;
+      case "level": setLevel(d("k"), d("l")); break;
+      case "enforce": S.lists[d("l")][parseInt(d("i"), 10)].s = "enforced"; render(); toast("Done. That note is now enforced."); break;
+      case "dry": S.dry = !S.dry; render(); break;
+      case "promote": promote(); break;
+      case "toggle-prompt": if ($("prompt").classList.contains("on")) { $("prompt").classList.remove("on"); S.forceIdea = false; S.ctxLine = null; ppRender(); } else openPrompt(); break;
+      case "send": sendPrompt(); break;
+      case "mic": toast("Voice is not connected in this mock."); break;
+      case "change-target":
+        var ids = THREADS.filter(function (x) { return x.s !== "done"; }).map(function (x) { return x.id; });
+        ids.push("idea");
+        if (S.tid !== "idea") S.prevTid = S.tid;
+        S.tid = ids[(ids.indexOf(S.tid) + 1) % ids.length];
+        ppRender(); render(); if (S.pend) tick(); break;
+      case "undo-send": undoSend(); break;
+      case "pl-kind": S.pl.kind = d("v"); ppRender(); break;
+      case "pl-scope": S.pl.scope = d("v"); ppRender(); break;
+      case "pl-enforce": toast("Enforcing needs a check that can run. None exists for this yet."); break;
+      case "pl-replace": S.pl.replace = !S.pl.replace; ppRender(); break;
+      case "pl-accept": acceptPlacement(); break;
+      case "pl-cancel": S.pl = null; ppRender(); break;
+    }
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && ev.target.id === "ppInput") sendPrompt();
+    if (ev.key === "Escape") { S.more = false; S.chat = null; S.forceIdea = false; S.ctxLine = null; ppRender(); render(); $("prompt").classList.remove("on"); }
+  });
+  document.addEventListener("change", function (ev) {
+    if (ev.target.id === "skipBox" && S.pend) S.pend.skipTick = ev.target.checked;
+  });
+  render();
+})();
+</script>
+</body>
+</html>

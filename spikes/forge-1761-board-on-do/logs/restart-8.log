@@ -1,0 +1,38 @@
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+Your Worker has access to the following bindings:
+Binding                       Resource            Mode
+env.BOARDS (BoardObject)      Durable Object      local
+
+Wrangler detected this dev session is running in an AI agent.
+The Local Explorer API is available at http://127.0.0.1:18761/cdn-cgi/local/explorer/api
+Useful routes:
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/workers - local Workers and bindings
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/scheduled?worker=<name> - invoke a Worker's scheduled handler; cron is required (see the OpenAPI schema for the full request)
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/storage/kv/namespaces - KV namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/d1/database - D1 databases
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/r2/buckets - R2 buckets
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workers/durable_objects/namespaces - Durable Object namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workflows - Workflows
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query - run a read-only SQL query (SELECT/WITH only) over captured request traces and console logs. Tables: spans, logs (read attributes via json(attributes)). Example:
+    curl -X POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query -H 'Content-Type: application/json' -d '{"sql":"SELECT service, name, outcome, duration_ms FROM spans WHERE parent_id IS NULL LIMIT 20"}'
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/clear - clear all captured traces and logs
+If the routes above don't cover what you need, fetch the full OpenAPI schema (large - use only as a last resort):
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api - OpenAPI schema
+⎔ Starting local server...
+[wrangler:info] Ready on http://127.0.0.1:18761
+[wrangler:info] GET /health 200 OK (70ms)
+[wrangler:info] GET /messages/317 200 OK (27ms)
+[wrangler:info] GET /trial-status 200 OK (11ms)
+[wrangler:info] GET /trial-status 200 OK (9ms)
+[wrangler:info] POST /messages 201 Created (40ms)
+[wrangler:info] GET /events 200 OK (93ms)
+[wrangler:info] GET /messages/317 200 OK (12ms)
+[wrangler:info] POST /messages 201 Created (30ms)
+[wrangler:info] GET /events 200 OK (16ms)
+[wrangler:info] GET /trial-status 200 OK (8ms)
+[wrangler:info] GET /trial-status 200 OK (6ms)

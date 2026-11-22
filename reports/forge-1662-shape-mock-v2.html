@@ -1,0 +1,937 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge Desk mock v2</title>
+<style>
+:root {
+  --bg: #faf9f7;
+  --ink: #1c1b1a;
+  --muted: #6b6862;
+  --hair: #e6e3dd;
+  --surface: #ffffff;
+  --accent: #b4540a;
+  --accent-ink: #ffffff;
+  --green: #5b7f5a;
+  --red: #b3261e;
+  --grey: #8a8680;
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151412;
+    --ink: #ecebe8;
+    --muted: #9a968f;
+    --hair: #2c2a27;
+    --surface: #1d1c1a;
+    --accent: #e08a45;
+    --accent-ink: #1a1209;
+    --green: #86a884;
+    --red: #e5776f;
+    --grey: #7d7972;
+    --shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-variant-numeric: tabular-nums; overflow-x: hidden;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+a { color: var(--muted); cursor: pointer; text-decoration: none; }
+a:hover { color: var(--ink); text-decoration: underline; }
+[hidden] { display: none !important; }
+.mu { color: var(--muted); }
+.sm { font-size: 13px; }
+.grow { flex: 1 1 auto; }
+.serif { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; }
+/* top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 22px;
+  padding: 10px 20px; background: var(--bg); border-bottom: 1px solid var(--hair);
+}
+.brand { font-weight: 600; background: none; border: 0; padding: 0; }
+.tbtn { background: none; border: 0; padding: 0; font-size: 13px; color: var(--ink); }
+.tbtn:hover { text-decoration: underline; }
+.tbtn.mu { color: var(--muted); }
+.tbtn.acc { color: var(--accent); }
+main { max-width: 1080px; margin: 0 auto; padding: 28px 20px 110px; }
+footer { text-align: center; color: var(--muted); font-size: 12px; padding: 0 20px 100px; }
+h1 { font-size: 28px; line-height: 1.2; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.crumb { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+.h1row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.h1l { display: flex; align-items: center; gap: 14px; }
+.hbtns { display: flex; gap: 18px; align-items: center; }
+.lede { font-size: 20px; line-height: 1.4; max-width: 48ch; margin: 14px 0 8px; }
+.meta { margin: 0 0 36px; color: var(--muted); font-size: 13px; }
+.menuwrap { position: relative; }
+.pop {
+  position: absolute; right: 0; top: 26px; z-index: 10; min-width: 180px; background: var(--surface);
+  border: 1px solid var(--hair); border-radius: 8px; box-shadow: var(--shadow); padding: 6px;
+}
+.pop button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 6px 8px; border-radius: 6px; font-size: 13px; }
+.pop button:hover { background: var(--bg); }
+.pop .mu { padding: 6px 8px; font-size: 13px; }
+/* state */
+.st { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; white-space: nowrap; }
+.st.s-needs { color: var(--accent); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.d-needs { background: var(--accent); }
+.d-work { background: var(--green); }
+.d-done { background: var(--grey); }
+.d-stuck { background: var(--red); }
+/* columns and sections */
+.cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 36px; }
+@media (min-width: 700px) { .cols { grid-template-columns: minmax(0, 62fr) minmax(0, 38fr); gap: 32px; } }
+.col > .sec { margin-top: 32px; padding-top: 14px; border-top: 1px solid var(--hair); }
+.col > .sec:first-child { margin-top: 0; }
+.sh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; margin-bottom: 14px; }
+.sh h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 2px; font-size: 13px; color: var(--muted); }
+.tab.on { color: var(--ink); border-bottom-color: var(--ink); }
+.tab .n { color: var(--muted); }
+.dens { display: inline-flex; gap: 12px; }
+.dens button { background: none; border: 0; padding: 0; font-size: 13px; color: var(--muted); }
+.dens button.on { color: var(--ink); font-weight: 600; }
+.sec.edit { outline: 1px dashed var(--muted); outline-offset: 8px; }
+.ctl { display: inline-flex; gap: 10px; }
+.ctl button { background: none; border: 0; padding: 0; font-size: 12px; color: var(--muted); text-decoration: underline; }
+.ctl button[disabled] { opacity: 0.35; cursor: default; text-decoration: none; }
+.addslot { margin-top: 32px; padding: 12px; border: 1px dashed var(--hair); border-radius: 8px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+/* brief */
+.prose { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 16.5px; line-height: 1.55; max-width: 62ch; margin: 0 0 12px; }
+.prose b { font-weight: 700; }
+.src { font-family: system-ui, sans-serif; font-size: 12.5px; color: var(--muted); margin-left: 4px; }
+.src a { color: var(--muted); }
+.claim { font-family: system-ui, sans-serif; font-size: 12.5px; color: var(--muted); margin-left: 4px; }
+.notcov { color: var(--muted); font-size: 13px; margin: 16px 0 0; }
+.evg { margin: 0 0 14px; }
+.evg > b { font-size: 13px; }
+.evr { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 10px; font-size: 13.5px; padding: 2px 0; }
+.evr time { color: var(--muted); }
+/* work */
+.goal { margin-bottom: 20px; }
+.gl { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin-bottom: 4px; }
+.gl b { font-weight: 600; }
+.gl .steps { font-size: 13px; color: var(--muted); }
+.gl .steps .dn { color: var(--ink); }
+.trow { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.trow:hover .tl1 b { text-decoration: underline; }
+.trow .dot { transform: translateY(-1px); }
+.tl1 b { font-weight: 600; margin-right: 6px; }
+.why { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.why .tbtn { margin-left: 8px; color: var(--ink); text-decoration: underline; }
+.tm { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.resline { display: flex; gap: 14px; align-items: baseline; }
+.rrow { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--hair); font-size: 13.5px; }
+/* cards */
+.card { background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; animation: pop 160ms ease; }
+@keyframes pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.card .q { font-weight: 600; margin-bottom: 10px; }
+.opts { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-bottom: 8px; }
+.btn { border: 1px solid var(--hair); background: var(--surface); border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+.btn:hover { border-color: var(--muted); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.dark { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.btn[disabled] { opacity: 0.45; cursor: default; }
+.evl { margin: 6px 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+.ifno { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.lockline { font-size: 12.5px; color: var(--red); margin-top: 6px; }
+.offer { border: 1px solid var(--accent); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.offer p { margin: 0 0 10px; }
+.dr { padding: 9px 0; border-bottom: 1px solid var(--hair); }
+.dr .acts { display: flex; gap: 16px; margin-top: 4px; }
+.dr .acts .tbtn { text-decoration: underline; }
+/* in force */
+.fi { padding: 7px 0; border-bottom: 1px solid var(--hair); }
+.fl { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.stw { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.stw.s-broken { color: var(--red); }
+.fi .why { margin-top: 1px; }
+.fi .acts { margin-top: 3px; display: flex; gap: 14px; }
+.fi .acts .tbtn { text-decoration: underline; }
+.dry { margin-top: 4px; font-size: 13px; color: var(--muted); }
+.wrow { padding: 7px 0; border-bottom: 1px solid var(--hair); font-size: 13.5px; }
+/* all projects */
+.pr { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; gap: 14px; align-items: baseline; padding: 16px 0; border-bottom: 1px solid var(--hair); cursor: pointer; width: 100%; background: none; border-left: 0; border-right: 0; border-top: 0; text-align: left; }
+.pr:first-child { border-top: 1px solid var(--hair); }
+.pr:hover .pn { text-decoration: underline; }
+.pn { font-weight: 600; font-size: 16px; display: block; }
+.pr .cn { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.pr .cn.on { color: var(--accent); }
+@media (max-width: 560px) { .pr { grid-template-columns: minmax(0, 1fr) auto; } .pr .st { grid-column: 1 / -1; } }
+/* thread */
+.now { margin: 16px 0 28px; font-size: 15px; }
+.now .lab { color: var(--muted); margin-right: 10px; font-size: 13px; }
+.two { display: grid; grid-template-columns: 1fr; gap: 20px; }
+@media (min-width: 560px) { .two { grid-template-columns: 1fr 1fr; gap: 32px; } }
+.two h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.two ul { margin: 0; padding-left: 18px; }
+.two li { margin-bottom: 4px; }
+.tcol { max-width: 760px; }
+/* drawers, prompt */
+.scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.3); z-index: 40; opacity: 0; pointer-events: none; transition: opacity 160ms; }
+.scrim.on { opacity: 1; pointer-events: auto; }
+.slide { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100%); z-index: 50; background: var(--bg); border-left: 1px solid var(--hair); box-shadow: var(--shadow); transform: translateX(105%); transition: transform 180ms ease; display: flex; flex-direction: column; }
+.slide.on { transform: none; }
+.slide > header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--hair); }
+.slide > header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.slide .body { padding: 16px 18px 40px; overflow-y: auto; flex: 1; }
+.x { background: none; border: 0; font-size: 22px; line-height: 1; color: var(--muted); padding: 2px 6px; }
+.kind-row { padding: 12px 0; border-bottom: 1px solid var(--hair); }
+.steps3 { display: flex; gap: 14px; margin-top: 6px; flex-wrap: wrap; }
+.step { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 2px; font-size: 13px; color: var(--muted); }
+.step.on { color: var(--ink); border-bottom-color: var(--ink); }
+.step[disabled] { cursor: default; }
+.step:not(.on)[disabled] { opacity: 0.5; }
+.blob { position: fixed; right: 20px; bottom: 20px; z-index: 30; width: 54px; height: 54px; border-radius: 50%; border: 0; background: var(--ink); color: var(--bg); display: grid; place-items: center; }
+.prompt { position: fixed; right: 20px; bottom: 86px; z-index: 35; width: min(380px, calc(100% - 40px)); background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; box-shadow: var(--shadow); padding: 14px; opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity 160ms, transform 160ms; max-height: 560px; overflow-y: auto; }
+.prompt.on { opacity: 1; transform: none; pointer-events: auto; }
+.looking { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.inrow { display: flex; gap: 8px; align-items: center; }
+.inrow input, .dr-input { flex: 1; min-width: 0; border: 1px solid var(--hair); border-radius: 8px; padding: 8px 10px; background: var(--bg); color: var(--ink); font: inherit; }
+.icon-btn { border: 1px solid var(--hair); background: var(--surface); border-radius: 8px; width: 36px; height: 36px; display: grid; place-items: center; }
+.confirm { border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; font-size: 13px; }
+.confirm label { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin: 6px 0; }
+.bar { height: 3px; background: var(--hair); overflow: hidden; margin: 6px 0; }
+.bar i { display: block; height: 100%; width: 100%; background: var(--ink); }
+.bubble { border-left: 2px solid var(--ink); padding: 2px 0 2px 10px; margin-bottom: 10px; font-size: 13.5px; }
+.place { border: 1px solid var(--hair); border-radius: 8px; padding: 12px; margin-bottom: 10px; font-size: 13.5px; }
+.place .r { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.place .lab { width: 84px; color: var(--muted); }
+.opt { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 1px; font-size: 13px; color: var(--muted); }
+.opt.on { color: var(--ink); border-bottom-color: var(--ink); }
+.toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 70; display: flex; flex-direction: column; gap: 8px; align-items: center; width: max-content; max-width: calc(100% - 110px); }
+.toast { background: var(--ink); color: var(--bg); border-radius: 8px; padding: 9px 14px; font-size: 13px; display: flex; gap: 12px; align-items: center; animation: pop 160ms ease; transition: opacity 200ms; }
+.toast.out { opacity: 0; }
+.toast button { background: none; border: 0; color: var(--bg); text-decoration: underline; padding: 0; }
+@media (max-width: 560px) { main { padding: 22px 16px 110px; } .topbar { padding: 10px 16px; } }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <button class="brand" data-act="go-all">Forge Desk</button>
+  <span class="grow"></span>
+  <button class="tbtn acc" id="needsBtn" data-act="open-inbox">Needs you (0)</button>
+  <button class="tbtn" id="trustBtn" data-act="open-trust">Trust</button>
+</header>
+<main id="app"></main>
+<footer>Mock. All data is made up.</footer>
+<button class="blob" id="blob" data-act="toggle-prompt" aria-label="Say something">
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z"/></svg>
+</button>
+<div class="prompt" id="prompt">
+  <div class="looking" id="looking"></div>
+  <div id="ppDyn"></div>
+  <div class="inrow">
+    <input id="ppInput" type="text" placeholder="Say anything. Press Enter to send." autocomplete="off">
+    <button class="icon-btn" data-act="mic" aria-label="Voice, not connected in this mock">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+    </button>
+    <button class="btn dark" data-act="send">Send</button>
+  </div>
+</div>
+<div class="scrim" id="scrim" data-act="close-all"></div>
+<aside class="slide" id="inbox" aria-label="Decision inbox">
+  <header><h2>Needs you</h2><button class="x" data-act="close-all" aria-label="Close">&times;</button></header>
+  <div class="body"><div class="sh" id="inboxTabs"></div><div id="inboxBody"></div></div>
+</aside>
+<aside class="slide" id="trust" aria-label="Trust settings">
+  <header><h2>What it may do on its own</h2><button class="x" data-act="close-all" aria-label="Close">&times;</button></header>
+  <div class="body" id="trustBody"></div>
+</aside>
+<div class="toasts" id="toasts"></div>
+<script>
+(function () {
+  "use strict";
+  /* ---------- vocabulary ---------- */
+  var ST = { needs: "Needs you", work: "Working", done: "Done", stuck: "Stuck" };
+  var KINDS = {
+    branch: { name: "Update the branch", irr: false },
+    review: { name: "Start another review round", irr: false },
+    deps: { name: "Update a tool version", irr: false },
+    flaky: { name: "Re-run a flaky CI job", irr: false },
+    publish: { name: "Publish the release", irr: true },
+    research: { name: "Promote a research result", irr: false }
+  };
+  var STEPS = ["built", "reviewed", "merged", "published"];
+  var GOALS = [
+    { id: "g1", n: "Ship release 0.0.12", done: 3 },
+    { id: "g2", n: "Fix cloud receipts", done: 1 },
+    { id: "g3", n: "Memory budget per run", done: 3 },
+    { id: "g4", n: "Move CI off Windows", done: 4 }
+  ];
+  var THREADS = [
+    { id: "t1", goal: "g1", ag: "Builder · Sol", doing: "Waiting on your publish decision", s: "needs", tm: "waiting 2 h", tab: "waiting",
+      why: "Publishing needs your yes. It always asks.", ch: "change 41",
+      now: "Holding the release package, ready to publish.",
+      sum: "The package check passed. Publishing waits on you.",
+      paras: [["Release", "The package check passed on main. The release notes are written. Publishing is held for you."], ["Next", "On your yes it publishes and three paused updates reopen."]],
+      rows: [["Release", "09:02", "Package check passed on main"], ["Release", "09:20", "Release notes written"], ["Release", "09:41", "Publish held for your decision"]],
+      claimed: ["The release notes cover every merged change"], proven: ["Package check passed on main", "Change 44 merged"] },
+    { id: "t2", goal: "g1", ag: "Reviewer · Sol", doing: "Third review round held", s: "needs", tm: "waiting 38 min", tab: "waiting",
+      why: "The design rule allows two rounds. It asks first.", ch: "change 41",
+      now: "Holding round 3 until you decide.",
+      sum: "Round 2 ended with three fixes, all proven. Round 3 is held for you.",
+      paras: [["Review", "Round 2 on change 41 ended with three fixes, all proven by CI."], ["Held", "The design rule allows two rounds, so round 3 waits for your yes."]],
+      rows: [["Review", "08:10", "Round 2 finished with three fixes"], ["Held", "08:44", "Round 3 held by the two round rule"]],
+      claimed: ["Round 3 would catch the last open issue"], proven: ["Round 2: three fixes, all passing in CI"] },
+    { id: "t3", goal: "g2", ag: "Builder · Sol", doing: "Fixing the empty subject case", s: "work", tm: "working 12 min", tab: "active", ch: "change 42",
+      now: "Writing the fix for the empty subject case.",
+      sum: "The first review failed on an empty subject. Four tests are added and the fix is in progress.",
+      paras: [["Failed", "The first review of change 42 found that an empty subject slipped through."], ["Fixing", "Four tests were added. The fix itself is not finished.", true]],
+      rows: [["Failed", "09:30", "First review failed: empty subject"], ["Fixing", "09:52", "Four tests added"], ["Fixing", "10:05", "Fix in progress"]],
+      claimed: ["The four tests cover the empty subject case", "The fix will pass the second review"], proven: ["The first review failed on an empty subject"] },
+    { id: "t4", goal: "g2", ag: "Reviewer · Sol", doing: "Second review of change 42", s: "work", tm: "working 6 min", tab: "active", ch: "change 42",
+      now: "Re-reading change 42 for the second review.",
+      sum: "The second review of change 42 started six minutes ago.",
+      paras: [["Review", "The second review of change 42 started once the builder pushed its tests.", true]],
+      rows: [["Review", "10:08", "Second review started"]],
+      claimed: ["No new issues so far"], proven: ["The first review result is recorded"] },
+    { id: "t5", goal: "g3", ag: "Builder · Sol", doing: "Rerunning one flaky upload test", s: "work", tm: "working 9 min", tab: "active", ch: "change 43",
+      now: "Rerunning one flaky upload test once.",
+      sum: "The memory budget now compares against the base run. One flaky test is filed and rerun.",
+      paras: [["Budget", "The memory budget compares each run against its base run."], ["Flaky", "One upload test was caught, filed and rerun once.", true]],
+      rows: [["Budget", "09:15", "Budget compares against base run"], ["Flaky", "09:48", "Flaky test caught and filed"], ["Flaky", "09:55", "Rerun started"]],
+      claimed: ["The flaky test is unrelated to change 43"], proven: ["The budget compares against the base run in CI"] },
+    { id: "t6", goal: "g4", ag: "Builder · Sol", doing: "Moved CI jobs off Windows", s: "done", tm: "done 1 h", tab: "fin", ch: "change 44",
+      now: "Finished.", sum: "CI jobs moved off Windows and change 44 merged.",
+      paras: [["Merged", "Change 44 merged. CI jobs now run off Windows."]],
+      rows: [["Merged", "08:30", "Change 44 merged"]], claimed: [], proven: ["Change 44 merged", "All CI jobs pass off Windows"] },
+    { id: "t7", goal: "g4", ag: "Reviewer · Sol", doing: "Approved change 44", s: "done", tm: "done 1 h", tab: "fin", ch: "change 44",
+      now: "Finished.", sum: "Change 44 was approved in one round.",
+      paras: [["Review", "Change 44 was approved in one round with no fixes."]],
+      rows: [["Review", "08:12", "Approved in one round"]], claimed: [], proven: ["One round, zero fixes"] },
+    { id: "t8", goal: "g3", ag: "Builder · Sol", doing: "Merged the memory budget change", s: "done", tm: "done 2 h", tab: "fin", ch: "change 43",
+      now: "Finished.", sum: "Change 43 merged with the base run memory budget.",
+      paras: [["Merged", "Change 43 merged. The memory budget now follows each run's base run."]],
+      rows: [["Merged", "07:50", "Change 43 merged"]], claimed: [], proven: ["Change 43 merged"] },
+    { id: "t9", goal: "g1", ag: "Builder · Sol", doing: "Wrote the release notes", s: "done", tm: "done 2 h", tab: "fin", ch: "change 41",
+      now: "Finished.", sum: "The release notes are written.",
+      paras: [["Notes", "The release notes are written and saved with the release package.", true]],
+      rows: [["Notes", "09:20", "Release notes written"]], claimed: ["The notes cover every merged change"], proven: [] }
+  ];
+  var BRIEF = {
+    since: {
+      short: "The release is one decision from going out. The cloud receipt fix failed its first review and is being fixed.",
+      story: [
+        { k: "Release", t: "The package check passed on main and the release notes are written. Publishing waits on you.", src: [["change 41 · 2 runs", "t1"]] },
+        { k: "Cloud", t: "The receipt fix failed its first review: an empty subject slipped through. The builder added four tests and is fixing it now.", claim: true, src: [["change 42 · 2 runs", "t3"]] },
+        { k: "Checks", t: "The memory budget now compares each run against its base run instead of a fixed number. One flaky test was caught, filed and rerun once.", src: [["change 43 · 1 run", "t5"]] },
+        { k: "Next", t: "If you approve the publish, the release goes out and three paused updates reopen.", src: [["change 41 · 1 run", "t1"]] }
+      ],
+      all: [["Release", "09:02", "Package check passed on main"], ["Release", "09:20", "Release notes written"], ["Release", "09:41", "Publish held for your decision"],
+        ["Cloud", "09:30", "First review of change 42 failed"], ["Cloud", "09:34", "Empty subject slipped through"], ["Cloud", "09:52", "Four tests added"], ["Cloud", "10:05", "Fix in progress"],
+        ["Checks", "09:15", "Memory budget now compares to base run"], ["Checks", "09:48", "One flaky test caught and filed"], ["Checks", "09:55", "Flaky test rerun once"],
+        ["Next", "10:10", "Three updates paused until the publish"]]
+    },
+    today: {
+      short: "The release package is ready and held for you. The cloud fix is on its second review.",
+      story: [
+        { k: "Release", t: "The package passed its check and the notes are written. Publishing is held for your decision.", src: [["change 41 · 2 runs", "t1"]] },
+        { k: "Cloud", t: "Change 42 failed its first review and is now in a second one. Four tests were added for the empty subject case.", claim: true, src: [["change 42 · 3 runs", "t4"]] },
+        { k: "Checks", t: "Change 44 merged and moved CI jobs off Windows. Change 43 added the base run memory budget.", src: [["change 44 · 1 run", "t6"], ["change 43 · 1 run", "t8"]] },
+        { k: "Rules", t: "Two review rounds is still the limit. One request for round 3 was held for you.", src: [["change 41 · 1 run", "t2"]] }
+      ],
+      all: [["Release", "09:02", "Package check passed on main"], ["Release", "09:20", "Release notes written"], ["Release", "09:41", "Publish held for your decision"],
+        ["Cloud", "09:30", "First review of change 42 failed"], ["Cloud", "10:08", "Second review started"],
+        ["Checks", "07:50", "Change 43 merged"], ["Checks", "08:30", "Change 44 merged"], ["Checks", "09:48", "One flaky test caught and filed"],
+        ["Rules", "08:44", "Round 3 on change 41 held"]]
+    },
+    week: {
+      short: "Release 0.0.12 went from first build to a held publish. CI got faster and one rule broke.",
+      story: [
+        { k: "Release", t: "Release 0.0.12 was built, reviewed and merged. Change 41 needed three fixes across two review rounds.", src: [["change 41 · 9 runs", "t1"]] },
+        { k: "Cloud", t: "Change 42 opened on Monday and has failed one review. It is now on its second.", claim: true, src: [["change 42 · 5 runs", "t3"]] },
+        { k: "Checks", t: "CI jobs left Windows in change 44. The memory budget now follows each run's base run.", src: [["change 44 · 3 runs", "t6"], ["change 43 · 4 runs", "t8"]] },
+        { k: "Rules", t: "One rule broke: builders pushed before reading the red log, three times. Two other rules held all week.", src: [["change 43 · 3 runs", "t5"]] }
+      ],
+      all: [["Release", "Mon", "Change 41 opened"], ["Release", "Tue", "Round 1 finished with two fixes"], ["Release", "Thu", "Round 2 finished with three fixes"], ["Release", "Fri", "Package check passed on main"],
+        ["Cloud", "Mon", "Change 42 opened"], ["Cloud", "Fri", "First review failed"],
+        ["Checks", "Wed", "Change 43 merged"], ["Checks", "Thu", "Change 44 merged"],
+        ["Rules", "Tue", "Builder pushed before reading the red log"], ["Rules", "Wed", "Same slip, second time"], ["Rules", "Thu", "Same slip, third time"]]
+    }
+  };
+  var PROJECTS = [
+    { n: "Forge", dyn: true },
+    { n: "Zwapit", s: "needs", t: "Two ticket price changes wait for your approval.", c: 2 },
+    { n: "Score Easy", s: "stuck", t: "Stuck. The same CI test failed three times.", c: 0 },
+    { n: "Harnest", s: "done", t: "Done for today. Three merges, nothing left open.", c: 0 }
+  ];
+  var BLK = { brief: "Brief", work: "Work", research: "Research", needs: "Needs you", force: "In force", watch: "Watch" };
+  var EXTRAS = ["Cost", "Forecast", "Calls", "Memory", "Config map"];
+  var WATCH = {
+    going: [["Patched the same design a third time. Stopped at round 2 and asked you.", "t2"], ["Pushed before reading the red log, three times this week. Rule marked broken.", "t3"]],
+    corrected: [["Asked the same question twice in an hour. Merged into one card.", "t1"], ["Skipped one flaky test without a note. Filed it and reran once.", "t5"], ["Began a fourth edit pass. Stopped at the round limit.", "t4"]]
+  };
+  /* ---------- state ---------- */
+  var S = {
+    screen: "project", thread: null, look: null, panel: null,
+    tab: { brief: "since", work: "active", needs: "needs", force: "laws", watch: "going", res: "running" },
+    dens: "story", tdens: "story", edit: false, more: false, resOpen: false,
+    cols: { main: ["brief", "work", "research"], side: ["needs", "force", "watch"] },
+    hid: [], added: {},
+    cards: [], done: [],
+    level: { branch: "ask", review: "ask", deps: "ask", flaky: "auto", publish: "ask", research: "ask" },
+    today: { branch: 0, review: 0, deps: 0 }, weekBase: 4, offer: null, offerNo: {}, evOpen: {},
+    dry: false, researchDone: false,
+    lists: {
+      laws: [{ t: "Never publish without a recorded review", s: "enforced" }, { t: "Never delete a branch with unmerged work", s: "enforced" }, { t: "Never touch another project's files", s: "held" }],
+      rules: [{ t: "At most 2 review rounds per design", s: "held" }, { t: "Merge only with a recorded review", s: "enforced" },
+        { t: "Builders read the red log before pushing", s: "broken", why: "Skipped 3 times this week. Two pushes failed CI." }, { t: "Keep each change under 400 lines", s: "not", dry: true }],
+      notes: [{ t: "Never use fast mode", s: "not", btn: true }, { t: "Release notes go in the changelog", s: "held" }]
+    },
+    pend: null, skip: {}, tid: "t1", pl: null, answer: null, log: [], nextId: 100
+  };
+  (function seed() {
+    var evB = ["Main has 3 new changes since this branch started.", "A trial merge found no conflicts."];
+    S.cards = [
+      { id: "c1", kind: "branch", short: "change 41", q: "Change 41: update the branch because main moved?", opts: ["Update the branch", "Leave it"], def: 0, ev: evB },
+      { id: "c2", kind: "branch", short: "change 42", q: "Change 42: update the branch because main moved?", opts: ["Update the branch", "Leave it"], def: 0, ev: evB },
+      { id: "c3", kind: "review", short: "change 41, round 3", q: "Start a third review round for change 41?", opts: ["Start round 3", "Hold for now"], def: 1,
+        ev: ["The design rule allows at most 2 rounds.", "Round 2 ended with 3 fixes, all proven by CI."] },
+      { id: "c4", kind: "publish", short: "release 0.0.12", q: "Publish the release to npm?", opts: ["Publish now", "Not yet"], def: 1,
+        ev: ["Change 41 has no recorded final review yet.", "Publishing cannot be taken back."], lock: true }
+    ];
+    S.done = [
+      { time: "08:12", what: "Re-ran the flaky upload test", why: "you chose the default 6 times", kind: "flaky" },
+      { time: "07:40", what: "Re-ran the flaky login test", why: "you chose the default 6 times", kind: "flaky" }
+    ];
+  })();
+  /* ---------- helpers ---------- */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function dot(s) { return '<span class="st s-' + s + '"><i class="dot d-' + s + '"></i>' + ST[s] + "</span>"; }
+  function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
+  function thr(id) { return THREADS.filter(function (t) { return t.id === id; })[0]; }
+  function goal(id) { return GOALS.filter(function (g) { return g.id === id; })[0]; }
+  function cardById(id) { return S.cards.filter(function (c) { return c.id === id; })[0]; }
+  function autoKinds() { return Object.keys(S.level).filter(function (k) { return S.level[k] === "auto"; }); }
+  function kindName(k) { return KINDS[k].name.toLowerCase(); }
+  function weekCount(k) { return S.weekBase + (S.today[k] || 0); }
+  function blkTitle(id) { return BLK[id] || id.slice(2); }
+  function tName() { var t = thr(S.tid); return t.ag + " on " + goal(t.goal).n; }
+  function tabsHtml(sid, tabs, cur) {
+    return '<div class="tabs" role="tablist">' + tabs.map(function (t) {
+      return '<button class="tab' + (t[0] === cur ? " on" : "") + '" role="tab" data-act="stab" data-s="' + sid + '" data-t="' + t[0] + '">' + esc(t[1]) + (t[2] ? ' <span class="n">' + esc(t[2]) + "</span>" : "") + "</button>";
+    }).join("") + "</div>";
+  }
+  function densHtml(cur, act) {
+    return '<span class="dens">' + [["short", "Short"], ["story", "Story"], ["all", "Everything"]].map(function (x) {
+      return '<button class="' + (x[0] === cur ? "on" : "") + '" data-act="' + act + '" data-v="' + x[0] + '">' + x[1] + "</button>";
+    }).join("") + "</span>";
+  }
+  /* ---------- toast ---------- */
+  function toast(msg, undo) {
+    var el = document.createElement("div");
+    el.className = "toast";
+    el.innerHTML = "<span>" + esc(msg) + "</span>";
+    var t;
+    function kill() {
+      clearTimeout(t);
+      el.classList.add("out");
+      setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+    }
+    if (undo) {
+      var b = document.createElement("button");
+      b.textContent = "Undo";
+      b.onclick = function () { undo(); kill(); };
+      el.appendChild(b);
+    }
+    $("toasts").appendChild(el);
+    t = setTimeout(kill, 6000);
+  }
+  /* ---------- decision cards ---------- */
+  function cardHtml(c) {
+    var o = c.opts.map(function (t, i) {
+      var d = i === c.def;
+      return '<button class="' + (d ? "btn pri" : "tbtn") + '" data-act="ans" data-id="' + c.id + '" data-i="' + i + '"' + (d ? ' title="The default"' : "") + ">" + esc(t) + "</button>";
+    }).join("");
+    var open = S.evOpen[c.id];
+    return '<div class="card" data-look="Decision: ' + esc(c.q) + '"><div class="q">' + esc(c.q) + '</div><div class="opts">' + o + "</div>" +
+      '<a data-act="ev" data-id="' + c.id + '" class="sm">' + (open ? "Hide evidence" : "Evidence") + "</a>" +
+      '<ul class="evl"' + (open ? "" : " hidden") + ">" + c.ev.map(function (e) { return "<li>" + esc(e) + "</li>"; }).join("") + "</ul>" +
+      (c.lock ? '<div class="lockline">Always asks. Cannot be made automatic.</div>' : "") +
+      '<div class="ifno">If you do nothing: it stays waiting' + (S.level[c.kind] === "batch" ? ". Batched into one daily question." : "") + "</div></div>";
+  }
+  function offerHtml() {
+    var k = S.offer;
+    if (!k) return "";
+    return '<div class="offer"><p>You took the default for \'' + esc(kindName(k)) + "' " + S.today[k] + " times today and " + weekCount(k) +
+      ' times this week. Let it happen on its own?</p><div class="opts" style="margin:0"><button class="btn pri" data-act="offer-yes">Yes, do it for me</button>' +
+      '<button class="tbtn" data-act="offer-no">Keep asking</button></div></div>';
+  }
+  function answer(id, i) {
+    var c = cardById(id);
+    if (!c) return;
+    var idx = S.cards.indexOf(c);
+    var counted = i === c.def && !KINDS[c.kind].irr && S.today[c.kind] !== undefined;
+    S.cards.splice(idx, 1);
+    if (counted) {
+      S.today[c.kind]++;
+      if (S.today[c.kind] === 2 && S.level[c.kind] === "ask" && !S.offerNo[c.kind]) S.offer = c.kind;
+    }
+    render();
+    toast("Answered: " + c.opts[i], function () {
+      S.cards.splice(idx, 0, c);
+      if (counted) {
+        S.today[c.kind]--;
+        if (S.offer === c.kind && S.today[c.kind] < 2) S.offer = null;
+      }
+      render();
+    });
+  }
+  function takeAllDefaults() {
+    var list = S.cards.filter(function (c) { return !c.lock; });
+    if (!list.length) { toast("Nothing to take. The locked question always asks."); return; }
+    list.forEach(function (c) {
+      S.cards.splice(S.cards.indexOf(c), 1);
+      if (S.today[c.kind] !== undefined) {
+        S.today[c.kind]++;
+        if (S.today[c.kind] === 2 && S.level[c.kind] === "ask" && !S.offerNo[c.kind]) S.offer = c.kind;
+      }
+    });
+    render();
+    toast("Took " + plural(list.length, "default") + ".");
+  }
+  function makeAuto(k) {
+    if (KINDS[k].irr) return;
+    S.level[k] = "auto";
+    var mine = S.cards.filter(function (c) { return c.kind === k; });
+    mine.forEach(function (c) {
+      S.cards.splice(S.cards.indexOf(c), 1);
+      S.done.unshift({ time: "just now", what: c.opts[c.def] + " for " + c.short, why: "you chose the default " + weekCount(k) + " times", kind: k, card: c });
+    });
+    if (S.offer === k) S.offer = null;
+    render();
+    toast(mine.length ? "Done. " + plural(mine.length, "question") + " moved to Done for you." : "Done. This kind now happens on its own.");
+  }
+  function setLevel(k, lv) {
+    if (KINDS[k].irr) return;
+    if (lv === "auto") { makeAuto(k); return; }
+    S.level[k] = lv;
+    render();
+    toast(KINDS[k].name + ": " + (lv === "ask" ? "asks every time." : "asks once a day in a batch."));
+  }
+  function undoDone(i) {
+    var d = S.done[i];
+    if (!d) return;
+    S.done.splice(i, 1);
+    if (d.card) S.cards.push(d.card);
+    render();
+    toast(d.card ? "Undone. The question is back in Needs you." : "Undone.");
+  }
+  function askAgain(i) {
+    var d = S.done[i];
+    if (!d) return;
+    S.level[d.kind] = "ask";
+    S.offerNo[d.kind] = true;
+    S.done.splice(i, 1);
+    render();
+    toast("Okay. '" + kindName(d.kind) + "' will ask you again.");
+  }
+  function needsParts() {
+    var n = S.cards.length;
+    var tabs = [["needs", "Needs you", "(" + n + ")"], ["done", "Done for you", "(" + S.done.length + ")"]];
+    var body;
+    if (S.tab.needs === "needs") {
+      body = offerHtml() + (n ? (n > 1 ? '<p style="margin:0 0 12px"><button class="tbtn" style="text-decoration:underline" data-act="all-defaults">Take all defaults</button></p>' : "") + S.cards.map(cardHtml).join("")
+        : '<p class="mu">Nothing needs you right now.</p>');
+    } else {
+      body = S.done.length ? S.done.map(function (d, i) {
+        return '<div class="dr"><div>' + esc(d.what) + ' <span class="mu sm">' + esc(d.time) + '</span></div><div class="mu sm">Why: ' + esc(d.why) + '</div>' +
+          '<div class="acts"><button class="tbtn" data-act="undo-done" data-i="' + i + '">Undo</button><button class="tbtn" data-act="ask-again" data-i="' + i + '">Ask me again</button></div></div>';
+      }).join("") : '<p class="mu">Nothing done for you yet.</p>';
+    }
+    return { tabs: tabs, cur: S.tab.needs, body: body };
+  }
+  /* ---------- brief ---------- */
+  function everythingHtml(rows, logItems) {
+    var all = logItems.map(function (l) { return ["You", "now", l.text]; }).concat(rows).slice(0, 12);
+    var order = [], by = {};
+    all.forEach(function (r) { if (!by[r[0]]) { by[r[0]] = []; order.push(r[0]); } by[r[0]].push(r); });
+    return order.map(function (k) {
+      return '<div class="evg"><b>' + esc(k) + "</b>" + by[k].map(function (r) { return '<div class="evr"><time>' + esc(r[1]) + "</time><span>" + esc(r[2]) + "</span></div>"; }).join("") + "</div>";
+    }).join("");
+  }
+  function briefBody(d, dens, logItems, links) {
+    var h;
+    if (dens === "short") h = '<p class="prose">' + esc(d.short) + "</p>";
+    else if (dens === "story") {
+      h = d.story.map(function (p) {
+        var src = (p.src || []).map(function (s) { return links ? '<a data-act="thread" data-id="' + s[1] + '">' + esc(s[0]) + "</a>" : esc(s[0]); }).join(" · ");
+        return '<p class="prose"><b>' + esc(p.k) + ".</b> " + esc(p.t) + (p.claim ? ' <span class="claim">claimed, not yet checked</span>' : "") + (src ? ' <span class="src">' + src + "</span>" : "") + "</p>";
+      }).join("");
+    } else h = everythingHtml(d.all, logItems);
+    return h + '<p class="notcov">Not covered: 2 research runs, 14 routine check passes.</p>';
+  }
+  /* ---------- sections ---------- */
+  function workBody(tab) {
+    var list = THREADS.filter(function (t) { return t.tab === tab; });
+    var h = GOALS.filter(function (g) { return list.some(function (t) { return t.goal === g.id; }); }).map(function (g) {
+      var steps = STEPS.map(function (s, i) { return '<span class="' + (i < g.done ? "dn" : "") + '">' + s + "</span>"; }).join(" · ");
+      return '<div class="goal"><div class="gl"><b>' + esc(g.n) + '</b><span class="steps">' + steps + "</span></div>" +
+        list.filter(function (t) { return t.goal === g.id; }).map(trow).join("") + "</div>";
+    }).join("");
+    return h || '<p class="mu">Nothing here.</p>';
+  }
+  function trow(t) {
+    return '<div class="trow" data-act="thread" data-id="' + t.id + '" data-look="Thread: ' + esc(t.ag + ", " + goal(t.goal).n) + '"><i class="dot d-' + t.s + '"></i><div>' +
+      '<div class="tl1"><b>' + esc(t.ag) + "</b><span>" + esc(t.doing) + "</span></div>" +
+      (t.why ? '<div class="why">' + esc(t.why) + '<button class="tbtn" data-act="nudge" data-id="' + t.id + '">Nudge</button></div>' : "") +
+      '</div><span class="tm">' + esc(t.tm) + "</span></div>";
+  }
+  function forceBody(tab) {
+    var names = { enforced: "enforced", held: "held", broken: "broken", not: "not enforced" };
+    var arr = S.lists[tab].map(function (r, i) { return { r: r, i: i }; });
+    arr.sort(function (a, b) { return (b.r.s === "broken") - (a.r.s === "broken") || a.i - b.i; });
+    return arr.map(function (x) {
+      var r = x.r, acts = "";
+      if (r.btn && r.s === "not") acts += '<button class="tbtn" data-act="enforce" data-l="' + tab + '" data-i="' + x.i + '">Make it enforced</button>';
+      if (r.dry) acts += '<button class="tbtn" data-act="dry">Dry run</button>';
+      return '<div class="fi" data-look="In force: ' + esc(r.t) + '"><div class="fl"><span>' + esc(r.t) + '</span><span class="stw s-' + r.s + '">' + names[r.s] + "</span></div>" +
+        (r.why ? '<div class="why">' + esc(r.why) + "</div>" : "") + (acts ? '<div class="acts">' + acts + "</div>" : "") +
+        (r.dry && S.dry ? '<div class="dry">Last 7 days: this would have blocked 4 changes and saved 2 review rounds.</div>' : "") + "</div>";
+    }).join("");
+  }
+  var SEC = {
+    brief: function () {
+      var cur = S.tab.brief;
+      return { tabs: [["since", "Since you left", "3 h 10 min"], ["today", "Today"], ["week", "This week"]], cur: cur, tools: densHtml(S.dens, "dens"), body: briefBody(BRIEF[cur], S.dens, S.log, true) };
+    },
+    work: function () {
+      var c = function (t) { return "(" + THREADS.filter(function (x) { return x.tab === t; }).length + ")"; };
+      return { tabs: [["active", "Active", c("active")], ["waiting", "Waiting", c("waiting")], ["fin", "Finished today", c("fin")]], cur: S.tab.work, body: workBody(S.tab.work) };
+    },
+    research: function () {
+      if (!S.resOpen) return { body: '<div class="resline"><button class="tbtn" style="text-decoration:underline" data-act="res-open">2 research runs · 1 finished</button><span class="mu sm">Open</span></div>' };
+      var body;
+      if (S.tab.res === "running") body = '<div class="rrow"><span>Which CI jobs share one cache?</span><span class="mu">running 14 min</span></div>';
+      else body = '<div class="rrow"><span>Two ways to cut CI time found</span><span class="mu">finished 2 h ago <button class="tbtn" style="text-decoration:underline;color:var(--ink);margin-left:8px" data-act="promote"' + (S.researchDone ? " disabled" : "") + ">" + (S.researchDone ? "Promoted" : "Promote to decision") + "</button></span></div>";
+      return { tabs: [["running", "Running", "(1)"], ["fin", "Finished", "(1)"]], cur: S.tab.res === "running" ? "running" : "fin", tools: '<button class="tbtn mu" data-act="res-close">Close</button>', body: body };
+    },
+    needs: needsParts,
+    force: function () {
+      var L = S.lists;
+      return { tabs: [["laws", "Laws", "(" + L.laws.length + ")"], ["rules", "Rules", "(" + L.rules.length + ")"], ["notes", "Notes", "(" + L.notes.length + ")"]], cur: S.tab.force, body: forceBody(S.tab.force) };
+    },
+    watch: function () {
+      var cur = S.tab.watch;
+      return { tabs: [["going", "Going wrong", "(" + WATCH.going.length + ")"], ["corrected", "Corrected", "(" + WATCH.corrected.length + ")"]], cur: cur,
+        body: WATCH[cur].map(function (w) { return '<div class="wrow" data-look="Watch: ' + esc(w[0]) + '">' + esc(w[0]) + ' <a data-act="thread" data-id="' + w[1] + '" class="sm">Open thread</a></div>'; }).join("") };
+    }
+  };
+  function secHtml(id) {
+    var title = blkTitle(id);
+    var d = SEC[id] ? SEC[id]() : { body: '<p class="mu" style="margin:0 0 6px">Placeholder for ' + esc(title) + '. Nothing is tracked here yet.</p><p class="mu" style="margin:0">The real block would show ' + esc(title.toLowerCase()) + " for this project.</p>" };
+    var col = colOf(id), a = S.cols[col], i = a.indexOf(id);
+    var ctl = S.edit ? '<span class="ctl"><button data-act="up" data-b="' + id + '"' + (i === 0 ? " disabled" : "") + '>Up</button><button data-act="down" data-b="' + id + '"' + (i === a.length - 1 ? " disabled" : "") + '>Down</button><button data-act="hide" data-b="' + id + '">Hide</button></span>' : "";
+    return '<section class="sec' + (S.edit ? " edit" : "") + '" data-look="Section: ' + esc(title) + '"><div class="sh"><h3>' + esc(title) + "</h3>" + (d.tabs ? tabsHtml(id, d.tabs, d.cur) : "") +
+      '<span class="grow"></span>' + (d.tools || "") + ctl + '</div><div class="sb">' + d.body + "</div></section>";
+  }
+  function colOf(id) {
+    if (S.cols.main.indexOf(id) >= 0) return "main";
+    if (S.cols.side.indexOf(id) >= 0) return "side";
+    return S.hid.filter(function (h) { return h.id === id; })[0].col;
+  }
+  function addSlot(col) {
+    var left = EXTRAS.filter(function (n) { return !S.added[n]; });
+    return '<div class="addslot"><span class="mu">Add block</span>' + (left.length ? left.map(function (n) { return '<button class="tbtn" style="text-decoration:underline" data-act="add" data-c="' + col + '" data-n="' + esc(n) + '">' + esc(n) + "</button>"; }).join("") : '<span class="mu">All added</span>') + "</div>";
+  }
+  /* ---------- screens ---------- */
+  function totalNeeds() { return S.cards.length + 2; }
+  function screenAll() {
+    var forgeN = S.cards.length, total = totalNeeds(), projs = (forgeN ? 1 : 0) + 1;
+    var line = total ? "You were away 3 h 10 min. " + plural(total, "thing") + " need" + (total === 1 ? "s" : "") + " you across " + plural(projs, "project") + "." : "You were away 3 h 10 min. Nothing needs you.";
+    var rows = PROJECTS.map(function (p) {
+      var cnt = p.dyn ? forgeN : p.c;
+      var s = p.dyn ? (cnt > 0 ? "needs" : "work") : p.s;
+      var txt = p.dyn ? "The release is one decision away." : p.t;
+      return '<button class="pr" data-act="project" data-look="Project: ' + esc(p.n) + '">' + dot(s) + '<span><span class="pn">' + esc(p.n) + '</span><span class="mu">' + esc(txt) + "</span></span>" +
+        '<span class="cn' + (cnt ? " on" : "") + '">' + (cnt ? cnt + " need you" : "nothing needs you") + "</span></button>";
+    }).join("");
+    return '<div class="crumb">All projects</div><h1>All projects</h1><p class="lede serif">' + esc(line) + "</p>" + '<div style="margin-top:28px">' + rows + "</div>";
+  }
+  function screenProject() {
+    var needs = S.cards.length > 0;
+    var more = '<span class="menuwrap"><button class="tbtn" data-act="more">More</button>' + (S.more ? '<div class="pop">' +
+      (S.hid.length ? S.hid.map(function (h) { return '<button data-act="unhide" data-b="' + h.id + '">' + esc(blkTitle(h.id)) + "</button>"; }).join("") : '<div class="mu">No hidden blocks</div>') + "</div>" : "") + "</span>";
+    var h = '<div class="crumb"><a data-act="go-all">All projects</a> / <span>Forge</span></div>' +
+      '<div class="h1row"><div class="h1l"><h1>Forge</h1>' + dot(needs ? "needs" : "work") + '</div><div class="hbtns"><button class="tbtn" data-act="edit">' + (S.edit ? "Done" : "Edit layout") + "</button>" + more + "</div></div>" +
+      '<p class="lede serif">The release is one decision away. The cloud receipt fix is on its second review.</p>' +
+      '<p class="meta">3 agents working · 2 waiting on you · nothing stuck · updated 4 min ago</p>';
+    function col(c) { return '<div class="col">' + S.cols[c].map(secHtml).join("") + (S.edit ? addSlot(c) : "") + "</div>"; }
+    return h + '<div class="cols">' + col("main") + col("side") + "</div>";
+  }
+  function screenThread() {
+    var t = thr(S.thread), g = goal(t.goal);
+    var d = { short: t.sum, story: t.paras.map(function (p) { return { k: p[0], t: p[1], claim: p[2], src: [[t.ch + " · 1 run"]] }; }), all: t.rows };
+    var mine = S.log.filter(function (l) { return l.t === t.id; });
+    function ul(a) { return a.length ? "<ul>" + a.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul>" : '<p class="mu" style="margin:0">Nothing yet.</p>'; }
+    return '<div class="tcol"><div class="crumb"><a data-act="go-all">All projects</a> / <a data-act="go-project">Forge</a> / <span>' + esc(t.ag) + "</span></div>" +
+      '<div class="h1row"><div class="h1l"><h1>' + esc(t.ag) + "</h1>" + dot(t.s) + '</div></div><p class="mu" style="margin:6px 0 0">' + esc(g.n) + " · " + esc(t.ch) + "</p>" +
+      '<p class="now" data-look="Thread: ' + esc(t.ag) + '"><span class="lab">Now</span>' + esc(t.now) + "</p>" +
+      '<section class="sec" style="margin-bottom:32px;padding-top:14px;border-top:1px solid var(--hair)"><div class="sh"><h3>Brief</h3><span class="grow"></span>' + densHtml(S.tdens, "tdens") + "</div>" + briefBody(d, S.tdens, mine, false) + "</section>" +
+      '<section class="sec" style="padding-top:14px;border-top:1px solid var(--hair)"><div class="sh"><h3>Claimed and proven</h3></div><div class="two"><div><h4>Claimed</h4>' + ul(t.claimed) + "</div><div><h4>Proven</h4>" + ul(t.proven) + "</div></div></section></div>";
+  }
+  /* ---------- panels ---------- */
+  function inboxRender() {
+    var d = needsParts();
+    $("inboxTabs").innerHTML = tabsHtml("needs", d.tabs, d.cur);
+    $("inboxBody").innerHTML = d.body;
+  }
+  function trustRender() {
+    var order = ["branch", "review", "deps", "flaky", "publish"];
+    var steps = [["ask", "Ask every time"], ["batch", "Ask once a day in a batch"], ["auto", "Do it and show me, with undo"]];
+    $("trustBody").innerHTML = '<p class="mu sm" style="margin-top:0">Trust is earned one kind of decision at a time. You are always in control.</p>' + order.map(function (k) {
+      var locked = KINDS[k].irr;
+      return '<div class="kind-row"><b>' + esc(KINDS[k].name) + "</b>" + (locked ? '<div class="mu sm">Always asks. Cannot be made automatic.</div>' : "") +
+        '<div class="steps3">' + steps.map(function (s) {
+          return '<button class="step' + (S.level[k] === s[0] ? " on" : "") + '" data-act="level" data-k="' + k + '" data-l="' + s[0] + '"' + (locked ? " disabled" : "") + ">" + s[1] + "</button>";
+        }).join("") + "</div></div>";
+    }).join("");
+  }
+  function lookText() {
+    if (S.look) return S.look;
+    return S.screen === "all" ? "All projects" : S.screen === "project" ? "Project Forge" : "Thread " + thr(S.thread).ag;
+  }
+  function render() {
+    var n = S.cards.length;
+    $("needsBtn").textContent = "Needs you (" + n + ")";
+    $("trustBtn").textContent = "Trust · " + autoKinds().length + " automatic";
+    $("app").innerHTML = S.screen === "all" ? screenAll() : S.screen === "project" ? screenProject() : screenThread();
+    inboxRender();
+    trustRender();
+    $("looking").textContent = "Looking at: " + lookText() + " · To: " + tName();
+  }
+  function openPanel(which) {
+    closeAll();
+    S.panel = which;
+    $(which).classList.add("on");
+    $("scrim").classList.add("on");
+  }
+  function closeAll() {
+    ["inbox", "trust"].forEach(function (id) { $(id).classList.remove("on"); });
+    $("scrim").classList.remove("on");
+    S.panel = null;
+  }
+  function go(screen, opts) {
+    S.screen = screen;
+    S.look = null;
+    S.more = false;
+    if (opts && opts.thread) { S.thread = opts.thread; if (!thr(opts.thread).tab || thr(opts.thread).tab !== "fin") S.tid = opts.thread; }
+    closeAll();
+    render();
+    window.scrollTo(0, 0);
+  }
+  /* ---------- layout ---------- */
+  function move(id, dir) {
+    var a = S.cols[colOf(id)], i = a.indexOf(id), j = i + dir;
+    if (j < 0 || j >= a.length) return;
+    a.splice(i, 1);
+    a.splice(j, 0, id);
+    render();
+  }
+  function hideBlock(id) {
+    var c = colOf(id);
+    S.cols[c].splice(S.cols[c].indexOf(id), 1);
+    S.hid.push({ id: id, col: c });
+    render();
+    toast(blkTitle(id) + " moved to More.");
+  }
+  function unhide(id) {
+    var h = S.hid.filter(function (x) { return x.id === id; })[0];
+    if (!h) return;
+    S.hid.splice(S.hid.indexOf(h), 1);
+    S.cols[h.col].push(id);
+    S.more = false;
+    render();
+    toast(blkTitle(id) + " is back.");
+  }
+  function addBlock(col, name) {
+    S.cols[col].push("x_" + name);
+    S.added[name] = true;
+    render();
+    toast("Added " + name + ".");
+  }
+  /* ---------- prompt ---------- */
+  function ppRender() {
+    var h = "";
+    if (S.pend) {
+      h += '<div class="confirm">To: <b>' + esc(tName()) + '</b> · <button class="tbtn" style="text-decoration:underline" data-act="change-target">Change</button>' +
+        '<div class="mu" style="margin-top:4px">' + esc(S.pend.text) + "</div>" +
+        '<label><input type="checkbox" id="skipBox"' + (S.pend.skipTick ? " checked" : "") + "> Do not show this next time for this kind</label>" +
+        '<div class="bar"><i id="barFill"></i></div><button class="btn" data-act="undo-send">Undo</button> <span class="mu sm" id="secs"></span></div>';
+    }
+    if (S.answer) h += '<div class="bubble"><b>' + esc(S.answer.q) + "</b><br>" + esc(S.answer.a) + '<br><span class="mu sm">Answered from the log, no agent started</span></div>';
+    if (S.pl) h += placeHtml();
+    $("ppDyn").innerHTML = h;
+  }
+  function placeHtml() {
+    var p = S.pl;
+    function chips(arr, cur, act) { return arr.map(function (x) { return '<button class="opt' + (x === cur ? " on" : "") + '" data-act="' + act + '" data-v="' + x + '">' + x + "</button>"; }).join(""); }
+    return '<div class="place"><div><b>You said:</b> ' + esc(p.text) + "</div>" +
+      '<div class="r"><span class="lab">Kind</span>' + chips(["Note", "Rule", "Law"], p.kind, "pl-kind") + "</div>" +
+      '<div class="r"><span class="lab">Applies to</span>' + chips(["This thread", "This project", "All projects"], p.scope, "pl-scope") + "</div>" +
+      '<div class="r"><span class="lab">Enforced by</span><span>nothing yet</span> <a data-act="pl-enforce">Make it enforced</a></div>' +
+      (p.fast ? '<div class="r">This replaces an older note. <button class="opt' + (p.replace ? " on" : "") + '" data-act="pl-replace">' + (p.replace ? "Will replace" : "Replace it") + "</button></div>" : "") +
+      '<div class="r"><button class="btn dark" data-act="pl-accept">Accept</button><button class="tbtn" data-act="pl-cancel">Cancel</button></div></div>';
+  }
+  function addLog(text, tid) { var e = { t: tid, text: text, time: "now" }; S.log.unshift(e); return e; }
+  function sendPrompt(forced) {
+    var inp = $("ppInput");
+    var txt = (forced || inp.value).trim();
+    if (!txt) return;
+    if (S.pend) commitSend();
+    S.answer = null; S.pl = null;
+    var low = txt.toLowerCase();
+    inp.value = "";
+    if (low.indexOf("always") >= 0 || low.indexOf("never") >= 0) {
+      S.pl = { text: txt, kind: "Rule", scope: "This project", fast: low.indexOf("fast mode") >= 0, replace: false };
+      ppRender();
+      return;
+    }
+    if (/\?\s*$/.test(txt)) {
+      S.answer = { q: txt, a: "The last green run was 2 hours ago, on change 44." };
+      ppRender();
+      return;
+    }
+    if (S.skip.steer) {
+      var e = addLog(txt, S.tid);
+      render();
+      toast("Sent", function () { S.log.splice(S.log.indexOf(e), 1); render(); });
+      return;
+    }
+    S.pend = { text: txt, start: Date.now(), skipTick: false };
+    ppRender();
+    S.pend.timer = setInterval(tick, 100);
+  }
+  function tick() {
+    if (!S.pend) return;
+    var left = Math.max(0, 10 - (Date.now() - S.pend.start) / 1000);
+    var f = $("barFill"), s = $("secs");
+    if (f) f.style.width = (left * 10) + "%";
+    if (s) s.textContent = Math.ceil(left) + "s";
+    if (left <= 0) commitSend();
+  }
+  function commitSend() {
+    var p = S.pend;
+    if (!p) return;
+    clearInterval(p.timer);
+    var box = $("skipBox");
+    if (box && box.checked) S.skip.steer = true;
+    S.pend = null;
+    addLog(p.text, S.tid);
+    ppRender();
+    render();
+    toast("Sent");
+  }
+  function undoSend() {
+    if (!S.pend) return;
+    clearInterval(S.pend.timer);
+    $("ppInput").value = S.pend.text;
+    S.pend = null;
+    ppRender();
+    toast("Not sent. Your text is back in the box.");
+  }
+  function openPrompt() {
+    $("prompt").classList.add("on");
+    $("looking").textContent = "Looking at: " + lookText() + " · To: " + tName();
+    setTimeout(function () { $("ppInput").focus(); }, 180);
+  }
+  function acceptPlacement() {
+    var p = S.pl;
+    if (!p) return;
+    var key = { Note: "notes", Rule: "rules", Law: "laws" }[p.kind];
+    if (p.fast && p.replace) S.lists.notes = S.lists.notes.filter(function (r) { return r.t !== "Never use fast mode"; });
+    S.lists[key].unshift({ t: p.text, s: "not" });
+    S.tab.force = key;
+    S.pl = null;
+    ppRender();
+    render();
+    toast("Added to In force as not enforced.");
+  }
+  function promote() {
+    if (S.researchDone) return;
+    S.researchDone = true;
+    S.cards.push({ id: "c7", kind: "research", short: "CI parallel run", q: "Run the two CI jobs side by side?", opts: ["Try it for a day", "Not now"], def: 1,
+      ev: ["Research says the saving is about 4 minutes.", "The two jobs share one cache and may clash."] });
+    render();
+    toast("Promoted. It is now a question in Needs you.");
+  }
+  /* ---------- click routing ---------- */
+  document.addEventListener("click", function (ev) {
+    var look = ev.target.closest("[data-look]");
+    if (look && !ev.target.closest(".prompt") && !ev.target.closest(".slide")) {
+      S.look = look.getAttribute("data-look");
+      $("looking").textContent = "Looking at: " + S.look + " · To: " + tName();
+    }
+    if (S.more && !ev.target.closest(".menuwrap")) { S.more = false; render(); }
+    var el = ev.target.closest("[data-act]");
+    if (!el) return;
+    var a = el.getAttribute("data-act");
+    var d = function (k) { return el.getAttribute("data-" + k); };
+    switch (a) {
+      case "go-all": go("all"); break;
+      case "go-project": go("project"); break;
+      case "project": go("project"); break;
+      case "thread": go("thread", { thread: d("id") }); break;
+      case "open-inbox": S.tab.needs = "needs"; render(); openPanel("inbox"); break;
+      case "open-trust": render(); openPanel("trust"); break;
+      case "close-all": closeAll(); break;
+      case "stab": S.tab[d("s") === "research" ? "res" : d("s")] = d("t"); render(); break;
+      case "dens": S.dens = d("v"); render(); break;
+      case "tdens": S.tdens = d("v"); render(); break;
+      case "edit": S.edit = !S.edit; S.more = false; render(); break;
+      case "more": S.more = !S.more; render(); break;
+      case "unhide": unhide(d("b")); break;
+      case "up": move(d("b"), -1); break;
+      case "down": move(d("b"), 1); break;
+      case "hide": hideBlock(d("b")); break;
+      case "add": addBlock(d("c"), d("n")); break;
+      case "res-open": S.resOpen = true; render(); break;
+      case "res-close": S.resOpen = false; render(); break;
+      case "ans": answer(d("id"), parseInt(d("i"), 10)); break;
+      case "ev": S.evOpen[d("id")] = !S.evOpen[d("id")]; render(); break;
+      case "all-defaults": takeAllDefaults(); break;
+      case "offer-yes": makeAuto(S.offer); break;
+      case "offer-no": S.offerNo[S.offer] = true; S.offer = null; render(); toast("Okay. It will keep asking."); break;
+      case "undo-done": undoDone(parseInt(d("i"), 10)); break;
+      case "ask-again": askAgain(parseInt(d("i"), 10)); break;
+      case "level": setLevel(d("k"), d("l")); break;
+      case "enforce": S.lists[d("l")][parseInt(d("i"), 10)].s = "enforced"; render(); toast("Done. That note is now enforced."); break;
+      case "dry": S.dry = !S.dry; render(); break;
+      case "promote": promote(); break;
+      case "nudge": S.tid = d("id"); S.look = "Thread: " + thr(d("id")).ag; openPrompt(); break;
+      case "toggle-prompt": if ($("prompt").classList.contains("on")) $("prompt").classList.remove("on"); else openPrompt(); break;
+      case "send": sendPrompt(); break;
+      case "mic": toast("Voice is not connected in this mock."); break;
+      case "change-target":
+        var ids = THREADS.filter(function (t) { return t.tab !== "fin"; }).map(function (t) { return t.id; });
+        S.tid = ids[(ids.indexOf(S.tid) + 1) % ids.length];
+        ppRender(); render(); if (S.pend) tick(); break;
+      case "undo-send": undoSend(); break;
+      case "pl-kind": S.pl.kind = d("v"); ppRender(); break;
+      case "pl-scope": S.pl.scope = d("v"); ppRender(); break;
+      case "pl-enforce": toast("Enforcing needs a check that can run. None exists for this yet."); break;
+      case "pl-replace": S.pl.replace = !S.pl.replace; ppRender(); break;
+      case "pl-accept": acceptPlacement(); break;
+      case "pl-cancel": S.pl = null; ppRender(); break;
+    }
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && ev.target.id === "ppInput") sendPrompt();
+    if (ev.key === "Escape") { closeAll(); $("prompt").classList.remove("on"); }
+  });
+  document.addEventListener("change", function (ev) {
+    if (ev.target.id === "skipBox" && S.pend) S.pend.skipTick = ev.target.checked;
+  });
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Plan in pull requests</title><style>
+body{margin:0}
+.w{font-family:var(--font-sans,system-ui,sans-serif);color:var(--foreground,#111);font-size:14px;line-height:1.45}
+h3{font-size:15px;margin:0 0 4px}.sub{color:var(--muted-foreground,#666);margin:0 0 12px;font-size:13px}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 18px}
+.t{border:1px solid var(--border,#ddd);border-radius:var(--radius,8px);padding:10px 12px}
+.t b{display:block;font-size:21px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
+.t span{display:block;font-size:12px;color:var(--muted-foreground,#666)}
+.t.main{border:2px solid var(--primary,#333)}
+.row{display:grid;grid-template-columns:22px 1fr 84px;gap:10px;padding:10px 0;border-top:1px solid var(--border,#ddd);align-items:start}
+.k{color:var(--muted-foreground,#666);text-align:right;font-variant-numeric:tabular-nums}
+.row p{margin:0;font-weight:600}.row small{display:block;color:var(--muted-foreground,#666);font-size:12.5px;font-weight:400;margin-top:1px}
+.n{text-align:right;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar{height:8px;border-radius:4px;margin-top:7px;background:linear-gradient(to right,var(--chart-1,#4a7) var(--lo),color-mix(in srgb,var(--chart-1,#4a7) 35%,transparent) var(--lo),color-mix(in srgb,var(--chart-1,#4a7) 35%,transparent) var(--hi),color-mix(in srgb,var(--foreground,#111) 7%,transparent) var(--hi))}
+.bar.fix{--c:var(--chart-2,#c84);background:linear-gradient(to right,var(--c) var(--lo),color-mix(in srgb,var(--c) 35%,transparent) var(--lo),color-mix(in srgb,var(--c) 35%,transparent) var(--hi),color-mix(in srgb,var(--foreground,#111) 7%,transparent) var(--hi))}
+em{font-style:normal;font-size:11px;border:1px solid var(--border,#ddd);border-radius:999px;padding:0 6px;margin-left:6px;white-space:nowrap;font-weight:400;color:var(--muted-foreground,#666)}
+.sec{margin:20px 0 6px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.two .t ul{margin:6px 0 0;padding-left:16px;font-size:12.5px;color:var(--muted-foreground,#666)}
+.note{color:var(--muted-foreground,#666);font-size:12px;margin:8px 0 0}
+@media(max-width:520px){.tiles,.two{grid-template-columns:1fr}.row{grid-template-columns:18px 1fr 70px}}
+</style></head><body><div class="w">
+<h3>The whole plan, counted in pull requests</h3>
+<p class="sub">Built to the careful standard, not the quick one. A pull request (PR) here is one small reviewed change, about 120 to 220 lines.</p>
+<div class="tiles">
+<div class="t main"><b>170 to 218</b><span>to build the product you described: cloud, phone, brief, Slack, teams</span></div>
+<div class="t"><b>38 to 57</b><span>more for the later designed parts</span></div>
+<div class="t"><b>360 to 480</b><span>to fix the 206 high-value faults already on the list</span></div>
+</div>
+
+<h3>New product, in build order</h3>
+<p class="sub">Solid bar is the low count, pale bar the high count. Scale is the same on every row.</p>
+
+<div class="row"><span class="k">1</span><div><p>Cloud switched on<em>built, switched off</em></p><small>Your laptop and cloud machines share one record. Sign-in is one command and one Approve.</small><div class="bar" style="--lo:6.25%;--hi:8.3%"></div></div><span class="n">30 to 40</span></div>
+<div class="row"><span class="k">2</span><div><p>Phone ask loop<em>first slice in build</em></p><small>An agent asks, your phone shows it with options, you tap, the agent carries on. Reminders at 0, 5, 15 and 30 minutes, snooze, sleep window.</small><div class="bar" style="--lo:9.4%;--hi:11.5%"></div></div><span class="n">45 to 55</span></div>
+<div class="row"><span class="k">3</span><div><p>Catch-me-up brief and all-projects home<em>designed</em></p><small>One screen says what changed in every project and what needs you.</small><div class="bar" style="--lo:6.25%;--hi:8.3%"></div></div><span class="n">30 to 40</span></div>
+<div class="row"><span class="k">4</span><div><p>Team asks, handoff and Slack<em>trial passed</em></p><small>A question goes to the right person, you can hand it on, and a Slack reply counts once the person is linked.</small><div class="bar" style="--lo:4.2%;--hi:5.8%"></div></div><span class="n">20 to 28</span></div>
+<div class="row"><span class="k">5</span><div><p>Teams<em>designed, basics worked out</em></p><small>A second person and their agents on the same project, with their own permissions, shared memory and room to grow.</small><div class="bar" style="--lo:9.4%;--hi:11.5%"></div></div><span class="n">45 to 55</span></div>
+<div class="row"><span class="k">6</span><div><p>Later parts<em>designed</em></p><small>Your own workflows and the flow map, open data so anyone can build a screen, and a check kit for replacement parts.</small><div class="bar" style="--lo:7.9%;--hi:11.9%"></div></div><span class="n">38 to 57</span></div>
+
+<h3 class="sec">Making what exists stable</h3>
+<div class="row"><span class="k">7</span><div><p>The 206 high-value faults<em>on the ranked list</em></p><small>29 quick ones are one PR each. 105 normal ones are one or two. 59 large ones need three or four. 13 hard ones need more.</small><div class="bar fix" style="--lo:75%;--hi:100%"></div></div><span class="n">360 to 480</span></div>
+
+<h3 class="sec">What the careful standard costs, on the phone ask loop</h3>
+<div class="two">
+<div class="t"><b>12 to 15</b><span>quick version</span><ul><li>One page, one notification</li><li>Works when everything goes right</li><li>Checked on a laptop only</li></ul></div>
+<div class="t main"><b>45 to 55</b><span>careful version, the one counted above</span><ul><li>Late, double and expired answers handled</li><li>Restart and lost connection tested</li><li>Proven on a real iPhone and Android phone</li><li>Sign-in proof for publish, merge and deploy</li></ul></div>
+</div>
+
+<h3 class="sec">Fixes that follow</h3>
+<p class="sub" style="margin-bottom:0">In the last 15 days Forge merged 370 PRs: 135 added something and 165 fixed something. So each building PR has brought about one more fix PR after it. With those, the new product (rows 1 to 6) is about 465 to 610 merged PRs.</p>
+<p class="note">Not counted: a real phone call, a store app, agents running on cloud boxes, a community gallery, and the 697 medium and low value items. Per-row counts are the lead's estimate from the written scope, the two trials and Forge's measured PR size. No second model has checked them.</p>
+</div></body></html>

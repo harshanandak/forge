@@ -1,0 +1,50 @@
+$ bun trial.ts
+live 50/50
+early 50/50
+resume 50/50
+restart 10/10
+{
+  "summary": {
+    "live": {
+      "attempted": 50,
+      "passed": 50,
+      "medianMs": 69.5,
+      "p95Ms": 177
+    },
+    "early": {
+      "attempted": 50,
+      "passed": 50,
+      "medianMs": 43.5,
+      "p95Ms": 80
+    },
+    "resume": {
+      "attempted": 50,
+      "passed": 50,
+      "medianMs": 41,
+      "p95Ms": 103
+    },
+    "restart": {
+      "attempted": 10,
+      "passed": 10,
+      "medianMs": 41.5,
+      "p95Ms": 67
+    }
+  },
+  "conformance": {
+    "passed": 86,
+    "failed": 0,
+    "skipped": 5
+  },
+  "alarm": {
+    "passed": true,
+    "scheduleDue": "2026-11-21T19:35:00.502Z",
+    "postedAt": "2026-11-21T19:35:00.593Z",
+    "message": "4"
+  },
+  "bundle": {
+    "bytes": 2014741,
+    "gzipBytes": 401024
+  },
+  "processCheck": [],
+  "errors": []
+}

@@ -1,0 +1,360 @@
+{
+  "runId": "950dfa3d-4871-4ae2-8c98-18d63428d1a3",
+  "driverPid": 43300,
+  "pids": [
+    18392,
+    13252
+  ],
+  "before": [],
+  "after": [],
+  "remaining": [],
+  "portsReleased": [
+    18761,
+    18762
+  ],
+  "bundle": {
+    "baseline": {
+      "bytes": 2014786,
+      "gzipBytes": 401037
+    },
+    "integrated": {
+      "bytes": 3595356,
+      "gzipBytes": 725658
+    }
+  },
+  "outcomes": {
+    "baseline": {
+      "bytes": 2014786,
+      "gzipBytes": 401037
+    },
+    "Q1 same Worker and Durable Object": {
+      "error": "Error: Slack post for channel/hosting did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async <anonymous> (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:171:36)\n    at async record (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:54:41)"
+    },
+    "Q7 bundle": {
+      "bytes": 1580570,
+      "gzipBytes": 324621
+    },
+    "Q2 channel mention": {
+      "error": "Error: Slack post for channel/mention did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async <anonymous> (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:180:26)\n    at async record (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:54:41)"
+    },
+    "Q2 existing DM": {
+      "error": "Error: Slack post for direct-existing did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async <anonymous> (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:184:53)\n    at async record (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:54:41)"
+    },
+    "Q2 DM by person": {
+      "error": "Error: Slack post for direct-person did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async <anonymous> (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:187:26)\n    at async record (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:54:41)"
+    },
+    "Q4 linked and unlinked": {
+      "error": "Error: Slack post for identity did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async <anonymous> (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:196:36)\n    at async record (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:54:41)"
+    },
+    "Q5 edit one Slack message and post separate status": {
+      "error": "Error: Slack post for channel/status did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async <anonymous> (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:211:36)\n    at async record (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:54:41)"
+    },
+    "Q6 bad signature and replay": {
+      "error": "Error: Slack post for channel/security did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async <anonymous> (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:229:36)\n    at async record (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:54:41)"
+    },
+    "shutdown": {
+      "remaining": [],
+      "portsReleased": [
+        18761,
+        18762
+      ]
+    }
+  },
+  "slackCalls": [
+    {
+      "method": "auth.test",
+      "verb": "POST",
+      "path": "/api/auth.test",
+      "fields": {
+        "token": "[redacted fake credential]"
+      },
+      "authorized": true
+    },
+    {
+      "method": "auth.test",
+      "verb": "POST",
+      "path": "/api/auth.test",
+      "fields": {},
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 9",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 11",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 12",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 13",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 10",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 14",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 15",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 16",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 17",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 18",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 19",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Question 20",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Identity question",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Initial status",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    },
+    {
+      "method": "chat.postMessage",
+      "verb": "POST",
+      "path": "/api/chat.postMessage",
+      "fields": {
+        "channel": "CTRIAL01",
+        "markdown_text": "Signature and replay question",
+        "unfurl_links": "false",
+        "unfurl_media": "false",
+        "username": "agent"
+      },
+      "authorized": true
+    }
+  ],
+  "slackFaults": [],
+  "samples": [
+    {
+      "iteration": 1,
+      "error": "Error: Slack post for channel/1 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 2,
+      "error": "Error: Slack post for channel/2 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 3,
+      "error": "Error: Slack post for channel/3 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 4,
+      "error": "Error: Slack post for channel/4 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 5,
+      "error": "Error: Slack post for channel/5 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 6,
+      "error": "Error: Slack post for channel/6 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 7,
+      "error": "Error: Slack post for channel/7 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 8,
+      "error": "Error: Slack post for channel/8 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 9,
+      "error": "Error: Slack post for channel/9 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 10,
+      "error": "Error: Slack post for channel/10 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 11,
+      "error": "Error: Slack post for channel/11 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 12,
+      "error": "Error: Slack post for channel/12 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 13,
+      "error": "Error: Slack post for channel/13 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 14,
+      "error": "Error: Slack post for channel/14 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 15,
+      "error": "Error: Slack post for channel/15 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 16,
+      "error": "Error: Slack post for channel/16 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 17,
+      "error": "Error: Slack post for channel/17 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 18,
+      "error": "Error: Slack post for channel/18 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 19,
+      "error": "Error: Slack post for channel/19 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    },
+    {
+      "iteration": 20,
+      "error": "Error: Slack post for channel/20 did not happen within 5000ms\n    at until (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:68:13)\n    at async post (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:81:23)\n    at async sample (E:\\Personal-Projects\\forge-new\\.overseer\\spikes\\forge-1761-board-slack\\trial.ts:119:36)"
+    }
+  ],
+  "elapsedSeconds": 147.8353156
+}

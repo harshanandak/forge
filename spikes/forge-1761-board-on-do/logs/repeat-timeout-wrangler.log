@@ -1,0 +1,164 @@
+
+--- 2026-11-21T19:30:54.231Z debug
+🪵  Writing logs to "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\logs\wrangler-2026-11-21_19-30-53_731.log"
+---
+
+--- 2026-11-21T19:30:54.231Z warn
+▲ [WARNING] Proxy environment variables detected. We'll use your proxy for fetch requests.
+
+
+---
+
+--- 2026-11-21T19:30:54.282Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:30:54.283Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env.local". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:30:54.338Z log
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+---
+
+--- 2026-11-21T19:30:54.372Z debug
+Metrics dispatcher: Dispatching disabled - would have sent {"deviceId":"89b88391-ebbe-4c13-b3f7-21ae7197ffe8","event":"wrangler command started","timestamp":1795289454372,"properties":{"amplitude_session_id":1795289454340,"amplitude_event_id":0,"wranglerVersion":"4.152.0","wranglerMajorVersion":4,"wranglerMinorVersion":152,"wranglerPatchVersion":0,"osPlatform":"Windows","osVersion":"Windows 11 Home Single Language","nodeVersion":24,"packageManager":"bun","isFirstUsage":false,"configFileType":"none","isCI":false,"isPagesCI":false,"isWorkersCI":false,"isInteractive":false,"hasAssets":false,"agent":"claude-code","argsUsed":["config","ip","local","persistTo","port"],"argsCombination":"config, ip, local, persistTo, port","sanitizedCommand":"dev","sanitizedArgs":{"local":true},"currentAgentSkillsInstalled":null}}.
+---
+
+--- 2026-11-21T19:30:54.374Z debug
+setting config
+---
+
+--- 2026-11-21T19:30:54.374Z debug
+Updating config... undefined undefined
+---
+
+--- 2026-11-21T19:30:54.430Z debug
+local dev variables file not found at ".dev.vars". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:30:54.431Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:30:54.431Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env.local". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:30:54.434Z log
+Your Worker has access to the following bindings:
+---
+
+--- 2026-11-21T19:30:54.435Z log
+Binding                       Resource            Mode
+---
+
+--- 2026-11-21T19:30:54.435Z log
+env.BOARDS (BoardObject)      Durable Object      local
+---
+
+--- 2026-11-21T19:30:54.435Z log
+
+---
+
+--- 2026-11-21T19:30:54.832Z log
+Wrangler detected this dev session is running in an AI agent.
+The Local Explorer API is available at http://127.0.0.1:18761/cdn-cgi/local/explorer/api
+Useful routes:
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/workers - local Workers and bindings
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/scheduled?worker=<name> - invoke a Worker's scheduled handler; cron is required (see the OpenAPI schema for the full request)
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/storage/kv/namespaces - KV namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/d1/database - D1 databases
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/r2/buckets - R2 buckets
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workers/durable_objects/namespaces - Durable Object namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workflows - Workflows
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query - run a read-only SQL query (SELECT/WITH only) over captured request traces and console logs. Tables: spans, logs (read attributes via json(attributes)). Example:
+    curl -X POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query -H 'Content-Type: application/json' -d '{"sql":"SELECT service, name, outcome, duration_ms FROM spans WHERE parent_id IS NULL LIMIT 20"}'
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/clear - clear all captured traces and logs
+If the routes above don't cover what you need, fetch the full OpenAPI schema (large - use only as a last resort):
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api - OpenAPI schema
+---
+
+--- 2026-11-21T19:30:54.939Z debug
+RemoteRuntimeController teardown beginning...
+---
+
+--- 2026-11-21T19:30:54.939Z debug
+RemoteRuntimeController teardown complete
+---
+
+--- 2026-11-21T19:30:54.945Z log
+⎔ Starting local server...
+---
+
+--- 2026-11-21T19:30:54.956Z debug
+[InspectorProxyWorker] handleProxyControllerIncomingMessage {"type":"reloadStart"}
+---
+
+--- 2026-11-21T19:30:55.709Z debug
+[InspectorProxyWorker] handleProxyControllerIncomingMessage {"type":"reloadComplete","proxyData":{"userWorkerUrl":{"protocol":"http:","hostname":"127.0.0.1","port":"57177"},"userWorkerInspectorUrl":{"protocol":"ws:","hostname":"127.0.0.1","port":"57178","pathname":"/core:user:forge-1761-board-on-do"},"userWorkerInnerUrlOverrides":{"protocol":"http:"},"headers":{"MF-Proxy-Shared-Secret":"6a887156-0fda-4155-974b-8b43e93bb182"},"liveReload":false,"proxyLogsToController":false}}
+---
+
+--- 2026-11-21T19:30:55.711Z debug
+[InspectorProxyWorker] reconnectRuntimeWebSocket
+---
+
+--- 2026-11-21T19:30:55.713Z debug
+[InspectorProxyWorker] NEW RUNTIME WEBSOCKET http://127.0.0.1:57178/core:user:forge-1761-board-on-do
+---
+
+--- 2026-11-21T19:30:55.714Z debug
+[InspectorProxyWorker] SEND TO DEVTOOLS {"method":"Runtime.executionContextsCleared"}
+---
+
+--- 2026-11-21T19:30:55.723Z debug
+[InspectorProxyWorker] RUNTIME WEBSOCKET OPENED
+---
+
+--- 2026-11-21T19:30:55.724Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.enable","id":100000001}
+---
+
+--- 2026-11-21T19:30:55.889Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.executionContextCreated',
+  params: {
+    context: {
+      id: 234657473,
+      origin: '',
+      name: 'Worker',
+      uniqueId: '-223542438693233690.-2274774752194386306'
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:30:55.890Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000001, result: {} }
+---
+
+--- 2026-11-21T19:31:05.724Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.getIsolateId","id":100000002}
+---
+
+--- 2026-11-21T19:31:05.735Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000002, result: { id: 'db3f175fd4ff6045' } }
+---
+
+--- 2026-11-21T19:31:15.742Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.getIsolateId","id":100000003}
+---
+
+--- 2026-11-21T19:31:18.776Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000003, result: { id: 'db3f175fd4ff6045' } }
+---
+
+--- 2026-11-21T19:31:25.753Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.getIsolateId","id":100000004}
+---
+
+--- 2026-11-21T19:31:25.808Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000004, result: { id: 'db3f175fd4ff6045' } }
+---

@@ -1,0 +1,16 @@
+{
+    "name":  "forge-1761-board-slack",
+    "private":  true,
+    "type":  "module",
+    "scripts":  {
+                    "trial":  "bun --no-env-file trial.ts"
+                },
+    "dependencies":  {
+                         "@vercel/board":  "0.54.0",
+                         "wrangler":  "4.152.0",
+                         "chat":  "4.41.1",
+                         "@chat-adapter/slack":  "4.41.1",
+                         "@vercel/connect":  "2.3.4"
+                     }
+}
+

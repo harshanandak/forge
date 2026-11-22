@@ -1,0 +1,8 @@
+{
+  "name": "forge-1761-board-on-do",
+  "main": "probe.ts",
+  "compatibility_date": "2026-10-26",
+  "send_metrics": false,
+  "dev": {"ip": "127.0.0.1"}
+}
+

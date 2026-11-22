@@ -1,0 +1,17 @@
+{
+  "runId": "cf4d846d-0273-4c2f-8ebc-9341219173da",
+  "file": "state/v3/do/forge-1761-board-on-do-BoardObject/9df6f0ba84f5103dd8d26e6b5e32bc3f3af869333e21e0452af5c02ebfdf230e.sqlite",
+  "query": "SELECT idx, created_at, json_extract(payload, '$.text') AS text FROM a2_events WHERE event_type = 'message.posted' AND json_extract(payload, '$.channel') = ? ORDER BY idx",
+  "channel": "resume/24",
+  "rows": [
+    {
+      "idx": 249,
+      "created_at": 1795289471801,
+      "text": "question resume/24"
+    }
+  ],
+  "smokeResult": {
+    "channel": "resume/24",
+    "error": "TimeoutError: The operation timed out."
+  }
+}

@@ -1,0 +1,1347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge Desk mock v5</title>
+<style>
+:root {
+  --bg: #faf9f7; --ink: #1c1b1a; --muted: #6b6862; --hair: #e6e3dd; --surface: #ffffff; --soft: #f2efea;
+  --accent: #b4540a; --accent-ink: #ffffff; --accent-soft: #fbeee2; --green: #5b7f5a; --red: #b3261e; --grey: #8a8680;
+  --band: rgba(28, 27, 26, 0.07);
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151412; --ink: #ecebe8; --muted: #9a968f; --hair: #2c2a27; --surface: #1d1c1a; --soft: #22201d;
+    --accent: #e08a45; --accent-ink: #1a1209; --accent-soft: #2a1d12; --green: #86a884; --red: #e5776f; --grey: #7d7972;
+    --band: rgba(236, 235, 232, 0.09);
+    --shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body { color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; cursor: pointer; }
+a { color: var(--muted); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+a:hover { color: var(--ink); }
+[hidden] { display: none !important; }
+.mu { color: var(--muted); }
+.sm { font-size: 13px; }
+.xs { font-size: 12px; }
+.grow { flex: 1 1 auto; }
+.serif { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; }
+
+/* frame */
+.app { position: relative; width: 100%; height: 800px; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border: 1px solid var(--hair); border-radius: 8px; }
+.topbar { flex: none; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; padding: 10px 16px; border-bottom: 1px solid var(--hair); }
+.brand { font-weight: 600; background: none; border: 0; padding: 0; }
+.crumb { font-size: 13px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb a { color: var(--muted); }
+.crumb .cur { color: var(--ink); }
+.tbr { font-size: 13px; color: var(--muted); white-space: nowrap; background: none; border: 0; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+.tbr:hover { color: var(--ink); }
+@media (max-width: 460px) { .crumb { order: 3; flex-basis: 100%; } }
+.content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 18px 16px 28px; }
+.dock { flex: none; position: relative; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--hair); background: var(--bg); }
+.dgrp { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 18px; overflow-x: auto; padding: 4px; }
+.db { flex: none; background: none; border: 0; border-bottom: 2px solid transparent; padding: 2px 0; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.db:hover { color: var(--ink); }
+.db.on { color: var(--ink); border-bottom-color: var(--ink); }
+@media (max-width: 460px) { .dgrp { gap: 13px; } .dock { padding: 8px; } }
+.blob { flex: none; width: 46px; height: 46px; border-radius: 50%; border: 0; background: var(--ink); color: var(--bg); display: grid; place-items: center; }
+.blob:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* popovers */
+.pop { position: absolute; z-index: 30; background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; box-shadow: var(--shadow); padding: 6px; }
+.more { left: 12px; bottom: calc(100% + 6px); width: min(340px, calc(100% - 24px)); max-height: 520px; overflow-y: auto; }
+.mrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 4px 2px 8px; border-radius: 6px; font-size: 13px; }
+.mrow:hover { background: var(--bg); }
+.mrow .open { background: none; border: 0; padding: 5px 0; text-align: left; flex: 1; font-size: 13px; }
+.mrow .pin { background: none; border: 0; padding: 4px 6px; font-size: 12px; color: var(--muted); text-decoration: underline; }
+.mrow .pin[disabled] { opacity: 0.4; text-decoration: none; cursor: default; }
+.mlab { padding: 8px 8px 2px; font-size: 12px; color: var(--muted); }
+.msep { border-top: 1px solid var(--hair); margin: 6px 0; }
+
+/* tray */
+.tray { flex: none; position: relative; z-index: 1; border-top: 1px solid var(--hair); background: var(--surface); max-height: 330px; overflow-y: auto; }
+.tray:empty { display: none; }
+.tin { padding: 10px 16px 12px; }
+.only { background: var(--accent-soft); border-bottom: 1px solid var(--hair); padding: 10px 16px 11px; border-left: 4px solid var(--accent); }
+.only .k { font-size: 12px; color: var(--accent); font-weight: 600; letter-spacing: 0.02em; }
+.only .q { font-weight: 600; font-size: 14.5px; margin: 1px 0 2px; }
+.only.flash { animation: flash 900ms ease 2; }
+@keyframes flash { 50% { background: var(--surface); } }
+.code { font-family: ui-monospace, Consolas, monospace; font-size: 15px; letter-spacing: 0.08em; background: var(--surface); border: 1px solid var(--hair); border-radius: 6px; padding: 1px 8px; }
+.thead { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); }
+.tnav { display: flex; gap: 12px; align-items: baseline; margin-left: auto; white-space: nowrap; }
+.tcard.slide { animation: slidein 200ms ease; }
+@keyframes slidein { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+.tq { font-weight: 600; font-size: 14px; line-height: 1.35; margin-bottom: 4px; }
+.tmeta { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.trayline { padding: 8px 16px; font-size: 13px; display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+
+/* prompt */
+.prompt { position: absolute; right: 12px; bottom: 70px; z-index: 35; width: min(400px, calc(100% - 24px)); max-height: 560px; overflow-y: auto; background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; box-shadow: var(--shadow); padding: 14px; opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity 160ms, transform 160ms; }
+.prompt.on { opacity: 1; transform: none; pointer-events: auto; }
+.looking { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.inrow { display: flex; gap: 8px; align-items: center; }
+.inrow input { flex: 1; min-width: 0; border: 1px solid var(--hair); border-radius: 8px; padding: 8px 10px; background: var(--bg); color: var(--ink); font: inherit; }
+.icon-btn { border: 1px solid var(--hair); background: var(--surface); border-radius: 8px; width: 36px; height: 36px; display: grid; place-items: center; flex: none; }
+.tries { display: flex; flex-direction: column; gap: 2px; margin: 0 0 10px; }
+.try { background: none; border: 0; padding: 3px 0; text-align: left; font-size: 13px; color: var(--muted); }
+.try:hover { color: var(--ink); }
+.try b { font-weight: 600; color: var(--ink); margin-right: 6px; }
+.route { border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; font-size: 13px; }
+.route .said { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 15px; margin-bottom: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 4px 0; }
+.chip { border: 1px solid var(--hair); background: var(--bg); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; }
+.chip:hover { border-color: var(--muted); }
+.chip b { font-weight: 600; }
+.dest { font-size: 12.5px; color: var(--muted); margin: 6px 0 2px; }
+.warnbox { border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin: 10px 0 4px; }
+.vs { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 3px 10px; font-size: 13px; margin: 6px 0; }
+.vs .d { color: var(--muted); }
+.answerbox { border-left: 2px solid var(--ink); padding: 2px 0 2px 10px; margin: 8px 0; font-size: 13.5px; }
+
+/* toasts */
+.toasts { position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%); z-index: 70; display: flex; flex-direction: column; gap: 8px; align-items: center; width: max-content; max-width: calc(100% - 24px); pointer-events: none; }
+.toast { pointer-events: auto; background: var(--ink); color: var(--bg); border-radius: 8px; padding: 9px 14px; font-size: 13px; display: flex; gap: 12px; align-items: center; animation: pop 160ms ease; transition: opacity 200ms; }
+.toast.out { opacity: 0; }
+.toast button { background: none; border: 0; color: var(--bg); text-decoration: underline; padding: 0; }
+@keyframes pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* type */
+h1 { font-size: 24px; line-height: 1.2; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.label { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; }
+.sec { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--hair); }
+.sh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-bottom: 10px; }
+.sh h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.tbtn { background: none; border: 0; padding: 0; font-size: 13px; color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.tbtn.mu { color: var(--muted); }
+.tbtn:hover { color: var(--ink); }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 12px; }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 2px; font-size: 13px; color: var(--muted); }
+.tab.on { color: var(--ink); border-bottom-color: var(--ink); }
+.prose { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 16.5px; line-height: 1.5; max-width: 62ch; margin: 0 0 10px; }
+.prose b { font-weight: 700; }
+.btn { border: 1px solid var(--hair); background: var(--surface); border-radius: 8px; padding: 5px 11px; font-size: 13px; }
+.btn:hover { border-color: var(--muted); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.dark { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.opts { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.lockline { font-size: 12.5px; color: var(--red); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.d-needs { background: var(--accent); }
+.d-work { background: var(--green); }
+.d-done { background: var(--grey); }
+.d-stuck { background: var(--red); }
+.d-idle { background: transparent; border: 1px solid var(--grey); }
+.d-pause { background: transparent; border: 2px solid var(--accent); width: 8px; height: 8px; }
+.quiet { margin: 14px 0 0; font-size: 13px; color: var(--muted); }
+
+/* home brief */
+.hhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 4px; }
+.pseg { display: flex; gap: 3px; height: 5px; max-width: 360px; margin: 6px 0 18px; }
+.pseg i { flex: 1; background: var(--hair); }
+.pseg i.d { background: var(--ink); }
+.pseg i.h { background: var(--accent); }
+.brief { margin: 0 0 6px; }
+.bl { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 2px 14px; padding: 9px 0; border-top: 1px solid var(--hair); }
+.bl:last-child { border-bottom: 1px solid var(--hair); }
+.bl .bk { font-size: 12.5px; color: var(--muted); padding-top: 3px; }
+.bl .bk.hot { color: var(--accent); font-weight: 600; }
+.bl .bt { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 16.5px; line-height: 1.45; }
+.bl .ba { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.bl .bx { margin-top: 6px; font-size: 13.5px; color: var(--muted); }
+.bl .bx div { margin: 2px 0; }
+@media (max-width: 520px) { .bl { grid-template-columns: minmax(0, 1fr); } }
+.awayline { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; font-size: 13.5px; margin: 12px 0 0; }
+.dr { padding: 8px 0; border-bottom: 1px solid var(--hair); font-size: 13.5px; }
+.dr .acts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 3px; }
+.latest { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 13.5px; }
+
+/* feature rows */
+.frow { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.frow:first-child { border-top: 1px solid var(--hair); }
+.frow:hover .fnm { text-decoration: underline; }
+.frow .dot { transform: translateY(-1px); }
+.fnm { font-weight: 600; }
+.fsn { font-size: 13px; color: var(--muted); margin-top: 1px; }
+.frt { font-size: 12.5px; color: var(--muted); white-space: nowrap; text-align: right; }
+@media (max-width: 460px) { .frow { grid-template-columns: 7px minmax(0, 1fr); } .frt { grid-column: 2; text-align: left; white-space: normal; } }
+
+/* before after */
+.bars { max-width: 420px; margin: 6px 0 4px; }
+.barrow { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 10px; align-items: center; margin: 5px 0; font-size: 13px; }
+.barrow .lb { color: var(--muted); }
+.barrow .tr { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.barrow .tr i { display: block; height: 10px; background: var(--grey); border-radius: 0 4px 4px 0; }
+.barrow.after .tr i { background: var(--ink); }
+.ba { border-collapse: collapse; width: 100%; font-size: 14px; }
+.ba td { padding: 6px 0; border-bottom: 1px solid var(--hair); vertical-align: top; }
+.ba td:first-child { width: 70px; color: var(--muted); font-size: 13px; }
+.fsec { margin-top: 20px; }
+.fsec h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.steps { margin: 0; padding-left: 20px; font-size: 14px; }
+.steps li { margin: 3px 0; }
+.ptree, .ptree ul { list-style: none; margin: 0; padding: 0; }
+.ptree ul { padding-left: 20px; }
+.ptree li { padding: 3px 0; font-size: 13.5px; }
+.ptree .dot { margin-right: 8px; transform: translateY(-1px); }
+.chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 13px; margin: 6px 0; }
+.chain .n { border: 1px solid var(--hair); border-radius: 6px; padding: 3px 9px; background: var(--surface); }
+.chain .n.me { border-color: var(--ink); font-weight: 600; }
+.chain .ar { color: var(--muted); font-size: 12px; }
+
+/* timeline */
+.zoom { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 14px; }
+.story { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 16.5px; line-height: 1.5; max-width: 62ch; margin: 0 0 16px; }
+.te { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 2px 14px; padding: 11px 0; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.te:first-child { border-top: 1px solid var(--hair); }
+.te .tt { color: var(--muted); font-size: 13px; padding-top: 2px; }
+.te .tt .live { color: var(--green); }
+.te .hl { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 16px; font-weight: 700; line-height: 1.35; }
+.te .hl.q { font-weight: 400; color: var(--muted); }
+.te .tx { font-size: 13.5px; margin-top: 2px; }
+.te .mk { display: flex; gap: 8px; align-items: baseline; margin-top: 3px; font-size: 13.5px; }
+.te .mk .dot { transform: translateY(-1px); }
+.te .src { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.te.you .hl { font-weight: 400; font-style: italic; }
+.te .kids { margin-top: 6px; border-left: 1px solid var(--hair); padding-left: 12px; }
+.te .kids div { font-size: 13.5px; margin: 4px 0; }
+@media (max-width: 460px) { .te { grid-template-columns: minmax(0, 1fr); } }
+
+/* rows, cards, tiles */
+.trow { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.trow:first-child { border-top: 1px solid var(--hair); }
+.trow:hover .tn { text-decoration: underline; }
+.tn { font-weight: 600; margin-right: 8px; }
+.tsz { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.sw { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0 0 10px; }
+.swb { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 0 3px; font-size: 14px; color: var(--muted); }
+.swb.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
+.card { background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.kl { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.mval { font-size: 20px; font-weight: 600; line-height: 1.2; margin-bottom: 2px; }
+.stt { font-size: 12.5px; color: var(--muted); }
+.stt.out { color: var(--accent); }
+.sig { padding: 14px 0; border-bottom: 1px solid var(--hair); }
+.sig:first-child { border-top: 1px solid var(--hair); }
+.sig .q { font-weight: 600; }
+.sig .row { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; margin-top: 6px; }
+.sig .mean { font-size: 13.5px; flex: 1 1 220px; }
+.leg { font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
+.leg i { display: inline-block; width: 14px; height: 8px; background: var(--band); margin-right: 5px; vertical-align: middle; }
+.leg s { display: inline-block; width: 14px; height: 2px; background: var(--ink); margin-right: 5px; vertical-align: middle; text-decoration: none; }
+.chart { display: flex; align-items: flex-end; gap: 12px; height: 130px; margin: 14px 0 4px; max-width: 420px; }
+.bc { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; min-width: 0; height: 100%; }
+.bc .v { font-size: 12.5px; margin-bottom: 3px; }
+.bc .b { width: 100%; max-width: 40px; background: var(--grey); border-radius: 4px 4px 0 0; }
+.bc.now .b { background: var(--ink); }
+.days { display: flex; gap: 12px; font-size: 12px; color: var(--muted); margin-bottom: 18px; max-width: 420px; }
+.days span { flex: 1; text-align: center; }
+.rrow { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--hair); font-size: 13.5px; }
+.cols3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 520px) { .cols3 { grid-template-columns: minmax(0, 1fr); } }
+.cols3 h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.ic { padding: 6px 0; border-bottom: 1px solid var(--hair); font-size: 13px; cursor: pointer; }
+.ic:hover { text-decoration: underline; }
+.stack { display: flex; gap: 2px; height: 10px; margin: 8px 0 6px; max-width: 420px; }
+.stack i { display: block; height: 100%; }
+
+/* team sync visual */
+.opt3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 8px 0 10px; }
+@media (max-width: 560px) { .opt3 { grid-template-columns: minmax(0, 1fr); } }
+.ov { border: 1px solid var(--hair); border-radius: 8px; padding: 8px 10px; background: var(--bg); font-size: 12.5px; }
+.ov.def { border-color: var(--accent); }
+.ov b { font-size: 13px; }
+.ov svg { display: block; width: 100%; max-width: 200px; height: auto; margin: 4px 0; }
+.ov .lose { color: var(--muted); }
+.mini { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 6px 0 10px; }
+.mini td, .mini th { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--hair); text-align: left; vertical-align: top; font-weight: 400; }
+.mini th { color: var(--muted); }
+
+/* drawer */
+.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: min(400px, 100%); z-index: 45; background: var(--bg); border-left: 1px solid var(--hair); box-shadow: var(--shadow); transform: translateX(105%); transition: transform 180ms ease; display: flex; flex-direction: column; visibility: hidden; }
+.drawer.on { transform: none; visibility: visible; }
+.drawer > header { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--hair); }
+.drawer > header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.drawer .body { flex: 1; overflow-y: auto; padding: 14px 16px; }
+.drawer footer { padding: 10px 16px; border-top: 1px solid var(--hair); display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.x { background: none; border: 0; font-size: 22px; line-height: 1; color: var(--muted); padding: 2px 6px; }
+.msg { margin-bottom: 12px; font-size: 13.5px; }
+.msg.me { border-left: 2px solid var(--ink); padding-left: 10px; }
+.msg .who2 { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.gi { padding: 10px 0; border-bottom: 1px solid var(--hair); font-size: 13.5px; }
+.gi .w { font-size: 12.5px; color: var(--muted); margin: 2px 0 6px; }
+.gi.ok { color: var(--muted); }
+
+/* fixed vs filled */
+.lay [data-slot] { position: relative; outline: 1px dashed var(--grey); outline-offset: 4px; margin-top: 22px; }
+.lay [data-slot]::before { content: attr(data-slot); position: absolute; top: -21px; left: 0; font: 11.5px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
+.lay [data-slot^="Filled"] { outline-color: var(--accent); }
+.lay [data-slot^="Filled"]::before { color: var(--accent); }
+.laybar { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; font-size: 13px; padding: 8px 12px; border: 1px solid var(--hair); border-radius: 8px; margin-bottom: 18px; background: var(--surface); }
+.sugg { margin-top: 22px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
+.extra { font-size: 13.5px; margin: 10px 0 0; }
+</style>
+</head>
+<body>
+<div class="app" id="appBox">
+  <header class="topbar">
+    <button class="brand" data-act="go-all">Forge Desk</button>
+    <span class="crumb" id="crumb"></span>
+    <span class="grow"></span>
+    <button class="tbr" data-act="leave">Leaving?</button>
+  </header>
+  <div class="content" id="content"></div>
+  <div class="tray" id="tray"></div>
+  <div class="dock" id="dock"></div>
+  <div class="prompt" id="prompt">
+    <div class="looking" id="looking"></div>
+    <div id="ppDyn"></div>
+    <div class="inrow">
+      <input id="ppInput" type="text" placeholder="Say anything. Enter to send." autocomplete="off">
+      <button class="icon-btn" data-act="mic" aria-label="Voice">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <button class="btn dark" data-act="read">Send</button>
+    </div>
+  </div>
+  <aside class="drawer" id="drawer" aria-label="Side panel"></aside>
+  <div class="toasts" id="toasts"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+  /* ================= data ================= */
+  var NOW = "15:40";
+  var BLOCKS = [
+    ["home", "Home", "The return brief, what now exists, and the latest line of the timeline."],
+    ["timeline", "Timeline", "What happened, written every 15 minutes. Zoom out to the day or the week."],
+    ["plan", "Plan", "Features, their parts, and a board of what is done and left."],
+    ["analytics", "Analytics", "What is outside this project's normal, value delivered, how the agents do."],
+    ["threads", "Threads", "Each working thread: Needs me, Running, Closed."],
+    ["decisions", "Decisions", "Waiting, done for you, and which kinds of question still ask."],
+    ["rules", "Rules and memory", "What you told it to always or never do, with your words and dates."],
+    ["ideas", "Ideas", "Ideas you parked. Talk one through or add it to the plan."],
+    ["setup", "Setup", "How Forge runs this project. Ask to change any line."],
+    ["changes", "Under the hood", "Code changes and checks. Only here."]
+  ];
+  var STF = { done: "Done", work: "Being built", needs: "Waits on you", idle: "Not started", pause: "Paused" };
+  var FEATS = [
+    { id: "f2", name: "Faster checks", s: "done", isNew: true, when: "finished 14:15",
+      sent: "Checks on new work finish in about 6 minutes instead of 14.",
+      gives: "You see whether new work is good in 6 minutes, so agents wait less and finish more each hour.",
+      ba: { unit: "min", b: 14, a: 6, bl: "14 min", al: "6 min", what: "Time for a check on new work" },
+      proof: ["Measured over the last 40 checks. The slowest took 8 minutes.", "No check was skipped to get there: the same steps run, side by side."],
+      steps: ["Timed where the 14 minutes went.", "Cut two steps that ran twice.", "Ran the rest side by side.", "Measured 40 checks to confirm."],
+      parts: [{ n: "Time every step", s: "done" }, { n: "Cut the steps that ran twice", s: "done" }, { n: "Run the rest side by side", s: "done" }],
+      deps: [], thr: ["lead", "fast"], ch: "Change 41", size: 3,
+      tl: [["14:15", "Live for everyone. 6 minutes, measured over 40 checks."], ["12:45", "Last slow step cut."], ["Yesterday", "Started from the plan."]] },
+    { id: "f3", name: "Fair memory check", s: "done", isNew: true, when: "finished 15:15",
+      sent: "A slow machine no longer fails good work.",
+      gives: "Good work stops bouncing back for a false reason, so you are not asked about failures that were never real.",
+      ba: { unit: "fails", b: 9, a: 0, bl: "9 last week", al: "0 since", what: "Good work failed by a slow machine" },
+      proof: ["Replayed last week's 9 false failures. All pass now.", "Real memory problems still fail: tried on 3 known bad cases."],
+      steps: ["Found why slow machines failed good work.", "Changed the check to compare each run with its own start.", "Replayed last week to confirm."],
+      parts: [{ n: "Record each starting point", s: "done" }, { n: "Compare against it", s: "done" }],
+      deps: [], thr: ["memrev", "lead"], ch: "Change 44", size: 2,
+      tl: [["15:15", "Switched on."], ["14:45", "Second review passed."], ["13:30", "Replayed last week: all 9 pass."]] },
+    { id: "f1", name: "Safe publishing", s: "done", when: "finished Thursday",
+      sent: "A release can only go out if that exact package was checked first.",
+      gives: "Nothing broken reaches people who install Forge by accident.",
+      ba: { unit: "", b: 1, a: 0, bl: "Possible", al: "Blocked", what: "An unchecked package going out" },
+      proof: ["Tried on the last 12 releases. It stopped the 2 that were unchecked."],
+      steps: ["Wrote the rule in plain words.", "Made the release step refuse anything unchecked.", "Tried it on old releases."],
+      parts: [{ n: "Check the exact package", s: "done" }, { n: "Refuse anything unchecked", s: "done" }],
+      deps: [], thr: ["release"], ch: "Change 42", size: 3, tl: [["Thursday", "Done."]] },
+    { id: "f4", name: "One rule for chance failures", s: "done", when: "finished Wednesday",
+      sent: "A test that fails by chance is retried once, written down, and fixed at the cause.",
+      gives: "Chance failures stop holding good work.",
+      ba: { unit: "h", b: 5, a: 0.5, bl: "5 h held", al: "30 min", what: "Time a chance failure held work, per week" },
+      proof: ["Used on 3 chance failures this week. All cleared on the retry."],
+      steps: ["Agreed one rule for every chance failure.", "Built the retry and the record.", "Tried it on this week's failures."],
+      parts: [{ n: "Retry once", s: "done" }, { n: "Write it down", s: "done" }], deps: [], thr: ["lead"], ch: "Part of change 41", size: 1, tl: [["Wednesday", "Done."]] },
+    { id: "f5", name: "Readable release notes", s: "done", when: "finished Friday",
+      sent: "Release notes are written from what actually changed, in plain words.",
+      gives: "People who install Forge can tell what is new without reading code.",
+      ba: { unit: "", b: 4, a: 0, bl: "4 missed", al: "0 missed", what: "Changes missing from the notes" },
+      proof: ["Checked against the last release. Nothing missing."],
+      steps: ["Listed what a reader needs.", "Wrote notes from the real list of changes.", "Read them against the last release."],
+      parts: [{ n: "Collect what changed", s: "done" }, { n: "Write it in plain words", s: "done" }], deps: [], thr: ["docs"], ch: "Change 45", size: 1, tl: [["Friday", "Done."]] },
+    { id: "f7", name: "Release 0.0.12 goes out", s: "needs", when: "waits on you",
+      sent: "Everything is checked. It needs your npm sign-in, then your yes.",
+      gives: "Everything above reaches people who install Forge.",
+      ba: { unit: "", b: 0, a: 0, bl: "0.0.11", al: "0.0.12", what: "Version people install" },
+      proof: ["The package was installed and checked on a clean machine, start to end."],
+      steps: ["Checked the package on a clean machine.", "Wrote the release notes.", "Holding the last step for you."],
+      parts: [{ n: "Package checked", s: "done" }, { n: "Notes written", s: "done" }, { n: "Your npm sign-in", s: "needs" }, { n: "Your yes to publish", s: "needs" }],
+      deps: [], thr: ["release"], ch: "Changes 42 and 45", size: 2, tl: [["14:00", "Reached the publish step. Stopped for your sign-in."]] },
+    { id: "f6", name: "Cloud receipts", s: "pause", when: "4 of 6 parts, paused",
+      sent: "Every action in the cloud leaves a record that cannot be forged.",
+      gives: "You can trust what an agent says it did in the cloud.",
+      ba: { unit: "", b: 0, a: 0, bl: "No record", al: "A signed record", what: "What a cloud action leaves behind" },
+      proof: [], unmeasured: "Not measured yet. It is still being built.",
+      steps: ["Defined what a receipt must hold.", "Built the record and the check that refuses bad ones.", "Testing odd cases, such as an empty name."],
+      parts: [{ n: "Receipt format", s: "done" }, { n: "Signing", s: "done" }, { n: "Storing", s: "done" }, { n: "Showing them to you", s: "done" },
+        { n: "Receipt check", s: "pause", kids: [{ n: "Refuse a changed receipt", s: "done" }, { n: "Refuse an empty name", s: "pause" }] },
+        { n: "Alerts on bad receipts", s: "idle", dep: "Receipt check" }],
+      deps: ["f7"], thr: ["cloud"], ch: "Change 43 (second try)", size: 3,
+      tl: [["13:05", "Paused until the release is out."], ["Friday", "Sent back once by review: an empty name got past the check."]] },
+    { id: "f8", name: "Team sync", s: "idle", when: "not started",
+      sent: "Two people can work on one project without overwriting each other.",
+      gives: "A second person can join without breaking your work.",
+      ba: { unit: "", b: 0, a: 0, bl: "Overwrite", al: "Side by side", what: "Two people on one project" },
+      proof: [], unmeasured: "Not measured yet. It has not started.",
+      steps: ["Decide what happens when two people change the same thing (waits on you, has a default).", "Build the shared view.", "Test two people at once."],
+      parts: [{ n: "Shared view of the project", s: "idle", dep: "Cloud receipts" }, { n: "Two edits at once", s: "idle" }],
+      deps: ["f6"], thr: [], ch: "None yet", size: 3, tl: [] }
+  ];
+  var THREADS = [
+    { id: "lead", name: "Lead", s: "work", doing: "Runs the plan and the builders",
+      sum: ["Steering the release and three builders.", "Took 6 defaults while you were away; all are listed and can be undone.", "Waits on your npm sign-in for the release only."],
+      tl: [["15:30", "Held the release for your sign-in. Kept the rest going."], ["14:15", "Faster checks went live."], ["13:05", "Paused Cloud receipts so the release stays clean."]] },
+    { id: "release", name: "Release", s: "needs", doing: "Waits on your npm sign-in",
+      sum: ["Release 0.0.12 is packed and checked.", "Publishing needs your npm sign-in, then your yes.", "After that: about 2 hours to publish and check."],
+      tl: [["14:00", "Reached the publish step. Stopped for your sign-in."], ["13:40", "Package checked on a clean machine."]] },
+    { id: "cloud", name: "Cloud receipts", s: "work", paused: true, doing: "Paused since 13:05, until the release is out",
+      sum: ["4 of 6 parts built.", "Paused at 13:05 so the release stays clean.", "Picks up again the minute the release is out."],
+      tl: [["13:05", "Paused."], ["12:40", "Wrote four tests for the empty name case."]] },
+    { id: "research", name: "Team sync research", s: "work", doing: "Comparing how other tools handle two editors",
+      sum: ["Read how 5 tools handle two people editing.", "Turned it into one question for you, with a default."],
+      tl: [["15:00", "Sent you the team sync question."], ["13:30", "Started."]] },
+    { id: "fast", name: "Faster checks", s: "done", doing: "Finished at 14:15", sum: ["Closed. Checks take 6 minutes."], tl: [["14:15", "Closed."]] },
+    { id: "memrev", name: "Fair memory check", s: "done", doing: "Finished at 15:15", sum: ["Closed. Slow machines stopped failing good work."], tl: [["15:15", "Closed."]] },
+    { id: "docs", name: "Release notes", s: "done", doing: "Finished yesterday", sum: ["Closed."], tl: [["Friday", "Closed."]] }
+  ];
+  /* timeline: newest first. m: list of [kind, text]; kind n = now, c = closed, f = faced, d = default taken */
+  var TL_AWAY = [
+    { id: "a0", t: "15:30", live: true, hl: "The release is packed and waits for your sign-in.", m: [["n", "Nothing else on the release can move until then. All other work goes on."]], feat: ["f7"], thr: ["release", "lead"] },
+    { id: "a1", t: "15:15", hl: "Slow machines stopped failing good work.", m: [["c", "Fair memory check is switched on."], ["n", "Last week it failed 9 good pieces of work. Replayed, all 9 pass."]], feat: ["f3"], thr: ["memrev"] },
+    { id: "a2", t: "15:00", hl: "A question about team sync is ready for you.", m: [["n", "It has a default and holds nothing today."]], feat: ["f8"], thr: ["research"] },
+    { id: "a3", t: "14:45", q: true, hl: "Quiet. Reviews running." },
+    { id: "a4", t: "14:30", hl: "Release notes read cleanly now.", m: [["f", "An old note named a feature we dropped. Removed."]], feat: ["f5", "f7"], thr: ["docs"] },
+    { id: "a5", t: "14:15", hl: "Checks now take 6 minutes, not 14.", m: [["c", "Faster checks is live for everyone."]], feat: ["f2"], thr: ["fast"] },
+    { id: "a6", t: "14:00", hl: "The release reached the step only you can do.", m: [["f", "npm needs your sign-in. Held since 14:00."]], feat: ["f7"], thr: ["release"] },
+    { id: "a7", t: "13:45", hl: "Three pieces of work brought up to date for you.", m: [["d", "Default taken. You can undo each one."]], feat: [], thr: ["lead"] },
+    { id: "a8", t: "13:30", hl: "A test failed by chance, was retried once and passed.", m: [["d", "Written down. Its cause is filed."]], feat: ["f4"], thr: ["lead"] },
+    { id: "a9", t: "13:05", hl: "Cloud receipts paused.", m: [["f", "Paused so the release stays clean. It should have told you then."]], feat: ["f6"], thr: ["cloud"] },
+    { id: "a10", t: "12:45", hl: "Faster checks: the last slow step is gone.", m: [], feat: ["f2"], thr: ["fast"] },
+    { id: "a11", t: "12:30", hl: "You left. Three things were moving.", m: [["n", "The release, faster checks, and the fair memory check."]], feat: [], thr: [] }
+  ];
+  var TL_MORNING = { id: "am", t: "09:00 to 12:30", hl: "Morning, with you here: the release was packed and you set the open-work limit.", m: [], kids: ["11:50 Package checked on a clean machine.", "11:10 You: no more than 4 pieces of open work at once.", "10:20 Faster checks: timed every step.", "09:05 You answered 3 questions."], feat: [], thr: [] };
+  var WEEK = [
+    { d: "Today", hl: "Checks got faster and slow machines stopped failing good work. The release waits on your sign-in.", k: ["Faster checks done: 6 minutes, was 14.", "Fair memory check done: 0 false failures, was 9 a week.", "Release held 1 h 40 min for your npm sign-in."] },
+    { d: "Friday", hl: "Release notes now write themselves from what changed.", k: ["Readable release notes done.", "Cloud receipts sent back once: an empty name got past the check."] },
+    { d: "Thursday", hl: "Only a checked package can go out now.", k: ["Safe publishing done.", "Tried on 12 old releases: stopped the 2 unchecked ones."] },
+    { d: "Wednesday", hl: "Chance failures no longer hold work.", k: ["One rule for chance failures done.", "Open work capped at 4, at your word."] },
+    { d: "Tuesday", hl: "Cloud receipts: 4 of 6 parts built.", k: ["Format, signing, storing and showing are built."] },
+    { d: "Monday", hl: "Mostly stalled: a sign-in code expired while you slept.", stall: true, k: ["Waited 7 hours for a new sign-in code.", "Now codes are asked for before you leave."] },
+    { d: "Sunday", hl: "Plan for release 0.0.12 agreed: 8 features.", k: ["You chose the release scope: local only."] }
+  ];
+  var KINDS = {
+    branch: { name: "Bring work up to date", irr: false },
+    flaky: { name: "Retry a chance failure once", irr: false },
+    review: { name: "Simplify after a second review", irr: false },
+    model: { name: "Pick the model for a task", irr: false },
+    keep: { name: "Keep a memory note", irr: false },
+    design: { name: "Product choices, like team sync", irr: false },
+    publish: { name: "Publish a release", irr: true },
+    account: { name: "Sign in, accounts and keys", irr: true },
+    money: { name: "Anything that costs money", irr: true }
+  };
+  /* ================= state ================= */
+  var S = {
+    screen: "project", block: "home", feature: null, ftab: "gives", thread: null,
+    pinned: ["home", "timeline", "plan", "analytics"], moreOpen: false,
+    briefMore: false, awayOpen: false, homeTab: "new", tlZoom: "away", tlOpen: {}, weekOpen: {},
+    signin: "wait", paused: "paused", trayMin: null, ci: 0, exp: {}, offer: null, offerNo: {},
+    level: { branch: "ask", flaky: "auto", review: "ask", model: "auto", keep: "ask", design: "ask", publish: "ask", account: "ask", money: "ask" },
+    week: { branch: 1 },
+    cards: [], done: [], publishCard: false,
+    ptab: "tree", pexp: {}, atab: "signals", aNormal: false, sizes: {}, thrSw: "needs", projSw: "needs", dtab: "waiting", rtab: "rules",
+    rules: [], laws: [], mems: [], corrections: [], ideas: [], log: [], complaints: [],
+    layout: false, sugg: "open", extraLine: false, drawer: null, pp: null, leaveDone: false
+  };
+  FEATS.forEach(function (f) { S.sizes[f.id] = f.size; });
+  S.cards = [
+    { id: "c1", kind: "design", visual: true, from: "Team sync research", q: "When two people change the same plan item at once, what should happen?",
+      opts: ["A. Later save wins", "B. Lock while one edits", "C. Keep both, ask the second person"], def: 2,
+      meta: "Holds nothing today. Team sync starts after the release. If you don't answer, C at 18:00." },
+    { id: "c2", kind: "branch", from: "Lead", short: "Cloud receipts", q: "Cloud receipts fell behind the latest work. Bring it up to date?",
+      opts: ["Bring it up to date", "Leave it"], def: 0, meta: "Holds nothing while it is paused. If you don't answer, it is brought up to date at 17:00.",
+      det: [["Behind by", "3 finished features"], ["Trial update", "No clashes found"], ["Risk", "Low. Undo puts it back as it was."]] },
+    { id: "c3", kind: "keep", from: "Lead", q: "Keep this for later? \"Release notes are for people: plain words, no ids.\"",
+      opts: ["Keep for this project", "Keep for all projects", "Don't keep"], def: 0, meta: "From what you said on Friday. If you don't answer, kept for this project at 18:00.",
+      det: [["Already saved?", "No"], ["Clashes with a rule?", "No"], ["Holds a secret?", "No"]] }
+  ];
+  S.done = [
+    { id: "d1", time: "13:45", kind: "branch", what: "Brought Faster checks up to date", why: "Default. Nobody else was changing it." },
+    { id: "d2", time: "13:45", kind: "branch", what: "Brought Fair memory check up to date", why: "Default. Needed before its review." },
+    { id: "d3", time: "13:46", kind: "branch", what: "Brought Release notes up to date", why: "Default." },
+    { id: "d4", time: "13:30", kind: "flaky", what: "Retried a chance failure in the upload test once", why: "Happens on its own since Wednesday, at your word." },
+    { id: "d5", time: "14:50", kind: "review", what: "Simplified Fair memory check after its second review", why: "Default. A third round would have cost about an hour." },
+    { id: "d6", time: "13:20", kind: "model", what: "Used Sonnet for the release notes", why: "Your routing rule: writing goes to Sonnet." }
+  ];
+  S.rules = [
+    { id: "r1", t: "Don't use Fable. It costs too much.", scope: "All projects", date: "17 Nov", key: "fable", hist: ["24 Oct: don't use Fable", "11 Nov: use Fable for the overseer", "17 Nov: don't use Fable again, for cost"] },
+    { id: "r2", t: "No more than 4 pieces of open work at once.", scope: "This project", date: "18 Nov", key: "open", hist: ["Said as a correction on 18 Oct, 19 Oct, 21 Oct, 9 Nov, 18 Nov"] },
+    { id: "r3", t: "No tests on the laptop. CI runs them.", scope: "All projects", date: "3 Nov", key: "laptop" },
+    { id: "r4", t: "Throw away and redo instead of patching.", scope: "This project", date: "20 Nov", key: "patch" },
+    { id: "r5", t: "Writing goes to Sonnet. Hard reviews go to Sol.", scope: "This device", date: "20 Nov", key: "sonnet" }
+  ];
+  S.laws = ["Never publish without your yes.", "Never use your accounts or keys without you.", "Never spend money without you.", "Never delete people's data."];
+  S.mems = [["Plain words; ids only in brackets.", "All projects", "13 Nov"], ["Release scope is local only for 0.0.x.", "This project", "20 Nov"], ["Approvals by text, never by link.", "All projects", "20 Nov"]];
+  S.corrections = [{ key: "jargon", t: "Reports and notes in plain words, no ids.", said: ["19 Nov"] }, { key: "wait", t: "Don't wait silently. Say what is paused.", said: ["16 Nov", "20 Nov"] }];
+  S.ideas = [{ id: "i1", t: "A phone app just for answering questions.", when: "20 Nov" }, { id: "i2", t: "A Monday note: what was delivered, what is next.", when: "18 Nov" }];
+
+  /* ================= helpers ================= */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function feat(id) { return FEATS.filter(function (f) { return f.id === id; })[0]; }
+  function thr(id) { return THREADS.filter(function (t) { return t.id === id; })[0]; }
+  function card(id) { return S.cards.filter(function (c) { return c.id === id; })[0]; }
+  function fdot(s) { return '<i class="dot d-' + s + '"></i>'; }
+  function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
+  function doneN() { return FEATS.filter(function (f) { return f.s === "done"; }).length; }
+  function blk(id) { return BLOCKS.filter(function (b) { return b[0] === id; })[0]; }
+  function tabs(sid, list, cur) {
+    return '<div class="tabs" role="tablist">' + list.map(function (t) {
+      return '<button class="tab' + (t[0] === cur ? " on" : "") + '" role="tab" data-act="tab" data-s="' + sid + '" data-t="' + t[0] + '">' + esc(t[1]) + "</button>";
+    }).join("") + "</div>";
+  }
+  function slot(kind, html) { return '<div data-slot="' + esc(kind) + '">' + html + "</div>"; }
+  function toast(msg, undo) {
+    var el = document.createElement("div");
+    el.className = "toast";
+    el.innerHTML = "<span>" + esc(msg) + "</span>";
+    var t;
+    function kill() { clearTimeout(t); el.classList.add("out"); setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 220); }
+    if (undo) { var b = document.createElement("button"); b.textContent = "Undo"; b.onclick = function () { undo(); kill(); }; el.appendChild(b); }
+    $("toasts").appendChild(el);
+    t = setTimeout(kill, 6500);
+  }
+  function waitingCount() { return S.cards.length + (S.signin !== "done" ? 1 : 0) + (S.publishCard ? 1 : 0); }
+
+  /* ================= return brief ================= */
+  function briefLines() {
+    var others = S.cards.length, L = [];
+    var w;
+    if (S.signin !== "done") {
+      w = { k: "Only you", hot: true, t: "Sign in to npm so the release can go out. It has waited 1 h 40 min for this.",
+        a: '<button class="tbtn" data-act="goto-signin">Sign in now</button>' + (others ? '<span class="mu">' + plural(others, "other question") + " have a default and hold nothing.</span>" : ""),
+        x: ["Only you can do this: it is your account. Everything not tied to the release keeps running.", "It takes about a minute. The code lasts 10 minutes, so do it while you are here."] };
+    } else if (S.publishCard) {
+      w = { k: "Waiting on you", hot: true, t: "Release 0.0.12 is ready and needs your yes to publish. Publishing always asks.",
+        a: '<button class="tbtn" data-act="goto-tray">Answer</button>' + (others ? '<span class="mu">' + plural(others, "other question") + " have a default.</span>" : ""), x: ["Nothing else is held."] };
+    } else if (others) {
+      w = { k: "Waiting on you", t: plural(others, "question") + " with a default. None holds work today.", a: '<button class="tbtn" data-act="goto-tray">See them</button>', x: ["If you don't answer, each takes its default at the time shown on it."] };
+    } else w = { k: "Waiting on you", t: "Nothing waits on you.", a: "", x: [] };
+    L.push(w);
+    L.push({ k: "New since you left", t: "Checks on new work take 6 minutes, not 14. Slow machines no longer fail good work: 9 false failures last week, none since.",
+      a: '<a data-act="feature" data-id="f2">Faster checks</a><a data-act="feature" data-id="f3">Fair memory check</a>',
+      x: ["Faster checks: agents learn if work is good in 6 minutes, so about twice as much finishes per hour.", "Fair memory check: you will not be asked about failures that were never real."] });
+    var pub = !!(feat("f7").s === "done");
+    L.push({ k: "Release 0.0.12", t: pub ? "Publishing now. Out for everyone by about 17:40." :
+      S.signin === "done" ? "Can go out by about 17:40 once you say yes. When you left it said tomorrow." :
+      "Can go out today by about 18:00 if you sign in by 16:00. When you left it said tomorrow.",
+      a: '<a data-act="block" data-b="plan">See the plan</a>',
+      x: ["How the time is worked out: publishing takes about 20 minutes after sign-in, then two checks on the published package, about 1 hour, then the notes go out.", "Each hour the sign-in waits moves this an hour.", "Why it moved up from tomorrow: faster checks cut about 3 hours from the remaining work."] });
+    var wr;
+    if (S.complaints.length) wr = { k: "Wrong or paused", hot: true, t: "You said: “" + S.complaints[0] + "” It is being looked into; this line stays until it is fixed.", a: "", x: [] };
+    else if (S.paused === "paused") wr = { k: "Wrong or paused", hot: true, t: "Cloud receipts was paused at 13:05 to keep the release clean, and nobody told you. Nothing else is wrong.",
+      a: '<button class="tbtn" data-act="pause" data-v="kept">Keep it paused until the release</button><button class="tbtn" data-act="pause" data-v="restarted">Restart it now</button>',
+      x: ["Why it was paused: it changes the same files as the release. Restarting now may push the release later by about 30 minutes.", "From now on any pause is written here when it happens."] };
+    else if (S.paused === "kept") wr = { k: "Wrong or paused", t: "Cloud receipts stays paused until the release is out, as you chose. Nothing else is wrong.", a: "", x: [] };
+    else wr = { k: "Wrong or paused", t: "Nothing is wrong. Cloud receipts restarted at your word.", a: "", x: [] };
+    L.push(wr);
+    return L;
+  }
+  function briefHtml() {
+    return '<div class="brief">' + briefLines().map(function (l) {
+      return '<div class="bl"><div class="bk' + (l.hot ? " hot" : "") + '">' + esc(l.k) + '</div><div><div class="bt">' + esc(l.t) + "</div>" +
+        (l.a ? '<div class="ba">' + l.a + "</div>" : "") + (S.briefMore && l.x.length ? '<div class="bx">' + l.x.map(function (x) { return "<div>" + esc(x) + "</div>"; }).join("") + "</div>" : "") + "</div></div>";
+    }).join("") + "</div>";
+  }
+
+  /* ================= home ================= */
+  function psegHtml() {
+    var h = '<div class="pseg" title="' + doneN() + " of " + FEATS.length + ' features done">';
+    FEATS.forEach(function (f) { h += '<i class="' + (f.s === "done" ? "d" : f.s === "needs" ? "h" : "") + '"></i>'; });
+    return h + "</div>";
+  }
+  function doneForYouHtml(all) {
+    var list = all ? S.done : S.done.slice(0, 6);
+    if (!list.length) return '<p class="mu sm">Nothing was decided for you.</p>';
+    return list.map(function (d) {
+      return '<div class="dr"><div>' + esc(d.what) + ' <span class="mu sm">' + esc(d.time) + '</span></div><div class="mu sm">' + esc(d.why) + "</div>" +
+        '<div class="acts"><button class="tbtn" data-act="undo-done" data-id="' + d.id + '">Undo</button>' +
+        (S.level[d.kind] === "auto" ? '<button class="tbtn mu" data-act="ask-again" data-k="' + d.kind + '">Ask me next time</button>' : "") + "</div></div>";
+    }).join("");
+  }
+  function homeBlock() {
+    var h = "";
+    if (S.layout) h += layoutBar();
+    h += '<p class="label">Back after 3 h 10 min · summary written 15:30, next at 16:00</p>';
+    h += slot("Fixed: project and progress", '<div class="hhead"><h1>Forge</h1><span class="mu sm">Release 0.0.12 · ' + doneN() + " of " + FEATS.length + " features done</span></div>" + psegHtml());
+    h += slot("Fixed order, filled by the agent: the brief", briefHtml() +
+      '<div class="ba" style="margin-top:6px"><button class="tbtn mu" data-act="brief-more">' + (S.briefMore ? "Less" : "More") + "</button></div>");
+    if (S.extraLine) h += slot("Filled by the agent: your extra line", '<p class="extra"><span class="mu">Usage this week:</span> 61% of the weekly limit with 2 days left. Normal at this point is 55%, so a little high. <button class="tbtn mu" data-act="extra-off">Remove</button></p>');
+    var n = S.done.length;
+    h += slot("Fixed: done for you", '<div class="awayline"><span>' + (n ? "While you were away, " + plural(n, "question") + " ran on the default." : "Nothing ran on a default while you were away.") + "</span>" +
+      (n ? '<button class="tbtn" data-act="away-open">' + (S.awayOpen ? "Hide" : "See and undo") + "</button>" : "") + "</div>" + (S.awayOpen ? '<div style="margin-top:6px">' + doneForYouHtml() + "</div>" : ""));
+    var fresh = FEATS.filter(function (f) { return f.isNew; });
+    var list = S.homeTab === "new" ? fresh : S.homeTab === "all" ? FEATS : FEATS.filter(function (f) { return f.s !== "done"; });
+    h += '<section class="sec">' + slot("Fixed: what now exists", '<div class="sh"><h3>What now exists</h3></div>' +
+      tabs("home", [["new", "New since you left (" + fresh.length + ")"], ["left", "Still to come (" + FEATS.filter(function (f) { return f.s !== "done"; }).length + ")"], ["all", "All (" + FEATS.length + ")"]], S.homeTab) +
+      list.map(featRow).join("")) + "</section>";
+    var top = S.log.length ? { t: S.log[0].time, hl: "You: " + S.log[0].text } : TL_AWAY[0];
+    h += '<section class="sec">' + slot("Fixed: latest from the timeline", '<div class="sh"><h3>Latest</h3><span class="mu xs">one entry every 15 minutes</span></div><div class="latest"><i class="dot d-work"></i><div><span class="mu">' + esc(top.t) + "</span> " + esc(top.hl) +
+      ' <button class="tbtn" data-act="block" data-b="timeline">Open the timeline</button></div></div>') + "</section>";
+    if (S.sugg === "open") h += '<div class="sugg"><span>The agent suggests one extra line on Home: your usage this week. Home will not change unless you say so.</span><button class="tbtn" data-act="sugg-add">Add it</button><button class="tbtn mu" data-act="sugg-no">Not now</button></div>';
+    return h;
+  }
+  function featRow(f) {
+    var right = f.isNew ? f.ba.bl + " → " + f.ba.al : f.when;
+    return '<div class="frow" data-act="feature" data-id="' + f.id + '">' + fdot(f.s) + '<div><span class="fnm">' + esc(f.name) + '</span><div class="fsn">' + esc(f.sent) + '</div></div><span class="frt">' + esc(right) + "</span></div>";
+  }
+  function layoutBar() {
+    return '<div class="laybar"><span><b>Showing what is fixed.</b> Grey outlines never move. Orange outlines are written by the agent each time, inside the same shape.</span><button class="tbtn" data-act="layout">Done</button></div>';
+  }
+
+  /* ================= timeline ================= */
+  function mkHtml(m) {
+    var cls = { n: "d-work", c: "d-done", f: "d-stuck", d: "d-needs" }[m[0]];
+    var word = { n: "", c: "Done: ", f: "Hit: ", d: "Decided for you: " }[m[0]];
+    return '<div class="mk"><i class="dot ' + cls + '"></i><span>' + (word ? '<span class="mu">' + word + "</span>" : "") + esc(m[1]) + "</span></div>";
+  }
+  function teHtml(e, cur) {
+    var open = S.tlOpen[e.id];
+    var h = '<div class="te' + (e.you ? " you" : "") + '" data-act="tl" data-id="' + e.id + '"><div class="tt">' + (e.live ? '<span class="live">now</span><br>' : "") + esc(e.t) + "</div><div>";
+    h += '<div class="hl' + (e.q ? " q" : "") + '">' + esc(e.hl) + "</div>";
+    (e.m || []).forEach(function (m) { h += mkHtml(m); });
+    if (e.kids && open) h += '<div class="kids">' + e.kids.map(function (k) { return "<div>" + esc(k) + "</div>"; }).join("") + "</div>";
+    if (open && !e.kids && !e.q) {
+      var fs = (e.feat || []).map(function (id) { return '<a data-act="feature" data-id="' + id + '">' + esc(feat(id).name) + "</a>"; }).join(" · ");
+      var ts = (e.thr || []).filter(function (id) { return id !== cur; }).map(function (id) { return '<a data-act="thread" data-id="' + id + '">' + esc(thr(id).name) + "</a>"; }).join(" · ");
+      h += '<div class="src">' + (e.dest ? "Sent to: " + esc(e.dest) : !fs && !ts ? (cur ? "From this thread's own work." : "Nothing more behind this one.") : [fs ? "Feature: " + fs : cur ? "" : "No feature moved.", ts ? "From: " + ts : ""].filter(Boolean).join(" &nbsp;·&nbsp; ")) + "</div>";
+    }
+    return h + "</div></div>";
+  }
+  function youEntries() {
+    return S.log.map(function (l) { return { id: "y" + l.n, t: l.time, you: true, hl: "You: “" + l.text + "”", m: [["n", l.done]], dest: l.dest }; });
+  }
+  function timelineBlock() {
+    var h = '<p class="label">Written every 15 minutes from all threads. Tap an entry to see where it came from.</p>';
+    h += tabs("zoom", [["away", "Since you left · 3 h 10 min"], ["today", "Today"], ["week", "Last 7 days"]], S.tlZoom);
+    if (S.tlZoom === "week") {
+      h += '<p class="story">This week 5 features were finished and one waits on you. The release moved from next week to today. The longest stall was Monday: 7 hours on an expired sign-in code.</p>';
+      h += WEEK.map(function (w, i) {
+        var open = S.weekOpen[i];
+        return '<div class="te" data-act="week" data-i="' + i + '"><div class="tt">' + esc(w.d) + '</div><div><div class="hl">' + esc(w.hl) + "</div>" +
+          (w.stall ? mkHtml(["f", "Stalled on you, not on the work."]) : "") +
+          (open ? '<div class="kids">' + w.k.map(function (k) { return "<div>" + esc(k) + "</div>"; }).join("") + "</div>" : '<div class="src">Tap for the day</div>') + "</div></div>";
+      }).join("");
+      return h + '<p class="quiet">After a week away, this view opens first. Each day opens into its own story, and today opens into 15-minute entries.</p>';
+    }
+    if (S.tlZoom === "away") h += '<p class="story">While you were away two features were finished and the release reached the step only you can do. One piece of work was paused and nobody said so. Six small questions ran on their default.</p>';
+    var list = youEntries().concat(TL_AWAY);
+    if (S.tlZoom === "today") list = list.concat([TL_MORNING]);
+    return h + "<div>" + list.map(function (e) { return teHtml(e, null); }).join("") + "</div>";
+  }
+
+  /* ================= feature screen ================= */
+  function baBars(f) {
+    var b = f.ba;
+    if (!b.unit) return '<table class="ba"><tr><td>Before</td><td>' + esc(b.bl) + "</td></tr><tr><td>After</td><td>" + esc(b.al) + "</td></tr></table>";
+    var max = Math.max(b.b, b.a) || 1;
+    var w = function (v) { return Math.max(2, Math.round(v / max * 100)); };
+    return '<div class="kl">' + esc(b.what) + '</div><div class="bars">' +
+      '<div class="barrow" title="Before: ' + esc(b.bl) + '"><span class="lb">Before</span><span class="tr"><i style="width:' + w(b.b) + '%"></i>' + esc(b.bl) + "</span></div>" +
+      '<div class="barrow after" title="After: ' + esc(b.al) + '"><span class="lb">After</span><span class="tr"><i style="width:' + w(b.a) + '%"></i>' + esc(b.al) + "</span></div></div>";
+  }
+  function partsHtml(parts) {
+    return '<ul class="ptree">' + parts.map(function (p) {
+      return "<li>" + fdot(p.s) + esc(p.n) + ' <span class="mu sm">' + esc(STF[p.s].toLowerCase()) + (p.dep ? " · waits on " + esc(p.dep) : "") + "</span>" + (p.kids ? partsHtml(p.kids) : "") + "</li>";
+    }).join("") + "</ul>";
+  }
+  function chainHtml(f) {
+    var chain = [], cur = f, guard = 0;
+    while (cur && guard++ < 5) { chain.unshift(cur); cur = cur.deps.length ? feat(cur.deps[0]) : null; }
+    var after = FEATS.filter(function (g) { return g.deps.indexOf(f.id) >= 0; });
+    var all = chain.concat(after);
+    if (all.length < 2) return '<div class="sm mu">Nothing waits on it and it waits on nothing.</div>';
+    return '<div class="chain">' + all.map(function (g, i) {
+      return (i ? '<span class="ar">then</span>' : "") + '<span class="n' + (g.id === f.id ? " me" : "") + '">' + fdot(g.s) + " " + esc(g.name) + "</span>";
+    }).join("") + '</div><div class="sm mu">Read left to right: each one starts when the one before it is done.</div>';
+  }
+  function screenFeature() {
+    var f = feat(S.feature);
+    var h = '<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px"><h1>' + esc(f.name) + '</h1><span class="sm">' + fdot(f.s) + " " + STF[f.s] + "</span></div>";
+    h += '<p class="prose">' + esc(f.sent) + "</p>";
+    h += tabs("feat", [["gives", "What it gives"], ["built", "How it was built"], ["parts", "Parts"], ["tl", "Timeline"], ["hood", "Under the hood"]], S.ftab);
+    if (S.ftab === "gives") {
+      h += '<div class="fsec"><h3>For you</h3><div class="sm">' + esc(f.gives) + "</div></div>";
+      h += '<div class="fsec"><h3>Before and after</h3>' + baBars(f) + "</div>";
+      h += '<div class="fsec"><h3>How we know</h3>' + (f.proof.length ? f.proof.map(function (x) { return '<div class="sm" style="margin:2px 0">' + esc(x) + "</div>"; }).join("") : '<div class="sm mu">' + esc(f.unmeasured) + "</div>") + "</div>";
+      h += '<div class="fsec"><h3>Size</h3><div class="sm">' + ["", "Small", "Medium", "Large"][S.sizes[f.id]] + ' for the people who use Forge. <span class="mu">Proposed by the agent; change it in Analytics.</span></div></div>';
+    } else if (S.ftab === "built") {
+      h += '<div class="fsec"><ol class="steps">' + f.steps.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ol></div>";
+    } else if (S.ftab === "parts") {
+      h += '<div class="fsec"><h3>Parts</h3>' + partsHtml(f.parts) + '</div><div class="fsec"><h3>Order</h3>' + chainHtml(f) + "</div>";
+    } else if (S.ftab === "tl") {
+      h += f.tl.length ? "<div>" + f.tl.map(function (x, i) { return teHtml({ id: f.id + "t" + i, t: x[0], hl: x[1], m: [], feat: [], thr: f.thr }, "feature"); }).join("") + "</div>" : '<p class="mu sm">Nothing yet. It has not started.</p>';
+    } else {
+      h += '<div class="fsec"><div class="sm">Threads: ' + (f.thr.length ? f.thr.map(function (id) { return '<a data-act="thread" data-id="' + id + '">' + esc(thr(id).name) + "</a>"; }).join(" · ") : "none yet") + "</div>" +
+        '<div class="sm" style="margin-top:4px">Code: ' + esc(f.ch) + ' <button class="tbtn mu" data-act="block" data-b="changes">See all changes</button></div></div>';
+    }
+    h += '<p class="quiet"><button class="tbtn" data-act="ask-here">Say something about this feature</button></p>';
+    return h;
+  }
+
+  /* ================= threads ================= */
+  function tstate(t) { return t.id === "release" ? (S.signin === "done" && !S.publishCard ? "work" : "needs") : t.s; }
+  function threadsBlock() {
+    var by = { needs: [], work: [], done: [] };
+    THREADS.forEach(function (t) { by[tstate(t)].push(t); });
+    var lab = { needs: "Needs me", work: "Running", done: "Closed" };
+    var h = '<div class="sw">' + ["needs", "work", "done"].map(function (k) {
+      return '<button class="swb' + (S.thrSw === k ? " on" : "") + '" data-act="sw" data-k="thrSw" data-v="' + k + '">' + lab[k] + " (" + by[k].length + ")</button>";
+    }).join("") + "</div>";
+    var rows = by[S.thrSw].map(function (t) {
+      return '<div class="trow" data-act="thread" data-id="' + t.id + '">' + fdot(t.paused ? "pause" : tstate(t)) + '<div><span class="tn">' + esc(t.name) + '</span><div class="tsz">' + esc(t.doing) + "</div></div></div>";
+    }).join("");
+    return h + (rows || '<p class="mu sm">Nothing here.</p>') + '<p class="quiet">Only what needs you shows first. Running work is one tap away.</p>';
+  }
+  function screenThread() {
+    var t = thr(S.thread);
+    var h = '<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:10px"><h1>' + esc(t.name) + '</h1><span class="sm">' + fdot(t.paused ? "pause" : tstate(t)) + " " + (t.paused ? "Paused" : { needs: "Needs me", work: "Running", done: "Closed" }[tstate(t)]) + "</span></div>";
+    h += t.sum.map(function (s) { return '<p class="prose" style="margin-bottom:4px">' + esc(s) + "</p>"; }).join("");
+    h += '<section class="sec"><div class="sh"><h3>Timeline of this thread</h3></div>' + t.tl.map(function (x, i) { return teHtml({ id: t.id + "x" + i, t: x[0], hl: x[1], m: [], feat: [], thr: [] }, t.id); }).join("") + "</section>";
+    h += '<p class="quiet"><button class="tbtn" data-act="ask-here">Say something to this thread</button></p>';
+    return h;
+  }
+
+  /* ================= plan ================= */
+  function planBlock() {
+    var h = '<p class="prose">Release 0.0.12: ' + doneN() + " of " + FEATS.length + " features done. The rest of the plan takes about 2 days at today's pace.</p>";
+    h += tabs("plan", [["tree", "Features and parts"], ["board", "Board"], ["ideas", "Ideas (" + S.ideas.length + ")"]], S.ptab);
+    if (S.ptab === "ideas") return h + ideasList();
+    if (S.ptab === "board") {
+      var groups = [["Not started", ["idle"]], ["Being built or waiting", ["work", "needs", "pause"]], ["Done", ["done"]]];
+      var parts = 0, pd = 0;
+      FEATS.forEach(function (f) { f.parts.forEach(function (p) { parts++; if (p.s === "done") pd++; }); });
+      h += '<div class="sm">' + pd + " of " + parts + " parts done across all features.</div>";
+      h += '<div class="stack" title="' + pd + " of " + parts + ' parts done"><i style="flex:' + pd + ';background:var(--ink)"></i><i style="flex:' + (parts - pd) + ';background:var(--hair)"></i></div>';
+      return h + '<div class="cols3" style="margin-top:14px">' + groups.map(function (g) {
+        var l = FEATS.filter(function (f) { return g[1].indexOf(f.s) >= 0; });
+        return "<div><h4>" + g[0] + " (" + l.length + ")</h4>" + l.map(function (f) { return '<div class="ic" data-act="feature" data-id="' + f.id + '">' + esc(f.name) + (f.s === "needs" ? ' <span class="mu">· waits on you</span>' : f.s === "pause" ? ' <span class="mu">· paused</span>' : "") + "</div>"; }).join("") + "</div>";
+      }).join("") + "</div>";
+    }
+    return h + FEATS.map(function (f) {
+      var open = S.pexp[f.id];
+      return '<div class="frow" data-act="pexp" data-id="' + f.id + '">' + fdot(f.s) + '<div><span class="fnm">' + esc(f.name) + "</span>" +
+        (open ? '<div style="margin-top:6px">' + partsHtml(f.parts) + '<div style="margin-top:4px"><a data-act="feature" data-id="' + f.id + '" class="sm">Open the feature</a></div></div>' : "") +
+        '</div><span class="frt">' + esc(f.when) + "</span></div>";
+    }).join("");
+  }
+  function ideasList() {
+    if (!S.ideas.length) return '<p class="mu sm">No parked ideas.</p>';
+    return S.ideas.map(function (i) {
+      return '<div class="dr"><div>' + esc(i.t) + ' <span class="mu sm">' + esc(i.when) + '</span></div><div class="acts"><button class="tbtn" data-act="idea-talk" data-id="' + i.id + '">Talk it through</button><button class="tbtn" data-act="idea-plan" data-id="' + i.id + '">Add to the plan</button><button class="tbtn mu" data-act="idea-drop" data-id="' + i.id + '">Drop</button></div></div>';
+    }).join("");
+  }
+
+  /* ================= analytics ================= */
+  function spark(vals, lo, hi, max) {
+    var W = 220, H = 48, n = vals.length;
+    var x = function (i) { return 4 + i * (W - 12) / (n - 1); }, y = function (v) { return H - 4 - v / max * (H - 10); };
+    var pts = vals.map(function (v, i) { return x(i).toFixed(1) + "," + y(v).toFixed(1); }).join(" ");
+    var last = vals[n - 1], out = last > hi || last < lo;
+    return '<svg viewBox="0 0 ' + W + " " + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="Last 14 days against the normal range">' +
+      '<rect x="0" y="' + y(hi).toFixed(1) + '" width="' + W + '" height="' + (y(lo) - y(hi)).toFixed(1) + '" style="fill:var(--band)"><title>Normal range: ' + lo + " to " + hi + "</title></rect>" +
+      '<polyline points="' + pts + '" style="fill:none;stroke:var(--ink);stroke-width:2;stroke-linejoin:round"/>' +
+      vals.map(function (v, i) { return '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="7" style="fill:transparent"><title>' + (i === n - 1 ? "Today" : (n - 1 - i) + " days ago") + ": " + v + "</title></circle>"; }).join("") +
+      '<circle cx="' + x(n - 1).toFixed(1) + '" cy="' + y(last).toFixed(1) + '" r="4" style="fill:' + (out ? "var(--accent)" : "var(--ink)") + ';stroke:var(--surface);stroke-width:2"/></svg>';
+  }
+  var SIG = [
+    { q: "Work waited on you 1 h 40 min today. A normal day is about 40 minutes.", mean: "All of it was the npm sign-in. Everything else ran.", act: S.signin === "done" ? null : ["Sign in now", "goto-signin"], v: [20, 35, 50, 30, 40, 420, 45, 30, 20, 60, 40, 35, 50, 100], lo: 20, hi: 60, max: 420, unit: "minutes" },
+    { q: "Checks failed 9 times today. A normal day is about 3.", mean: "One upload test caused 6. It passes on retry, so it fails by chance, not because work is broken.", act: ["Fix it at the cause", "sig-fix"], v: [3, 2, 4, 3, 2, 5, 3, 4, 2, 3, 4, 3, 2, 9], lo: 1, hi: 5, max: 10, unit: "failures" },
+    { q: "Cloud receipts has taken 3 days. Features this size usually take 1.", mean: "Review sent it back once, then it was paused for the release. It is not broken.", act: ["Open the feature", "sig-feat"], v: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3], lo: 0, hi: 1.2, max: 3.5, unit: "days" }
+  ];
+  var NORMALS = [["Time to finish a piece of work", "42 min", "normal is 38 min"], ["Work sent back by review", "1 in 6", "normal is 1 in 5"], ["Size of each change", "180 lines", "normal is 210"], ["Usage of the weekly limit", "61% with 2 days left", "normal is 55% by now"], ["Features finished per week", "5", "normal is 3"], ["Open pieces of work", "3", "your limit is 4"]];
+  function analyticsBlock() {
+    var h = tabs("an", [["signals", "Anything abnormal?"], ["value", "Value delivered"], ["agents", "How the agents do"]], S.atab);
+    if (S.atab === "signals") {
+      h += '<p class="label">Each line is compared with this project\'s own normal: the middle of the last 4 weeks.</p>';
+      h += SIG.map(function (s) {
+        var act = s.act && !(s.act[1] === "goto-signin" && S.signin === "done") ? '<button class="btn" data-act="' + s.act[1] + '">' + esc(s.act[0]) + "</button>" : "";
+        return '<div class="sig"><div class="q">' + esc(s.q) + '</div><div class="row"><div>' + spark(s.v, s.lo, s.hi, s.max) +
+          '<div class="leg"><span><i></i>normal range</span><span><s></s>last 14 days, ' + esc(s.unit) + '</span></div></div><div class="mean"><div>' + esc(s.mean) + '</div><div style="margin-top:8px">' + act + "</div></div></div></div>";
+      }).join("");
+      h += '<p class="quiet"><button class="tbtn mu" data-act="a-normal">' + (S.aNormal ? "Hide" : "Everything else is normal (" + NORMALS.length + ")") + "</button></p>";
+      if (S.aNormal) h += NORMALS.map(function (n) { return '<div class="rrow"><span>' + esc(n[0]) + '</span><span class="mu">' + esc(n[1]) + ", " + esc(n[2]) + "</span></div>"; }).join("");
+      return h;
+    }
+    if (S.atab === "value") {
+      var done = FEATS.filter(function (f) { return f.s === "done"; });
+      var pts = 0;
+      done.forEach(function (f) { pts += S.sizes[f.id]; });
+      var w = [["3 weeks ago", 4], ["2 weeks ago", 6], ["Last week", 7], ["This week", pts]];
+      var mx = Math.max.apply(null, w.map(function (x) { return x[1]; }));
+      h += '<p class="prose">This week ' + done.length + " features reached people, worth " + pts + " points. Last week: 7 points.</p>";
+      h += '<p class="label">A point is a guess at how much a feature matters to the people who use Forge: small 1, medium 2, large 3.</p>';
+      h += '<div class="chart">' + w.map(function (x, i) { return '<div class="bc' + (i === 3 ? " now" : "") + '"><span class="v">' + x[1] + '</span><div class="b" title="' + x[0] + ": " + x[1] + ' points" style="height:' + Math.round(x[1] / mx * 100) + 'px"></div></div>'; }).join("") + "</div>";
+      h += '<div class="days">' + w.map(function (x) { return "<span>" + x[0] + "</span>"; }).join("") + "</div>";
+      var how = { f2: "Faster", f3: "Fewer false failures", f1: "Safer", f4: "Less waiting", f5: "Clearer" };
+      h += done.map(function (f) {
+        return '<div class="rrow"><a data-act="feature" data-id="' + f.id + '">' + esc(f.name) + '</a><span class="mu"><button class="tbtn mu" data-act="size" data-id="' + f.id + '">' + ["", "Small", "Medium", "Large"][S.sizes[f.id]] + "</button> · " + esc(how[f.id] || "") + "</span></div>";
+      }).join("");
+      return h + '<p class="quiet">Sizes are proposed by the agent. Tap one to change it.</p>';
+    }
+    h += '<p class="label">How the agents work, against their own normal. This is where merges and change counts live.</p>';
+    var tiles = [["Pieces of work finished today", "14", "normal is 18", false], ["Time to finish one", "42 min", "normal is 38 min", false], ["Checks failing", "9 today", "normal is 3", true],
+      ["Work sent back by review", "1 in 6", "normal is 1 in 5", false], ["Time held by you", "1 h 40 min", "normal is 40 min", true], ["Usage of the weekly limit", "61%", "normal is 55% by now", false]];
+    h += '<div class="grid">' + tiles.map(function (t) {
+      return '<div class="card"><div class="kl">' + esc(t[0]) + '</div><div class="mval">' + esc(t[1]) + '</div><div class="stt' + (t[3] ? " out" : "") + '">' + esc(t[2]) + (t[3] ? " · outside normal" : "") + "</div></div>";
+    }).join("") + "</div>";
+    return h;
+  }
+
+  /* ================= decisions, rules, setup, changes ================= */
+  function decisionsBlock() {
+    var h = tabs("dec", [["waiting", "Waiting (" + waitingCount() + ")"], ["done", "Done for you (" + S.done.length + ")"], ["trust", "What still asks"]], S.dtab);
+    if (S.dtab === "waiting") {
+      return h + '<p class="sm">' + (waitingCount() ? "Waiting items sit at the bottom of every screen, the most blocking first." : "Nothing waits on you.") + "</p>" +
+        S.cards.map(function (c) { return '<div class="dr">' + esc(c.q) + '<div class="mu sm">Default: ' + esc(c.opts[c.def]) + "</div></div>"; }).join("") +
+        (waitingCount() ? '<p class="quiet"><button class="tbtn" data-act="goto-tray">Answer them</button></p>' : "");
+    }
+    if (S.dtab === "done") return h + doneForYouHtml(true);
+    var steps = [["ask", "Ask me"], ["auto", "Do it and tell me"]];
+    return h + '<p class="sm mu" style="margin-top:0">When you keep taking the default for a kind of question, it offers to stop asking. Kinds that touch your accounts, money or publishing always ask.</p>' +
+      Object.keys(KINDS).map(function (k) {
+        var lk = KINDS[k].irr;
+        return '<div class="dr"><b>' + esc(KINDS[k].name) + "</b>" + (lk ? '<div class="lockline">Always asks. Cannot be made automatic.</div>' :
+          '<div class="acts">' + steps.map(function (s) { return '<button class="tab' + (S.level[k] === s[0] ? " on" : "") + '" data-act="level" data-k="' + k + '" data-l="' + s[0] + '">' + s[1] + "</button>"; }).join("") + "</div>") + "</div>";
+      }).join("");
+  }
+  function rulesBlock() {
+    var h = tabs("rules", [["rules", "Rules (" + S.rules.length + ")"], ["laws", "Laws"], ["memory", "Memory"], ["count", "Said more than once"]], S.rtab);
+    if (S.rtab === "rules") return h + S.rules.map(function (r) {
+      return '<div class="dr"><div>' + esc(r.t) + '</div><div class="mu sm">' + esc(r.scope) + " · your words, " + esc(r.date) + (r.hist ? " · changed before: " + esc(r.hist.join("; ")) : "") + "</div></div>";
+    }).join("") + '<p class="quiet">When a new rule clashes with one here, you see both with their dates and pick once.</p>';
+    if (S.rtab === "laws") return h + '<p class="sm mu" style="margin-top:0">Laws cannot be broken by any agent and cannot be made automatic.</p>' + S.laws.map(function (l) { return '<div class="dr">' + esc(l) + "</div>"; }).join("");
+    if (S.rtab === "memory") return h + S.mems.map(function (m) { return '<div class="dr">' + esc(m[0]) + '<div class="mu sm">' + esc(m[1]) + " · " + esc(m[2]) + "</div></div>"; }).join("");
+    return h + '<p class="sm mu" style="margin-top:0">Corrections you have given. The second time you say one, it offers to make it a rule.</p>' + S.corrections.map(function (c) {
+      return '<div class="dr">' + esc(c.t) + '<div class="mu sm">Said ' + plural(c.said.length, "time") + ": " + esc(c.said.join(", ")) + "</div></div>";
+    }).join("");
+  }
+  var SETUP = [["Models", "Opus plans. Sol builds and reviews hard work. Sonnet writes."], ["Open work", "At most 4 pieces at once."], ["Where tests run", "In CI only, never on your laptop."],
+    ["Summary on Home", "Rewritten every 30 minutes, 4 lines."], ["Timeline", "One entry every 15 minutes."], ["When you are away", "Take the default and keep going. Ask about accounts, money and publishing only when you are here."], ["Reviews", "Two rounds at most, then simplify or park."]];
+  function setupBlock() {
+    return '<p class="label">How Forge runs this project, in plain words. Tap a line to ask for a change; the change is shown to you before it applies.</p>' +
+      SETUP.map(function (s, i) { return '<div class="rrow"><span><b>' + esc(s[0]) + "</b> · " + esc(s[1]) + '</span><button class="tbtn mu" data-act="setup-ask" data-i="' + i + '">Ask to change</button></div>'; }).join("");
+  }
+  function changesBlock() {
+    var rows = [["Change 41", "Faster checks, and the retry rule", "merged 14:15"], ["Change 42", "Safe publishing", "merged"], ["Change 43", "Cloud receipts, second try", "paused"], ["Change 44", "Fair memory check", "merged 15:15"], ["Change 45", "Release notes", "merged"]];
+    return '<p class="label">Code changes behind the features. This is the only place they are named.</p>' +
+      rows.map(function (r) { return '<div class="rrow"><span><b>' + r[0] + "</b> · " + esc(r[1]) + '</span><span class="mu">' + esc(r[2]) + "</span></div>"; }).join("") +
+      '<p class="quiet">Finished today: 14. Normal is 18. See <a data-act="an-agents">how the agents do</a>.</p>';
+  }
+
+  /* ================= projects screen ================= */
+  var PROJ = [["Forge", "needs", "Only you: npm sign-in. 2 features new since you left."], ["Score Easy", "work", "Running without you. Next: scoring screen."], ["Product Suite", "work", "Running without you. Next: meeting notes."], ["Harnest", "done", "Closed for this release."]];
+  function screenProjects() {
+    var c = { needs: 0, work: 0, done: 0 };
+    PROJ.forEach(function (p) { c[p[1]]++; });
+    var lab = { needs: "Needs me", work: "Running", done: "Closed" };
+    var h = '<p class="label">Your projects</p><div class="sw">' + ["needs", "work", "done"].map(function (k) {
+      return '<button class="swb' + (S.projSw === k ? " on" : "") + '" data-act="sw" data-k="projSw" data-v="' + k + '">' + lab[k] + " (" + c[k] + ")</button>";
+    }).join("") + "</div>";
+    return h + PROJ.filter(function (p) { return p[1] === S.projSw; }).map(function (p) {
+      return '<div class="trow" data-act="proj" data-n="' + esc(p[0]) + '">' + fdot(p[1]) + '<div><span class="tn">' + esc(p[0]) + '</span><div class="tsz">' + esc(p[2]) + "</div></div></div>";
+    }).join("");
+  }
+
+  /* ================= tray ================= */
+  function syncSvg(kind) {
+    var lane = function (y, who) { return '<text x="0" y="' + (y + 4) + '" style="fill:var(--muted);font-size:10px">' + who + '</text><line x1="34" y1="' + y + '" x2="196" y2="' + y + '" style="stroke:var(--hair);stroke-width:2"/>'; };
+    var dot = function (x, y, fill) { return '<circle cx="' + x + '" cy="' + y + '" r="5" style="fill:' + fill + '"/>'; };
+    var s = '<svg viewBox="0 0 200 66" role="img" aria-label="Two people editing">' + lane(16, "You") + lane(42, "Sam");
+    if (kind === 0) s += dot(70, 16, "var(--grey)") + '<line x1="64" y1="10" x2="76" y2="22" style="stroke:var(--red);stroke-width:2"/>' + dot(110, 42, "var(--ink)") + '<text x="122" y="62" style="fill:var(--muted);font-size:10px">your edit gone</text>';
+    if (kind === 1) s += '<rect x="60" y="11" width="60" height="10" rx="3" style="fill:var(--grey)"/>' + dot(150, 42, "var(--ink)") + '<line x1="80" y1="42" x2="145" y2="42" style="stroke:var(--grey);stroke-dasharray:3 3;stroke-width:2"/><text x="70" y="62" style="fill:var(--muted);font-size:10px">Sam waits</text>';
+    if (kind === 2) s += dot(70, 16, "var(--ink)") + dot(110, 42, "var(--ink)") + '<text x="140" y="33" style="fill:var(--accent);font-size:14px;font-weight:700">?</text><text x="96" y="62" style="fill:var(--muted);font-size:10px">both kept, Sam asked</text>';
+    return s + "</svg>";
+  }
+  function cardBody(c) {
+    var st = S.exp[c.id], h = "";
+    if (c.visual) {
+      var lose = ["Lose: the first edit, silently.", "Lose: speed; one person waits.", "Lose: a little time; one extra question."];
+      h += '<div class="opt3">' + c.opts.map(function (o, i) {
+        return '<div class="ov' + (i === c.def ? " def" : "") + '"><b>' + esc(o) + "</b>" + (i === c.def ? ' <span class="xs" style="color:var(--accent)">default</span>' : "") + syncSvg(i) + '<div class="lose">' + lose[i] + "</div></div>";
+      }).join("") + "</div>";
+      if (st === "ready") h += '<table class="mini"><tr><th></th><th>A</th><th>B</th><th>C</th></tr><tr><td>Who does it</td><td>Most note apps</td><td>Old file shares</td><td>Code review tools</td></tr><tr><td>Time to build</td><td>1 day</td><td>2 days</td><td>3 days</td></tr><tr><td>Work ever lost</td><td>Yes</td><td>No</td><td>No</td></tr></table><div class="sm" style="margin-bottom:8px">Why C: it is the only one that never loses work and never makes anyone wait. It costs 1 to 2 more days.</div>';
+    } else if (st === "ready" && c.det) {
+      h += '<table class="mini">' + c.det.map(function (r) { return '<tr><td class="mu">' + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td></tr>"; }).join("") + "</table>";
+    }
+    if (st === "loading") h += '<div class="mu sm" style="margin:4px 0 8px">The agent is gathering a fuller answer…</div>';
+    h += '<div class="opts">' + c.opts.map(function (t, i) {
+      return '<button class="' + (i === c.def ? "btn pri" : "btn") + '" data-act="ans" data-id="' + c.id + '" data-i="' + i + '">' + esc(c.visual ? t.slice(0, 2).replace(".", "") : t) + (i === c.def ? " (default)" : "") + "</button>";
+    }).join("") + (st ? "" : '<button class="tbtn mu" data-act="more-detail" data-id="' + c.id + '">More detail</button>') + "</div>";
+    return h;
+  }
+  function trayHtml() {
+    var h = "";
+    if (S.signin !== "done") {
+      h += '<div class="only" id="onlyStrip"><div class="k">ONLY YOU CAN DO THIS · HELD 1 H 40 MIN</div>';
+      if (S.signin === "wait") h += '<div class="q">Sign in to npm so release 0.0.12 can go out.</div><div class="sm" style="margin-bottom:8px">Your account, so no agent can do it. No default: the release waits, everything else runs.</div><div class="opts"><button class="btn pri" data-act="signin-start">Start sign-in</button><button class="tbtn mu" data-act="signin-later">Remind me before I leave</button></div>';
+      else if (S.signin === "code") h += '<div class="q">The npm page is open on your laptop. Confirm there with this code:</div><div style="margin:6px 0 8px"><span class="code">4F7K-29QD</span> <span class="mu sm">lasts 10 minutes</span></div><div class="opts"><button class="btn pri" data-act="signin-did">I confirmed it</button><button class="tbtn mu" data-act="signin-start">New code</button></div>';
+      else h += '<div class="q">Checking the sign-in…</div><div class="sm mu">About 2 seconds.</div>';
+      h += "</div>";
+    }
+    if (S.publishCard) {
+      h += '<div class="only"><div class="k">ALWAYS ASKS · PUBLISHING</div><div class="q">Publish release 0.0.12 to everyone?</div><div class="sm" style="margin-bottom:8px">Package checked, notes written, 5 new features. This cannot be made automatic.</div><div class="opts"><button class="btn pri" data-act="publish-yes">Publish</button><button class="btn" data-act="publish-no">Not yet</button></div></div>';
+    }
+    if (S.offer) {
+      var k = S.offer;
+      h += '<div class="tin"><div class="tq">You took the default for “' + esc(KINDS[k].name.toLowerCase()) + "” " + (S.week[k] || 0) + " times this week, 3 of them while you were away, and never undid one.</div>" +
+        '<div class="tmeta">Let it happen on its own? It will still show in Done for you, each with Undo.</div><div class="opts"><button class="btn pri" data-act="offer-yes">Yes, stop asking</button><button class="btn" data-act="offer-no">Keep asking</button></div></div>';
+      return h;
+    }
+    if (!S.cards.length) return h;
+    if (S.ci >= S.cards.length) S.ci = 0;
+    var c = S.cards[S.ci];
+    var mini = S.trayMin === null ? S.signin !== "done" : S.trayMin;
+    if (mini) return h + '<div class="trayline"><span>' + plural(S.cards.length, "question") + " with a default. None holds work.</span><button class=\"tbtn\" data-act=\"tray-min\">Show</button></div>";
+    h += '<div class="tin"><div class="thead"><span>Has a default · from ' + esc(c.from) + "</span>" +
+      '<span class="tnav">' + (S.cards.length > 1 ? '<button class="tbtn mu" data-act="cprev" aria-label="Previous">Prev</button><span>' + (S.ci + 1) + " of " + S.cards.length + '</span><button class="tbtn mu" data-act="cnext" aria-label="Next">Next</button>' : "") +
+      '<button class="tbtn mu" data-act="tray-min">Hide</button></span></div><div class="tcard slide"><div class="tq">' + esc(c.q) + '</div><div class="tmeta">' + esc(c.meta) + "</div>" + cardBody(c) + "</div></div>";
+    return h;
+  }
+
+  /* ================= answering ================= */
+  function answer(id, i) {
+    var c = card(id);
+    if (!c) return;
+    var idx = S.cards.indexOf(c), took = i === c.def, offered = false, memAdd = null;
+    S.cards.splice(idx, 1);
+    delete S.exp[id];
+    if (c.kind === "keep" && i < 2) { memAdd = ["Release notes are for people: plain words, no ids.", i === 0 ? "This project" : "All projects", "today"]; S.mems.unshift(memAdd); }
+    if (took && c.kind === "branch") {
+      S.week.branch = 5;
+      if (S.level.branch === "ask" && !S.offerNo.branch) { S.offer = "branch"; offered = true; }
+    }
+    if (c.kind === "design") { feat("f8").steps[0] = "Decided: " + c.opts[i] + ". Chosen by you today."; }
+    render();
+    toast("Answered: " + c.opts[i] + ".", function () {
+      S.cards.splice(idx, 0, c); S.ci = idx;
+      if (memAdd) S.mems.splice(S.mems.indexOf(memAdd), 1);
+      if (offered) { S.offer = null; S.week.branch = 1; }
+      if (c.kind === "design") feat("f8").steps[0] = "Decide what happens when two people change the same thing (waits on you, has a default).";
+      render();
+    });
+  }
+  function moreDetail(id) {
+    S.exp[id] = "loading";
+    render();
+    setTimeout(function () { if (S.exp[id] === "loading" && card(id)) { S.exp[id] = "ready"; render(); } }, 1200);
+  }
+
+  /* ================= prompt and router ================= */
+  var CLS = [["answer", "An answer"], ["direction", "Direction"], ["idea", "A new idea"], ["rule", "A rule"], ["correction", "A correction"], ["complaint", "A complaint"], ["question", "A question"]];
+  var SCOPES = ["This thread", "Today only", "This project", "All projects", "This device"];
+  var TRIES = [["Direction", "Ship the release first, then team sync."], ["Idea", "Idea: a phone alert when only I can unblock work."],
+    ["Rule", "From now on use Fable for the overseer reviews."], ["Correction", "The release notes have ids and jargon again."], ["Question", "By when can the release go out?"]];
+  function clsName(k) { return CLS.filter(function (c) { return c[0] === k; })[0][1]; }
+  function classify(text) {
+    var t = text.toLowerCase().trim();
+    if (/^(a|b|c|yes|no|ok|default|defaults)[.!]?$/.test(t)) return "answer";
+    if (/(from now on|^always|^never|don'?t ever|do not ever|\bnever\b)/.test(t)) return "rule";
+    if (/(again|you keep|stop doing|i told you|i said)/.test(t)) return "correction";
+    if (/(red flag|annoying|waste|stupid|too slow|why is it so|bad)/.test(t)) return "complaint";
+    if (/(^idea|what if|we could|would be nice|maybe we|let'?s add|new idea)/.test(t)) return "idea";
+    if (/\?$/.test(t) || /^(how|what|when|by when|why|where|is|are|can|do|does)\b/.test(t)) return "question";
+    return "direction";
+  }
+  function defaultScope(cls) { return cls === "rule" ? "This project" : cls === "correction" || cls === "direction" ? "This thread" : "This project"; }
+  function hereName() {
+    if (S.screen === "feature") return "feature " + feat(S.feature).name;
+    if (S.screen === "thread") return "thread " + thr(S.thread).name;
+    if (S.screen === "projects") return "all projects";
+    return blk(S.block)[1];
+  }
+  function routeInfo(p) {
+    var t = p.text.toLowerCase();
+    var info = { dest: "", note: "", conflict: null, repeat: null, ans: null };
+    if (p.cls === "answer") {
+      var c = S.cards[S.ci];
+      info.dest = c ? "Answers the open question: “" + c.q + "”" : "There is no open question; it will go to the Lead thread.";
+    } else if (p.cls === "direction") {
+      info.dest = S.screen === "thread" ? "The " + thr(S.thread).name + " thread, now." : "The Lead thread, which runs the work. It starts on the next step.";
+    } else if (p.cls === "idea") {
+      info.dest = "The plan, as an idea under “New ideas”. Not started. Nothing running stops.";
+    } else if (p.cls === "rule") {
+      info.dest = "Rules, " + p.scope.toLowerCase() + ". Kept with your words and today's date.";
+      S.rules.forEach(function (r) { if (!info.conflict && t.indexOf(r.key) >= 0) info.conflict = r; });
+    } else if (p.cls === "correction") {
+      info.dest = "The Lead thread, now. Counted, so a repeat is noticed.";
+      S.corrections.forEach(function (c) { if (!info.repeat && (t.indexOf(c.key) >= 0 || (c.key === "jargon" && /\bids?\b/.test(t)))) info.repeat = c; });
+    } else if (p.cls === "complaint") {
+      info.dest = "Home, under “Wrong or paused”, until it is fixed. A check makes sure it does not come back.";
+    } else {
+      info.dest = "Answered here.";
+      if (/release|when|by when|how long/.test(t)) info.ans = S.signin === "done" ? "About 17:40 today. Publishing takes about 20 minutes after your yes, then about 1 hour of checks on the published package." : "About 18:00 today, if you sign in to npm by 16:00. Each hour the sign-in waits moves it an hour.";
+      else if (/pause|stopp|wait/.test(t)) info.ans = "Cloud receipts was paused at 13:05 because it changes the same files as the release. Nothing else is paused.";
+      else if (/mean|number|point/.test(t)) info.ans = "Points are a guess at how much a feature matters to people who use Forge: small 1, medium 2, large 3. You can change any of them in Analytics.";
+      else info.ans = "The Lead thread is working out the answer. It will show here and in the timeline within a few minutes.";
+    }
+    return info;
+  }
+  function ppHtml() {
+    var p = S.pp;
+    if (!p || p.stage === "type") {
+      return '<div class="tries"><div class="mu xs" style="margin-bottom:2px">Try one of these, or type your own:</div>' + TRIES.map(function (x, i) {
+        return '<button class="try" data-act="try" data-i="' + i + '"><b>' + esc(x[0]) + "</b>" + esc(x[1]) + "</button>";
+      }).join("") + "</div>";
+    }
+    var info = routeInfo(p), h = '<div class="route"><div class="said">“' + esc(p.text) + "”</div>";
+    h += '<div class="chips"><span class="mu xs">I read this as</span><button class="chip" data-act="pp-cls"><b>' + esc(clsName(p.cls)) + "</b> ▾</button>";
+    if (p.cls === "rule" || p.cls === "direction" || p.cls === "correction") h += '<span class="mu xs">for</span><button class="chip" data-act="pp-scope"><b>' + esc(p.scope) + "</b> ▾</button>";
+    h += '</div><div class="dest">Goes to: ' + esc(info.dest) + "</div>";
+    if (info.ans) h += '<div class="answerbox">' + esc(info.ans) + "</div>";
+    if (info.conflict) {
+      var r = info.conflict;
+      h += '<div class="warnbox"><div class="sm"><b>This clashes with an older rule.</b></div><div class="vs"><span class="d">' + esc(r.date) + "</span><span>" + esc(r.t) + ' <span class="mu">(' + esc(r.scope) + ')</span></span><span class="d">Today</span><span>' + esc(p.text) + "</span></div>" +
+        (r.hist ? '<div class="mu xs" style="margin-bottom:6px">This has flipped before: ' + esc(r.hist.join("; ")) + ".</div>" : "") +
+        '<div class="opts">' + [["narrow", "Both: Fable only for overseer reviews"], ["replace", "New replaces old"], ["keep", "Keep the old one"]].map(function (o, i) {
+          return '<button class="' + (p.res === o[0] || (!p.res && i === 0) ? "btn pri" : "btn") + '" data-act="pp-res" data-v="' + o[0] + '">' + esc(o[1]) + (i === 0 ? " (default)" : "") + "</button>";
+        }).join("") + "</div></div>";
+    }
+    if (info.repeat) {
+      var c = info.repeat;
+      h += '<div class="warnbox"><div class="sm"><b>Second time you have said this.</b> First on ' + esc(c.said.join(", ")) + ".</div>" +
+        '<div class="sm" style="margin:4px 0 6px">Make it a rule so you do not have to say it again? “' + esc(c.t) + "”</div>" +
+        '<div class="opts"><button class="' + (p.mk !== false ? "btn pri" : "btn") + '" data-act="pp-mk" data-v="1">Yes, make it a rule (default)</button><button class="' + (p.mk === false ? "btn pri" : "btn") + '" data-act="pp-mk" data-v="0">Just this time</button></div></div>';
+    }
+    if (p.cls === "idea") h += '<div class="sm" style="margin-top:8px"><button class="tbtn" data-act="pp-talk">Talk it through first, in a side chat</button></div>';
+    h += '<div class="opts" style="margin-top:10px"><button class="btn dark" data-act="send">' + (p.cls === "question" ? "Done" : "Send") + '</button><button class="tbtn mu" data-act="pp-cancel">Change the words</button></div></div>';
+    return h;
+  }
+  var logN = 0;
+  function sendRouted() {
+    var p = S.pp, info = routeInfo(p), undo = [], msg = "", done = "";
+    if (p.cls === "question") { closePrompt(); return; }
+    if (p.cls === "answer") {
+      var c = S.cards[S.ci];
+      if (c) {
+        var t = p.text.toLowerCase().replace(/[.!]/g, "");
+        var li = "abc".indexOf(t), i = /^(default|defaults|yes|ok)$/.test(t) ? c.def : t === "no" ? Math.min(1, c.opts.length - 1) : (t.length === 1 && li >= 0 ? li : c.def);
+        closePrompt(); answer(c.id, Math.min(i, c.opts.length - 1)); return;
+      }
+      p.cls = "direction";
+    }
+    if (p.cls === "idea") {
+      var it = { id: "i" + (++logN + 50), t: p.text.replace(/^idea:\s*/i, ""), when: "today" };
+      S.ideas.unshift(it); undo.push(function () { S.ideas.splice(S.ideas.indexOf(it), 1); });
+      msg = "Added to the plan as an idea. Nothing running stops."; done = "Added to the plan as an idea, not started.";
+    } else if (p.cls === "rule") {
+      var r = info.conflict;
+      if (r) {
+        var res = p.res || "narrow", old = { t: r.t, scope: r.scope, date: r.date };
+        if (res === "narrow") { r.t = "Don't use Fable, except for overseer reviews."; r.date = "today"; }
+        else if (res === "replace") { r.t = p.text; r.date = "today"; r.scope = p.scope; }
+        r.hist = (r.hist || []).concat(res === "keep" ? [] : ["today: " + p.text]);
+        undo.push(function () { r.t = old.t; r.scope = old.scope; r.date = old.date; if (res !== "keep") r.hist.pop(); });
+        msg = res === "keep" ? "Kept the old rule. Nothing changed." : "Rule updated. The older one is kept in its history.";
+        done = res === "keep" ? "Kept the older rule." : "Rule updated: " + r.t;
+      } else {
+        var nr = { id: "r" + (++logN + 50), t: p.text, scope: p.scope, date: "today", key: "~" };
+        S.rules.unshift(nr); undo.push(function () { S.rules.splice(S.rules.indexOf(nr), 1); });
+        msg = "Saved as a rule for " + p.scope.toLowerCase() + "."; done = "Saved as a rule, " + p.scope.toLowerCase() + ".";
+      }
+    } else if (p.cls === "correction") {
+      var rep = info.repeat;
+      if (rep) {
+        rep.said.push("today"); undo.push(function () { rep.said.pop(); });
+        if (p.mk !== false) {
+          var nr2 = { id: "rc" + logN, t: rep.t, scope: "This project", date: "today", key: "~" };
+          S.rules.unshift(nr2); undo.push(function () { S.rules.splice(S.rules.indexOf(nr2), 1); });
+          msg = "Fixed now, and made a rule."; done = "Sent to Lead and made a rule: " + rep.t;
+        } else { msg = "Sent to the Lead thread."; done = "Sent to Lead. Counted: said twice."; }
+      } else {
+        var nc = { key: "~" + logN, t: p.text, said: ["today"] };
+        S.corrections.push(nc); undo.push(function () { S.corrections.splice(S.corrections.indexOf(nc), 1); });
+        msg = "Sent to the Lead thread. If you say it again, I will offer a rule."; done = "Sent to Lead. Counted once.";
+      }
+    } else if (p.cls === "complaint") {
+      S.complaints.unshift(p.text); undo.push(function () { S.complaints.shift(); });
+      msg = "Shown on Home until it is fixed."; done = "Put on Home under Wrong or paused.";
+    } else {
+      msg = "Sent to " + (S.screen === "thread" ? thr(S.thread).name : "the Lead thread") + "."; done = "Sent to " + (S.screen === "thread" ? thr(S.thread).name : "Lead") + ".";
+    }
+    var entry = { n: ++logN, time: NOW, text: p.text, dest: info.dest, done: done };
+    S.log.unshift(entry);
+    closePrompt();
+    render();
+    toast(msg, function () { undo.forEach(function (f) { f(); }); S.log.splice(S.log.indexOf(entry), 1); render(); toast("Undone."); });
+  }
+  function openPrompt(prefill) {
+    S.pp = null;
+    $("prompt").classList.add("on");
+    $("looking").textContent = "Looking at: " + hereName() + ". What you say goes to the right place; you confirm first.";
+    $("ppInput").value = prefill || "";
+    renderPrompt();
+    setTimeout(function () { $("ppInput").focus(); }, 30);
+  }
+  function closePrompt() { $("prompt").classList.remove("on"); S.pp = null; }
+  function readInput() {
+    var v = $("ppInput").value.trim();
+    if (!v) { toast("Type something first, or pick one of the examples."); return; }
+    var cls = classify(v);
+    S.pp = { stage: "route", text: v, cls: cls, scope: defaultScope(cls), res: null, mk: true };
+    $("ppInput").value = "";
+    renderPrompt();
+  }
+  function renderPrompt() { $("ppDyn").innerHTML = ppHtml(); }
+
+  /* ================= drawers ================= */
+  function renderDrawer() {
+    var el = $("drawer"), d = S.drawer;
+    if (!d) { el.className = "drawer"; el.innerHTML = ""; return; }
+    var h = "";
+    if (d.kind === "chat") {
+      h = '<header><h2>Side chat · running work is not touched</h2><button class="x" data-act="drawer-close" aria-label="Close">&times;</button></header><div class="body">' +
+        '<div class="msg me"><div class="who2">Your idea</div>' + esc(d.text) + '</div><div class="msg"><div class="who2">Agent</div>One question first: is this for you only, or for anyone who uses Forge?' +
+        (d.step === 0 ? '<div class="opts" style="margin-top:8px"><button class="btn" data-act="chat-pick" data-v="you">Just me</button><button class="btn" data-act="chat-pick" data-v="everyone">Anyone who uses Forge</button></div>' : "") + "</div>";
+      if (d.step >= 1) h += '<div class="msg me"><div class="who2">You</div>' + (d.pick === "you" ? "Just me" : "Anyone who uses Forge") + '</div><div class="msg"><div class="who2">Agent</div>Then I would add it as one feature after Team sync, not started. Size: ' + (d.pick === "you" ? "small" : "medium") + ". It does not move the release date.</div>";
+      h += "</div>" + (d.step >= 1 ? '<footer><button class="btn pri" data-act="chat-plan">Add to the plan</button><button class="tbtn" data-act="chat-keep">Keep as an idea</button><button class="tbtn mu" data-act="chat-drop">Drop</button></footer>' : "");
+    } else {
+      var items = [];
+      if (S.signin !== "done" || d.ok.g1) items.push({ id: "g1", q: "npm sign-in for the release", w: "Without it the release waits until you are back. Codes cannot be kept for later.", a: [["Do it now, 1 minute", "leave-signin"]] });
+      if (card("c1") || d.ok.g2) items.push({ id: "g2", q: "Team sync: what happens when two people edit at once", w: "Default C (keep both, ask the second person) at 18:00.", a: [["C is fine", "leave-c1"]] });
+      if (card("c2") || card("c3") || d.ok.g3) items.push({ id: "g3", q: "2 small questions", w: "Both take their default by 18:00.", a: [["Defaults are fine", "leave-small"]] });
+      items.push({ id: "g4", q: "Publishing 0.0.12", w: "Always asks. If you are away when it is ready, it waits for you.", a: [] });
+      h = '<header><h2>Before you go</h2><button class="x" data-act="drawer-close" aria-label="Close">&times;</button></header><div class="body">' +
+        '<p class="sm" style="margin-top:0">These would wait for you in the next 12 hours. Anything you settle now keeps work moving while you are away.</p>' +
+        items.map(function (g) {
+          var ok = d.ok[g.id];
+          return '<div class="gi' + (ok ? " ok" : "") + '"><div><b>' + esc(g.q) + '</b></div><div class="w">' + esc(ok || g.w) + "</div>" + (ok || !g.a.length ? "" : '<div class="opts">' + g.a.map(function (a) { return '<button class="btn" data-act="' + a[1] + '">' + esc(a[0]) + "</button>"; }).join("") + "</div>") + "</div>";
+        }).join("") +
+        '<div class="gi"><b>How long are you away?</b><div class="opts" style="margin-top:6px">' + [["few", "A few hours"], ["night", "Overnight"], ["days", "A few days"]].map(function (a) {
+          return '<button class="tab' + (d.len === a[0] ? " on" : "") + '" data-act="leave-len" data-v="' + a[0] + '">' + a[1] + "</button>";
+        }).join("") + '</div><div class="w" style="margin-top:6px">' + ({ few: "Your brief will cover the time you were away; the timeline opens at Since you left.", night: "Overnight work is planned to finish the release checks and start Cloud receipts.", days: "When you come back, the timeline opens by day, not by 15 minutes." })[d.len] + "</div></div></div>" +
+        '<footer><button class="btn dark" data-act="leave-go">Go. Keep working on defaults</button><button class="tbtn mu" data-act="drawer-close">Stay</button></footer>';
+    }
+    el.className = "drawer on"; el.innerHTML = h;
+  }
+
+  /* ================= render ================= */
+  function renderCrumb() {
+    var c = $("crumb");
+    if (S.screen === "projects") { c.innerHTML = '<span class="cur">All projects</span>'; return; }
+    var base = '<a data-act="go-home">Forge</a>';
+    if (S.screen === "feature") c.innerHTML = base + ' / <a data-act="block" data-b="plan">Plan</a> / <span class="cur">' + esc(feat(S.feature).name) + "</span>";
+    else if (S.screen === "thread") c.innerHTML = base + ' / <a data-act="block" data-b="threads">Threads</a> / <span class="cur">' + esc(thr(S.thread).name) + "</span>";
+    else c.innerHTML = S.block === "home" ? '<span class="cur">Forge</span>' : base + ' / <span class="cur">' + esc(blk(S.block)[1]) + "</span>";
+  }
+  function renderDock() {
+    var cur = S.screen === "project" ? S.block : null;
+    var h = '<div class="dgrp">' + S.pinned.map(function (id) {
+      return '<button class="db' + (cur === id ? " on" : "") + '" data-act="block" data-b="' + id + '">' + esc(blk(id)[1]) + (id === "decisions" && waitingCount() ? " (" + waitingCount() + ")" : "") + "</button>";
+    }).join("") + '<button class="db' + (cur && S.pinned.indexOf(cur) < 0 ? " on" : "") + '" data-act="more" aria-expanded="' + S.moreOpen + '">More' + (cur && S.pinned.indexOf(cur) < 0 ? ": " + esc(blk(cur)[1]) : "") + "</button></div>";
+    h += '<button class="blob" data-act="prompt" aria-label="Say something"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg></button>';
+    if (S.moreOpen) {
+      h += '<div class="pop more"><div class="mlab">Open a block. Pin up to 4 to the dock; Home stays pinned.</div>' + BLOCKS.map(function (b) {
+        var pinned = S.pinned.indexOf(b[0]) >= 0, full = S.pinned.length >= 4 && !pinned;
+        return '<div class="mrow"><button class="open" data-act="block" data-b="' + b[0] + '" title="' + esc(b[2]) + '">' + esc(b[1]) + '</button><button class="pin" data-act="pin" data-b="' + b[0] + '"' + (b[0] === "home" ? " disabled" : "") + ">" +
+          (b[0] === "home" ? "always" : pinned ? "Unpin" : full ? "Pin (swap)" : "Pin") + "</button></div>";
+      }).join("") + '<div class="msep"></div><div class="mrow"><button class="open" data-act="layout">' + (S.layout ? "Hide what is fixed" : "Show what is fixed and what the agent fills") + "</button></div>" +
+        '<div class="mrow"><button class="open" data-act="ask-block">Ask to change a block</button></div></div>';
+    }
+    $("dock").innerHTML = h;
+  }
+  function render() {
+    renderCrumb();
+    var c = $("content"), h;
+    if (S.screen === "projects") h = screenProjects();
+    else if (S.screen === "feature") h = screenFeature();
+    else if (S.screen === "thread") h = screenThread();
+    else h = ({ home: homeBlock, timeline: timelineBlock, plan: planBlock, analytics: analyticsBlock, threads: threadsBlock, decisions: decisionsBlock, rules: rulesBlock, ideas: function () { return '<p class="label">Ideas you parked. None of them is started.</p>' + ideasList(); }, setup: setupBlock, changes: changesBlock })[S.block]();
+    c.className = "content" + (S.layout && S.screen === "project" && S.block === "home" ? " lay" : "");
+    c.innerHTML = h;
+    $("tray").innerHTML = S.screen === "projects" ? "" : trayHtml();
+    renderDock();
+    renderDrawer();
+  }
+  function go(fn) { fn(); S.moreOpen = false; $("content").scrollTop = 0; render(); }
+
+  /* ================= events ================= */
+  function signinDone() {
+    S.signin = "check"; render();
+    setTimeout(function () {
+      S.signin = "done"; S.publishCard = true;
+      feat("f7").parts[2].s = "done"; feat("f7").sent = "Signed in. It needs your yes to publish.";
+      render(); toast("Signed in. The release moves again and now needs your yes to publish.");
+    }, 1200);
+  }
+  var A = {
+    "go-all": function () { go(function () { S.screen = "projects"; }); },
+    "go-home": function () { go(function () { S.screen = "project"; S.block = "home"; }); },
+    proj: function (el) { if (el.dataset.n === "Forge") go(function () { S.screen = "project"; S.block = "home"; }); else toast(el.dataset.n + " is not filled in this mock. Only Forge is."); },
+    block: function (el) { go(function () { S.screen = "project"; S.block = el.dataset.b; }); },
+    more: function () { S.moreOpen = !S.moreOpen; renderDock(); },
+    pin: function (el) {
+      var b = el.dataset.b, i = S.pinned.indexOf(b), prev = S.pinned.slice();
+      if (b === "home") return;
+      if (i >= 0) S.pinned.splice(i, 1);
+      else { if (S.pinned.length >= 4) S.pinned.splice(S.pinned.length - 1, 1); S.pinned.push(b); }
+      renderDock();
+      toast(i >= 0 ? blk(b)[1] + " unpinned. It stays under More." : blk(b)[1] + " pinned to the dock.", function () { S.pinned = prev; renderDock(); });
+    },
+    layout: function () { S.layout = !S.layout; S.moreOpen = false; S.screen = "project"; S.block = "home"; render(); if (S.layout) toast("Outlines show what never moves and what the agent writes."); },
+    "ask-block": function () { S.moreOpen = false; renderDock(); openPrompt("On Home, add a line for "); },
+    feature: function (el) { go(function () { S.screen = "feature"; S.feature = el.dataset.id; S.ftab = "gives"; }); },
+    thread: function (el) { go(function () { S.screen = "thread"; S.thread = el.dataset.id; }); },
+    tab: function (el) {
+      var s = el.dataset.s, t = el.dataset.t;
+      var key = { home: "homeTab", zoom: "tlZoom", feat: "ftab", plan: "ptab", an: "atab", dec: "dtab", rules: "rtab" }[s];
+      S[key] = t; render();
+    },
+    sw: function (el) { S[el.dataset.k] = el.dataset.v; render(); },
+    "brief-more": function () { S.briefMore = !S.briefMore; render(); },
+    "away-open": function () { S.awayOpen = !S.awayOpen; render(); },
+    tl: function (el) { S.tlOpen[el.dataset.id] = !S.tlOpen[el.dataset.id]; render(); },
+    week: function (el) { S.weekOpen[el.dataset.i] = !S.weekOpen[el.dataset.i]; render(); },
+    pexp: function (el) { S.pexp[el.dataset.id] = !S.pexp[el.dataset.id]; render(); },
+    pause: function (el) {
+      var prev = S.paused; S.paused = el.dataset.v;
+      if (S.paused === "restarted") { THREADS[2].paused = false; THREADS[2].doing = "Restarted at 15:41 at your word"; feat("f6").s = "work"; feat("f6").when = "4 of 6 parts"; }
+      render();
+      toast(S.paused === "kept" ? "Stays paused until the release is out." : "Cloud receipts restarted.", function () {
+        S.paused = prev; THREADS[2].paused = true; THREADS[2].doing = "Paused since 13:05, until the release is out"; feat("f6").s = "pause"; feat("f6").when = "4 of 6 parts, paused"; render();
+      });
+    },
+    "goto-signin": function () {
+      render();
+      var s = $("onlyStrip"); if (s) { s.classList.remove("flash"); void s.offsetWidth; s.classList.add("flash"); }
+      $("tray").scrollTop = 0;
+    },
+    "goto-tray": function () { S.trayMin = false; render(); var t = $("tray"); t.scrollTop = S.signin === "done" ? 0 : t.scrollHeight; },
+    "signin-start": function () { S.signin = "code"; render(); },
+    "signin-did": signinDone,
+    "signin-later": function () { toast("It will be first in Before you go. The release keeps waiting until then."); },
+    "publish-yes": function () {
+      S.publishCard = false; var f = feat("f7"); f.s = "done"; f.parts[3].s = "done"; f.when = "publishing"; render();
+      toast("Publishing 0.0.12. Out for everyone by about 17:40.", function () { S.publishCard = true; f.s = "needs"; f.parts[3].s = "needs"; f.when = "waits on you"; render(); });
+    },
+    "publish-no": function () { S.publishCard = false; render(); toast("Holding. It will ask again when you are back.", function () { S.publishCard = true; render(); }); },
+    ans: function (el) { answer(el.dataset.id, +el.dataset.i); },
+    "more-detail": function (el) { moreDetail(el.dataset.id); },
+    cprev: function () { S.ci = (S.ci - 1 + S.cards.length) % S.cards.length; render(); },
+    cnext: function () { S.ci = (S.ci + 1) % S.cards.length; render(); },
+    "tray-min": function () { S.trayMin = !(S.trayMin === null ? S.signin !== "done" : S.trayMin); render(); },
+    "offer-yes": function () {
+      var k = S.offer; S.level[k] = "auto"; S.offer = null;
+      var moved = S.cards.filter(function (c) { return c.kind === k; });
+      moved.forEach(function (c) { S.cards.splice(S.cards.indexOf(c), 1); S.done.unshift({ id: "dx" + c.id, time: NOW, kind: k, what: c.opts[c.def] + ": " + c.short, why: "Happens on its own now, at your word.", card: c }); });
+      render();
+      toast("“" + KINDS[k].name + "” now happens on its own and shows in Done for you.", function () {
+        S.level[k] = "ask";
+        moved.forEach(function (c) { S.cards.push(c); S.done = S.done.filter(function (d) { return d.card !== c; }); });
+        render();
+      });
+    },
+    "offer-no": function () { S.offerNo[S.offer] = true; S.offer = null; render(); toast("It keeps asking. It will not offer again this week."); },
+    "undo-done": function (el) {
+      var d = S.done.filter(function (x) { return x.id === el.dataset.id; })[0], i = S.done.indexOf(d);
+      if (!d) return;
+      S.done.splice(i, 1); if (d.card) S.cards.push(d.card);
+      render(); toast("Undone: " + d.what.toLowerCase() + ".", function () { S.done.splice(i, 0, d); if (d.card) S.cards.splice(S.cards.indexOf(d.card), 1); render(); });
+    },
+    "ask-again": function (el) { var k = el.dataset.k, p = S.level[k]; S.level[k] = "ask"; render(); toast("“" + KINDS[k].name + "” will ask you again.", function () { S.level[k] = p; render(); }); },
+    level: function (el) {
+      var k = el.dataset.k, p = S.level[k]; if (KINDS[k].irr) return;
+      S.level[k] = el.dataset.l; render(); toast(KINDS[k].name + ": " + (el.dataset.l === "ask" ? "asks you." : "happens on its own and is listed."), function () { S.level[k] = p; render(); });
+    },
+    "sugg-add": function () { S.extraLine = true; S.sugg = "added"; render(); toast("Added one line under the brief. Nothing else moved.", function () { S.extraLine = false; S.sugg = "open"; render(); }); },
+    "sugg-no": function () { S.sugg = "no"; render(); toast("Not now. It will not suggest this again this week.", function () { S.sugg = "open"; render(); }); },
+    "extra-off": function () { S.extraLine = false; render(); toast("Removed.", function () { S.extraLine = true; render(); }); },
+    "a-normal": function () { S.aNormal = !S.aNormal; render(); },
+    "sig-fix": function () {
+      var it = { id: "ifx", t: "Fix the upload test that fails by chance, at its cause.", when: "today" };
+      S.ideas.unshift(it); render();
+      toast("Filed under One rule for chance failures. Starts after the release.", function () { S.ideas.splice(S.ideas.indexOf(it), 1); render(); });
+    },
+    "sig-feat": function () { go(function () { S.screen = "feature"; S.feature = "f6"; S.ftab = "tl"; }); },
+    "an-agents": function () { go(function () { S.screen = "project"; S.block = "analytics"; S.atab = "agents"; }); },
+    size: function (el) { var id = el.dataset.id, p = S.sizes[id]; S.sizes[id] = p % 3 + 1; render(); toast(feat(id).name + " is now " + ["", "small", "medium", "large"][S.sizes[id]] + ".", function () { S.sizes[id] = p; render(); }); },
+    "setup-ask": function (el) { openPrompt("Change " + SETUP[+el.dataset.i][0].toLowerCase() + ": "); },
+    "idea-talk": function (el) { var i = S.ideas.filter(function (x) { return x.id === el.dataset.id; })[0]; S.drawer = { kind: "chat", text: i.t, idea: i, step: 0 }; renderDrawer(); },
+    "idea-plan": function (el) { ideaToPlan(S.ideas.filter(function (x) { return x.id === el.dataset.id; })[0]); },
+    "idea-drop": function (el) {
+      var i = S.ideas.filter(function (x) { return x.id === el.dataset.id; })[0], at = S.ideas.indexOf(i);
+      S.ideas.splice(at, 1); render(); toast("Dropped.", function () { S.ideas.splice(at, 0, i); render(); });
+    },
+    "chat-pick": function (el) { S.drawer.step = 1; S.drawer.pick = el.dataset.v; renderDrawer(); },
+    "chat-plan": function () { var d = S.drawer; S.drawer = null; ideaToPlan(d.idea || { t: d.text, id: null }); },
+    "chat-keep": function () { var d = S.drawer; S.drawer = null; if (!d.idea) S.ideas.unshift({ id: "ik" + (++logN), t: d.text, when: "today" }); render(); toast("Kept as an idea."); },
+    "chat-drop": function () { var d = S.drawer; S.drawer = null; if (d.idea) S.ideas.splice(S.ideas.indexOf(d.idea), 1); render(); toast("Dropped."); },
+    "drawer-close": function () { S.drawer = null; renderDrawer(); },
+    "ask-here": function () { openPrompt(""); },
+    prompt: function () { if ($("prompt").classList.contains("on")) closePrompt(); else openPrompt(""); },
+    mic: function () { toast("Voice is not connected in this mock. Type instead."); },
+    read: function () { readInput(); },
+    "try": function (el) { $("ppInput").value = TRIES[+el.dataset.i][1]; readInput(); },
+    "pp-cls": function () { var i = CLS.map(function (c) { return c[0]; }).indexOf(S.pp.cls); S.pp.cls = CLS[(i + 1) % CLS.length][0]; S.pp.scope = defaultScope(S.pp.cls); renderPrompt(); },
+    "pp-scope": function () { S.pp.scope = SCOPES[(SCOPES.indexOf(S.pp.scope) + 1) % SCOPES.length]; renderPrompt(); },
+    "pp-res": function (el) { S.pp.res = el.dataset.v; renderPrompt(); },
+    "pp-mk": function (el) { S.pp.mk = el.dataset.v === "1"; renderPrompt(); },
+    "pp-talk": function () { var t = S.pp.text.replace(/^idea:\s*/i, ""); closePrompt(); S.drawer = { kind: "chat", text: t, idea: null, step: 0 }; renderDrawer(); },
+    "pp-cancel": function () { $("ppInput").value = S.pp.text; S.pp = null; renderPrompt(); $("ppInput").focus(); },
+    send: function () { sendRouted(); },
+    leave: function () { closePrompt(); S.drawer = { kind: "leave", ok: {}, len: "night" }; renderDrawer(); },
+    "leave-len": function (el) { S.drawer.len = el.dataset.v; renderDrawer(); },
+    "leave-signin": function () { S.drawer = null; renderDrawer(); A["goto-signin"](); },
+    "leave-c1": function () { var c = card("c1"); if (c) answer("c1", c.def); S.drawer.ok.g2 = "Settled: C."; renderDrawer(); },
+    "leave-small": function () {
+      ["c2", "c3"].forEach(function (id) { var c = card(id); if (c) { S.cards.splice(S.cards.indexOf(c), 1); S.done.unshift({ id: "dl" + id, time: NOW, kind: c.kind, what: c.opts[c.def] + (c.short ? ": " + c.short : ""), why: "You said defaults are fine, before leaving." }); } });
+      S.drawer.ok.g3 = "Settled on defaults. Listed in Done for you."; render();
+    },
+    "leave-go": function () { S.drawer = null; render(); toast("See you. Work keeps going on defaults; your brief will be ready when you are back."); }
+  };
+  function ideaToPlan(i) {
+    var at = i.id ? S.ideas.indexOf(i) : -1;
+    if (at >= 0) S.ideas.splice(at, 1);
+    var f = { id: "fn" + (++logN), name: i.t.replace(/[.?!]+$/, "").split(/\s+/).slice(0, 5).join(" "), s: "idle", when: "not started", sent: i.t, gives: i.t,
+      ba: { unit: "", bl: "An idea", al: "Not built yet", what: "Today" }, proof: [], unmeasured: "Not measured yet. It has not started.",
+      steps: ["Agree what it should give you.", "Build it.", "Test it."], parts: [{ n: "First part", s: "idle" }], deps: [], thr: [], ch: "None yet", size: 1, tl: [] };
+    FEATS.push(f); S.sizes[f.id] = 1;
+    render();
+    toast("Added to the plan as not started. The release date does not move.", function () { FEATS.splice(FEATS.indexOf(f), 1); if (at >= 0) S.ideas.splice(at, 0, i); render(); });
+  }
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest("[data-act]");
+    if (!el || !$("appBox").contains(el)) {
+      if (S.moreOpen && !e.target.closest(".more")) { S.moreOpen = false; renderDock(); }
+      return;
+    }
+    var act = el.dataset.act;
+    if (S.moreOpen && act !== "more" && act !== "pin" && !el.closest(".more")) { S.moreOpen = false; }
+    if (A[act]) { e.stopPropagation(); A[act](el); }
+    if (act !== "more" && act !== "pin" && !el.closest(".more") && S.moreOpen) { S.moreOpen = false; renderDock(); }
+  });
+  $("ppInput").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); readInput(); } });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if ($("prompt").classList.contains("on")) closePrompt();
+    else if (S.drawer) { S.drawer = null; renderDrawer(); }
+    else if (S.moreOpen) { S.moreOpen = false; renderDock(); }
+  });
+  render();
+})();
+</script>
+</body>
+</html>

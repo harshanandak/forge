@@ -1,0 +1,1190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge owner mock v8</title>
+<style>
+:root {
+  --page: #e8e8ed; --bg: #f2f2f5; --surface: #ffffff; --raised: #f0f0f3; --ink: #111114; --muted: #6a6a72; --faint: #a3a3ab; --hair: rgba(60, 60, 67, 0.14);
+  --accent: #4b55d6; --accent-ink: #ffffff; --accent-soft: rgba(75, 85, 214, 0.10);
+  --green: #1f9a52; --orange: #c97a0a; --red: #e5484d; --grey: #b9b9c0;
+  --red-soft: rgba(229, 72, 77, 0.10); --orange-soft: rgba(224, 138, 18, 0.13); --green-soft: rgba(36, 160, 88, 0.12);
+  --bar: rgba(242, 242, 245, 0.85); --scrim: rgba(0, 0, 0, 0.32); --shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+  --sk-bg: #ffffff; --sk-head: #f8f8fa; --sk-btn: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0a0a0c; --bg: #000000; --surface: #1c1c1f; --raised: #2a2a2e; --ink: #f2f2f5; --muted: #9d9da6; --faint: #6c6c74; --hair: rgba(255, 255, 255, 0.11);
+    --accent: #8a92ff; --accent-ink: #0b0c1e; --accent-soft: rgba(138, 146, 255, 0.16);
+    --green: #3fca7a; --orange: #f2a640; --red: #ff6b6f; --grey: #4a4a52;
+    --red-soft: rgba(255, 107, 111, 0.15); --orange-soft: rgba(242, 166, 64, 0.15); --green-soft: rgba(63, 202, 122, 0.15);
+    --bar: rgba(22, 22, 25, 0.85); --scrim: rgba(0, 0, 0, 0.55); --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    --sk-bg: #1a1d21; --sk-head: #222529; --sk-btn: #2b2e33;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #0a0a0c; --bg: #000000; --surface: #1c1c1f; --raised: #2a2a2e; --ink: #f2f2f5; --muted: #9d9da6; --faint: #6c6c74; --hair: rgba(255, 255, 255, 0.11);
+  --accent: #8a92ff; --accent-ink: #0b0c1e; --accent-soft: rgba(138, 146, 255, 0.16);
+  --green: #3fca7a; --orange: #f2a640; --red: #ff6b6f; --grey: #4a4a52;
+  --red-soft: rgba(255, 107, 111, 0.15); --orange-soft: rgba(242, 166, 64, 0.15); --green-soft: rgba(63, 202, 122, 0.15);
+  --bar: rgba(22, 22, 25, 0.85); --scrim: rgba(0, 0, 0, 0.55); --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  --sk-bg: #1a1d21; --sk-head: #222529; --sk-btn: #2b2e33;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+html, body { margin: 0; padding: 0; background: var(--page); }
+body { color: var(--ink); font: 15px/1.4 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+svg.i.s { width: 16px; height: 16px; }
+[hidden] { display: none !important; }
+
+/* stage and controls */
+.stage { display: flex; gap: 24px; align-items: flex-start; justify-content: center; padding: 20px 16px 40px; }
+.ctl { flex: 0 1 290px; min-width: 0; max-height: 760px; overflow-y: auto; padding: 2px; }
+.ctl h2 { font-size: 12px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 2px; }
+.ctl .note { font-size: 12.5px; color: var(--muted); margin: 0 0 10px; }
+.nbar { display: none; }
+.gh { display: flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 14px 10px 4px; }
+.scn { display: block; width: 100%; text-align: left; padding: 7px 10px; border-radius: 11px; margin-bottom: 2px; }
+.scn b { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.scn b .mk { margin-left: auto; }
+.scn span.d { display: block; font-size: 12.5px; color: var(--muted); }
+.scn:hover { background: var(--hair); }
+.scn.on { background: var(--surface); box-shadow: var(--shadow); }
+.scn.pk { opacity: 0.55; }
+.sub { margin: 2px 0 8px 12px; display: flex; flex-direction: column; gap: 1px; }
+.sub button { text-align: left; font-size: 12.5px; padding: 4px 10px; border-radius: 8px; color: var(--muted); }
+.sub button.on { color: var(--ink); background: var(--hair); }
+.thm { display: flex; background: var(--raised); border-radius: 10px; padding: 2px; margin: 4px 0 6px; max-width: 260px; }
+.thm button { flex: 1; font-size: 12.5px; padding: 5px 4px; border-radius: 8px; color: var(--muted); }
+.thm button.on { background: var(--surface); color: var(--ink); font-weight: 600; }
+.foot { font-size: 12px; color: var(--muted); margin: 14px 10px 0; }
+@media (max-width: 699px) {
+  .stage { flex-direction: column; align-items: stretch; gap: 8px; padding: 8px 0 24px; }
+  .ctl { flex: none; width: 100%; max-width: 390px; margin: 0 auto; max-height: none; overflow: visible; padding: 0 8px; }
+  .nbar { display: flex; align-items: center; gap: 6px; }
+  .nbar .nv { width: 40px; height: 40px; border-radius: 12px; background: var(--surface); display: grid; place-items: center; flex: none; }
+  .nbar .nt { flex: 1; min-width: 0; height: 40px; border-radius: 12px; background: var(--surface); display: flex; align-items: center; gap: 8px; padding: 0 12px; font-weight: 600; font-size: 14px; }
+  .nbar .nt .tx { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+  .nbar .nt .of { font-size: 12px; color: var(--muted); font-weight: 500; }
+  .ctl .nlist { display: none; background: var(--surface); border-radius: 14px; padding: 4px 6px 10px; margin-top: 6px; }
+  .ctl.open .nlist { display: block; }
+  .ctl h2, .ctl .note { display: none; }
+  .scn span.d { display: none; }
+  .sub { display: none; }
+}
+
+/* phone */
+.phone { position: relative; width: 390px; max-width: 100%; height: 760px; flex: none; border-radius: 44px; overflow: hidden; background: var(--bg); border: 1px solid var(--hair); box-shadow: var(--shadow); isolation: isolate; margin: 0 auto; }
+@media (max-width: 699px) { .phone { border-radius: 28px; } }
+.sbar { position: absolute; top: 0; left: 0; right: 0; height: 44px; z-index: 45; display: flex; align-items: center; justify-content: space-between; padding: 6px 26px 0; font-size: 14px; font-weight: 600; pointer-events: none; }
+.sbar .ic { display: flex; gap: 5px; align-items: center; }
+.sbar.w { color: #fff; }
+.scroll { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; padding: 50px 16px 110px; }
+.scroll.full { padding: 0; overflow: hidden; }
+.tabbar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; justify-content: space-around; padding: 7px 6px 22px; background: var(--bar); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); border-top: 1px solid var(--hair); }
+.tb { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; color: var(--faint); min-width: 0; position: relative; }
+.tb.on { color: var(--accent); }
+.tb .bd { position: absolute; top: -3px; left: calc(50% + 6px); background: var(--red); color: #fff; font-size: 10px; font-weight: 700; border-radius: 9px; padding: 0 5px; line-height: 16px; }
+.tb .mk { position: absolute; top: -2px; left: calc(50% + 8px); }
+
+/* first and later markers */
+.mk { display: inline-block; font-size: 10px; font-weight: 650; letter-spacing: 0.03em; border-radius: 6px; padding: 0 5px; line-height: 15px; white-space: nowrap; text-transform: none; }
+.mk-first { color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.mk-later { color: var(--muted); box-shadow: inset 0 0 0 1px var(--faint); border: 0; background: repeating-linear-gradient(135deg, transparent 0 3px, var(--hair) 3px 4px); }
+.sbar .mk { pointer-events: none; }
+.sbar.w .mk-first, .sbar.w .mk-later { color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6); background: none; }
+
+/* type */
+.top { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin: 8px 0 12px; }
+.lt { font-size: 32px; font-weight: 750; letter-spacing: -0.02em; line-height: 1.05; margin: 0; }
+.cap { font-size: 13px; color: var(--muted); }
+.ey { font-size: 12px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 20px 4px 8px; display: flex; align-items: center; gap: 8px; }
+.ey .n { background: var(--raised); color: var(--ink); border-radius: 9px; padding: 0 7px; letter-spacing: 0; }
+.ey .mk { margin-left: auto; }
+.take { font-size: 13.5px; font-weight: 600; margin: 8px 2px 0; color: var(--ink); }
+.take.m { color: var(--muted); font-weight: 500; }
+.crumb { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 6px; }
+.crumb button { display: flex; align-items: center; gap: 2px; color: var(--accent); font-size: 14px; font-weight: 500; }
+.tag { display: inline-block; font-size: 11.5px; font-weight: 650; border-radius: 7px; padding: 1px 7px; background: var(--raised); color: var(--muted); white-space: nowrap; }
+.tag.team { background: var(--orange-soft); color: var(--orange); }
+.tag.pers { background: var(--accent-soft); color: var(--accent); }
+.byl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.lab { font-size: 12px; font-weight: 700; letter-spacing: 0.05em; display: flex; align-items: center; gap: 6px; text-transform: uppercase; }
+.lab.r { color: var(--red); } .lab.o { color: var(--orange); } .lab.a { color: var(--accent); } .lab.g { color: var(--muted); }
+.q { font-size: 23px; font-weight: 720; letter-spacing: -0.01em; line-height: 1.22; margin: 6px 0 12px; }
+
+/* surfaces */
+.card { background: var(--surface); border-radius: 18px; padding: 14px 16px; margin-bottom: 12px; }
+.card.tap { cursor: pointer; }
+.group { background: var(--surface); border-radius: 18px; overflow: hidden; margin-bottom: 12px; }
+.row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 50px; width: 100%; text-align: left; position: relative; }
+.row + .row::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--hair); }
+.row .t { flex: 1; min-width: 0; }
+.row .t b { font-weight: 600; display: block; }
+.row .t > span { font-size: 13px; color: var(--muted); display: block; }
+.row.tap:active { background: var(--raised); }
+.row.fade { opacity: 0.62; }
+.row .r { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+.s-done { background: var(--grey); } .s-work { background: var(--green); } .s-needs { background: var(--orange); } .s-stop { background: var(--red); } .s-idle { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); } .s-pause { background: transparent; box-shadow: inset 0 0 0 2px var(--orange); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 14px; padding: 12px 16px; font-weight: 600; font-size: 15px; background: var(--surface); }
+.btn.pri { background: var(--accent); color: var(--accent-ink); }
+.btn.w { width: 100%; }
+.btn.sm { padding: 8px 12px; font-size: 13.5px; border-radius: 12px; }
+.btn.ghost { background: var(--raised); }
+.btn[disabled] { opacity: 0.4; cursor: default; }
+.link { color: var(--accent); font-weight: 500; font-size: 14px; }
+.ban { border-radius: 14px; padding: 12px 14px; margin: 0 0 12px; background: var(--surface); font-size: 14px; box-shadow: inset 4px 0 0 var(--faint); }
+.ban b { display: block; margin-bottom: 2px; }
+.ban.g { box-shadow: inset 4px 0 0 var(--green); } .ban.o { box-shadow: inset 4px 0 0 var(--orange); } .ban.a { box-shadow: inset 4px 0 0 var(--accent); } .ban.r { box-shadow: inset 4px 0 0 var(--red); }
+.ban .cap { margin-top: 4px; }
+.kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; font-size: 13.5px; margin-top: 8px; }
+.kv span:nth-child(odd) { color: var(--muted); }
+.kv span:nth-child(even) { font-weight: 600; text-align: right; }
+
+/* options */
+.opts { display: flex; flex-direction: column; gap: 8px; }
+.opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 13px 14px; border-radius: 14px; background: var(--surface); font-weight: 600; text-align: left; box-shadow: inset 0 0 0 1px var(--hair); }
+.opt .df { font-size: 11.5px; font-weight: 650; color: var(--muted); background: var(--raised); border-radius: 8px; padding: 2px 8px; white-space: nowrap; }
+.opt.pick { box-shadow: inset 0 0 0 2px var(--accent); }
+.opt.chosen { box-shadow: inset 0 0 0 2px var(--green); }
+.opt[disabled] { cursor: default; }
+.opt[disabled]:not(.chosen) { opacity: 0.45; }
+.opt .lk { display: inline-flex; align-items: center; gap: 6px; }
+.choice { display: flex; flex-wrap: wrap; gap: 6px; }
+.choice button { font-size: 13px; padding: 6px 11px; border-radius: 10px; background: var(--raised); color: var(--muted); }
+.choice button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.choice button .df { opacity: 0.75; font-weight: 400; }
+.rule { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+
+/* chain */
+.chain { display: flex; align-items: flex-start; padding: 4px 0 2px; }
+.cn { flex: 0 1 74px; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; font-size: 11.5px; line-height: 1.2; }
+.cn .c { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--raised); }
+.cn.me .c { box-shadow: 0 0 0 2px var(--accent); }
+.cn.ok .c { background: var(--green-soft); color: var(--green); }
+.cn.off .c { box-shadow: inset 0 0 0 1.5px var(--faint); background: none; }
+.cn em { font-style: normal; color: var(--muted); font-size: 10.5px; }
+.cl { flex: 1 0 8px; height: 2px; background: var(--hair); margin-top: 15px; }
+.cl.dash { background: repeating-linear-gradient(90deg, var(--faint) 0 3px, transparent 3px 6px); }
+
+/* reminder ladder */
+.lad { display: flex; align-items: flex-start; margin: 6px 0 2px; }
+.lad .lg { flex: none; width: 54px; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11.5px; text-align: center; }
+.lad .lg .c { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--raised); color: var(--muted); font-weight: 700; font-size: 12px; }
+.lad .lg.on .c { background: var(--red); color: #fff; }
+.lad .lg.nx .c { background: var(--red-soft); color: var(--red); box-shadow: inset 0 0 0 2px var(--red); }
+.lad .lg em { font-style: normal; color: var(--muted); }
+.lad .lg s { text-decoration: line-through; color: var(--faint); font-size: 10.5px; }
+.lad .ll { flex: 1 0 6px; height: 2px; background: var(--hair); margin-top: 15px; }
+.lad .ll.on { background: var(--red); }
+.lad.w .lg .c { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.lad.w .lg.on .c { background: #ff6b6f; }
+.lad.w .lg.nx .c { background: rgba(255, 107, 111, 0.25); box-shadow: inset 0 0 0 2px #ff6b6f; color: #fff; }
+.lad.w .lg em { color: rgba(255, 255, 255, 0.75); }
+.lad.w .ll { background: rgba(255, 255, 255, 0.25); }
+.lad.w .ll.on { background: #ff6b6f; }
+.lad.q .lg.on .c { background: var(--accent); }
+.lad.q .lg.nx .c { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+.lad.q .ll.on { background: var(--accent); }
+.ml { display: inline-flex; gap: 3px; align-items: center; }
+.ml i { width: 6px; height: 6px; border-radius: 50%; background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair); }
+.ml i.on { background: var(--red); box-shadow: none; }
+.ml i.nx { background: transparent; box-shadow: inset 0 0 0 1.5px var(--red); }
+
+/* bars, rings */
+.hero { display: flex; gap: 16px; align-items: center; }
+.hero .h1 { font-size: 20px; font-weight: 700; }
+.stackp { display: flex; gap: 3px; height: 10px; border-radius: 5px; overflow: hidden; margin: 10px 0 8px; }
+.stackp i { display: block; height: 100%; }
+.leg { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+.leg span { display: inline-flex; align-items: center; gap: 5px; }
+.trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.trio div { text-align: left; }
+.trio .v { font-size: 30px; font-weight: 750; letter-spacing: -0.02em; line-height: 1; }
+.trio .k { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.big { font-size: 24px; font-weight: 750; letter-spacing: -0.02em; }
+.big .from { font-size: 15px; color: var(--muted); font-weight: 500; text-decoration: line-through; margin-right: 6px; }
+
+/* toggles, inputs */
+.sw { width: 44px; height: 26px; border-radius: 13px; background: var(--raised); position: relative; flex: none; transition: background 200ms ease; box-shadow: inset 0 0 0 1px var(--hair); }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transition: transform 200ms ease; }
+.sw.on { background: var(--green); }
+.sw.on::after { transform: translateX(18px); }
+.tick { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; flex: none; box-shadow: inset 0 0 0 1.5px var(--faint); color: transparent; }
+.tick.on { background: var(--accent); box-shadow: none; color: var(--accent-ink); }
+.tin { border: 0; border-radius: 9px; padding: 5px 6px; background: var(--raised); color: var(--ink); font: inherit; font-size: 14px; color-scheme: light dark; max-width: 104px; }
+.sendbar { position: sticky; bottom: 96px; z-index: 5; margin-top: 12px; }
+
+/* people */
+.av { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; background: var(--raised); color: var(--ink); }
+.av.p0 { background: var(--accent-soft); color: var(--accent); } .av.p1 { background: var(--green-soft); color: var(--green); } .av.p2 { background: var(--orange-soft); color: var(--orange); } .av.p3 { background: var(--raised); color: var(--muted); }
+.who { display: flex; flex-wrap: wrap; gap: 8px; }
+.who span.w { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; background: var(--raised); border-radius: 16px; padding: 3px 10px 3px 3px; }
+.who span.w .av { width: 22px; height: 22px; font-size: 11px; }
+.ct { display: inline-block; font-size: 11px; font-weight: 650; border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+.ct.y { background: var(--green-soft); color: var(--green); } .ct.n { background: var(--raised); color: var(--muted); } .ct.h { background: var(--accent-soft); color: var(--accent); }
+
+/* projects */
+.ovl { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 14px; font-weight: 600; margin: 0 4px 4px; }
+.ovl span { display: inline-flex; align-items: center; gap: 6px; }
+.pc { display: flex; gap: 12px; align-items: center; }
+.pc .t { flex: 1; min-width: 0; }
+.pc .nm { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 16.5px; }
+.pc .nm .tm { margin-left: auto; font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.pc .ab { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.mt { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; border-radius: 9px; padding: 2px 8px; background: var(--raised); color: var(--muted); white-space: nowrap; }
+.mt.need { background: var(--orange-soft); color: var(--orange); }
+.mt.stopm { background: var(--red-soft); color: var(--red); }
+.mt.goal { background: var(--accent-soft); color: var(--accent); }
+.sum4 { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 6px 10px; font-size: 14.5px; }
+.sum4 b { font-size: 12px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
+.sum4 b.st { color: var(--red); }
+.prov { font-size: 12px; color: var(--faint); margin-top: 10px; }
+
+/* sheets */
+.scrim { position: absolute; inset: 0; z-index: 50; background: var(--scrim); opacity: 0; transition: opacity 250ms ease; pointer-events: none; }
+.scrim.on { opacity: 1; pointer-events: auto; }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 60; background: var(--bg); border-radius: 20px 20px 0 0; max-height: 88%; display: flex; flex-direction: column; transform: translateY(102%); transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1); box-shadow: var(--shadow); }
+.sheet.on { transform: none; }
+.sheet .grab { flex: none; height: 22px; display: grid; place-items: center; cursor: pointer; }
+.sheet .grab i { display: block; width: 38px; height: 5px; border-radius: 3px; background: var(--faint); }
+.sheet .sh { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px 6px; }
+.sheet .sh h3 { margin: 0; font-size: 18px; font-weight: 700; }
+.sheet .sh .x { color: var(--accent); font-weight: 600; }
+.sheet .sb { flex: 1; overflow-y: auto; padding: 4px 16px 28px; }
+.sgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.sbtn { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 12px 14px; border-radius: 14px; background: var(--surface); text-align: left; }
+.sbtn b { font-size: 16px; }
+.sbtn span { font-size: 13px; color: var(--muted); }
+.okc { width: 64px; height: 64px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; margin: 8px auto 12px; animation: pop 300ms ease; }
+.okc.lk { background: var(--accent); }
+@keyframes pop { from { transform: scale(0.6); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* toast */
+.toast { position: absolute; top: 50px; left: 12px; right: 12px; z-index: 95; background: var(--surface); box-shadow: var(--shadow); border-radius: 16px; padding: 12px 14px; display: flex; align-items: center; gap: 10px; font-size: 14px; animation: drop 240ms ease; }
+.toast button { color: var(--accent); font-weight: 600; margin-left: auto; }
+@keyframes drop { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+
+/* lock screen */
+.lock { position: absolute; inset: 0; background: radial-gradient(120% 80% at 30% 10%, #3b4a7a 0%, #1b2233 60%); color: #fff; display: flex; flex-direction: column; align-items: center; padding: 64px 14px 26px; }
+.lock.night { background: radial-gradient(120% 80% at 70% 0%, #1d2440 0%, #07080d 65%); }
+.lock .lk { opacity: 0.8; }
+.lock .clock { font-size: 76px; font-weight: 300; letter-spacing: -0.02em; line-height: 1; margin-top: 6px; }
+.lock .date { font-size: 16px; opacity: 0.85; margin-top: 4px; }
+.lock .moon { width: 18px; height: 18px; border-radius: 50%; box-shadow: inset -5px -2px 0 0 #c9cdf5; transform: rotate(-20deg); display: inline-block; vertical-align: -3px; margin-right: 6px; }
+.notif { width: 100%; margin-top: 26px; background: rgba(255, 255, 255, 0.18); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border-radius: 20px; padding: 12px 14px; text-align: left; color: #fff; display: block; }
+.notif .h { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; opacity: 0.85; margin-bottom: 3px; }
+.notif .h b { display: flex; gap: 6px; align-items: center; }
+.notif .h span { display: flex; gap: 4px; align-items: center; }
+.notif .ap { width: 18px; height: 18px; border-radius: 5px; background: #4b55d6; display: inline-block; }
+.notif .t { font-weight: 650; font-size: 15px; }
+.notif .b { font-size: 14px; opacity: 0.92; }
+.notif .p { font-size: 12.5px; opacity: 0.8; margin-top: 6px; display: flex; gap: 6px; align-items: center; }
+.notif.loud { box-shadow: 0 0 0 2px #ff6b6f; }
+.notif.upd .t, .notif.upd .b { animation: fade 450ms ease; }
+@keyframes fade { from { opacity: 0.2; } to { opacity: 1; } }
+.lock .hint { margin-top: auto; width: 100%; font-size: 13px; text-align: center; }
+.lock .hint .tx { opacity: 0.8; margin-top: 6px; }
+.stepr { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 12px; }
+.stepr button { width: 36px; height: 36px; border-radius: 50%; background: rgba(255, 255, 255, 0.16); display: grid; place-items: center; color: #fff; }
+.stepr button[disabled] { opacity: 0.35; }
+.stepr span { min-width: 150px; font-size: 13px; }
+.lbtn { margin-top: 12px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.lbtn button { padding: 9px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.18); color: #fff; font-weight: 600; font-size: 14px; }
+
+/* slack */
+.sk { position: absolute; inset: 0; background: var(--sk-bg); color: var(--ink); display: flex; flex-direction: column; }
+.skh { flex: none; padding: 50px 14px 10px; background: var(--sk-head); border-bottom: 1px solid var(--hair); display: flex; align-items: center; gap: 10px; }
+.skh b { font-size: 16px; display: block; }
+.skh span { font-size: 12.5px; color: var(--muted); }
+.skb { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 6px 0 20px; }
+.skm { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 8px; padding: 8px 14px; }
+.ska { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; font-weight: 700; font-size: 14px; }
+.ska.app { background: #4b55d6; color: #fff; }
+.skn { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.skn b { font-size: 15px; }
+.skn .apptag { font-size: 10px; font-weight: 700; background: var(--raised); color: var(--muted); border-radius: 4px; padding: 0 4px; }
+.skn time { font-size: 12px; color: var(--muted); }
+.skx { border-left: 4px solid var(--accent); padding: 8px 10px; margin-top: 6px; background: var(--raised); border-radius: 0 10px 10px 0; font-size: 14px; }
+.skx .qq { font-weight: 700; font-size: 15px; margin: 2px 0 8px; }
+.skbtns { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 6px; }
+.skbtn { border-radius: 8px; padding: 6px 12px; font-weight: 650; font-size: 13.5px; background: var(--sk-btn); box-shadow: inset 0 0 0 1px var(--hair); }
+.skbtn.on { background: var(--green); color: #fff; box-shadow: none; }
+.skbtn[disabled] { cursor: default; }
+.skw { font-size: 13px; font-weight: 650; margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+.at { color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 0 3px; font-weight: 600; }
+.skthr { margin: 0 14px 0 58px; border-left: 2px solid var(--hair); }
+.skthr .skm { padding-left: 10px; grid-template-columns: 28px minmax(0, 1fr); }
+.skthr .ska { width: 28px; height: 28px; font-size: 12px; border-radius: 7px; }
+.sksys { font-size: 13px; color: var(--muted); font-style: italic; }
+.skcount { margin: 0 14px 4px 58px; font-size: 13px; font-weight: 650; color: var(--accent); }
+.mcap { margin: 10px 14px 0; font-size: 13px; color: var(--muted); background: var(--bg); border-radius: 12px; padding: 10px 12px; }
+.mcap b { color: var(--ink); }
+
+/* parked */
+.pkc { background: var(--surface); border-radius: 16px; padding: 12px 14px; margin-bottom: 10px; opacity: 0.6; filter: grayscale(1); }
+.pkc b { display: block; }
+.pkc .cap { margin-top: 2px; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="stage">
+  <nav class="ctl" id="ctl" aria-label="Mock screens"></nav>
+  <div class="phone" id="phone">
+    <div class="sbar" id="sbar"></div>
+    <div class="scroll" id="scroll"></div>
+    <div class="tabbar" id="tabbar"></div>
+    <div class="scrim" id="scrim" data-act="sheet-close"></div>
+    <div id="sheet"></div>
+    <div id="toast"></div>
+  </div>
+</div>
+<!-- The only source of sample data. Agents write asks; Forge derives counts, states and reminder times; people set answers, snooze and sleep. -->
+<script type="application/json" id="forge-data">
+{
+ "schema": "forge.view/0",
+ "now": {"day": "Saturday 21 November", "time": "15:40"},
+ "night": {"day": "Sunday 22 November", "time": "02:14"},
+ "me": "you",
+ "people": [
+  {"id": "you", "name": "You", "role": "owner", "slack": "linked", "offset": 0},
+  {"id": "sam", "name": "Sam", "role": "member", "slack": "linked", "offset": 0, "sleep": {"from": "00:00", "to": "08:00"}},
+  {"id": "priya", "name": "Priya", "role": "member", "slack": "linked", "offset": 570, "sleep": {"from": "22:00", "to": "06:00"}},
+  {"id": "lee", "name": "Lee", "role": "member", "slack": "not linked", "offset": 0}
+ ],
+ "teams": [
+  {"id": "score-team", "name": "Score Easy team", "members": ["you", "sam", "priya", "lee"], "channel": "scoreeasy"}
+ ],
+ "reach": {
+  "ladder": [0, 5, 15, 30],
+  "loudAt": 30,
+  "loud": "A loud, time-sensitive notification. A real phone call is parked.",
+  "snooze": {"short": [5, 10, 30, 60], "long": [120, 180, 360]},
+  "sleep": {"from": "23:30", "to": "07:30"},
+  "onlyStoppingAsksRing": true
+ },
+ "machines": [
+  {"id": "phone", "name": "This phone", "s": "on"},
+  {"id": "laptop", "name": "Your laptop", "s": "on"},
+  {"id": "cloud1", "name": "Cloud box 1", "s": "on"},
+  {"id": "mini", "name": "Mac mini at home", "s": "off", "since": "15:20"}
+ ],
+ "projects": [
+  {"id": "forge", "name": "Forge", "about": "One owner, many coding agents.", "goal": {"title": "Release 0.0.12", "due": "today"}, "base": "work", "lastChange": "15:39",
+   "summary": {"writtenAt": "15:30", "fromEvents": 10, "progress": "5 of 8 done. The release can go out today.", "done": "Checks take 6 minutes, was 14. No false failures since 15:15.", "next": "Publish 0.0.12 after your sign-in, then restart Cloud receipts.", "stuck": "The release waits on your yes since 15:28."}},
+  {"id": "score", "name": "Score Easy", "about": "Volleyball scoring on a phone.", "goal": {"title": "Scoring screen v2", "due": "Fri 27 Nov"}, "base": "work", "lastChange": "14:50",
+   "summary": {"writtenAt": "15:30", "fromEvents": 4, "progress": "1 of 3 done. On track for Fri 27 Nov.", "done": "Sign-up takes 2 steps, was 5.", "next": "Score history, half built.", "stuck": "Nothing stuck. The dark screen waits on the team, default at 18:00."}},
+  {"id": "suite", "name": "Product Suite", "about": "Roadmap and meeting notes in one app.", "goal": {"title": "One meeting list", "due": "Wed 25 Nov"}, "base": "idle", "lastChange": "15:34",
+   "summary": {"writtenAt": "15:35", "fromEvents": 3, "progress": "1 of 2 done.", "done": "Roadmap exports in 1 minute, was 12.", "next": "Merge the meeting lists once you say.", "stuck": "Meeting work stopped at 15:34 on your answer."}},
+  {"id": "harnest", "name": "Harnest", "about": "Handoffs between coding agents. Writing its docs.", "goal": {"title": "Docs for 0.2", "due": "Mon 23 Nov"}, "base": "work", "lastChange": "15:39",
+   "summary": {"writtenAt": "15:30", "fromEvents": 5, "progress": "1 of 4 pages done.", "done": "Getting started page: a first handoff in 4 steps, was 9.", "next": "Fact check of 2 pages.", "stuck": "The docs agent waits for the Mac mini, off since 15:20."}},
+  {"id": "zwapit", "name": "Zwapit", "about": "Marketplace for tickets and passes.", "goal": {"title": "Resale pilot", "due": "Dec"}, "base": "idle", "lastChange": "Wed",
+   "summary": {"writtenAt": "Wed", "fromEvents": 1, "progress": "0 of 2 started.", "done": "Nothing since Wed.", "next": "Starts when an agent is free.", "stuck": "Nothing stuck."}}
+ ],
+ "features": [
+  {"id": "f2", "project": "forge", "name": "Faster checks", "s": "done", "isNew": true, "ba": {"k": "Minutes per check", "b": 14, "a": 6, "u": "min"}},
+  {"id": "f3", "project": "forge", "name": "Fair memory check", "s": "done", "isNew": true, "ba": {"k": "False failures per week", "b": 9, "a": 0, "u": ""}},
+  {"id": "f1", "project": "forge", "name": "Safe publishing", "s": "done"},
+  {"id": "f4", "project": "forge", "name": "Chance failures rule", "s": "done"},
+  {"id": "f5", "project": "forge", "name": "Readable release notes", "s": "done", "isNew": true, "ba": {"k": "Changes missing from notes", "b": 4, "a": 0, "u": ""}},
+  {"id": "f7", "project": "forge", "name": "Release 0.0.12", "s": "needs"},
+  {"id": "f6", "project": "forge", "name": "Cloud receipts", "s": "pause", "note": "Paused at 13:05 so the release stays clean."},
+  {"id": "f8", "project": "forge", "name": "Team sync", "s": "idle"},
+  {"id": "s1", "project": "score", "name": "Faster sign-up", "s": "done", "isNew": true, "ba": {"k": "Steps to sign up", "b": 5, "a": 2, "u": ""}},
+  {"id": "s2", "project": "score", "name": "Dark scoring screen", "s": "needs"},
+  {"id": "s3", "project": "score", "name": "Score history", "s": "work"},
+  {"id": "p1", "project": "suite", "name": "Roadmap export", "s": "done", "isNew": true, "ba": {"k": "Minutes to export", "b": 12, "a": 1, "u": "min"}},
+  {"id": "p2", "project": "suite", "name": "One meeting list", "s": "stop", "note": "Stopped at 15:34. Two lists disagree on 2 meetings."},
+  {"id": "h1", "project": "harnest", "name": "Getting started page", "s": "done", "isNew": true, "ba": {"k": "Steps to a first handoff", "b": 9, "a": 4, "u": ""}},
+  {"id": "h2", "project": "harnest", "name": "Handoff guide", "s": "work"},
+  {"id": "h3", "project": "harnest", "name": "Graph view explainer", "s": "work"},
+  {"id": "h4", "project": "harnest", "name": "Daemon questions page", "s": "needs"},
+  {"id": "z1", "project": "zwapit", "name": "Ticket resale", "s": "idle"},
+  {"id": "z2", "project": "zwapit", "name": "Pass transfer", "s": "idle"}
+ ],
+ "runs": [
+  {"project": "forge", "what": "Lead, steering the release", "on": "cloud1"},
+  {"project": "forge", "what": "Team sync research", "on": "laptop"},
+  {"project": "score", "what": "Score history", "on": "cloud1"},
+  {"project": "score", "what": "Scoring screen", "on": "cloud1"},
+  {"project": "harnest", "what": "Docs fact check", "on": "laptop"}
+ ],
+ "defaults": [
+  {"project": "forge", "t": "13:20", "w": "Used Sonnet for the release notes"},
+  {"project": "forge", "t": "13:30", "w": "Retried a chance failure once"},
+  {"project": "forge", "t": "13:45", "w": "Brought Fair memory check up to date"},
+  {"project": "forge", "t": "13:46", "w": "Brought Release notes up to date"},
+  {"project": "forge", "t": "14:50", "w": "Simplified Fair memory check after review 2"}
+ ],
+ "asks": [
+  {"id": "a-publish", "project": "forge", "by": "Release agent", "on": "cloud1", "kind": "protected", "action": "publish",
+   "t": "Publish release 0.0.12?", "short": "Publish 0.0.12", "opts": ["Publish", "Not yet"], "def": 1, "act": 0,
+   "stops": true, "blocks": ["Publishing 0.0.12", "The announcement"], "why": "Checked on a clean machine. 5 new features reach people.",
+   "facts": [["New features", "5"], ["Checks passed", "All, on a clean machine"], ["Can be undone", "No, a published version stays"]],
+   "askedAt": "15:28", "audience": "personal", "askOf": ["you"], "group": "only", "state": "open"},
+  {"id": "a-merge", "project": "suite", "by": "Meeting agent", "on": "laptop", "kind": "question",
+   "t": "Merge the two meeting lists into one?", "short": "Merge the meeting lists?", "opts": ["Merge", "Keep two"], "def": 0,
+   "stops": true, "blocks": ["One meeting list", "Meeting search"], "why": "The two lists disagree on 2 meetings. Merging keeps the newer copy of each.",
+   "facts": [["Meetings in list A", "41"], ["Meetings in list B", "39"], ["Disagree", "2"], ["After merging", "41 in one list"]],
+   "askedAt": "15:34", "audience": "personal", "askOf": ["you"], "group": "only", "state": "open"},
+  {"id": "a-sync", "project": "forge", "by": "Team sync research", "on": "laptop", "kind": "question",
+   "t": "Two people edit one plan item at once. What happens?", "short": "Two editors, one item", "opts": ["A: later save wins", "B: lock while editing", "C: keep both, ask"], "def": 2,
+   "stops": false, "holds": "Team sync plan", "why": "Decides how the shared view works. Building starts after the release.",
+   "facts": [["A", "1 day to build, can lose work"], ["B", "2 days, one person waits"], ["C", "3 days, never loses work"]],
+   "askedAt": "15:31", "defaultAt": "18:00", "audience": "personal", "askOf": ["you"], "group": "look", "state": "open"},
+  {"id": "a-dark", "project": "score", "by": "Score agent", "on": "cloud1", "kind": "question",
+   "t": "Show scores in dark mode by default?", "short": "Dark scores by default?", "opts": ["Yes", "No"], "def": 0,
+   "stops": false, "holds": "Scoring screen v2", "why": "Courts are bright. Dark is easier to read in sun, light is easier indoors.",
+   "facts": [["Built", "Both versions"], ["Tested in sun", "Dark read faster"], ["Tested indoors", "No difference"]],
+   "askedAt": "14:50", "defaultAt": "18:00", "audience": "team", "team": "score-team", "tagged": "you", "askOf": ["you"], "handTo": "sam", "group": "look", "state": "open",
+   "history": [
+    {"t": "14:50", "who": "Score agent", "k": "post", "what": "Posted to the team, tagged You. The scoring screen waits on your view."},
+    {"t": "15:42", "who": "you", "k": "handoff", "to": "sam", "what": "Handed to Sam: busy."},
+    {"t": "15:44", "who": "lee", "k": "comment", "what": "Dark looks better.", "why": "Comment: Lee's Slack is not linked to Forge."},
+    {"t": "15:46", "who": "sam", "k": "answer", "answer": 1, "what": "No, keep light for v2.", "why": "Counts: Sam was handed the ask."},
+    {"t": "15:46", "who": "Score agent", "k": "resume", "what": "Carried on with the scoring screen: light."},
+    {"t": "20:35", "who": "priya", "k": "comment", "what": "Agree with Sam.", "why": "Comment: an answer was already recorded."}
+   ]},
+  {"id": "s-up", "project": "forge", "by": "Lead", "on": "cloud1", "t": "Bring Cloud receipts up to date", "short": "Bring Cloud receipts up to date", "opts": ["Yes", "Leave it"], "def": 0, "stops": false, "askedAt": "15:02", "defaultAt": "18:00", "askOf": ["you"], "group": "safe", "state": "open"},
+  {"id": "s-model", "project": "forge", "by": "Lead", "on": "cloud1", "t": "Who writes the 0.0.12 announcement", "short": "Announcement writer", "opts": ["Sonnet", "Opus"], "def": 0, "stops": false, "askedAt": "14:40", "defaultAt": "18:00", "askOf": ["you"], "group": "safe", "state": "open"},
+  {"id": "s-review", "project": "forge", "by": "Lead", "on": "cloud1", "t": "After review 2 on Cloud receipts", "short": "After review 2", "opts": ["Simplify", "Third round"], "def": 0, "stops": false, "askedAt": "14:20", "defaultAt": "18:00", "askOf": ["you"], "group": "safe", "state": "open"},
+  {"id": "s-keep", "project": "forge", "by": "Lead", "on": "cloud1", "t": "Keep: release notes in plain words, no ids", "short": "Keep a note", "opts": ["This project", "All projects", "Don't keep"], "def": 0, "stops": false, "askedAt": "13:50", "defaultAt": "18:00", "askOf": ["you"], "group": "safe", "state": "open"},
+  {"id": "s-tidy", "project": "forge", "by": "Lead", "on": "cloud1", "t": "Close 2 stale drafts", "short": "Close 2 drafts", "opts": ["Close", "Keep"], "def": 0, "stops": false, "askedAt": "13:45", "defaultAt": "18:00", "askOf": ["you"], "group": "safe", "state": "open"},
+  {"id": "s-font", "project": "score", "by": "Score agent", "on": "cloud1", "t": "Use the scoring font on the history page", "short": "Same font on history", "opts": ["Yes", "No"], "def": 0, "stops": false, "askedAt": "14:10", "defaultAt": "18:00", "askOf": ["you"], "group": "safe", "state": "open"},
+  {"id": "x-elsewhere", "project": "forge", "by": "Lead", "on": "cloud1", "kind": "question",
+   "t": "Bring Faster checks up to date?", "short": "Bring Faster checks up to date", "opts": ["Yes", "Leave it"], "def": 0,
+   "stops": false, "holds": "Faster checks", "why": "It fell 3 changes behind the main line.",
+   "askedAt": "15:20", "askOf": ["you"], "group": "look", "state": "answered", "answer": 0, "answeredBy": "you", "answeredOn": "laptop", "answeredAt": "15:38"},
+  {"id": "x-expired", "project": "forge", "by": "Lead", "on": "cloud1", "kind": "question",
+   "t": "Rerun the Windows checks in the 15:30 batch?", "short": "Rerun Windows checks at 15:30", "opts": ["Yes", "Skip"], "def": 0,
+   "stops": false, "holds": "The 15:30 Windows batch", "why": "One Windows check failed once by chance.",
+   "askedAt": "15:12", "expiresAt": "15:30", "askOf": ["you"], "group": "look", "state": "expired"},
+  {"id": "x-withdrawn", "project": "forge", "by": "Cloud receipts agent", "on": "cloud1", "kind": "question",
+   "t": "Restart Cloud receipts now, or after the release?", "short": "Restart Cloud receipts when?", "opts": ["Now", "After the release"], "def": 1,
+   "stops": false, "holds": "Cloud receipts", "why": "It is paused so the release stays clean.",
+   "askedAt": "15:15", "withdrawnAt": "15:36", "withdrawnBy": "Cloud receipts agent", "reason": "You set the release first this morning, so the agent waits for it. Nothing to decide.",
+   "askOf": ["you"], "group": "look", "state": "withdrawn"},
+  {"id": "x-stored", "project": "harnest", "by": "Docs agent", "on": "mini", "kind": "question",
+   "t": "Short or long getting started page?", "short": "Short or long getting started?", "opts": ["Short, 4 steps", "Long, 9 steps"], "def": 0,
+   "stops": false, "holds": "Getting started page", "why": "Readers stop after about 5 steps.",
+   "askedAt": "15:12", "askOf": ["you"], "group": "look", "state": "stored", "answer": 0, "answeredBy": "you", "answeredOn": "phone", "answeredAt": "15:39"},
+  {"id": "p-priya", "project": "harnest", "by": "Docs agent", "on": "laptop", "kind": "question",
+   "t": "Does the daemon page list every question users asked?", "short": "Daemon page complete?", "opts": ["Yes", "Some are missing"], "def": 0,
+   "stops": false, "holds": "Daemon questions page", "why": "Priya collected the questions from support. Only she knows the full list.",
+   "askedAt": "15:25", "defaultAt": "18:00", "audience": "personal", "askOf": ["priya"], "group": "look", "state": "open"},
+  {"id": "n-roadmap", "project": "suite", "by": "Roadmap agent", "on": "laptop", "kind": "question", "night": true,
+   "t": "Roadmap import failed twice. Retry with the old file format?", "short": "Retry the roadmap import?", "opts": ["Retry, old format", "Wait for me"], "def": 1,
+   "stops": true, "blocks": ["Roadmap import"], "why": "The new format failed twice on the same file.",
+   "askedAt": "02:10", "askOf": ["you"], "group": "only", "state": "open"}
+ ],
+ "parked": [
+  {"name": "Layouts and template sharing", "what": "Rearrange home screens and share the layout.", "unpark": "Three outside people build their own screen on the open data."},
+  {"name": "Third-party panels", "what": "Panels other people write, shown inside Forge.", "unpark": "Same signal as layouts."},
+  {"name": "Analytics", "what": "Charts of how the agents work over weeks.", "unpark": "Someone regularly runs more than about ten agents."},
+  {"name": "Floating bubble", "what": "A bubble over other apps on Android, a Live Activity on iPhone.", "unpark": "The web app is in daily use."},
+  {"name": "A real phone call", "what": "Forge calls at 30 minutes instead of a loud notification.", "unpark": "You approve telephony spend, or a native app exists."},
+  {"name": "Flow map", "what": "A drawing of where each piece of work sits in its workflow.", "unpark": "The project home is in daily use."}
+ ]
+}
+</script>
+<script>
+(function () {
+  "use strict";
+  var D = JSON.parse(document.getElementById("forge-data").textContent);
+
+  /* ---------- icons ---------- */
+  var IC = {
+    asks: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8.5 12.5l2.5 2.5 4.5-5.5"/>',
+    projects: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
+    reach: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    back: '<path d="M15 5l-7 7 7 7"/>',
+    chev: '<path d="M9 5l7 7-7 7"/>',
+    down: '<path d="M6 9l6 6 6-6"/>',
+    check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
+    stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>',
+    snooze: '<circle cx="12" cy="13" r="7.5"/><path d="M12 9.5V13l2 1.5M5 4L3 6M19 4l2 2"/>',
+    bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+    mute: '<path d="M6 16v-5a6 6 0 0 1 9.5-4.9M18 11v5l2 2H8"/><path d="M4 4l16 16"/>',
+    laptop: '<rect x="5" y="5" width="14" height="10" rx="1.5"/><path d="M3 19h18"/>',
+    box: '<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v8"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4.5-6 8-6s7 2 8 6"/>',
+    hand: '<path d="M5 12h11M12 7l5 5-5 5"/><path d="M20 5v14"/>',
+    hash: '<path d="M9 4L7 20M17 4l-2 16M4 9h16M3 15h16"/>',
+    face: '<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 10v1M15 10v1M12 10v3h-1M9.5 15.5a3.5 3.5 0 0 0 5 0"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h16"/>'
+  };
+  function ic(n, c) { return '<svg class="i' + (c ? " " + c : "") + '" viewBox="0 0 24 24" aria-hidden="true">' + IC[n] + "</svg>"; }
+
+  /* ---------- helpers ---------- */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function hm(t) { var p = String(t).split(":"); return +p[0] * 60 + +p[1]; }
+  function clk(m) { m = ((m % 1440) + 1440) % 1440; return ("0" + Math.floor(m / 60)).slice(-2) + ":" + ("0" + (m % 60)).slice(-2); }
+  function fmtMin(m) { return m >= 60 ? Math.floor(m / 60) + " h" + (m % 60 ? " " + (m % 60) + " min" : "") : m + " min"; }
+  function snzWord(m) { return m < 60 ? m + " min" : m === 60 ? "1 hour" : m % 60 ? fmtMin(m) : m / 60 + " hours"; }
+  function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
+  function andList(L) { return L.length < 2 ? L.join("") : L.slice(0, -1).join(", ") + " and " + L[L.length - 1]; }
+  function dot(s) { return '<i class="dot s-' + s + '"></i>'; }
+  function take(t, m) { return '<div class="take' + (m ? " m" : "") + '">' + esc(t) + "</div>"; }
+  function mk(m) { return '<span class="mk mk-' + m + '">' + m + "</span>"; }
+  function byId(list, id) { return list.filter(function (x) { return x.id === id; })[0]; }
+  function proj(id) { return byId(D.projects, id); }
+  function ask(id) { return byId(D.asks, id); }
+  function person(id) { return byId(D.people, id); }
+  function mach(id) { return byId(D.machines, id); }
+  function team(id) { return byId(D.teams, id); }
+  function pname(id) { var p = person(id); return p ? p.name : id; }
+  function pidx(id) { var i = D.people.map(function (p) { return p.id; }).indexOf(id); return i < 0 ? 3 : i; }
+  function avatar(id) { return '<span class="av p' + pidx(id) + '">' + esc(pname(id).charAt(0)) + "</span>"; }
+  var NOW = hm(D.now.time), NIGHT = hm(D.night.time), ME = D.me;
+
+  /* ---------- UI state (never sample data) ---------- */
+  var U;
+  function fresh(theme) {
+    return { scr: "lock", cur: "a-merge", step: null, sheet: null, picks: {}, safeOn: false, safeOpen: false, done: {}, sentSafe: false,
+      snz: null, snzLong: false, snzCustom: false, signin: 0, published: false, handed: null, tonight: null,
+      sleep: { from: D.reach.sleep.from, to: D.reach.sleep.to }, theme: theme || "auto", navOpen: false, toast: null, dm: null, undone: false };
+  }
+  U = fresh();
+
+  /* ---------- derived from the data ---------- */
+  function mine(a) { return !a.night && a.askOf.indexOf(ME) >= 0; }
+  function isOpen(a) { return a.state === "open" && U.done[a.id] === undefined && !(a.id === "a-dark" && U.handed); }
+  function openMine() { return D.asks.filter(function (a) { return mine(a) && isOpen(a); }); }
+  function grp(g) { return openMine().filter(function (a) { return a.group === g; }); }
+  function settledMine() { return D.asks.filter(function (a) { return mine(a) && a.state !== "open"; }); }
+  function settledAt(a) { return a.expiresAt || a.withdrawnAt || a.answeredAt || null; }
+  function sleepNow() { return U.tonight || U.sleep; }
+  function inSleep(m) { var z = sleepNow(), f = hm(z.from), t = hm(z.to); m = ((m % 1440) + 1440) % 1440; return f > t ? (m >= f || m < t) : (m >= f && m < t); }
+  /* Reminder steps for a stopping ask. Asked during sleep: steps start at wake time. Snoozed: a step inside the snooze moves to its end. */
+  function ladder(a, now) {
+    var start = hm(a.askedAt), shifted = false;
+    if (inSleep(start)) { start = hm(sleepNow().to); shifted = true; }
+    var snz = U.snz ? hm(U.snz) : null;
+    if (snz !== null && snz < now) snz += 1440;
+    var steps = D.reach.ladder.map(function (m) { return { m: m, t: start + m, at: start + m, moved: false }; });
+    var next = null;
+    steps.forEach(function (s) {
+      if (s.t <= now) return;
+      if (snz !== null && s.t < snz && !next) { s.at = snz; s.moved = true; }
+      if (!next) next = s;
+    });
+    return { steps: steps, next: next, passed: steps.filter(function (s) { return s.t <= now; }), start: start, shifted: shifted };
+  }
+  function ladDots(a, now, cls) {
+    var L = ladder(a, now);
+    return '<div class="lad' + (cls ? " " + cls : "") + '" role="img" aria-label="Reminders at 0, 5, 15 and 30 minutes">' + L.steps.map(function (s, i) {
+      var on = s.t <= now, nx = L.next === s;
+      return (i ? '<i class="ll' + (on ? " on" : "") + '"></i>' : "") + '<div class="lg' + (on ? " on" : "") + (nx ? " nx" : "") + '"><span class="c">' + s.m + "</span><em>" +
+        (s.moved ? "<s>" + clk(s.t) + "</s> " + clk(s.at) : clk(s.t)) + "</em>" + (s.m === D.reach.loudAt ? "<em>loud</em>" : "") + "</div>";
+    }).join("") + "</div>";
+  }
+  function ladLine(a, now) {
+    var L = ladder(a, now), p = L.passed.map(function (s) { return clk(s.t); });
+    if (L.shifted && !p.length) return "Nothing rings at night. Reminders start at " + clk(L.start) + ": " + andList(L.steps.map(function (s) { return clk(s.t); })) + ", loud at the last.";
+    var head = p.length ? "Rang at " + andList(p) + "." : "Not rung yet.";
+    if (!L.next) return head + " Loud since " + clk(L.steps[L.steps.length - 1].t) + ", until you look.";
+    if (L.next.moved) return head + " The " + clk(L.next.t) + " reminder moves to " + clk(L.next.at) + ", when your snooze ends.";
+    return head + " Next at " + clk(L.next.t) + (L.next.m === D.reach.loudAt ? ", loud." : ".");
+  }
+  function miniLad(a) {
+    var L = ladder(a, NOW);
+    return '<span class="ml" aria-hidden="true">' + L.steps.map(function (s) { return '<i class="' + (s.t <= NOW ? "on" : L.next === s ? "nx" : "") + '"></i>'; }).join("") + "</span>";
+  }
+  function featsOf(pid) { return D.features.filter(function (f) { return f.project === pid; }); }
+  function runsOf(pid) { return D.runs.filter(function (r) { return r.project === pid; }); }
+  function pState(p) {
+    var a = openMine().filter(function (x) { return x.project === p.id; });
+    if (a.some(function (x) { return x.stops; })) return "stop";
+    if (a.length) return "needs";
+    var answered = D.asks.some(function (x) { return x.project === p.id && U.done[x.id] !== undefined; });
+    return runsOf(p.id).length || answered ? "work" : p.base;
+  }
+  function pCounts(p) {
+    var a = openMine().filter(function (x) { return x.project === p.id; });
+    return { needs: a.length, stops: a.filter(function (x) { return x.stops; }).length, running: runsOf(p.id).length };
+  }
+  function waitText(a) {
+    if (a.stops) { var L = ladder(a, NOW); return "stopped " + fmtMin(NOW - hm(a.askedAt)) + (L.next ? " · next " + clk(L.next.at) : " · loud"); }
+    return (a.audience === "team" ? "team ask, tags you · " : "") + "default at " + a.defaultAt;
+  }
+  function rowTarget(a) {
+    if (a.kind === "protected") return "st-protected";
+    if (a.audience === "team") return "team-group";
+    var st = { answered: "st-elsewhere", expired: "st-expired", withdrawn: "st-withdrawn", stored: "st-laptop" }[a.state];
+    return st || "ask:" + a.id;
+  }
+
+  /* ---------- small visuals ---------- */
+  function ring(frac, size, sw, color, label, sub) {
+    var r = (size - sw) / 2, c = 2 * Math.PI * r, h = size / 2;
+    return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + " " + size + '" role="img" aria-label="' + esc(label + " " + (sub || "")) + '" style="flex:none">' +
+      '<circle cx="' + h + '" cy="' + h + '" r="' + r + '" style="fill:none;stroke:var(--raised);stroke-width:' + sw + '"/>' +
+      '<circle cx="' + h + '" cy="' + h + '" r="' + r + '" transform="rotate(-90 ' + h + " " + h + ')" style="fill:none;stroke:' + color + ";stroke-width:" + sw + ";stroke-linecap:round;stroke-dasharray:" + (c * frac).toFixed(1) + " " + c.toFixed(1) + '"/>' +
+      '<text x="50%" y="' + (sub ? h - 2 : h + 6) + '" text-anchor="middle" style="fill:var(--ink);font-size:' + Math.round(size / 4.2) + 'px;font-weight:750">' + esc(label) + "</text>" +
+      (sub ? '<text x="50%" y="' + (h + 15) + '" text-anchor="middle" style="fill:var(--muted);font-size:11px">' + esc(sub) + "</text>" : "") + "</svg>";
+  }
+  function stackBar(parts) {
+    var tot = parts.reduce(function (n, p) { return n + p[1]; }, 0) || 1;
+    return '<div class="stackp" role="img" aria-label="' + esc(parts.map(function (p) { return p[1] + " " + p[0]; }).join(", ")) + '">' + parts.filter(function (p) { return p[1]; }).map(function (p) { return '<i style="flex:' + p[1] / tot + ";background:" + p[2] + '"></i>'; }).join("") + "</div>";
+  }
+  function stackPill(list) {
+    var c = { done: 0, needs: 0, stop: 0, pause: 0, work: 0, idle: 0 };
+    list.forEach(function (f) { c[f.s]++; });
+    var col = { done: "var(--grey)", needs: "var(--orange)", stop: "var(--red)", pause: "var(--orange)", work: "var(--green)", idle: "var(--raised)" };
+    var lab = { done: "done", needs: "waits on you", stop: "stopped", pause: "paused", work: "being built", idle: "not started" };
+    var keys = Object.keys(c).filter(function (k) { return c[k]; });
+    return stackBar(keys.map(function (k) { return [lab[k], c[k], col[k]]; })) + '<div class="leg">' + keys.map(function (k) { return "<span>" + dot(k) + c[k] + " " + lab[k] + "</span>"; }).join("") + "</div>";
+  }
+  function chain(nodes) {
+    return '<div class="chain">' + nodes.map(function (n, i) {
+      return (i ? '<i class="cl' + (n.dash ? " dash" : "") + '"></i>' : "") + '<div class="cn' + (n.cls ? " " + n.cls : "") + '"><span class="c">' + n.icon + "</span>" + esc(n.label) + (n.sub ? "<em>" + esc(n.sub) + "</em>" : "") + "</div>";
+    }).join("") + "</div>";
+  }
+  function sleepRing(nowMin) {
+    var z = sleepNow(), S = 132, c = S / 2, r = 52, sw = 13;
+    function pt(m, rr) { var a = m / 1440 * 2 * Math.PI - Math.PI / 2; return [(c + (rr || r) * Math.cos(a)).toFixed(1), (c + (rr || r) * Math.sin(a)).toFixed(1)]; }
+    var s = hm(z.from), e = hm(z.to), span = (e - s + 1440) % 1440, p1 = pt(s), p2 = pt(e), n = pt(nowMin);
+    var labs = [[0, "0"], [360, "6"], [720, "12"], [1080, "18"]].map(function (x) { var p = pt(x[0], r - 22); return '<text x="' + p[0] + '" y="' + (+p[1] + 4) + '" text-anchor="middle" style="fill:var(--faint);font-size:10px">' + x[1] + "</text>"; }).join("");
+    return '<svg width="' + S + '" height="' + S + '" viewBox="0 0 ' + S + " " + S + '" role="img" aria-label="Sleep window ' + esc(z.from + " to " + z.to) + '" style="flex:none">' +
+      '<circle cx="' + c + '" cy="' + c + '" r="' + r + '" style="fill:none;stroke:var(--raised);stroke-width:' + sw + '"/>' +
+      '<path d="M' + p1[0] + " " + p1[1] + " A" + r + " " + r + " 0 " + (span > 720 ? 1 : 0) + " 1 " + p2[0] + " " + p2[1] + '" style="fill:none;stroke:var(--accent);stroke-width:' + sw + ';stroke-linecap:round"/>' +
+      labs + '<circle cx="' + n[0] + '" cy="' + n[1] + '" r="6" style="fill:var(--orange);stroke:var(--surface);stroke-width:2.5"/>' +
+      '<text x="50%" y="' + (c + 2) + '" text-anchor="middle" style="fill:var(--ink);font-size:22px;font-weight:750">' + fmtMin(span).replace(" 0 min", "") + "</text>" +
+      '<text x="50%" y="' + (c + 18) + '" text-anchor="middle" style="fill:var(--muted);font-size:11px">asleep</text></svg>';
+  }
+
+  /* ---------- the one notification: replayed from the asks' own times ---------- */
+  var REPLAY_FROM = hm("15:25"), REPLAY_TO = hm("15:58");
+  function replayEvents() {
+    var ev = [];
+    D.asks.filter(mine).forEach(function (a) {
+      var at = hm(a.askedAt);
+      if (at >= REPLAY_FROM && at <= REPLAY_TO) ev.push({ t: at, k: "arrive", a: a, snd: a.stops ? "sound" : "silent" });
+      if (a.stops && a.state === "open") D.reach.ladder.forEach(function (m) {
+        var t = at + m;
+        if (m && t >= REPLAY_FROM && t <= REPLAY_TO) ev.push({ t: t, k: m === D.reach.loudAt ? "loud" : "remind", a: a, m: m, snd: m === D.reach.loudAt ? "loud" : "sound" });
+      });
+      if (a.state === "expired") ev.push({ t: hm(a.expiresAt), k: "expired", a: a, snd: "silent" });
+      if (a.state === "withdrawn") ev.push({ t: hm(a.withdrawnAt), k: "withdrawn", a: a, snd: "silent" });
+      if (a.answeredOn && a.answeredOn !== "phone") ev.push({ t: hm(a.answeredAt), k: "elsewhere", a: a, snd: "silent" });
+    });
+    ev = ev.filter(function (e) { return e.t >= REPLAY_FROM && e.t <= REPLAY_TO; });
+    ev.push({ t: NOW, k: "now", snd: "none" });
+    ev.sort(function (x, y) { return x.t - y.t || (x.k === "now") - (y.k === "now"); });
+    return ev;
+  }
+  var EV = replayEvents();
+  function nowIdx() { var i = 0; EV.forEach(function (e, k) { if (e.k === "now") i = k; }); return i; }
+  function asksAt(T) {
+    return D.asks.filter(function (a) {
+      if (!mine(a) || hm(a.askedAt) > T) return false;
+      var s = settledAt(a);
+      return !s || hm(s) > T;
+    });
+  }
+  function notifHtml(i) {
+    var e = EV[i], live = asksAt(e.t), stops = live.filter(function (a) { return a.stops; }), rest = live.length - stops.length;
+    var title = stops.length ? stops.length + " stopped on you · " + rest + " more" : plural(live.length, "ask") + " · none stopped";
+    var pn = function (a) { return proj(a.project).name; };
+    var oldest = stops.slice().sort(function (x, y) { return hm(x.askedAt) - hm(y.askedAt); })[0];
+    var body = {
+      arrive: e.a && (e.a.stops ? "New: " + pn(e.a) + ", " + e.a.short + ". Work stopped." : "New: " + pn(e.a) + ", " + e.a.short + ". Has a default."),
+      remind: e.a && "Reminder: " + e.a.short + ", stopped " + e.m + " min.",
+      loud: e.a && "Stopped 30 min: " + e.a.short + ". Loud until you look.",
+      expired: e.a && "Expired: " + e.a.short + ". The default was taken.",
+      withdrawn: e.a && "Withdrawn by the agent: " + e.a.short + ".",
+      elsewhere: e.a && "Answered on your laptop: " + e.a.short + ".",
+      now: oldest ? "Oldest: " + oldest.short + ", stopped " + fmtMin(e.t - hm(oldest.askedAt)) + "." : "Nothing is stopped."
+    }[e.k];
+    var right = { sound: ic("bell", "s") + "sound", silent: ic("mute", "s") + "silent update", loud: ic("bell", "s") + "loud", none: "now" }[e.snd];
+    var prot = live.some(function (a) { return a.kind === "protected"; });
+    return '<button class="notif' + (i !== nowIdx() ? " upd" : "") + (e.snd === "loud" ? " loud" : "") + '" data-act="go" data-v="list"><div class="h"><b><span class="ap"></span>FORGE</b><span>' + right + '</span></div><div class="t">' + esc(title) + '</div><div class="b">' + esc(body) + "</div>" +
+      (prot ? '<div class="p">' + ic("lock", "s") + "Publish opens Forge and asks you to sign in.</div>" : "") + "</button>";
+  }
+  function evLabel(e) {
+    var m = { arrive: e.a && (e.a.stops ? "new, stops work" : "new, silent"), remind: "reminder " + e.m + " min", loud: "loud, 30 min", expired: "expired, silent", withdrawn: "withdrawn, silent", elsewhere: "answered on laptop, silent", now: "now" }[e.k];
+    return clk(e.t) + " · " + m;
+  }
+
+  /* ---------- screens ---------- */
+  function lockFrame(time, day, inner, hint, night) {
+    return '<div class="lock' + (night ? " night" : "") + '"><span class="lk">' + ic("lock") + '</span><div class="clock">' + time + '</div><div class="date">' + esc(day) + "</div>" + inner + '<div class="hint">' + hint + "</div></div>";
+  }
+  function scrLock() {
+    var i = U.step === null ? nowIdx() : U.step, e = EV[i], pub = ask("a-publish");
+    var hint = (e.t < hm(pub.askedAt) ? '<div class="tx">Publish 0.0.12 is not asked yet. It arrives at ' + esc(pub.askedAt) + ".</div>" : ladDots(pub, e.t, "w") + '<div class="tx">' + esc("Publish 0.0.12: " + ladLine(pub, e.t)) + "</div>") +
+      '<div class="tx" style="font-weight:600;opacity:1">One notification for every ask. It changes in place.</div>' +
+      '<div class="stepr"><button data-act="lad" data-v="' + (i - 1) + '"' + (i ? "" : " disabled") + ' aria-label="Earlier">' + ic("back", "s") + "</button><span>" + esc(evLabel(e)) + '</span><button data-act="lad" data-v="' + (i + 1) + '"' + (i < EV.length - 1 ? "" : " disabled") + ' aria-label="Later">' + ic("chev", "s") + "</button></div>";
+    return { full: true, light: true, time: clk(e.t), html: lockFrame(clk(e.t), D.now.day, notifHtml(i), hint) };
+  }
+  function askRow(a) {
+    return '<button class="row tap" data-act="go" data-v="' + rowTarget(a) + '">' + dot(a.stops ? "stop" : "needs") + '<span class="t"><b class="ell">' + esc(a.short) + '</b><span class="ell">' + esc(proj(a.project).name + " · " + waitText(a)) + "</span></span>" + (a.stops ? miniLad(a) : "") + ic("chev", "s") + "</button>";
+  }
+  function settledLine(a) {
+    if (a.state === "answered") return "Answered on your " + mach(a.answeredOn).name.replace("Your ", "").toLowerCase() + " at " + a.answeredAt;
+    if (a.state === "expired") return "Expired at " + a.expiresAt + ", default taken";
+    if (a.state === "withdrawn") return "Withdrawn by the agent at " + a.withdrawnAt;
+    if (a.state === "stored") return "You answered at " + a.answeredAt + ". Stored, " + mach(a.on).name + " is off";
+    return "";
+  }
+  function safeRows() {
+    return grp("safe").map(function (a) {
+      var sel = U.picks[a.id] !== undefined ? U.picks[a.id] : a.def;
+      return '<div class="row" style="align-items:flex-start"><span class="t"><b style="font-weight:500">' + esc(a.t) + '</b><span style="margin-top:6px" class="choice">' + a.opts.map(function (o, k) {
+        return '<button class="' + (k === sel ? "on" : "") + '" data-act="pick" data-id="' + a.id + '" data-i="' + k + '">' + esc(o) + (k === a.def ? ' <span class="df">· default</span>' : "") + "</button>";
+      }).join("") + "</span></span></div>";
+    }).join("");
+  }
+  function scrList() {
+    var only = grp("only"), look = grp("look"), safe = grp("safe"), others = D.asks.filter(function (a) { return !a.night && a.askOf.indexOf(ME) < 0 && a.state === "open"; });
+    var h = '<div class="top"><div><div class="cap">' + esc(D.now.day.split(" ")[0]) + " · " + D.now.time + '</div><h1 class="lt">Asks</h1></div><button class="btn sm ghost" data-act="sheet" data-v="snooze">' + ic("snooze", "s") + "Snooze</button></div>";
+    if (U.snz) h += '<div class="ban a"><b>Snoozed until ' + esc(U.snz) + '</b><span class="cap">Nothing rings until then. <button class="link" data-act="snz-end">End snooze</button></span></div>';
+    h += '<div class="card"><div class="trio"><div><div class="v" style="color:var(--red)">' + only.length + '</div><div class="k">only you</div></div><div><div class="v" style="color:var(--orange)">' + look.length + '</div><div class="k">worth a look</div></div><div><div class="v" style="color:var(--muted)">' + safe.length + '</div><div class="k">safe defaults</div></div></div>' +
+      stackBar([["only you", only.length, "var(--red)"], ["worth a look", look.length, "var(--orange)"], ["safe defaults", safe.length, "var(--grey)"]]) +
+      take(only.length ? plural(only.length, "thing") + " stopped on you. The rest can wait or take a default." : "Nothing is stopped on you.") + "</div>";
+    h += '<div class="ey">' + ic("stop", "s") + 'Only you <span class="n">' + only.length + "</span></div>" + (only.length ? '<div class="group">' + only.map(askRow).join("") + "</div>" : '<div class="card cap">Nothing stopped on you.</div>');
+    h += '<div class="ey">Worth a look <span class="n">' + look.length + "</span></div>" + (look.length ? '<div class="group">' + look.map(askRow).join("") + "</div>" : '<div class="card cap">Nothing here.</div>');
+    if (safe.length) {
+      h += '<div class="ey">Safe defaults <span class="n">' + safe.length + '</span></div><div class="group"><div class="row"><span class="t"><b>Take all ' + safe.length + ' defaults</b><span>Small and reversible. Each one is listed with Undo.</span></span><button class="sw' + (U.safeOn ? " on" : "") + '" data-act="safe-all" aria-label="Take all defaults"></button></div>' +
+        '<button class="row tap" data-act="safe-open"><span class="t"><span style="color:var(--accent);font-size:14px">' + (U.safeOpen ? "Hide the " + safe.length : "Show what each of the " + safe.length + " does") + "</span></span>" + ic(U.safeOpen ? "down" : "chev", "s") + "</button>" + (U.safeOpen ? safeRows() : "") + "</div>";
+      h += '<div class="sendbar"><button class="btn pri w" data-act="safe-send"' + (U.safeOn ? "" : " disabled") + ">" + (U.safeOn ? "Send " + plural(safe.length, "default") : "Switch on to send the defaults") + "</button></div>";
+    } else if (U.sentSafe) h += '<div class="ey">Safe defaults</div><div class="card cap">Sent. Each one is listed with Undo in the project.</div>';
+    h += '<div class="ey">Settled since you looked <span class="n">' + settledMine().length + "</span></div><div class=\"group\">" + settledMine().map(function (a) {
+      return '<button class="row tap fade" data-act="go" data-v="' + rowTarget(a) + '">' + ic(a.state === "answered" ? "laptop" : a.state === "stored" ? "box" : a.state === "expired" ? "clock" : "back", "s") + '<span class="t"><b class="ell" style="font-weight:500">' + esc(a.short) + '</b><span class="ell">' + esc(settledLine(a)) + "</span></span>" + ic("chev", "s") + "</button>";
+    }).join("") + "</div>";
+    if (others.length) h += '<div class="ey">Asked of others <span class="n">' + others.length + "</span>" + mk("later") + '</div><div class="group">' + others.map(function (a) {
+      return '<button class="row tap fade" data-act="go" data-v="team-personal">' + avatar(a.askOf[0]) + '<span class="t"><b class="ell" style="font-weight:500">' + esc(a.short) + '</b><span class="ell">Asked of ' + esc(pname(a.askOf[0])) + " only · " + esc(proj(a.project).name) + "</span></span>" + ic("chev", "s") + "</button>";
+    }).join("") + "</div>";
+    return { tab: "asks", html: h };
+  }
+  function optsHtml(a, mode) {
+    var chosen = mode && mode.chosen !== undefined ? mode.chosen : -1, dis = !!mode;
+    return '<div class="opts">' + a.opts.map(function (o, k) {
+      var lockOpt = a.kind === "protected" && k === a.act;
+      return '<button class="opt' + (k === chosen ? " chosen" : "") + '" data-act="answer" data-id="' + a.id + '" data-i="' + k + '"' + (dis ? " disabled" : "") + '><span class="lk">' + (lockOpt ? ic("lock", "s") : "") + esc(o) + "</span>" +
+        (k === chosen ? '<span class="df" style="color:var(--green)">' + esc(mode.label || "answer") + "</span>" : k === a.def ? '<span class="df">default</span>' : "") + "</button>";
+    }).join("") + "</div>";
+  }
+  function stopChain(a) {
+    var nodes = [{ icon: dot(a.stops ? "stop" : "needs"), label: a.by, sub: mach(a.on).name }, { icon: ic("user", "s"), label: "You", cls: "me", sub: "this answer" }];
+    (a.stops ? a.blocks : [a.holds]).forEach(function (b) { nodes.push({ icon: dot(a.stops ? "stop" : "pause"), label: b, dash: true }); });
+    return chain(nodes);
+  }
+  function askBody(a, opts) {
+    opts = opts || {};
+    var p = proj(a.project), h = "";
+    h += '<div class="crumb"><button data-act="go" data-v="list">' + ic("back", "s") + "Asks</button>" + (a.audience === "personal" ? '<span class="tag pers">Personal ask</span>' : "") + "</div>";
+    h += '<div class="byl"><span class="tag">' + esc(p.name) + "</span><span>" + esc(a.by + " on " + mach(a.on).name + " · asked " + a.askedAt) + "</span></div>";
+    var lab = opts.lab || (a.stops ? '<div class="lab r">' + ic("stop", "s") + "Only you · stopped " + fmtMin(NOW - hm(a.askedAt)) + "</div>" : '<div class="lab o">Holds ' + esc(a.holds) + " · has a default</div>");
+    h += lab + '<div class="q">' + esc(a.t) + "</div>";
+    if (opts.banner) h += opts.banner;
+    if (opts.pre) h += opts.pre;
+    h += '<div class="ey">' + (a.stops ? "What is stopped" : "What waits") + '</div><div class="card">' + stopChain(a) +
+      take(a.stops ? plural(a.blocks.length, "piece") + " of work wait on this answer." : opts.mode ? "Nothing was stopped. Only " + a.holds + " waited on it." : "Nothing is stopped. " + a.holds + " waits for it, or for the default.") + "</div>";
+    h += '<div class="ey">Why it matters</div><div class="card"><div>' + esc(a.why) + "</div>" + (a.facts ? '<div class="kv">' + a.facts.map(function (f) { return "<span>" + esc(f[0]) + "</span><span>" + esc(f[1]) + "</span>"; }).join("") + "</div>" : "") + "</div>";
+    h += '<div class="ey">Your answer</div>' + optsHtml(a, opts.mode) + '<div class="rule">' + esc(opts.rule || (a.kind === "protected" ? "Publish needs your sign-in in Forge. It cannot be tapped from a notification or Slack." : a.stops ? "The default is a suggestion. It is taken only if you choose it." : "If nobody answers, the default is taken at " + a.defaultAt + ".")) + "</div>";
+    if (a.stops && !opts.mode) h += '<div class="ey">Reminders</div><div class="card">' + ladDots(a, NOW) + take(ladLine(a, NOW)) + "</div>";
+    else if (!a.stops && !opts.mode) h += '<div class="ey">Reminders</div><div class="card cap">This ask does not stop work, so it never rings. It sits in the list until ' + esc(a.defaultAt) + ".</div>";
+    h += '<div class="ey">Who may answer</div><div class="card"><div class="who">' + a.askOf.map(function (id) { return '<span class="w">' + avatar(id) + esc(pname(id)) + "</span>"; }).join("") + '</div><div class="rule">Every answer records who gave it, and cannot be changed after.</div></div>';
+    if (!opts.mode) h += '<button class="btn ghost w" data-act="sheet" data-v="snooze">' + ic("snooze", "s") + "Snooze reminders</button>";
+    return h;
+  }
+  function scrAsk() {
+    var a = ask(U.cur);
+    if (U.done[a.id] !== undefined) {
+      return { tab: "asks", html: askBody(a, { lab: '<div class="lab g">' + ic("check", "s") + "Answered here at " + D.now.time + "</div>", mode: { chosen: U.done[a.id], label: "your answer" }, banner: '<div class="ban g"><b>Sent. ' + esc((a.stops ? a.blocks[0] : a.holds) + " carries on.") + '</b><span class="cap">The agent woke up without checking in. The notification on your other devices updated.</span></div>' }) };
+    }
+    return { tab: "asks", html: askBody(a) };
+  }
+  function scrSnooze() { var r = scrAsk(); return r; }
+  function scrElsewhere() {
+    var a = ask("x-elsewhere");
+    return { tab: "asks", html: askBody(a, { lab: '<div class="lab g">' + ic("laptop", "s") + "Answered on another device</div>", mode: { chosen: a.answer, label: "laptop, " + a.answeredAt },
+      banner: '<div class="ban g"><b>Answered on your laptop at ' + esc(a.answeredAt) + ": " + esc(a.opts[a.answer]) + '.</b><span class="cap">Nothing to do here. A tap now would be kept as a comment: the first answer counts.</span></div>', rule: "The notification on this phone updated in place at " + a.answeredAt + ", without a sound." }) };
+  }
+  function scrExpired() {
+    var a = ask("x-expired");
+    return { tab: "asks", html: askBody(a, { lab: '<div class="lab g">' + ic("clock", "s") + "Expired at " + esc(a.expiresAt) + "</div>", mode: { chosen: a.def, label: "default taken" },
+      banner: '<div class="ban o"><b>Expired at ' + esc(a.expiresAt) + ". The default was taken: " + esc(a.opts[a.def]) + '.</b><span class="cap">' + (U.undone ? "Undone: the rerun was cancelled. The answer itself stays on record." : 'The 15:30 batch could not wait. <button class="link" data-act="undo-expired">Undo what the default did</button>') + "</span></div>",
+      rule: "The ask had a deadline: the 15:30 batch. It did not stop work, so it never rang." }) };
+  }
+  function scrWithdrawn() {
+    var a = ask("x-withdrawn");
+    return { tab: "asks", html: askBody(a, { lab: '<div class="lab g">' + ic("back", "s") + "Withdrawn by the agent</div>", mode: {},
+      banner: '<div class="ban"><b>Withdrawn by the ' + esc(a.withdrawnBy) + " at " + esc(a.withdrawnAt) + '.</b><span class="cap">' + esc(a.reason) + "</span></div>", rule: "A withdrawn ask cannot be answered. It stays on record." }) };
+  }
+  function scrStored() {
+    var a = ask("x-stored"), m = mach(a.on);
+    var pre = '<div class="card">' + chain([{ icon: ic("user", "s"), label: "You", cls: "me", sub: a.answeredAt }, { icon: ic("check", "s"), label: "Forge", cls: "ok", sub: "stored" }, { icon: ic("laptop", "s"), label: m.name, cls: "off", sub: "off since " + m.since, dash: true }, { icon: dot("pause"), label: a.by, sub: "wakes with it", dash: true }]) +
+      take("The answer waits in Forge. The agent picks it up when the " + m.name + " starts. Nothing else waits on it.") + "</div>";
+    return { tab: "asks", html: askBody(a, { lab: '<div class="lab a">' + ic("box", "s") + "Answer stored</div>", mode: { chosen: a.answer, label: "stored " + a.answeredAt }, pre: pre,
+      banner: '<div class="ban a"><b>You answered at ' + esc(a.answeredAt) + ": " + esc(a.opts[a.answer]) + '.</b><span class="cap">The ' + esc(m.name) + " that runs this agent is off since " + esc(m.since) + ".</span></div>", rule: "Answers cannot be changed after they are stored." }) };
+  }
+  function scrProtected() {
+    var a = ask("a-publish");
+    if (U.published) {
+      return { tab: "asks", html: askBody(a, { lab: '<div class="lab g">' + ic("check", "s") + "Published</div>", mode: { chosen: a.act, label: "signed in, " + D.now.time },
+        banner: '<div class="ban g"><b>You signed in and published at ' + esc(D.now.time) + '.</b><span class="cap">Out by about 15:52. The sign-in was for this one request and is used up.</span></div>' }) };
+    }
+    var pre = '<div class="ban r"><b>Protected action</b><span class="cap">Publish, merge and deploy cannot be tapped through from the notification or Slack. Tapping Publish opens a sign-in step first.</span></div>';
+    return { tab: "asks", html: askBody(a, { pre: pre }) };
+  }
+  function scrSnoozed() {
+    if (!U.snz) U.snz = "15:50";
+    var pub = ask("a-publish"), stops = grp("only").length, z = hm(U.snz);
+    var night = inSleep(z) ? "Your sleep window starts at " + sleepNow().from + ", so the next sound is at " + sleepNow().to + "." : "At " + U.snz + ": one reminder for " + plural(stops, "stopped ask") + ".";
+    var inner = '<div class="notif"><div class="h"><b><span class="ap"></span>FORGE</b><span>' + ic("mute", "s") + 'silent</span></div><div class="t">Snoozed until ' + esc(U.snz) + '</div><div class="b">' + esc("Nothing rings until then. " + night) + '</div><div class="p">' + ic("clock", "s") + "Agents see you are back at " + esc(U.snz) + " and move to other work.</div></div>";
+    var hint = ladDots(pub, NOW + 1, "w") + '<div class="tx">' + esc("Publish 0.0.12: " + ladLine(pub, NOW + 1)) + '</div><div class="lbtn"><button data-act="sheet" data-v="snooze">Change</button><button data-act="snz-end">End snooze</button></div>';
+    return { full: true, light: true, time: clk(NOW + 1), html: lockFrame(clk(NOW + 1), D.now.day, inner, hint) };
+  }
+  function scrAsleep() {
+    var a = ask("n-roadmap"), z = sleepNow();
+    var inner = '<div class="notif"><div class="h"><b><span class="ap"></span>FORGE</b><span>' + ic("mute", "s") + 'silent · asleep</span></div><div class="t"><span class="moon"></span>Asleep until ' + esc(z.to) + ' · 1 stopped ask waits</div><div class="b">' + esc(proj(a.project).name + ": " + a.t) + '</div><div class="p">' + ic("clock", "s") + "Asked at " + esc(a.askedAt) + ". It rings at " + esc(z.to) + ", not now.</div></div>";
+    var hint = ladDots(a, NIGHT, "w") + '<div class="tx">' + esc(ladLine(a, NIGHT)) + '</div><div class="lbtn"><button data-act="go" data-v="sleep">Sleep settings</button></div>';
+    return { full: true, light: true, time: D.night.time, html: lockFrame(D.night.time, D.night.day, inner, hint, true) };
+  }
+  function scrSleep() {
+    var z = sleepNow(), r = U.sleep, t = U.tonight;
+    var h = '<div class="top"><div><div class="cap">Settings</div><h1 class="lt">Reach</h1></div></div>';
+    h += '<div class="card"><div class="hero">' + sleepRing(NOW) + '<div style="min-width:0"><div class="cap">Sleep window' + (t ? ", just tonight" : ", every night") + '</div><div class="h1">' + esc(z.from + " to " + z.to) + '</div><div class="cap">No sound, no reminders. Stopping asks start ringing at ' + esc(z.to) + ".</div></div></div>" + take("Blue arc: asleep. Orange dot: now, " + D.now.time + ".", true) + "</div>";
+    h += '<div class="group"><div class="row"><span class="t"><b style="font-weight:500">Every night</b></span><input class="tin" type="time" data-chg="from" value="' + r.from + '" aria-label="Sleep at"><span class="cap">to</span><input class="tin" type="time" data-chg="to" value="' + r.to + '" aria-label="Wake at"></div>' +
+      '<div class="row"><span class="t"><b style="font-weight:500">Just tonight</b><span>Every night stays as it is</span></span><button class="sw' + (t ? " on" : "") + '" data-act="tonight" aria-label="Just tonight"></button></div>' +
+      (t ? '<div class="row"><span class="t"><b style="font-weight:500">Tonight</b></span><input class="tin" type="time" data-chg="n-from" value="' + t.from + '" aria-label="Sleep tonight at"><span class="cap">to</span><input class="tin" type="time" data-chg="n-to" value="' + t.to + '" aria-label="Wake tomorrow at"></div>' : "") + "</div>";
+    h += '<button class="link" style="margin:0 4px 6px" data-act="go" data-v="st-asleep">See the lock screen at ' + esc(D.night.time) + "</button>";
+    h += '<div class="ey">Reminders</div><div class="card"><div class="lad q">' + D.reach.ladder.map(function (m, i) { return (i ? '<i class="ll on"></i>' : "") + '<div class="lg on"><span class="c">' + m + "</span><em>" + (m ? m + " min" : "asked") + "</em>" + (m === D.reach.loudAt ? "<em>loud</em>" : "") + "</div>"; }).join("") + "</div>" +
+      take("Only asks that stop work ring: at 0, 5, 15 and 30 minutes.") + '<div class="rule">One notification holds every ask and changes in place. At 30 minutes it turns loud. ' + esc(D.reach.loud) + "</div></div>";
+    h += '<div class="ey">Snooze</div><div class="group"><button class="row tap" data-act="sheet" data-v="snooze">' + ic("snooze", "s") + '<span class="t"><b>' + (U.snz ? "Snoozed until " + esc(U.snz) : "Not snoozed") + '</b><span>5, 10, 30 min, 1 hour, or longer. Always ends at a time.</span></span>' + ic("chev", "s") + "</button></div>";
+    return { tab: "reach", html: h };
+  }
+
+  /* team asks (later) */
+  function scrPersonal() {
+    var a = ask("p-priya"), pr = person("priya"), local = NOW + pr.offset, asleep = (function () { var f = hm(pr.sleep.from), t = hm(pr.sleep.to), m = ((local % 1440) + 1440) % 1440; return f > t ? (m >= f || m < t) : (m >= f && m < t); })();
+    var wakeYours = clk(hm(pr.sleep.to) - pr.offset);
+    var h = '<div class="crumb"><span class="tag pers">Seen on Priya\'s phone</span><span class="cap">her time ' + clk(local) + "</span></div>";
+    h += '<div class="byl"><span class="tag">' + esc(proj(a.project).name) + "</span><span>" + esc(a.by + " · asked " + clk(hm(a.askedAt) + pr.offset) + " her time") + '</span></div><div class="lab a">Personal ask · only you</div><div class="q">' + esc(a.t) + "</div>";
+    h += '<div class="card">' + chain([{ icon: dot("needs"), label: a.by }, { icon: avatar("priya"), label: "Priya", cls: "me", sub: "only her" }, { icon: dot("pause"), label: a.holds, dash: true }]) + take("Asked of Priya only. Not posted to the team.") + "</div>";
+    h += '<div class="ey">Her answer</div>' + optsHtml(a, U.dm !== null ? { chosen: U.dm, label: "her answer" } : null) + '<div class="rule">If she has not answered by ' + esc(clk(hm(a.defaultAt) + pr.offset)) + " her time, the default is taken.</div>";
+    h += '<div class="ey">Her phone right now</div><div class="card"><div style="display:flex;gap:10px;align-items:center">' + ic(asleep ? "mute" : "bell", "s") + "<b>" + (asleep ? "Asleep until " + esc(pr.sleep.to) + " her time" : "Awake") + '</b></div><div class="rule">' + (asleep ? "That is " + esc(wakeYours) + " your time. The ask does not stop work, so it waits quietly." : "") + " It also arrives as a Slack direct message.</div></div>";
+    h += '<button class="btn ghost w" data-act="go" data-v="slack-dm">See it in Slack</button>';
+    return { tab: "asks", html: h };
+  }
+  function scrTeam() {
+    var a = ask("a-dark"), tm = team(a.team), hist = a.history, ho = hist.filter(function (x) { return x.k === "handoff"; })[0];
+    var h = '<div class="crumb"><button data-act="go" data-v="list">' + ic("back", "s") + 'Asks</button><span class="tag team">Team ask</span></div>';
+    h += '<div class="byl"><span class="tag">' + esc(proj(a.project).name) + "</span><span>" + esc(a.by + " · posted to #" + tm.channel + " at " + a.askedAt) + "</span></div>";
+    h += '<div class="lab o">Team ask · tags you · waits on your view</div><div class="q">' + esc(a.t) + "</div>";
+    if (U.handed) h += '<div class="ban a"><b>Handed to ' + esc(pname(U.handed)) + " at " + esc(ho.t) + '.</b><span class="cap">Only ' + esc(pname(U.handed)) + '\'s answer counts now. You still see it. <button class="link" data-act="go" data-v="slack-channel">See it in Slack</button> · <button class="link" data-act="go" data-v="team-record">See the record</button></span></div>';
+    h += '<div class="card">' + chain([{ icon: dot("needs"), label: a.by }, { icon: ic("hash", "s"), label: "#" + tm.channel, sub: plural(tm.members.length, "person") }, U.handed ? { icon: avatar(U.handed), label: pname(U.handed), cls: "me", sub: "handed" } : { icon: ic("user", "s"), label: "You", cls: "me", sub: "tagged" }, { icon: dot("pause"), label: a.holds, dash: true }]) +
+      take(U.handed ? "Now waits on " + pname(U.handed) + "'s view." : "Posted to the team. The scoring screen waits on your view.") + "</div>";
+    h += '<div class="ey">Why it matters</div><div class="card"><div>' + esc(a.why) + '</div><div class="kv">' + a.facts.map(function (f) { return "<span>" + esc(f[0]) + "</span><span>" + esc(f[1]) + "</span>"; }).join("") + "</div></div>";
+    var mine2 = U.done[a.id];
+    if (mine2 !== undefined) h += '<div class="ban g"><b>You answered: ' + esc(a.opts[mine2]) + '.</b><span class="cap">Posted in the thread as your answer. The scoring screen carries on.</span></div>';
+    h += '<div class="ey">Your answer</div>' + optsHtml(a, U.handed ? {} : mine2 !== undefined ? { chosen: mine2, label: "your answer" } : null) + '<div class="rule">Default at ' + esc(a.defaultAt) + " if nobody answers. Does not stop work, so it never rings.</div>";
+    h += '<div class="ey">Who may answer</div><div class="card"><div class="who">' + tm.members.map(function (id) {
+      var p = person(id), can = U.handed ? id === U.handed : a.askOf.indexOf(id) >= 0;
+      return '<span class="w">' + avatar(id) + esc(p.name) + ' <span class="ct ' + (can ? "y" : p.slack === "linked" ? "n" : "n") + '">' + (can ? "counts" : p.slack === "linked" ? "comment" : "not linked") + "</span></span>";
+    }).join("") + '</div><div class="rule">Anyone in the channel can reply. A reply counts only from the person the ask is with. A reply from someone\'s agent never counts as that person.</div></div>';
+    if (!U.handed && mine2 === undefined) h += '<button class="btn ghost w" data-act="sheet" data-v="handoff">' + ic("hand", "s") + "I am busy, ask someone else</button>";
+    return { tab: "asks", html: h };
+  }
+  function scrRecord() {
+    var a = ask("a-dark"), H = a.history;
+    var get = function (k) { return H.filter(function (x) { return x.k === k; })[0]; }, ho = get("handoff"), an = get("answer"), rs = get("resume");
+    var h = '<div class="crumb"><button data-act="go" data-v="team-group">' + ic("back", "s") + 'Team ask</button><span class="cap">record as of 20:35</span></div>';
+    h += '<div class="lab g">Who handed off, who answered</div><div class="q">' + esc(a.short) + "</div>";
+    h += '<div class="card">' + chain([{ icon: dot("needs"), label: "Asked", sub: a.askedAt }, { icon: avatar(ho.who), label: pname(ho.who) + " handed", sub: ho.t }, { icon: avatar(an.who), label: pname(an.who) + " answered", cls: "ok", sub: an.t }, { icon: dot("work"), label: "Work went on", sub: rs.t }]) +
+      take("Handed once. Answered in Slack " + (hm(an.t) - hm(ho.t)) + " min after the handoff.") + "</div>";
+    h += '<div class="ey">Every step</div><div class="group">' + H.map(function (x) {
+      var who = person(x.who) ? pname(x.who) : x.who, tag = { post: ["h", "asked"], handoff: ["h", "handoff"], answer: ["y", "the answer"], comment: ["n", "comment"], resume: ["h", "resumed"] }[x.k];
+      return '<div class="row" style="align-items:flex-start"><span class="r" style="width:40px">' + esc(x.t) + "</span>" + (person(x.who) ? avatar(x.who) : '<span class="av">' + ic("box", "s") + "</span>") + '<span class="t"><b style="font-weight:600">' + esc(who) + ' <span class="ct ' + tag[0] + '">' + tag[1] + "</span></b><span>" + esc(x.what) + (x.k === "answer" ? " Recorded as: " + a.opts[x.answer] + "." : "") + "</span>" + (x.why ? '<span style="font-size:12px">' + esc(x.why) + "</span>" : "") + "</span></div>";
+    }).join("") + "</div>";
+    h += take("The first answer from the person the ask is with counts. Later replies stay as comments.");
+    return { tab: "asks", html: h };
+  }
+  function skMsg(av, name, app, time, body) {
+    return '<div class="skm"><span class="ska' + (app ? " app" : " av p" + pidx(av)) + '">' + (app ? "F" : esc(pname(av).charAt(0))) + '</span><div style="min-width:0"><div class="skn"><b>' + esc(name) + "</b>" + (app ? '<span class="apptag">APP</span>' : "") + "<time>" + esc(time) + "</time></div>" + body + "</div></div>";
+  }
+  function skHead(icon, title, sub) { return '<div class="skh"><button data-act="go" data-v="list" aria-label="Back">' + ic("back", "s") + "</button>" + icon + '<div style="min-width:0"><b>' + esc(title) + "</b><span>" + esc(sub) + "</span></div></div>"; }
+  function scrSlackDm() {
+    var a = ask("p-priya"), pr = person("priya");
+    var btns = '<div class="skbtns">' + a.opts.map(function (o, k) { return '<button class="skbtn' + (U.dm === k ? " on" : "") + '" data-act="dm" data-i="' + k + '"' + (U.dm !== null ? " disabled" : "") + ">" + esc(o) + "</button>"; }).join("") + "</div>";
+    var body = '<div class="skx"><div class="cap">' + esc(proj(a.project).name + " · " + a.by + " asks you") + '</div><div class="qq">' + esc(a.t) + "</div>" + btns +
+      '<div class="cap">' + esc("Default: " + a.opts[a.def] + " at " + clk(hm(a.defaultAt) + pr.offset) + " your time. Does not stop work.") + '</div><div class="skw" style="color:var(--accent)">Open in Forge</div></div>';
+    var h = skHead('<span class="ska app" style="width:30px;height:30px;font-size:13px">F</span>', "Forge", "Direct message with Priya") + '<div class="skb">' + skMsg(null, "Forge", true, clk(hm(a.askedAt) + pr.offset), body);
+    if (U.dm !== null) h += skMsg(null, "Forge", true, "06:12", '<div>Recorded: Priya answered <b>' + esc(a.opts[U.dm]) + '</b>. The docs agent carries on.</div>');
+    h += '<div class="mcap"><b>A personal ask goes to one person:</b> her phone and this direct message. Her tap here counts because her Slack is linked to Forge. Shown in her time.' + (U.dm === null ? " Tap an answer to see it recorded." : "") + "</div></div>";
+    return { full: true, sk: true, time: U.dm !== null ? "06:12" : clk(NOW + pr.offset), html: '<div class="sk">' + h + "</div>" };
+  }
+  function scrSlackChannel() {
+    var a = ask("a-dark"), tm = team(a.team), H = a.history, an = H.filter(function (x) { return x.k === "answer"; })[0], ho = H.filter(function (x) { return x.k === "handoff"; })[0];
+    var post = '<div><span class="at">@You</span> ' + esc(a.by + " waits on your view.") + '</div><div class="skx" style="border-color:var(--orange)"><div class="cap">' + esc(proj(a.project).name + " · team ask") + '</div><div class="qq">' + esc(a.t) + '</div><div class="skbtns">' +
+      a.opts.map(function (o, k) { return '<button class="skbtn' + (k === an.answer ? " on" : "") + '" disabled>' + esc(o) + "</button>"; }).join("") + '</div><div class="cap">' + esc("Default: " + a.opts[a.def] + " at " + a.defaultAt + ". Does not stop work.") + '</div>' +
+      '<div class="skw">' + dot("work") + esc("Answered by " + pname(an.who) + " at " + an.t + ". Handed by You at " + ho.t + ".") + "</div></div>";
+    var h = skHead('<span style="display:grid;place-items:center">' + ic("hash") + "</span>", tm.channel, plural(tm.members.length, "member")) + '<div class="skb">' + skMsg(null, "Forge", true, a.askedAt, post);
+    h += '<div class="skcount">' + plural(H.length - 2, "reply") + "</div><div class=\"skthr\">";
+    H.forEach(function (x) {
+      if (x.k === "post" || x.k === "resume") return;
+      var tag = x.k === "answer" ? '<div><span class="ct y">Recorded as the answer</span></div>' : x.k === "comment" ? '<div><span class="ct n">' + esc(x.why.replace("Comment: ", "Comment only: ")) + "</span></div>" : "";
+      var text = x.k === "handoff" ? 'Busy, handing this to <span class="at">@' + esc(pname(x.to)) + '</span><div class="sksys">' + esc("You handed this to " + pname(x.to) + ". Only " + pname(x.to) + "'s reply counts now.") + "</div>" : esc(x.what);
+      h += skMsg(x.who, pname(x.who), false, x.t, "<div>" + text + "</div>" + tag);
+      if (x.k === "answer") h += skMsg(null, "Forge", true, x.t, "<div>" + esc("Answer from " + pname(x.who) + " recorded: " + a.opts[x.answer] + ". The scoring screen carries on.") + "</div>");
+    });
+    h += '</div><div class="mcap"><b>A team ask is posted to the group and tags one person.</b> A reply in the thread counts only from the person the ask is with. Publish, merge and deploy are never answered here: their posts only link to Forge.</div></div>';
+    return { full: true, sk: true, time: D.now.time, html: '<div class="sk">' + h + "</div>" };
+  }
+
+  /* wider screens (later) */
+  function pCard(p) {
+    var f = featsOf(p.id), done = f.filter(function (x) { return x.s === "done"; }).length, c = pCounts(p), st = pState(p);
+    var m = (c.needs ? '<span class="mt ' + (c.stops ? "stopm" : "need") + '">' + c.needs + " for you</span>" : "") + (c.running ? '<span class="mt">' + dot("work") + c.running + " running</span>" : "") +
+      (!c.needs && !c.running ? '<span class="mt">' + dot("idle") + "idle</span>" : "") + '<span class="mt goal">' + esc(p.goal.title) + "</span>";
+    return '<div class="card pc' + (p.id === "forge" ? ' tap" role="button" data-act="go" data-v="project"' : '"') + ">" + ring(f.length ? done / f.length : 0, 46, 5, st === "idle" ? "var(--grey)" : st === "stop" ? "var(--red)" : "var(--accent)", done + "/" + f.length, "") +
+      '<div class="t"><div class="nm">' + dot(st) + esc(p.name) + '<span class="tm">' + esc(p.lastChange) + '</span></div><div class="ab">' + esc(p.about) + '</div><div class="mets">' + m + "</div></div></div>";
+  }
+  function rank(p) { var c = pCounts(p), s = pState(p); return c.stops ? 0 : c.needs ? 1 : s === "work" ? 2 : 3; }
+  function scrAll() {
+    var P = D.projects.slice().sort(function (x, y) { return rank(x) - rank(y); });
+    var needs = P.filter(function (p) { return pCounts(p).needs; }).length, stopped = P.filter(function (p) { return pState(p) === "stop"; }).length;
+    var h = '<div class="top"><div><div class="cap">' + esc(D.now.day.split(" ")[0] + " · " + D.now.time + " · " + plural(P.length, "project")) + '</div><h1 class="lt">All projects</h1></div></div>';
+    h += '<div class="ovl"><span>' + dot("stop") + stopped + " stopped on you</span><span>" + dot("needs") + needs + " need you</span><span>" + dot("work") + plural(D.runs.length, "agent") + " running</span></div>";
+    var only = grp("only");
+    h += '<div class="ey">' + ic("stop", "s") + 'Stopped on you <span class="n">' + only.length + "</span></div>" + (only.length ? '<div class="group">' + only.map(askRow).join("") + "</div>" : '<div class="card cap">Nothing stopped on you.</div>');
+    h += '<div class="ey">Projects</div>' + P.map(pCard).join("") + take("Ring: share of planned items done. Red ring: work is stopped on you.", true);
+    return { tab: "projects", html: h };
+  }
+  function scrProject() {
+    var p = proj("forge"), s = p.summary, f = featsOf(p.id), done = f.filter(function (x) { return x.s === "done"; }).length, pub = ask("a-publish"), nw = f.filter(function (x) { return x.isNew && x.ba; });
+    var h = '<div class="crumb"><button data-act="go" data-v="all">' + ic("back", "s") + "All projects</button></div>";
+    h += '<div class="top" style="margin-bottom:4px"><div><h1 class="lt">' + esc(p.name) + '</h1></div></div><div class="cap" style="font-size:14px;margin:0 0 6px">' + esc(p.about) + '</div><div class="mets" style="margin:0 0 12px"><span class="mt goal">Goal: ' + esc(p.goal.title + " · " + p.goal.due) + "</span></div>";
+    h += '<div class="card"><div class="sum4"><b>Progress</b><span>' + esc(s.progress) + "</span><b>Done</b><span>" + esc(s.done) + "</span><b>Next</b><span>" + esc(s.next) + '</span><b class="st">Stuck</b><span>' + esc(s.stuck) + '</span></div><div class="prov">Written by your agent at ' + esc(s.writtenAt) + " from " + plural(s.fromEvents, "recorded event") + "</div></div>";
+    if (!U.published) h += '<button class="card tap" style="display:block;width:100%;text-align:left;box-shadow:inset 0 0 0 1.5px var(--red)" data-act="go" data-v="st-protected"><div class="lab r">' + ic("stop", "s") + "Only you · stopped " + fmtMin(NOW - hm(pub.askedAt)) + '</div><div class="q" style="font-size:19px;margin:4px 0">' + esc(pub.t) + '</div><div class="cap">' + ic("lock", "s") + " Opens a sign-in step. " + esc(ladLine(pub, NOW)) + "</div></button>";
+    else h += '<div class="card"><div class="lab g">Waiting on you</div><div class="big" style="font-size:20px">Nothing is stopped.</div></div>';
+    h += '<div class="card"><div class="hero">' + ring(done / f.length, 88, 9, "var(--accent)", done + "/" + f.length, "items") + '<div><div class="cap">' + esc(p.goal.title) + '</div><div class="h1">' + (U.published ? "Out by 15:52" : "Out today, after your yes") + "</div></div></div>" + stackPill(f) + "</div>";
+    h += '<div class="ey">New since you left</div><div class="group">' + nw.map(function (x) { return '<div class="row"><span class="t"><b>' + esc(x.name) + '</b><div class="big"><span class="from">' + x.ba.b + "</span>" + x.ba.a + (x.ba.u ? " " + x.ba.u : "") + "</div><span>" + esc(x.ba.k.toLowerCase()) + "</span></span></div>"; }).join("") + "</div>";
+    var wrong = f.filter(function (x) { return x.s === "pause" || x.s === "stop"; });
+    h += '<div class="ey">Wrong or paused</div>' + wrong.map(function (x) { return '<div class="card"><div style="display:flex;gap:10px;align-items:center">' + dot(x.s) + "<b>" + esc(x.name) + '</b></div><div class="cap" style="margin:2px 0 0 18px">' + esc(x.note) + "</div></div>"; }).join("");
+    var dfl = D.defaults.filter(function (d) { return d.project === p.id; });
+    h += '<div class="ey">Done for you <span class="n">' + dfl.length + '</span></div><div class="group">' + dfl.map(function (d) { return '<div class="row"><span class="r" style="width:40px">' + esc(d.t) + '</span><span class="t"><b style="font-weight:500">' + esc(d.w) + '</b></span><button class="link" data-act="undo-d">Undo</button></div>'; }).join("") + "</div>";
+    return { tab: "projects", html: h };
+  }
+  function scrParked() {
+    var h = '<div class="top"><div><div class="cap">Not in any build</div><h1 class="lt">Parked</h1></div></div><div class="cap" style="margin:0 4px 12px">Each one starts only on its signal.</div>';
+    h += D.parked.map(function (x) { return '<div class="pkc"><b>' + esc(x.name) + '</b><div class="cap">' + esc(x.what) + '</div><div class="cap"><b style="display:inline;font-weight:600">Starts when:</b> ' + esc(x.unpark) + "</div></div>"; }).join("");
+    return { html: h };
+  }
+
+  /* ---------- screen list (the navigation) ---------- */
+  var SCREENS = [
+    { id: "lock", g: "The ask loop", m: "first", t: "The one notification", d: "Lock screen. Steps 15:25 to 15:58 in place.", r: scrLock },
+    { id: "list", g: "The ask loop", m: "first", t: "The grouped list", d: "Only you, worth a look, safe defaults.", r: scrList },
+    { id: "ask", g: "The ask loop", m: "first", t: "One ask", d: "Options, default, why, what is stopped.", r: scrAsk },
+    { id: "snooze", g: "The ask loop", m: "first", t: "Snooze", d: "5, 10, 30 min, 1 hour, Long. Always a time.", r: scrSnooze, sheet: "snooze" },
+    { id: "sleep", g: "The ask loop", m: "first", t: "Sleep window", d: "Every night or just tonight.", r: scrSleep },
+    { id: "st-elsewhere", g: "States", m: "first", t: "Answered on another device", d: "Your laptop got there first.", r: scrElsewhere },
+    { id: "st-expired", g: "States", m: "first", t: "Expired", d: "Deadline passed, default taken.", r: scrExpired },
+    { id: "st-withdrawn", g: "States", m: "first", t: "Withdrawn by the agent", d: "No longer needed.", r: scrWithdrawn },
+    { id: "st-snoozed", g: "States", m: "first", t: "Snoozed until a time", d: "Lock screen while snoozed.", r: scrSnoozed },
+    { id: "st-asleep", g: "States", m: "first", t: "Asleep until wake time", d: "Lock screen at 02:14.", r: scrAsleep },
+    { id: "st-laptop", g: "States", m: "first", t: "Machine off, answer stored", d: "Picked up when it starts.", r: scrStored },
+    { id: "st-protected", g: "States", m: "first", t: "Protected action", d: "Publish opens a sign-in step.", r: scrProtected },
+    { id: "team-personal", g: "Team asks", m: "later", t: "Personal ask to one person", d: "Seen on Priya's phone.", r: scrPersonal },
+    { id: "team-group", g: "Team asks", m: "later", t: "Team ask that tags you", d: "Busy? Hand it to someone.", r: scrTeam },
+    { id: "team-record", g: "Team asks", m: "later", t: "Who handed off, who answered", d: "The record.", r: scrRecord },
+    { id: "slack-dm", g: "Team asks", m: "later", t: "Slack: direct message", d: "The personal ask in Slack.", r: scrSlackDm },
+    { id: "slack-channel", g: "Team asks", m: "later", t: "Slack: channel and thread", d: "The team ask, answered in the thread.", r: scrSlackChannel },
+    { id: "all", g: "Wider screens", m: "later", t: "All projects", d: "One line, stopped asks, a card each.", r: scrAll },
+    { id: "project", g: "Wider screens", m: "later", t: "Project home", d: "Progress, done, next, stuck.", r: scrProject },
+    { id: "parked", g: "Parked", m: "later", t: "Parked ideas", d: "Greyed. Not in any build.", r: scrParked, pk: true }
+  ];
+  function scrDef(id) { return byId(SCREENS, id); }
+
+  /* ---------- sheets ---------- */
+  function snoozeSheet() {
+    var b = function (m) { var until = clk(NOW + m); return '<button class="sbtn" data-act="snz" data-m="' + m + '"><b>' + snzWord(m) + "</b><span>until " + until + (inSleep(NOW + m) ? ", then sleep" : "") + "</span></button>"; };
+    var h = '<div class="cap" style="margin-bottom:12px">Nothing rings until the time you pick. Stopped work stays stopped, and agents move to other work.</div><div class="sgrid">';
+    if (!U.snzLong) h += D.reach.snooze.short.map(b).join("") + '<button class="sbtn" data-act="snz-long"><b>Long</b><span>2, 3, 6 hours, or a time</span></button>';
+    else {
+      h += D.reach.snooze.long.map(b).join("");
+      h += U.snzCustom ? '<div class="sbtn"><b>Until</b><span style="display:flex;gap:6px;align-items:center;margin-top:4px"><input id="snzAt" class="tin" type="time" value="18:00" aria-label="Back at"><button class="link" data-act="snz-at">Set</button></span></div>' : '<button class="sbtn" data-act="snz-custom"><b>Custom</b><span>Pick a time</span></button>';
+      h += '<button class="sbtn" data-act="snz-long"><b>Shorter</b><span>Back to 5 min to 1 hour</span></button>';
+    }
+    return { title: "Snooze", body: h + "</div>" };
+  }
+  function handoffSheet() {
+    var a = ask("a-dark"), tm = team(a.team);
+    var h = '<div class="cap" style="margin-bottom:12px">The ask moves to the person you pick. Only their answer counts after that. The handoff is recorded with your name.</div><div class="group">';
+    h += tm.members.filter(function (id) { return id !== ME; }).map(function (id) {
+      var p = person(id), local = NOW + (p.offset || 0), asleep = p.sleep ? (function () { var f = hm(p.sleep.from), t = hm(p.sleep.to), m = ((local % 1440) + 1440) % 1440; return f > t ? (m >= f || m < t) : (m >= f && m < t); })() : false;
+      var line = p.slack !== "linked" ? "Slack not linked to Forge. Cannot answer." : asleep ? "Asleep until " + clk(hm(p.sleep.to) - p.offset) + " your time. It would wait for her." : "Awake. Slack linked.";
+      return '<button class="row tap" data-act="hand" data-id="' + id + '"' + (p.slack !== "linked" ? " disabled style=\"opacity:0.5;cursor:default\"" : "") + ">" + avatar(id) + '<span class="t"><b>' + esc(p.name) + "</b><span>" + esc(line) + "</span></span>" + (p.slack === "linked" ? ic("chev", "s") : "") + "</button>";
+    }).join("");
+    return { title: "Ask someone else", body: h + "</div>" };
+  }
+  function signinSheet() {
+    var a = ask("a-publish"), s = U.signin, h;
+    if (s <= 1) h = '<div style="text-align:center"><div class="okc lk">' + ic("lock") + '</div><div style="font-size:20px;font-weight:700">Sign in to publish</div><div class="cap" style="margin:6px 0 16px">This approves one thing: ' + esc(a.short) + " in " + esc(proj(a.project).name) + ', from this phone.</div><button class="btn pri w" data-act="signin-go"' + (s === 1 ? " disabled" : "") + ">" + ic("face", "s") + (s === 1 ? "Checking" : "Use your passkey") + '</button><button class="link" style="margin-top:12px;color:var(--muted)" data-act="sheet-close">Not now</button></div>';
+    else h = '<div style="text-align:center"><div class="okc">' + ic("check") + '</div><div style="font-size:20px;font-weight:700">Signed in for this one request</div></div><div class="card" style="margin-top:12px"><div class="kv" style="margin:0"><span>Request</span><span>' + esc(a.short) + "</span><span>Project</span><span>" + esc(proj(a.project).name) + "</span><span>Device</span><span>This phone</span><span>Ends</span><span>15:50, or when used</span></div></div><button class=\"btn pri w\" data-act=\"publish\">Publish now</button>";
+    return { title: "", body: h };
+  }
+  function sheetHtml() {
+    var s = U.sheet;
+    if (!s) return "";
+    var c = s === "snooze" ? snoozeSheet() : s === "handoff" ? handoffSheet() : signinSheet();
+    return '<section class="sheet" role="dialog" aria-label="' + esc(c.title || "Sign in") + '"><div class="grab" data-act="sheet-close"><i></i></div><div class="sh"><h3>' + esc(c.title) + '</h3><button class="x" data-act="sheet-close">Close</button></div><div class="sb">' + c.body + "</div></section>";
+  }
+
+  /* ---------- render ---------- */
+  function curIndex() { return SCREENS.map(function (s) { return s.id; }).indexOf(U.scr); }
+  function renderCtl() {
+    var i = curIndex(), cur = SCREENS[i];
+    var h = '<div class="nbar"><button class="nv" data-act="nav-step" data-v="-1" aria-label="Previous screen">' + ic("back", "s") + '</button><button class="nt" data-act="nav-toggle" aria-expanded="' + U.navOpen + '"><span class="tx">' + esc(cur.t) + "</span>" + mk(cur.m) + '<span class="of">' + (i + 1) + " of " + SCREENS.length + "</span>" + ic(U.navOpen ? "down" : "menu", "s") + '</button><button class="nv" data-act="nav-step" data-v="1" aria-label="Next screen">' + ic("chev", "s") + "</button></div>";
+    h += '<div class="nlist"><h2>Forge owner app, mock v8</h2><p class="note">Phone first. Tap through the phone, or pick a screen. <b>first</b> is in the first build; <b>later</b> comes after.</p>';
+    h += '<div class="thm" role="group" aria-label="Theme">' + [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]].map(function (x) { return '<button class="' + (U.theme === x[0] ? "on" : "") + '" data-act="theme" data-v="' + x[0] + '">' + x[1] + "</button>"; }).join("") + "</div>";
+    var last = "";
+    SCREENS.forEach(function (s) {
+      if (s.g !== last) { h += '<div class="gh">' + esc(s.g) + "</div>"; last = s.g; }
+      h += '<button class="scn' + (s.id === U.scr ? " on" : "") + (s.pk ? " pk" : "") + '" data-act="go" data-v="' + s.id + '"><b>' + esc(s.t) + mk(s.m) + '</b><span class="d">' + esc(s.d) + "</span></button>";
+      if (s.id === "lock" && U.scr === "lock") h += '<div class="sub">' + EV.map(function (e, k) { return '<button class="' + ((U.step === null ? nowIdx() : U.step) === k ? "on" : "") + '" data-act="lad" data-v="' + k + '">' + esc(evLabel(e)) + "</button>"; }).join("") + "</div>";
+    });
+    h += '<div class="foot">All sample data comes from one JSON block in this page (forge.view/0). Every screen is drawn from it.</div></div>';
+    var ctl = $("ctl");
+    ctl.innerHTML = h;
+    ctl.className = "ctl" + (U.navOpen ? " open" : "");
+  }
+  function sbarHtml(time, mark) {
+    return "<span>" + time + "</span>" + mk(mark) + '<span class="ic"><svg width="18" height="11" viewBox="0 0 18 11" aria-hidden="true"><rect x="0" y="7" width="3" height="4" rx="1" fill="currentColor"/><rect x="5" y="5" width="3" height="6" rx="1" fill="currentColor"/><rect x="10" y="2.5" width="3" height="8.5" rx="1" fill="currentColor"/><rect x="15" y="0" width="3" height="11" rx="1" fill="currentColor"/></svg><svg width="26" height="12" viewBox="0 0 26 12" aria-hidden="true"><rect x="0.5" y="0.5" width="22" height="11" rx="3" fill="none" stroke="currentColor" opacity="0.5"/><rect x="2" y="2" width="15" height="8" rx="1.5" fill="currentColor"/></svg></span>';
+  }
+  function renderTabbar(tab) {
+    var tb = $("tabbar");
+    if (!tab) { tb.hidden = true; tb.innerHTML = ""; return; }
+    tb.hidden = false;
+    var n = grp("only").length + grp("look").length;
+    tb.innerHTML = [["asks", "Asks", "list"], ["projects", "Projects", "all"], ["reach", "Reach", "sleep"]].map(function (t) {
+      return '<button class="tb' + (tab === t[0] ? " on" : "") + '" data-act="go" data-v="' + t[2] + '">' + ic(t[0]) + "<span>" + t[1] + "</span>" + (t[0] === "asks" && n ? '<span class="bd">' + n + "</span>" : "") + (t[0] === "projects" ? mk("later") : "") + "</button>";
+    }).join("");
+  }
+  var lastScr = null;
+  function render() {
+    var def = scrDef(U.scr), out = def.r();
+    renderCtl();
+    var sc = $("scroll");
+    sc.className = "scroll" + (out.full ? " full" : "");
+    sc.innerHTML = out.html;
+    if (lastScr !== U.scr) { sc.scrollTop = 0; lastScr = U.scr; }
+    var sb = $("sbar");
+    sb.className = "sbar" + (out.light ? " w" : "");
+    sb.innerHTML = sbarHtml(out.time || D.now.time, def.m);
+    renderTabbar(out.full ? null : out.tab);
+    $("scrim").className = "scrim" + (U.sheet ? " on" : "");
+    var box = $("sheet"), had = !!box.querySelector(".sheet");
+    box.innerHTML = sheetHtml();
+    var sh = box.querySelector(".sheet");
+    if (sh) { if (had) sh.classList.add("on"); else { void sh.offsetHeight; requestAnimationFrame(function () { sh.classList.add("on"); }); } }
+    renderToast();
+  }
+  var toastTimer;
+  function toast(msg, undo) { clearTimeout(toastTimer); U.toast = { msg: msg, undo: undo }; renderToast(); toastTimer = setTimeout(function () { U.toast = null; renderToast(); }, 5000); }
+  function renderToast() { var t = U.toast; $("toast").innerHTML = t ? '<div class="toast" role="status">' + ic("check", "s") + "<span>" + esc(t.msg) + "</span>" + (t.undo ? '<button data-act="toast-undo">Undo</button>' : "") + "</div>" : ""; }
+  function applyTheme() { if (U.theme === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", U.theme); }
+  function go(v) {
+    var id = v, cur = null;
+    if (v.indexOf("ask:") === 0) { id = "ask"; cur = v.slice(4); }
+    if (cur) U.cur = cur;
+    if (id === "ask" && !cur && U.scr !== "snooze") U.cur = U.cur || "a-merge";
+    U.scr = id; U.navOpen = false;
+    var def = scrDef(id);
+    U.sheet = def.sheet || null; U.snzLong = false; U.snzCustom = false;
+    if (id === "snooze") U.cur = "a-merge";
+    render();
+  }
+  function closeSheet() {
+    var sh = $("sheet").querySelector(".sheet");
+    if (sh) sh.classList.remove("on");
+    $("scrim").className = "scrim";
+    U.sheet = null; U.snzLong = false; U.snzCustom = false;
+    if (U.signin === 1) U.signin = 0;
+    setTimeout(render, 220);
+  }
+  function setSnooze(m) {
+    U.snz = clk(NOW + m); U.sheet = null; U.snzLong = false; U.snzCustom = false;
+    U.scr = "st-snoozed"; render();
+  }
+
+  /* ---------- actions ---------- */
+  var A = {
+    go: function (el) { go(el.dataset.v); },
+    "nav-step": function (el) { var i = curIndex() + +el.dataset.v; if (i < 0) i = SCREENS.length - 1; if (i >= SCREENS.length) i = 0; go(SCREENS[i].id); },
+    "nav-toggle": function () { U.navOpen = !U.navOpen; renderCtl(); },
+    theme: function (el) { U.theme = el.dataset.v; applyTheme(); renderCtl(); },
+    lad: function (el) { var k = +el.dataset.v; if (k < 0 || k >= EV.length) return; U.step = k; if (U.scr !== "lock") U.scr = "lock"; render(); },
+    sheet: function (el) { U.sheet = el.dataset.v; render(); },
+    "sheet-close": function () { closeSheet(); },
+    "snz-long": function () { U.snzLong = !U.snzLong; U.snzCustom = false; render(); },
+    "snz-custom": function () { U.snzCustom = true; render(); },
+    snz: function (el) { setSnooze(+el.dataset.m); },
+    "snz-at": function () { var i = $("snzAt"), v = i && i.value ? i.value : "18:00", m = (hm(v) - NOW + 1440) % 1440 || 1440; setSnooze(m); },
+    "snz-end": function () { var p = U.snz; U.snz = null; U.sheet = null; U.scr = U.scr === "st-snoozed" ? "list" : U.scr; render(); toast("Snooze ended. Reminders are back on their times.", function () { U.snz = p; }); },
+    answer: function (el) {
+      var a = ask(el.dataset.id), i = +el.dataset.i;
+      if (a.kind === "protected" && i === a.act) { U.signin = 0; U.sheet = "signin"; render(); return; }
+      if (a.kind === "protected") { toast("Holding. It stays in Only you and rings on its reminder times."); return; }
+      if (a.id === "p-priya") { U.dm = i; render(); return; }
+      U.done[a.id] = i; render();
+      toast("Sent: " + a.opts[i] + ". " + (a.stops ? a.blocks[0] : a.holds) + " carries on.", function () { delete U.done[a.id]; });
+    },
+    "signin-go": function () { U.signin = 1; render(); setTimeout(function () { if (U.signin === 1) { U.signin = 2; render(); } }, 900); },
+    publish: function () { U.published = true; U.done["a-publish"] = 0; U.signin = 0; U.sheet = null; U.scr = "st-protected"; render(); toast("Publishing 0.0.12. Out by about 15:52."); },
+    pick: function (el) { U.picks[el.dataset.id] = +el.dataset.i; U.safeOn = true; render(); },
+    "safe-all": function () { U.safeOn = !U.safeOn; render(); },
+    "safe-open": function () { U.safeOpen = !U.safeOpen; render(); },
+    "safe-send": function () {
+      var L = grp("safe"), ids = L.map(function (a) { return a.id; });
+      L.forEach(function (a) { U.done[a.id] = U.picks[a.id] !== undefined ? U.picks[a.id] : a.def; });
+      U.safeOn = false; U.sentSafe = true; render();
+      toast("Sent " + plural(ids.length, "default") + ". Each is listed with Undo.", function () { ids.forEach(function (id) { delete U.done[id]; }); U.sentSafe = false; });
+    },
+    "undo-expired": function () { U.undone = true; render(); toast("The rerun was cancelled."); },
+    "undo-d": function () { toast("Undone in this mock only."); },
+    tonight: function () { var p = U.tonight; U.tonight = p ? null : { from: "01:00", to: "09:00" }; render(); toast(U.tonight ? "Just tonight: 01:00 to 09:00." : "Back to every night.", function () { U.tonight = p; }); },
+    hand: function (el) { var id = el.dataset.id; U.handed = id; U.sheet = null; render(); toast("Handed to " + pname(id) + ". The record shows you did it.", function () { U.handed = null; }); },
+    dm: function (el) { U.dm = +el.dataset.i; render(); },
+    "toast-undo": function () { var t = U.toast; U.toast = null; renderToast(); if (t && t.undo) { t.undo(); render(); toast("Undone."); } }
+  };
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest && e.target.closest("[data-act]");
+    if (!el || el.disabled) return;
+    var f = A[el.dataset.act];
+    if (f) { e.preventDefault(); f(el); }
+  });
+  document.addEventListener("change", function (e) {
+    var el = e.target.closest && e.target.closest("[data-chg]");
+    if (!el || !el.value) return;
+    var k = el.dataset.chg;
+    if (k === "from" || k === "to") U.sleep[k] = el.value; else if (U.tonight) U.tonight[k === "n-from" ? "from" : "to"] = el.value;
+    render();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.target && /INPUT/.test(e.target.tagName)) return;
+    if (e.key === "ArrowRight") A["nav-step"]({ dataset: { v: "1" } });
+    if (e.key === "ArrowLeft") A["nav-step"]({ dataset: { v: "-1" } });
+    if (e.key === "Escape" && U.sheet) closeSheet();
+  });
+  applyTheme();
+  render();
+})();
+</script>
+</body>
+</html>

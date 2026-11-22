@@ -1,0 +1,52 @@
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+Your Worker has access to the following bindings:
+Binding                       Resource            Mode
+env.BOARDS (BoardObject)      Durable Object      local
+
+[wrangler:warn] Unable to fetch the `Request.cf` object! Falling back to a default placeholder...
+Error: connect ECONNREFUSED 127.0.0.1:1
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+⎔ Starting local server...
+[wrangler:warn] Unable to fetch the `Request.cf` object! Falling back to a default placeholder...
+Error: connect ECONNREFUSED 127.0.0.1:1
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+Wrangler detected this dev session is running in an AI agent.
+The Local Explorer API is available at http://127.0.0.1:18761/cdn-cgi/local/explorer/api
+Useful routes:
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/workers - local Workers and bindings
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/scheduled?worker=<name> - invoke a Worker's scheduled handler; cron is required (see the OpenAPI schema for the full request)
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/storage/kv/namespaces - KV namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/d1/database - D1 databases
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/r2/buckets - R2 buckets
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workers/durable_objects/namespaces - Durable Object namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workflows - Workflows
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query - run a read-only SQL query (SELECT/WITH only) over captured request traces and console logs. Tables: spans, logs (read attributes via json(attributes)). Example:
+    curl -X POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query -H 'Content-Type: application/json' -d '{"sql":"SELECT service, name, outcome, duration_ms FROM spans WHERE parent_id IS NULL LIMIT 20"}'
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/clear - clear all captured traces and logs
+If the routes above don't cover what you need, fetch the full OpenAPI schema (large - use only as a last resort):
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api - OpenAPI schema
+[wrangler:info] Ready on http://127.0.0.1:18761
+[wrangler:info] GET /health 200 OK (3051ms)
+[wrangler:info] GET /health 200 OK (3712ms)
+[wrangler:info] GET /health 200 OK (3212ms)
+[wrangler:info] GET /health 200 OK (3255ms)
+[wrangler:info] GET /health 200 OK (2754ms)
+[wrangler:info] GET /health 200 OK (2252ms)
+[wrangler:info] GET /health 200 OK (1751ms)
+[wrangler:info] GET /health 200 OK (1258ms)
+[wrangler:info] GET /health 200 OK (758ms)
+[wrangler:info] GET /health 200 OK (257ms)
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1m[board] no url: verifying tokens for http://127.0.0.1:18761, the host requests name. Pass board({ url }) before this serves in production.[0m
+
+
+[wrangler:info] GET /me 200 OK (54ms)
+[wrangler:info] GET /me 200 OK (8ms)
+[wrangler:info] POST /messages 201 Created (42ms)
+[wrangler:info] GET /events 200 OK (12ms)
+[wrangler:info] POST /messages 201 Created (28ms)
+[wrangler:info] GET /events 200 OK (216ms)

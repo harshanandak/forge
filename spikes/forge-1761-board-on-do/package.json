@@ -1,0 +1,12 @@
+{
+  "name": "forge-1761-board-on-do",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "trial": "bun trial.ts"
+  },
+  "dependencies": {
+    "@vercel/board": "0.54.0",
+    "wrangler": "4.152.0"
+  }
+}

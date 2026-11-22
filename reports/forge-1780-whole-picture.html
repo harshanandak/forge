@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge whole picture</title>
+<style>
+:root {
+  --bg: #f2f2f5; --surface: #ffffff; --raised: #f7f7f9; --ink: #111114; --muted: #6e6e76; --faint: #a3a3ab; --hair: rgba(60, 60, 67, 0.14);
+  --accent: #4b55d6; --accent-ink: #ffffff; --accent-soft: rgba(75, 85, 214, 0.10);
+  --green: #24a058; --green-soft: rgba(36, 160, 88, 0.12);
+  --orange: #e08a12; --orange-soft: rgba(224, 138, 18, 0.12);
+  --red: #e5484d; --grey: #b9b9c0;
+  --c-works: #1d8a4b; --c-works-bg: rgba(36, 160, 88, 0.13);
+  --c-exp: #2f7d6a; --c-exp-bg: rgba(47, 125, 106, 0.10);
+  --c-off: #4b55d6; --c-off-bg: rgba(75, 85, 214, 0.11);
+  --c-half: #b23a3e; --c-half-bg: rgba(229, 72, 77, 0.11);
+  --c-int: #7a4fb0; --c-int-bg: rgba(122, 79, 176, 0.10);
+  --c-trial: #b56d06; --c-trial-bg: rgba(224, 138, 18, 0.14);
+  --c-design: #55555c; --c-design-bg: rgba(60, 60, 67, 0.09);
+  --c-idea: #85858d;
+  --own: #111114; --own-bg: #fff6d6; --own-line: #d9b740;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000; --surface: #1c1c1f; --raised: #2a2a2e; --ink: #f2f2f5; --muted: #9d9da6; --faint: #6c6c74; --hair: rgba(255, 255, 255, 0.10);
+    --accent: #8a92ff; --accent-ink: #0b0c1e; --accent-soft: rgba(138, 146, 255, 0.16);
+    --green: #3fca7a; --green-soft: rgba(63, 202, 122, 0.15);
+    --orange: #f2a640; --orange-soft: rgba(242, 166, 64, 0.15);
+    --red: #ff6b6f; --grey: #4a4a52;
+    --c-works: #4fd487; --c-works-bg: rgba(63, 202, 122, 0.15);
+    --c-exp: #6fd0b6; --c-exp-bg: rgba(111, 208, 182, 0.12);
+    --c-off: #9aa1ff; --c-off-bg: rgba(138, 146, 255, 0.16);
+    --c-half: #ff8a8d; --c-half-bg: rgba(255, 107, 111, 0.14);
+    --c-int: #c3a2f0; --c-int-bg: rgba(195, 162, 240, 0.13);
+    --c-trial: #f2a640; --c-trial-bg: rgba(242, 166, 64, 0.15);
+    --c-design: #c4c4cc; --c-design-bg: rgba(255, 255, 255, 0.09);
+    --c-idea: #8d8d96;
+    --own: #f7e7a6; --own-bg: rgba(217, 183, 64, 0.14); --own-line: #b8982c;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px 48px; }
+h2 { font-size: 13px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 48px 0 10px; }
+p { margin: 0; }
+.card { background: var(--surface); border-radius: 18px; padding: 16px; }
+
+/* hero */
+.hero { padding: 48px 0 8px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700; letter-spacing: 0.02em; }
+.brand i { width: 26px; height: 26px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; }
+.brand i::after { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--accent-ink); transform: rotate(45deg); }
+.hero h1 { font-size: clamp(28px, 5.4vw, 48px); line-height: 1.12; letter-spacing: -0.025em; font-weight: 750; margin: 18px 0 14px; }
+.hero .sub { font-size: clamp(16px, 2.2vw, 19px); color: var(--muted); max-width: 760px; }
+
+/* numbers */
+.nums { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; margin-top: 28px; }
+.num { background: var(--surface); border-radius: 14px; padding: 12px 14px; }
+.num b { display: block; font-size: 22px; font-weight: 750; letter-spacing: -0.02em; line-height: 1.2; }
+.num span { display: block; font-size: 13.5px; color: var(--muted); margin-top: 2px; }
+
+/* chips */
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 3px 10px 3px 8px; line-height: 1.4; max-width: 100%; }
+.chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.works { color: var(--c-works); background: var(--c-works-bg); } .works::before { background: var(--c-works); }
+.exp { color: var(--c-exp); background: var(--c-exp-bg); } .exp::before { background: transparent; box-shadow: inset 0 0 0 2px var(--c-exp); border-radius: 50%; background-image: linear-gradient(90deg, var(--c-exp) 50%, transparent 50%); }
+.off { color: var(--c-off); background: var(--c-off-bg); } .off::before { background: transparent; box-shadow: inset 0 0 0 2px var(--c-off); }
+.half { color: var(--c-half); background: var(--c-half-bg); } .half::before { background: transparent; box-shadow: inset 0 0 0 2px var(--c-half); background-image: linear-gradient(0deg, var(--c-half) 50%, transparent 50%); }
+.int { color: var(--c-int); background: var(--c-int-bg); } .int::before { background: var(--c-int); border-radius: 2px; }
+.trial { color: var(--c-trial); background: var(--c-trial-bg); } .trial::before { background: var(--c-trial); border-radius: 2px; transform: rotate(45deg); width: 7px; height: 7px; }
+.design { color: var(--c-design); background: var(--c-design-bg); } .design::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--c-design); }
+.idea { color: var(--c-idea); background: transparent; box-shadow: inset 0 0 0 1px var(--c-idea); } .idea::before { background: transparent; border: 1.5px dashed var(--c-idea); }
+
+/* owner tags: square, ruled, distinct from status chips */
+.own { display: inline-block; font-size: 12.5px; font-weight: 700; color: var(--own); background: var(--own-bg); border-left: 3px solid var(--own-line); border-radius: 4px; padding: 2px 8px; line-height: 1.5; }
+.own.none { font-weight: 600; color: var(--muted); background: transparent; border: 1px dashed var(--faint); border-left: 3px solid var(--faint); }
+
+/* legend */
+.legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+.lg { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 14px; border-radius: 14px; background: var(--surface); }
+.lg span.d { font-size: 13px; color: var(--muted); }
+.tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; background: var(--surface); border-radius: 14px; padding: 12px 14px; }
+.tags .d { flex-basis: 100%; font-size: 13px; color: var(--muted); }
+
+/* decided */
+.decided { box-shadow: inset 4px 0 0 var(--own-line); }
+.decided ul { list-style: none; margin: 0; padding: 0; }
+.decided li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; align-items: start; padding: 9px 0; border-top: 1px solid var(--hair); font-size: 15px; }
+.decided li:first-child { border-top: 0; padding-top: 0; }
+.decided li .own { justify-self: end; white-space: nowrap; }
+
+/* areas */
+.bar { display: none; justify-content: flex-end; gap: 8px; margin-bottom: 10px; }
+.js .bar { display: flex; }
+.bar button { font: inherit; font-size: 13.5px; font-weight: 600; color: var(--accent); background: var(--surface); border: 0; border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+.areas { display: flex; flex-direction: column; gap: 12px; }
+details.area { padding: 0; }
+details.area > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 30px minmax(0, 1fr) 20px; gap: 12px; align-items: start; padding: 16px; }
+details.area > summary::-webkit-details-marker { display: none; }
+.area .n { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 700; }
+.area .tt b { display: block; font-size: 19px; font-weight: 720; letter-spacing: -0.01em; line-height: 1.25; }
+.area .tt span { display: block; font-size: 14.5px; color: var(--muted); margin-top: 3px; }
+.area .tt span em { font-style: normal; font-weight: 650; color: var(--ink); }
+.area .car { width: 20px; height: 20px; margin-top: 4px; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform 160ms ease; }
+details.area[open] .car { transform: rotate(180deg); }
+.four { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0 16px 16px; }
+.pt { background: var(--raised); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+.pt h3 { margin: 0 0 8px; font-size: 11.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.pt.dir { background: var(--own-bg); }
+.pt.dir h3 { color: var(--own); }
+.pt ul { list-style: none; margin: 0; padding: 0; }
+.pt li { font-size: 14.5px; line-height: 1.45; }
+.pt li + li { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--hair); }
+.pt li .chip, .pt li .own { margin-top: 5px; }
+.pt li .row { display: flex; flex-wrap: wrap; gap: 6px; }
+.pt .q { color: var(--muted); }
+
+/* after */
+.after { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.after .card b.h { display: block; font-size: 18px; font-weight: 720; letter-spacing: -0.01em; margin-bottom: 10px; }
+.split { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 10px 0 12px; }
+.split div { background: var(--raised); border-radius: 10px; padding: 8px 10px; }
+.split b { display: block; font-size: 20px; font-weight: 750; }
+.split span { display: block; font-size: 12.5px; color: var(--muted); line-height: 1.3; }
+.after p + p, .after p + ul, .after ul + p { margin-top: 10px; }
+.after ul { margin: 0; padding-left: 18px; font-size: 15px; }
+.after ul li + li { margin-top: 4px; }
+.note { font-size: 13.5px; color: var(--muted); border-left: 3px solid var(--hair); padding-left: 10px; }
+.weeks { display: flex; align-items: flex-end; gap: 8px; height: 64px; margin: 10px 0 4px; }
+.weeks div { flex: 0 0 44px; background: var(--accent-soft); border-radius: 6px 6px 0 0; position: relative; }
+.weeks div span { position: absolute; top: -20px; left: 0; right: 0; text-align: center; font-size: 12.5px; font-weight: 700; color: var(--accent); }
+.trust { margin-top: 12px; }
+.trust ul { margin: 0; padding-left: 18px; font-size: 14px; color: var(--muted); }
+.trust li + li { margin-top: 6px; }
+.trust b.h { display: block; font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+
+footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--muted); }
+
+@media (max-width: 899px) {
+  .after { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 699px) {
+  .hero { padding-top: 32px; }
+  h2 { margin-top: 40px; }
+  .four { grid-template-columns: minmax(0, 1fr); padding: 0 12px 12px; }
+  details.area > summary { padding: 14px 12px; gap: 10px; grid-template-columns: 28px minmax(0, 1fr) 20px; }
+  .split { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .decided li { grid-template-columns: minmax(0, 1fr); }
+  .decided li .own { justify-self: start; white-space: normal; }
+  .nums { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="brand"><i aria-hidden="true"></i>Forge</div>
+  <h1>Forge: the whole picture</h1>
+  <p class="sub">What is built, what is unfinished, what is pending, and what you have decided. Drawn from Forge's code and its issue list on 2026-11-21, not from one conversation.</p>
+
+  <div class="nums">
+    <div class="num"><b>82 commands</b><span>across 8 blocks</span></div>
+    <div class="num"><b>18 stable, 64 experimental</b><span>18 marked stable (memory), 64 marked experimental by Forge's own files</span></div>
+    <div class="num"><b>1,780 issues</b><span>ever filed: 767 closed, 1,013 open</span></div>
+    <div class="num"><b>977 open about Forge</b><span>27 are Score Easy, 9 belong to other projects</span></div>
+    <div class="num"><b>247 open bugs</b><span>46 open top-priority items, 73 open security items, 70 open Windows items</span></div>
+    <div class="num"><b>80 old features compared</b><span>9 carried as is, 27 carried in a new form, 2 not carried, 42 not yet determined</span></div>
+  </div>
+</header>
+
+<section>
+  <h2>What the labels mean</h2>
+  <div class="legend" role="list" aria-label="Status labels">
+    <div class="lg" role="listitem"><span class="chip works">Works, stable</span><span class="d">Built, and Forge's own files mark it stable.</span></div>
+    <div class="lg" role="listitem"><span class="chip exp">Works, marked experimental</span><span class="d">Forge's own caution label, not proof of a fault.</span></div>
+    <div class="lg" role="listitem"><span class="chip off">Built, switched off</span><span class="d">The code exists. It is not turned on.</span></div>
+    <div class="lg" role="listitem"><span class="chip half">Half-built</span><span class="d">Something is plainly unfinished.</span></div>
+    <div class="lg" role="listitem"><span class="chip int">Internal only</span><span class="d">Used to build Forge, not shipped to users.</span></div>
+    <div class="lg" role="listitem"><span class="chip trial">Proven in a trial</span><span class="d">Ran as an experiment. Not product code.</span></div>
+    <div class="lg" role="listitem"><span class="chip design">Designed</span><span class="d">Decided on paper. Not built.</span></div>
+    <div class="lg" role="listitem"><span class="chip idea">Idea</span><span class="d">Parked, or not yet designed.</span></div>
+  </div>
+  <div class="tags" aria-label="Owner tags">
+    <span class="d">Owner tags show what you said on 2026-11-21.</span>
+    <span class="own">Owner: work on it</span>
+    <span class="own">Owner: keep</span>
+    <span class="own">Owner: not hard, basics are worked out</span>
+    <span class="own">Owner: removed</span>
+    <span class="own">Owner: stays, shape will change</span>
+    <span class="own none">No word yet</span>
+  </div>
+</section>
+
+<section>
+  <h2>What you decided today</h2>
+  <div class="card decided">
+    <ul>
+      <li><span>Newcomer experience: work on it.</span><span class="own">Owner: work on it</span></li>
+      <li><span>Self-tuning delivery loop: work on it.</span><span class="own">Owner: work on it</span></li>
+      <li><span>Recovery (lanes, memory, stores): keep.</span><span class="own">Owner: keep</span></li>
+      <li><span>Laws: keep.</span><span class="own">Owner: keep</span></li>
+      <li><span>Teams: not a hard build, because the basics are already worked out. The rest comes later.</span><span class="own">Owner: not hard, rest later</span></li>
+      <li><span>Forge and Meetings together: removed. Closed today.</span><span class="own">Owner: removed</span></li>
+      <li><span>Retire old Forge, and drop ideas that only fit weaker agents: yes.</span></li>
+      <li><span>Breaking changes are fine. Old stuff may break. Move fast and build stable, high-quality features.</span></li>
+      <li><span>Recurring insights from old Forge: covered by the self-tuning loop.</span></li>
+      <li><span>Shepherd: stays, but its shape will change around the CI work and merge rules.</span><span class="own">Owner: stays, shape will change</span></li>
+      <li><span>Agent dispatch block: removed. Harnest stays its own repo and can come back later as a block.</span><span class="own">Owner: removed</span></li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <h2>The 13 areas</h2>
+  <div class="bar"><button type="button" id="collapse">Collapse all</button><button type="button" id="expand">Open all</button></div>
+  <div class="areas" id="areas">
+
+    <details class="card area" open>
+      <summary><span class="n">1</span><span class="tt"><b>Work tracking</b><span><em>What it lets you do:</em> keep every task, its blockers and its history in one record.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>17 commands for issues, dependencies, links, comments, events, a board that explains what blocks what, and lists of ready, blocked and stale work.<br><span class="chip exp">Works, marked experimental</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>In the cloud, changing an issue's type, parent or dependencies is not supported yet.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>23 open items tagged tracker.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li><span class="own none">No word yet</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">2</span><span class="tt"><b>Claims and handoff between sessions</b><span><em>What it lets you do:</em> let one agent hold a task, hand it to another, and pick it up later without losing the thread.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>9 commands: claim, renew, release, checkpoint, resume, invite, join, leave, call. A claim lasts two hours by default in the delivery setup.<br><span class="chip exp">Works, marked experimental</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>In the cloud, reopening a claim and issues that several agents share or compete on are not supported yet.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>Handoff items sit under the delivery loop work.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li><span class="own none">No word yet</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">3</span><span class="tt"><b>Lanes and parallel attempts</b><span><em>What it lets you do:</em> run several pieces of work side by side in separate workspaces, try the same task more than once, and pick the winner on evidence.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>20 commands. Lanes: start, dispatch, stop, resume, freeze, unfreeze, control, record, status, show, close. Attempts: slots, reserve, release, evidence, select, note.<br><span class="chip exp">Works, marked experimental</span></li>
+          <li>The lane runner Forge uses to build itself.<br><span class="chip int">Internal only</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>Nothing yet counts review and fix rounds. Limits on how many lanes run at once are advice only. Closing a lane on a cloud project is refused.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>71 open items tagged lanes.</li>
+          <li>"Recover a lane safely from start to close": 45 open.</li>
+          <li>"Lane autopilot" (Forge runs the whole pull-request loop itself): 13 open.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li>Recovery: keep.<br><span class="own">Owner: keep</span></li>
+          <li>Lane autopilot: no word yet.<br><span class="own none">No word yet</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">4</span><span class="tt"><b>Checks, receipts and the merge gate</b><span><em>What it lets you do:</em> know exactly what was checked before anything merges.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>6 commands: run checks, list and show receipts, the gate, pull-request state, and merge. A merge is pinned to the exact version that was checked.<br><span class="chip exp">Works, marked experimental</span></li>
+          <li>Proof from GitHub that a pull request really merged before work is closed.<br><span class="chip off">Built, switched off</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>The shepherd. Old Forge had a background watcher for every pull request. New Forge has none of its own, so the agent tool must wake the agent.<br><span class="chip half">Half-built: not carried from old Forge</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>68 open items tagged CI and 33 tagged check.</li>
+          <li>"CI tiers" and the "Review Gate" now under test.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li>Shepherd stays, shape will change. The CI work under test may become part of it. (filed today)<br><span class="own">Owner: stays, shape will change</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">5</span><span class="tt"><b>Memory and decisions</b><span><em>What it lets you do:</em> keep what agents learn and what you decide, and give it back at the right moment.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>18 commands, the only block marked stable: add, search, show, attach, move, export, restore, propose, accept, reject, forget, and decisions you can propose and adopt. Scoped notes are handed to an agent at the start of a session.<br><span class="chip works">Works, stable</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li class="q">None found in the manifests.</li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>83 open items tagged memory.</li>
+          <li>"Move project memory without losing notes": 33 open.</li>
+          <li>"Memory reliability": 6 open.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li>Recovery: keep.<br><span class="own">Owner: keep</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">6</span><span class="tt"><b>Guards on agents and the agent workflow</b><span><em>What it lets you do:</em> let agents work on their own while a few rules stop the costly mistakes.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>Guards. One warns when a tool result looks like it contains a password or key. One challenges an agent that says "done" without a current receipt. One checks dangerous commands. One makes the agent ask first.<br><span class="chip exp">Works, marked experimental</span></li>
+          <li>Six workflow skills: intake, cut, build, review, land, loop. The review loop stops after two rounds and re-plans.<br><span class="chip exp">Works, marked experimental</span></li>
+          <li>Ready setups for Claude, Codex and T3. Other agent tools get guidance only.<br><span class="chip exp">Works, marked experimental</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>From old Forge, the automatic test-first check on every commit and the automatic sorting of a change into six types were not found. Not yet determined whether they are missing or replaced.<br><span class="chip half">Half-built: not yet determined</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>47 open items tagged templates, 35 tagged delivery.</li>
+          <li>"Newcomer experience": 47 open.</li>
+          <li>"Self-tuning delivery loop": 33 open.</li>
+          <li>"Laws" (your rules mapped to what enforces each): 5 open.</li>
+          <li>"Absorb agent-config into Forge": 23 open across two epics.</li>
+          <li>"Agent dispatch block": closed on 21 Nov. Its 4 scoreboard items moved to the self-tuning loop.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li>Newcomer experience: work on it.<br><span class="own">Owner: work on it</span></li>
+          <li>Self-tuning loop: work on it.<br><span class="own">Owner: work on it</span></li>
+          <li>Laws: keep.<br><span class="own">Owner: keep</span></li>
+          <li>Agent dispatch block: removed.<br><span class="own">Owner: removed</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">7</span><span class="tt"><b>Accounts, identity and sign-in</b><span><em>What it lets you do:</em> make sure work goes out under the right account, and prove who is who.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>4 commands that plan, choose and check the account and the name on outgoing commits. Cloud login and logout.<br><span class="chip exp">Works, marked experimental</span></li>
+          <li>Sign-in for devices, with browser approval.<br><span class="chip off">Built, switched off</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>No hosted proof of sign-in yet, no way to list tokens, no admin tool.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>"Accounts for any service" (GitHub, Cloudflare, Neon and any tool, bound per project): 11 open.</li>
+          <li>73 open security items across all areas.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li><span class="own none">No word yet</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">8</span><span class="tt"><b>Cloud: one record across machines</b><span><em>What it lets you do:</em> use the same record from your laptop and from cloud machines, and restore it if something breaks.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>One small store per project, shared claims, issues in the cloud, lanes that stop and resume across machines, checkpoint, restore and export, and 25 files of checks Forge runs on its own cloud.<br><span class="chip off">Built, switched off</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>Every standard cloud request is answered "Cloud projects arrive with v3." Launch needs the packed and public acceptance runs, a two-machine journey and your approval to publish. The live check still skips 33 journeys.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>73 open items tagged cloud.</li>
+          <li>"Cloud client in the command line": 43 open.</li>
+          <li>"Team-scale cloud tracker": 7 open.</li>
+          <li>"Cloud and autonomy, stage 2": 10 open.</li>
+          <li>"Recover stores without losing identity": 19 open.</li>
+          <li>The release list has 178 rows.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li>Recovery: keep.<br><span class="own">Owner: keep</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">9</span><span class="tt"><b>Teams</b><span><em>What it lets you do:</em> bring in a second person.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>A directory of people and a small identity file.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>A teammate cannot connect today. Browser login accepts only the configured owner. The team plan itself says it proves no working team setup yet.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>"Teams: see who works on what, and let several people work one issue".</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li>Not a hard build: the basics are already worked out. The rest comes later.<br><span class="own">Owner: not hard, rest later</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">10</span><span class="tt"><b>Extending Forge</b><span><em>What it lets you do:</em> swap any part, add your own, or wrap someone else's work.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>8 blocks, 11 adapters, 20 ports, 1 interface, 1 template. A custom block is checked without running its code, then admitted by its exact fingerprint. A guide and an example block.<br><span class="chip exp">Works, marked experimental</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>No check kit for replacement parts, no start-to-finish guide for building one.<br><span class="chip design">Designed</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>Check kit, provider guide, adoption map of outside parts Forge could wrap.</li>
+          <li>Vercel Board's engine and Slack connection.<br><span class="chip trial">Proven in a trial</span></li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li><span class="own none">No word yet</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">11</span><span class="tt"><b>Release, install and upgrade</b><span><em>What it lets you do:</em> ship Forge to others safely.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>Version 0.0.12 on the main branch. A release runbook with signatures, read-back on three systems and staged promotion.<br><span class="chip exp">Works, marked experimental</span></li>
+          <li>Release, import and CI tools.<br><span class="chip int">Internal only</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>The front page still says 0.0.11 and describes Forge as "a local command-line tool to track work and run project checks". No changelog.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>"First release checklist": 7 open.</li>
+          <li>"Release 0.2.0": 30 open.</li>
+          <li>"Publish 0.1.0": 16 open.</li>
+          <li>"Make packed proof repeatable": 27 open.</li>
+          <li>"Retire old Forge": 4 open.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li>Retire old Forge: yes. Breaking changes are fine.</li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">12</span><span class="tt"><b>Speed and platform support</b><span><em>What it lets you do:</em> use Forge without waiting, on Windows as well.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>Dedicated process supervision for Windows.<br><span class="chip exp">Works, marked experimental</span></li>
+          <li>Speed and footprint measuring tools.<br><span class="chip int">Internal only</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>An open item says every command pays about 0.7 to 1 second of startup.<br><span class="chip half">Half-built</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>100 open items tagged runtime, 70 tagged Windows.</li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li><span class="own none">No word yet</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+    <details class="card area" open>
+      <summary><span class="n">13</span><span class="tt"><b>The owner layer: reaching you away from the laptop</b><span><em>What it lets you do:</em> answer what only you can answer, from your phone or Slack.</span></span><svg class="car" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="four">
+        <div class="pt"><h3>Built</h3><ul>
+          <li>Nothing shipped. In the cloud code, resuming a stopped lane can ask for your decision and take a relayed reply.<br><span class="chip off">Built, switched off</span></li>
+          <li>A mailbox for questions, Vercel Board's engine on Forge's cloud, and its Slack connection against a fake Slack.<br><span class="chip trial">Proven in a trial</span></li>
+        </ul></div>
+        <div class="pt"><h3>Unfinished</h3><ul>
+          <li>Everything a person would touch: phone app, questions with who may answer, reminder ladder, snooze and sleep, handoff, the catch-me-up brief, the all-projects home.<br><span class="chip design">Designed</span></li>
+        </ul></div>
+        <div class="pt"><h3>Pending</h3><ul>
+          <li>The question loop, the brief and home, team questions, the phone app's first slice.</li>
+          <li>"Runner on any cloud machine" so agents work with the laptop closed.<br><span class="chip idea">Idea</span></li>
+        </ul></div>
+        <div class="pt dir"><h3>Your direction</h3><ul>
+          <li>No word yet on order. Earlier in this chat you approved the design choices.<br><span class="own none">No word yet</span></li>
+        </ul></div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<section>
+  <h2>Beyond the areas</h2>
+  <div class="after">
+    <div class="card">
+      <b class="h">Old Forge against new Forge</b>
+      <p>80 old features compared by reading both codebases.</p>
+      <div class="split">
+        <div><b>9</b><span>carried as is</span></div>
+        <div><b>27</b><span>carried in a new form</span></div>
+        <div><b>2</b><span>not carried</span></div>
+        <div><b>42</b><span>not yet determined</span></div>
+      </div>
+      <p>Carried in a new form, for example: the six old stages became intake, cut, build, review, land and loop.</p>
+      <p>Not carried: the shepherd, and the command that tied a role to a skill.</p>
+      <p>Possibly lost, not proven either way:</p>
+      <ul>
+        <li>the test-first check on every commit</li>
+        <li>sorting a change into six types</li>
+        <li>automatic reruns of flaky checks</li>
+        <li>the quick push</li>
+        <li>upgrade that repairs itself</li>
+        <li>import from Beads</li>
+        <li>the dashboard</li>
+        <li>recurring insights</li>
+      </ul>
+      <p class="note">Not yet determined means the reader could not find a match. It is not proof that anything is missing.</p>
+    </div>
+
+    <div class="card">
+      <b class="h">The unsorted pile</b>
+      <p>Of 977 open Forge items:</p>
+      <ul>
+        <li>352 have no parent</li>
+        <li>210 have no label</li>
+        <li>77 have no type</li>
+        <li>133 sit in the Parked backlog</li>
+        <li>103 were carried in from old Forge and are still open</li>
+      </ul>
+      <p>New items arrived at 159, then 197, then 252 a week in November.</p>
+      <div class="weeks" role="img" aria-label="New items per week in November: 159, then 197, then 252">
+        <div style="height:40%"><span>159</span></div>
+        <div style="height:50%"><span>197</span></div>
+        <div style="height:64%"><span>252</span></div>
+      </div>
+      <p>Closing has not kept up: 767 closed in total.</p>
+      <p class="note">You said many of these can be removed or closed. Nothing has been bulk-closed yet.</p>
+    </div>
+  </div>
+
+  <div class="card trust">
+    <b class="h">How far to trust this page</b>
+    <ul>
+      <li>Counts of issues: pulled from the live issue store by script on 2026-11-21. All 1,780 ids present.</li>
+      <li>Stable and experimental counts, and the cloud switch: read directly from the files by the lead.</li>
+      <li>Everything else under Built and Unfinished: read from code and documents by four separate readers. Nothing was run. Several readers reported their own gaps.</li>
+      <li>"Works" on this page means the code, a document and a test reference exist. It does not mean a test was run for this page.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>Forge whole picture. Drawn on 2026-11-21.</footer>
+
+</div>
+<script>
+(function () {
+  document.documentElement.className += ' js';
+  var all = document.querySelectorAll('#areas details');
+  function setAll(open) { for (var i = 0; i < all.length; i++) all[i].open = open; }
+  document.getElementById('collapse').addEventListener('click', function () { setAll(false); });
+  document.getElementById('expand').addEventListener('click', function () { setAll(true); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,392 @@
+
+--- 2026-11-21T19:25:41.532Z debug
+🪵  Writing logs to "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\logs\wrangler-2026-11-21_19-25-41_106.log"
+---
+
+--- 2026-11-21T19:25:41.532Z warn
+▲ [WARNING] Proxy environment variables detected. We'll use your proxy for fetch requests.
+
+
+---
+
+--- 2026-11-21T19:25:41.581Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:25:41.581Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env.local". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:25:41.636Z log
+
+ ⛅️ wrangler 4.152.0
+────────────────────
+---
+
+--- 2026-11-21T19:25:41.660Z debug
+Metrics dispatcher: Dispatching disabled - would have sent {"deviceId":"89b88391-ebbe-4c13-b3f7-21ae7197ffe8","event":"wrangler command started","timestamp":1795289141660,"properties":{"amplitude_session_id":1795289141637,"amplitude_event_id":0,"wranglerVersion":"4.152.0","wranglerMajorVersion":4,"wranglerMinorVersion":152,"wranglerPatchVersion":0,"osPlatform":"Windows","osVersion":"Windows 11 Home Single Language","nodeVersion":24,"packageManager":"bun","isFirstUsage":false,"configFileType":"none","isCI":false,"isPagesCI":false,"isWorkersCI":false,"isInteractive":false,"hasAssets":false,"agent":"codex","argsUsed":["config","ip","local","persistTo","port"],"argsCombination":"config, ip, local, persistTo, port","sanitizedCommand":"dev","sanitizedArgs":{"local":true},"currentAgentSkillsInstalled":null}}.
+---
+
+--- 2026-11-21T19:25:41.662Z debug
+setting config
+---
+
+--- 2026-11-21T19:25:41.663Z debug
+Updating config... undefined undefined
+---
+
+--- 2026-11-21T19:25:41.717Z debug
+local dev variables file not found at ".dev.vars". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:25:41.718Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:25:41.718Z debug
+.env file not found at "E:\Personal-Projects\forge-new\.overseer\spikes\forge-1761-board-on-do\.env.local". Continuing... For more details, refer to https://developers.cloudflare.com/workers/wrangler/system-environment-variables/
+---
+
+--- 2026-11-21T19:25:41.721Z log
+Your Worker has access to the following bindings:
+---
+
+--- 2026-11-21T19:25:41.721Z log
+Binding                       Resource            Mode
+---
+
+--- 2026-11-21T19:25:41.721Z log
+env.BOARDS (BoardObject)      Durable Object      local
+---
+
+--- 2026-11-21T19:25:41.722Z log
+
+---
+
+--- 2026-11-21T19:25:42.095Z log
+Wrangler detected this dev session is running in an AI agent.
+The Local Explorer API is available at http://127.0.0.1:18761/cdn-cgi/local/explorer/api
+Useful routes:
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/workers - local Workers and bindings
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/scheduled?worker=<name> - invoke a Worker's scheduled handler; cron is required (see the OpenAPI schema for the full request)
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/storage/kv/namespaces - KV namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/d1/database - D1 databases
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/r2/buckets - R2 buckets
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workers/durable_objects/namespaces - Durable Object namespaces
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api/workflows - Workflows
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query - run a read-only SQL query (SELECT/WITH only) over captured request traces and console logs. Tables: spans, logs (read attributes via json(attributes)). Example:
+    curl -X POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/query -H 'Content-Type: application/json' -d '{"sql":"SELECT service, name, outcome, duration_ms FROM spans WHERE parent_id IS NULL LIMIT 20"}'
+  POST http://127.0.0.1:18761/cdn-cgi/local/explorer/api/local/observability/clear - clear all captured traces and logs
+If the routes above don't cover what you need, fetch the full OpenAPI schema (large - use only as a last resort):
+  GET http://127.0.0.1:18761/cdn-cgi/local/explorer/api - OpenAPI schema
+---
+
+--- 2026-11-21T19:25:42.158Z debug
+RemoteRuntimeController teardown beginning...
+---
+
+--- 2026-11-21T19:25:42.158Z debug
+RemoteRuntimeController teardown complete
+---
+
+--- 2026-11-21T19:25:42.164Z log
+⎔ Starting local server...
+---
+
+--- 2026-11-21T19:25:42.175Z debug
+[InspectorProxyWorker] handleProxyControllerIncomingMessage {"type":"reloadStart"}
+---
+
+--- 2026-11-21T19:25:42.959Z debug
+[InspectorProxyWorker] handleProxyControllerIncomingMessage {"type":"reloadComplete","proxyData":{"userWorkerUrl":{"protocol":"http:","hostname":"127.0.0.1","port":"49960"},"userWorkerInspectorUrl":{"protocol":"ws:","hostname":"127.0.0.1","port":"49961","pathname":"/core:user:forge-1761-board-on-do"},"userWorkerInnerUrlOverrides":{"protocol":"http:"},"headers":{"MF-Proxy-Shared-Secret":"d12b766f-b173-4384-8264-b45402f8b715"},"liveReload":false,"proxyLogsToController":false}}
+---
+
+--- 2026-11-21T19:25:42.961Z debug
+[InspectorProxyWorker] reconnectRuntimeWebSocket
+---
+
+--- 2026-11-21T19:25:42.964Z debug
+[InspectorProxyWorker] NEW RUNTIME WEBSOCKET http://127.0.0.1:49961/core:user:forge-1761-board-on-do
+---
+
+--- 2026-11-21T19:25:42.965Z debug
+[InspectorProxyWorker] SEND TO DEVTOOLS {"method":"Runtime.executionContextsCleared"}
+---
+
+--- 2026-11-21T19:25:42.976Z debug
+[InspectorProxyWorker] RUNTIME WEBSOCKET OPENED
+---
+
+--- 2026-11-21T19:25:42.977Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.enable","id":100000001}
+---
+
+--- 2026-11-21T19:25:43.008Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.executionContextCreated',
+  params: {
+    context: {
+      id: 42967809,
+      origin: '',
+      name: 'Worker',
+      uniqueId: '-2323062503172348853.-204788685399896313'
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:43.010Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000001, result: {} }
+---
+
+--- 2026-11-21T19:25:52.976Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.getIsolateId","id":100000002}
+---
+
+--- 2026-11-21T19:25:52.977Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000002, result: { id: 'e5c2d91d44d760e7' } }
+---
+
+--- 2026-11-21T19:25:55.103Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:55.105Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289155097,
+    exceptionDetails: {
+      exceptionId: 1,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:55.113Z warn
+▲ [WARNING] NOSENTRY reporting trace with exceptions, but no exception outcome; trace->eventInfo = FetchEventInfo: POST, http://127.0.0.1:18761/schedules/s1/cancel
+
+
+---
+
+--- 2026-11-21T19:25:55.172Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:55.173Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289155169,
+    exceptionDetails: {
+      exceptionId: 2,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:56.314Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:56.315Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289156312,
+    exceptionDetails: {
+      exceptionId: 3,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:56.522Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:56.523Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289156515,
+    exceptionDetails: {
+      exceptionId: 4,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:57.744Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:57.745Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289157743,
+    exceptionDetails: {
+      exceptionId: 5,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:57.779Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:57.780Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289157778,
+    exceptionDetails: {
+      exceptionId: 6,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:58.139Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:58.140Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289158138,
+    exceptionDetails: {
+      exceptionId: 7,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:59.588Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:59.589Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289159586,
+    exceptionDetails: {
+      exceptionId: 8,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:25:59.710Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:25:59.711Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289159708,
+    exceptionDetails: {
+      exceptionId: 9,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:26:01.796Z error
+X [ERROR] Uncaught TypeError: Can't read from request stream after response has been sent. 
+
+
+---
+
+--- 2026-11-21T19:26:01.797Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE {
+  method: 'Runtime.exceptionThrown',
+  params: {
+    timestamp: 1795289161794,
+    exceptionDetails: {
+      exceptionId: 10,
+      text: "Uncaught TypeError: Can't read from request stream after response has been sent.",
+      lineNumber: 0,
+      columnNumber: -2,
+      url: 'undefined',
+      executionContextId: 42967809
+    }
+  }
+}
+---
+
+--- 2026-11-21T19:26:02.979Z debug
+[InspectorProxyWorker] SEND TO RUNTIME {"method":"Runtime.getIsolateId","id":100000003}
+---
+
+--- 2026-11-21T19:26:02.983Z debug
+[InspectorProxyWorker] RUNTIME INCOMING MESSAGE { id: 100000003, result: { id: 'e5c2d91d44d760e7' } }
+---

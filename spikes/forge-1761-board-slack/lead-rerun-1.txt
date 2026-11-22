@@ -1,0 +1,31 @@
+$ bun --no-env-file trial.ts
+{
+  "elapsedSeconds": 17.671489400000002,
+  "samples": 20,
+  "median": 90.33210000000054,
+  "p95": 228.07250000000022,
+  "bundle": {
+    "baseline": {
+      "bytes": 2014786,
+      "gzipBytes": 401037
+    },
+    "integrated": {
+      "bytes": 3595510,
+      "gzipBytes": 725698
+    }
+  },
+  "methods": [
+    "auth.test",
+    "chat.postMessage",
+    "chat.getPermalink",
+    "conversations.open",
+    "users.info",
+    "conversations.replies",
+    "chat.update"
+  ],
+  "remaining": [],
+  "portsReleased": [
+    18761,
+    18762
+  ]
+}
