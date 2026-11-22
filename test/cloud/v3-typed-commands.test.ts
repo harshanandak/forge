@@ -231,7 +231,7 @@ function tamper(f: Fixture, sequence: number, edit: (frame: Json) => void) {
 }
 
 test(
-  "v3 checkpoint refuses a create frame whose receipt id collides with a live receipt",
+  "v3 recovery and checkpoint refuse a create frame whose receipt id collides with a live receipt",
   async () => {
     const f = guardFixture(env);
     using _db = f.db;
@@ -244,6 +244,9 @@ test(
     tamper(f, 2, (frame) => {
       (frame.outcome as Json).id = (first!.outcome as Json).id;
     });
+    expect(
+      await send(f, { ...create, input: { title: "Second" } }),
+    ).toMatchObject(error(503, "UNAVAILABLE"));
     expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject(
       error(503, "UNAVAILABLE"),
     );
