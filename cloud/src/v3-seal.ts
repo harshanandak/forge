@@ -11,6 +11,9 @@ export interface Seal {
   readonly keys: readonly [Key, ...Key[]];
 }
 
+export const BOUNDED_MAC =
+  "CASE WHEN length(CAST(mac AS BLOB))=81 THEN mac END AS mac";
+
 const SECRET = /^[A-Za-z0-9_-]{43,512}$/;
 const ENVELOPE = /^([0-9a-f]{16})\.([0-9a-f]{64})$/;
 

@@ -35,7 +35,7 @@ import {
 import type { roster as checkpointRoster } from "./v3-checkpoint.ts";
 import { recordNumber, verifyRecordFrame } from "./v3-record-transitions.ts";
 import { TABLE_PROBE } from "./store.ts";
-import { type Seal, signRow, verifyRow } from "./v3-seal.ts";
+import { BOUNDED_MAC, type Seal, signRow, verifyRow } from "./v3-seal.ts";
 
 export { withinDepth };
 export const ROOT = "cloud_v3_root";
@@ -417,7 +417,7 @@ function activationFrame(root: V3Image["root"], time: number) {
 function applyActivation(db: SqlDatabase, seal: Seal, image: V3Image) {
   const { root } = image;
   const [row, extra] = db.all(
-    `SELECT sequence, mac, CASE WHEN length(CAST(body AS BLOB))<=${PAGE_BYTES} THEN body END AS body FROM ${COMMITS} ORDER BY sequence LIMIT 2`,
+    `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN length(CAST(body AS BLOB))<=${PAGE_BYTES} THEN body END AS body FROM ${COMMITS} ORDER BY sequence LIMIT 2`,
   );
   if (
     extra ||
@@ -524,7 +524,7 @@ export function recoverV3(
   verification?.sealed(image);
   const upper = through === undefined ? "" : " AND sequence<=?";
   const rows = db.all(
-    `SELECT sequence, mac, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body, mac FROM ${COMMITS} WHERE sequence>?${upper} ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
+    `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body, mac FROM ${COMMITS} WHERE sequence>?${upper} ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
     through === undefined ? [root.coveredHead] : [root.coveredHead, through],
   );
   if (rows.length > TAIL_ROWS) throw unavailable();

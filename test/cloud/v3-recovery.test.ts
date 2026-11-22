@@ -450,6 +450,29 @@ for (const [label, shape] of overLimits) {
 }
 
 test(
+  "a stored mac far larger than its envelope is refused without being read",
+  async () => {
+    const f = fixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      expect(await commit(f, note)).toMatchObject({ status: 200 });
+      f.db.run("UPDATE cloud_v3_commits SET mac=? WHERE sequence=1", [
+        "0".repeat(COLD_BYTES + MiB),
+      ]);
+      f.restart();
+      f.reads.rows = 0;
+      f.reads.bytes = 0;
+      expect(await f.send(probe)).toMatchObject(unavailable);
+      expect(f.reads.rows).toBeLessThanOrEqual(COLD_ROWS);
+      expect(f.reads.bytes).toBeLessThanOrEqual(COLD_BYTES);
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
   "an append that would take the tail past 16 MiB is refused before any write, and one that fits is admitted",
   async () => {
     const f = fixture();

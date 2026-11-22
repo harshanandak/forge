@@ -21,7 +21,7 @@ import {
   TAIL_ROWS,
   type V3Image,
 } from "./v3-store.ts";
-import { type Seal, verifyRow } from "./v3-seal.ts";
+import { BOUNDED_MAC, type Seal, verifyRow } from "./v3-seal.ts";
 
 const STAGE = "cloud_v3_checkpoint";
 const STAGED = "cloud_v3_checkpoint_pages";
@@ -298,7 +298,7 @@ async function checkpoint(
       }),
   );
   const frames = db.all(
-    `SELECT sequence, mac, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TURN_TAIL_BYTES} THEN body END AS body FROM ${COMMITS} WHERE sequence>? AND sequence<=? ORDER BY sequence`,
+    `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TURN_TAIL_BYTES} THEN body END AS body FROM ${COMMITS} WHERE sequence>? AND sequence<=? ORDER BY sequence`,
     [root.coveredHead, cut],
   );
   requireCheckpoint(

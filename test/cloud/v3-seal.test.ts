@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { Project } from "../../cloud/src/project.ts";
 import { TABLE_PROBE } from "../../cloud/src/store.ts";
 import {
@@ -71,10 +71,10 @@ async function refusedAfterRestart(f: Fixture) {
 
 function watch(f: Fixture) {
   const statements: string[] = [];
-  const exec = f.storage.sql.exec.bind(f.storage.sql);
+  const original = f.storage.sql.exec.bind(f.storage.sql);
   f.storage.sql.exec = (statement, ...bindings) => {
     statements.push(statement);
-    return exec(statement, ...bindings);
+    return original(statement, ...bindings);
   };
   return statements;
 }
@@ -191,7 +191,7 @@ test(
     expect(check(mac, "inc", 2)).toBe(false);
     expect(check(mac, "inc", "1")).toBe(false);
     expect(check(mac, "inc", 1, "bod")).toBe(false);
-    expect(check(mac, "inc", 1, undefined)).toBe(false);
+    expect(check(mac, "inc", 1, null)).toBe(false);
     const scoped = sealOf(
       { V3_SEAL_KEY: key },
       { toString: () => "b".repeat(64) },
@@ -402,15 +402,23 @@ test(
     const f = guardFixture(env);
     using _db = f.db;
     await history(f, 0);
-    const headers = {
-      "X-Forge-Owner": "laptop",
-      "X-Forge-Owner-Expires": String(Date.now() + 5_000),
-    };
-    for (let i = 0; i < 2; i++) {
-      expect(await f.send(`${probe}/command`, create, headers)).toMatchObject({
-        status: 200,
-      });
-      if (i === 0) await new Promise((done) => setTimeout(done, 5_100));
+    const start = Date.now();
+    try {
+      for (const [at, lifetime] of [
+        [start, 5_000],
+        [start + 6_000, 3_600_000],
+      ] as const) {
+        setSystemTime(at);
+        const headers = {
+          "X-Forge-Owner": "laptop",
+          "X-Forge-Owner-Expires": String(at + lifetime),
+        };
+        expect(await f.send(`${probe}/command`, create, headers)).toMatchObject(
+          { status: 200 },
+        );
+      }
+    } finally {
+      setSystemTime();
     }
     expect(rows(f)).toHaveLength(2);
     f.db.run("UPDATE cloud_v3_commits SET mac=? WHERE sequence=2", [
@@ -552,9 +560,9 @@ for (const read of ["archive", "recovery"] as const)
       using _db = f.db;
       await history(f);
       f.restart();
-      const exec = f.storage.sql.exec.bind(f.storage.sql);
+      const original = f.storage.sql.exec.bind(f.storage.sql);
       f.storage.sql.exec = (statement, ...bindings) => {
-        const result = exec(statement, ...bindings);
+        const result = original(statement, ...bindings);
         const staged = statement.includes("(SELECT sequence, body, mac FROM");
         const target =
           read === "recovery"
