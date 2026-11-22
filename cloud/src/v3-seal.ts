@@ -171,6 +171,36 @@ export function authenticateManifest(
 export const isVerifiedManifest = (value: unknown): value is VerifiedManifest =>
   typeof value === "object" && value !== null && issued.has(value);
 
+export interface TokenFields {
+  readonly id: string;
+  readonly hash: string;
+  readonly device: string;
+  readonly session: string;
+  readonly agent: string | null;
+  readonly harness: string | null;
+  readonly expiresAt: number;
+  readonly revokedAt: number | null;
+}
+
+const tokenParts = ({ scope }: Seal, t: TokenFields) => [
+  "forge/v3/token/1",
+  scope,
+  t.id,
+  t.hash,
+  t.device,
+  t.session,
+  t.agent,
+  t.harness,
+  t.expiresAt,
+  t.revokedAt,
+];
+
+export const signToken = (seal: Seal, token: TokenFields) =>
+  sealed(seal, tokenParts(seal, token));
+
+export const verifyToken = (seal: Seal, token: TokenFields, mac: unknown) =>
+  authentic(seal, tokenParts(seal, token), mac);
+
 export const signRoot = (seal: Seal, body: string) =>
   sealed(seal, rootParts(seal, body));
 

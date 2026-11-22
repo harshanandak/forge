@@ -128,6 +128,7 @@ import {
   bearer,
   wellFormed,
 } from "./tokens.ts";
+import { issueV3Token, revokeV3Token } from "./v3-tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { checkpointV3 } from "./v3-checkpoint.ts";
@@ -265,6 +266,15 @@ function integer(input: Record<string, unknown>, key: string): number {
 
 function optional(input: Record<string, unknown>, key: string): string | null {
   return input[key] === undefined ? null : text(input, key);
+}
+function deviceFields(input: Record<string, unknown>) {
+  return {
+    device: text(input, "device"),
+    session: optional(input, "session"),
+    agent: optional(input, "agent"),
+    harness: optional(input, "harness"),
+    ttlMs: integer(input, "ttlMs"),
+  };
 }
 function object(body: string): Record<string, unknown> {
   let parsed: unknown;
@@ -651,6 +661,21 @@ export class Project {
         );
         return Response.json({ ok: true, value });
       }
+      if (
+        this.#testV3 &&
+        request.method === "POST" &&
+        (route === "devices" || route === "revoke") &&
+        this.#hasV3Root()
+      ) {
+        const seal = this.#seal();
+        const input = object(await bounded(request));
+        const db = writableStore(this.#storage);
+        const value =
+          route === "devices"
+            ? await issueV3Token(db, seal, deviceFields(input), Date.now())
+            : revokeV3Token(db, seal, text(input, "id"), Date.now());
+        return Response.json({ ok: true, value });
+      }
       if (route === "upgrade" || route === "devices" || route === "restore")
         this.#requireV2();
       if (isStatePath(request)) return await this.#state(request);
@@ -720,13 +745,7 @@ export class Project {
       // The Worker has already checked the admin token before it forwards these two routes.
       if (request.method === "POST" && route === "devices") {
         const input = object(await bounded(request));
-        const deviceInput = {
-          device: text(input, "device"),
-          session: optional(input, "session"),
-          agent: optional(input, "agent"),
-          harness: optional(input, "harness"),
-          ttlMs: integer(input, "ttlMs"),
-        };
+        const deviceInput = deviceFields(input);
         if (deviceInput.ttlMs > MAX_TTL_MS)
           throw fail("INPUT_INVALID", "ttlMs is over 90 days");
         // Issuing a token provisions the project, so staged rows are cleared first: they were never checked.
