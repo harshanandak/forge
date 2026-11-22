@@ -73,10 +73,16 @@ test("a PR close without a delivers link gives a stable wire reason", async () =
     expect(
       (await command("create", "issue.create", { title: "First" })).status,
     ).toBe(200);
-    expect(
-      (await command("claim", "issue.claim", { id }, { actor, session }))
-        .status,
-    ).toBe(200);
+    const claim = await command(
+      "claim",
+      "issue.claim",
+      { id, ttlSeconds: 60 },
+      { actor, session },
+    );
+    expect({ status: claim.status, body: await claim.json() }).toMatchObject({
+      status: 200,
+      body: { ok: true, status: "OK" },
+    });
     const response = await command(
       "close",
       "issue.close",
