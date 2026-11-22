@@ -2366,3 +2366,173 @@ test(
     }, 16),
   timeout,
 );
+
+async function withTyped(
+  run: (target: Fixture, data: Portable) => Promise<void>,
+) {
+  const source = guardFixture(typedEnv);
+  const target = guardFixture(typedEnv);
+  using _source = source.db;
+  using _target = target.db;
+  expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+  expect((await typed(source, missingUpdate)).status).toBe(404);
+  expect((await typed(source, invalidUpdate)).status).toBe(400);
+  await drain(source, 0, 2);
+  await run(target, typedBackup(source));
+}
+
+function refusalEntry(data: Portable) {
+  const entries = JSON.parse(data.pages[0]!.body) as DirectoryItem[];
+  const bytes = Buffer.from(data.pages[1]!.body);
+  const text = ({ offset, length }: DirectoryItem) =>
+    bytes.subarray(offset, offset! + length!).toString();
+  const item = entries.find((e) => text(e).includes('"code":"NOT_FOUND"'))!;
+  return { entries, item, text, size: bytes.length };
+}
+
+function forgeRefusal(data: Portable, edit: (result: Json) => unknown) {
+  const { entries, item, text } = refusalEntry(data);
+  const saved = JSON.parse(text(item)) as { outcome: { result: Json } };
+  edit(saved.outcome.result);
+  const parts = entries.map((e) =>
+    e === item ? canonicalJson(saved) : text(e),
+  );
+  let offset = 0;
+  for (const [i, e] of entries.entries()) {
+    const length = Buffer.byteLength(parts[i]!);
+    Object.assign(e, { offset, length, digest: digestBytes(parts[i]!) });
+    offset += length;
+  }
+  data.pages[1]!.body = parts.join("");
+  data.pages[0]!.body = canonicalJson(entries);
+  editProjection(data, item.collection, item.key, (same) => same);
+  editHistory(data, (frames) => {
+    const { outcome } = frames.find(
+      (f) => (f.outcome as Json).id === item.key,
+    )!;
+    (outcome as Json).resultDigest = digestBytes(
+      canonicalJson(saved.outcome.result),
+    );
+  });
+}
+
+function retarget(
+  data: Portable,
+  edit: (found: ReturnType<typeof refusalEntry>) => unknown,
+) {
+  const found = refusalEntry(data);
+  edit(found);
+  data.pages[0]!.body = canonicalJson(found.entries);
+}
+
+const accent = (result: Json) =>
+  Object.assign(result, { message: "caf\u00e9" });
+const splitAccent = (data: Portable, atEnd: boolean) => {
+  forgeRefusal(data, accent);
+  retarget(data, ({ item, text }) => {
+    const at = Buffer.from(text(item)).indexOf(0xc3) + 1;
+    return atEnd
+      ? Object.assign(item, { length: at })
+      : Object.assign(item, {
+          offset: item.offset! + at,
+          length: item.length! - at,
+        });
+  });
+};
+
+test(
+  "v3 restore restores and replays a refused typed update with a multi-byte message",
+  () =>
+    withTyped(async (target, data) => {
+      forgeRefusal(data, accent);
+      const upload = await stageRestore(target, data);
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+      target.restart();
+      expect(await typed(target, missingUpdate)).toMatchObject({
+        status: 404,
+        body: { error: { code: "NOT_FOUND", message: "caf\u00e9" } },
+      });
+    }),
+  timeout,
+);
+
+for (const [fault, tamper] of [
+  [
+    "a result missing a field",
+    (d: Portable) => forgeRefusal(d, (r) => delete r.message),
+  ],
+  [
+    "a result code that contradicts the status",
+    (d: Portable) =>
+      forgeRefusal(d, (r) => Object.assign(r, { code: "INPUT_INVALID" })),
+  ],
+  [
+    "a result with an extra field",
+    (d: Portable) => forgeRefusal(d, (r) => Object.assign(r, { extra: true })),
+  ],
+  [
+    "a duplicate directory entry",
+    (d: Portable) =>
+      retarget(d, ({ entries, item }) =>
+        entries.splice(entries.indexOf(item), 0, { ...item }),
+      ),
+  ],
+  [
+    "an offset past the snapshot",
+    (d: Portable) =>
+      retarget(d, ({ item, size }) => Object.assign(item, { offset: size })),
+  ],
+  [
+    "a last entry whose length runs past the snapshot end",
+    (d: Portable) =>
+      retarget(d, ({ entries, size }) => {
+        const last = entries.at(-1)!;
+        last.length = size - last.offset! + 1;
+      }),
+  ],
+  [
+    "a saved outcome nested past 64 levels",
+    (d: Portable) =>
+      forgeRefusal(d, (r) =>
+        Object.assign(r, {
+          observed: JSON.parse("[".repeat(70) + "]".repeat(70)) as unknown,
+        }),
+      ),
+  ],
+  [
+    "an entry that overlaps another outcome",
+    (d: Portable) =>
+      retarget(d, ({ entries, item }) => {
+        const { offset, length } = entries.find((e) => e !== item)!;
+        Object.assign(item, { offset, length });
+      }),
+  ],
+  [
+    "a slice that ends inside a multi-byte character",
+    (d: Portable) => splitAccent(d, true),
+  ],
+  [
+    "a slice that starts inside a multi-byte character",
+    (d: Portable) => splitAccent(d, false),
+  ],
+  [
+    "a 100000-level directory page inside the page cap",
+    (d: Portable) => {
+      d.pages[0]!.body = "[".repeat(100_000) + "]".repeat(100_000);
+    },
+  ],
+] as const) {
+  test(
+    `v3 restore guards a saved refusal against ${fault}`,
+    () =>
+      withTyped(async (target, data) => {
+        tamper(data);
+        const upload = await stageRestore(target, data);
+        const staged = target.snapshot();
+        expect(await upload(2)).toMatchObject(restoreRefusal);
+        await unprovisioned(target);
+        expect(target.snapshot()).toEqual(staged);
+      }),
+    timeout,
+  );
+}
