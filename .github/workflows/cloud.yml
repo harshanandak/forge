@@ -70,6 +70,32 @@ jobs:
             grep -Fq "$text" "$log"
           done
           "${suite[@]}"
+      - name: Issue report red on both baselines and green on the PR
+        run: |
+          suite=(bun test --timeout 15000 test/cloud/auth/report-app.test.ts)
+          log="$RUNNER_TEMP/report-app-red.log"
+          red() {
+            local name="$1"; shift
+            if env --chdir="$baseline" "${suite[@]}" --test-name-pattern "^$name$" > "$log" 2>&1; then exit 1; fi
+            cat "$log"
+            for line in "(fail) $name" "$@"; do grep -Fq -- "$line" "$log"; done
+          }
+          for rev in 8c0273e00e41781135b1bf4ec393179c5dfbe0f6 6b0c8aa7356afcf18915ccb93d3193d62927d75b; do
+            baseline="$RUNNER_TEMP/report-app-${rev:0:8}"
+            git fetch --no-tags --depth=1 origin "$rev"
+            git worktree add --detach "$baseline" FETCH_HEAD
+            for deps in node_modules cloud/node_modules; do ln -s "$PWD/$deps" "$baseline/$deps"; done
+            cp test/cloud/auth/report-{app.test,fixture}.ts "$baseline/test/cloud/auth/"
+            if [[ $rev == 8c* ]]; then
+              red 'report requires owner' 'expect(anonymous.status).toBe(401)' 'Expected: 401' 'Received: 404'
+              red 'report renders escaped owner data' 'expect(response.status).toBe(302)' 'Expected: 302' 'Received: 404'
+            else
+              red 'report requires owner' 'expect(anonymous.status).toBe(401)' 'Expected: 401' 'Received: 200'
+              red 'report renders escaped owner data' 'expect(html).toContain(escapedTitle)' 'Expected to contain: "Report &lt;script&gt;' 'Received: "<!doctype html>'
+            fi
+            red 'report install assets stay public and inert' 'expect(manifest.status).toBe(200)' 'Expected: 200' 'Received: 404'
+          done
+          "${suite[@]}"
       - name: Storage quota merge gate regressions
         run: bun test --timeout 30000 test/cloud/storage-review.test.ts test/assembly/cloud-state-client.test.ts test/assembly/cloud-login.test.ts
       - name: Paged restore marker ordering counterfactual

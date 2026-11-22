@@ -200,11 +200,9 @@ reportTest("report expiry revokes copies", async () => {
 reportTest("report page dispatch and cookies", async () => {
   const f = reportFixture();
   const jar = new Jar();
-  await page(f, jar, false, "?issue=fixture-12");
+  await page(f, jar, false);
   const { record } = await session(f, jar);
-  expect(await page(f, jar, true, "?issue=fixture-12")).not.toContain(
-    "fixture-12",
-  );
+  expect(await page(f, jar, true)).not.toContain("fixture-12");
   for (const [path, method, allow] of [
     ["/app/", "POST", "GET"],
     ["/app/sign-in", "POST", "GET"],

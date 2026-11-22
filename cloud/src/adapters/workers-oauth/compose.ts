@@ -43,6 +43,7 @@ import { composeGithub } from "../../github-compose.ts";
 import { report } from "../../auth/report-session.ts";
 import { record } from "./report-session-store.ts";
 import { appUnavailable } from "../../report-http.ts";
+import { reportRequest } from "../../report-app.ts";
 export { GrantState } from "./grant-state.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -192,6 +193,10 @@ export function createConfiguredWorker(
           upstream: clerkUpstream(cfg, dependencies),
           redemption: durableRedemption(ns),
           session: record.bind(null, ns),
+          fetchReport: (project, issue, until) =>
+            env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(
+              reportRequest(issue, until),
+            ),
         };
       }).catch(appUnavailable);
       if (app) return app;

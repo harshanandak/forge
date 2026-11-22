@@ -70,9 +70,13 @@ import {
 import {
   commandProject,
   failed,
+  lazyViews,
   MAX_COMMAND_BODY,
   runCommand,
 } from "./issue-commands.ts";
+import { readIssue } from "./issue-read.ts";
+import { REPORT_ROUTE, REPORT_UNTIL, renderIssue } from "./report-app.ts";
+import { appReply, appUnavailable } from "./report-http.ts";
 import {
   guardLegacy,
   receiptScope,
@@ -493,6 +497,39 @@ export class Project {
   async fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if (url.pathname === REPORT_ROUTE) {
+        if (request.method !== "GET") return appReply(405, { Allow: "GET" });
+        try {
+          const until = Number(request.headers.get(REPORT_UNTIL));
+          if (
+            !Number.isSafeInteger(until) ||
+            until <= Date.now() ||
+            !(await this.#isProvisioned()) ||
+            until <= Date.now()
+          )
+            return appReply(401);
+          const { FORGE_CLOUD_ID_PREFIX: prefix } = this.#env as {
+            FORGE_CLOUD_ID_PREFIX: string;
+          };
+          const issue = readIssue(
+            lazyViews(this.#storage),
+            { id: url.searchParams.get("issue") },
+            Date.now(),
+            prefix,
+          );
+          const reply = await renderIssue(issue);
+          return until > Date.now() ? reply : appReply(401);
+        } catch (error) {
+          if (error instanceof ForgeFailure && error.error.code === "NOT_FOUND")
+            return appReply(404);
+          if (
+            error instanceof ForgeFailure &&
+            error.error.code === "INPUT_INVALID"
+          )
+            return appReply(400);
+          return appUnavailable();
+        }
+      }
       const route = url.pathname.split("/")[3] ?? "";
       const probe =
         this.#testV3 &&

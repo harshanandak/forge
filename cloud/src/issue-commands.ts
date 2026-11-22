@@ -237,7 +237,7 @@ export interface CommandRun extends CommandHost {
 
 // Each view is built on first use and then kept, so a request that never reaches the work tables
 // never probes them.
-function lazyViews(storage: DurableStorage): IssueViews {
+export function lazyViews(storage: DurableStorage): IssueViews {
   const built: {
     records?: [ReturnType<typeof readOnlyStore>];
     leases?: [ReturnType<typeof readOnlyStore>];

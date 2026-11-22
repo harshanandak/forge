@@ -13,7 +13,13 @@ export async function record(ns: Namespace, id: string, op: SessionOperation) {
   const url = "https://redemption.internal" + REPORT_PATH;
   const target = method === "POST" ? url + "?until=" + op : url;
   const stub = ns.get(ns.idFromName(name));
-  return (await stub.fetch(new Request(target, { method }))).status;
+  const response = await stub.fetch(new Request(target, { method }));
+  const { status } = response;
+  if (method !== "GET" || status !== 200) return { status };
+  const until = Number(await response.text());
+  return Number.isSafeInteger(until) && until > 0
+    ? { status, until }
+    : { status: 401 };
 }
 
 type Store = ClaimState["storage"];
