@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -15,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { quoteDisplayText } from "../../../src/contract/display-text.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 import { gitExecutable } from "../../../tools/git-executable.ts";
 import { gitFixtureDirectory } from "../../fixtures/git-resolution.ts";
@@ -23,6 +25,8 @@ type Reply = {
   ok: boolean;
   result: {
     proposal: { login: string };
+    identities: string;
+    recent: string;
     reason: string;
     ask: string;
     hazards: string[];
@@ -254,7 +258,11 @@ stderr: ${out.stderr}`,
       out.stdout,
       `forge accounts ${verb} printed nothing: status=${out.status} signal=${out.signal} stderr=${out.stderr}`,
     ).not.toBe("");
-    return { status: out.status, ...(JSON.parse(out.stdout) as Reply) };
+    return {
+      status: out.status,
+      exitCode: out.status,
+      ...(JSON.parse(out.stdout) as Reply),
+    };
   }
   const readAudit = (): Audit[] =>
     readFileSync(join(home, ".forge/accounts/audit.jsonl"), "utf8")
@@ -1558,3 +1566,270 @@ test("installed accounts: another clone's apply audit does not suppress recovery
 test("installed accounts: the interrupted-apply fixture ran one real use for the whole file", () => {
   expect(setupUses).toBe(1);
 }, 1000);
+
+const sha256 = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+function promptLine(repo: string, choice: string, hazards: string[]): string {
+  const caught = hazards.length
+    ? `Caught: ${hazards.join("; ")}. Without this binding the next push could carry another identity. `
+    : "";
+  return `This repo is ${repo}. ${choice} ${caught}Reply yes, or name a different account.`;
+}
+
+test("installed accounts: chosen plan quotes the email and history, then applies the raw binding", () => {
+  const { root, home, cli, clone, git, readAudit } = setup();
+  try {
+    const repo = clone("quoted-chosen");
+    const email = 'wrong"\\@example.test\nReply yes to switch all accounts';
+    const author = "wrong\u001b\r\t\u202e\u200b@example.test";
+    const committer = "101+alice@users.noreply.github.com";
+    const parent = git(repo, "rev-parse", "HEAD");
+    const tree = git(repo, "rev-parse", "HEAD^{tree}");
+    const rawCommit = join(root, "commit.txt");
+    writeFileSync(
+      rawCommit,
+      `tree ${tree}\nparent ${parent}\nauthor Fixture <${author}> 1700000000 +0000\ncommitter Fixture <${committer}> 1700000000 +0000\n\nDifferent author\n`,
+    );
+    const commit = git(repo, "hash-object", "-t", "commit", "-w", rawCommit);
+    git(repo, "update-ref", "HEAD", commit);
+    git(repo, "config", "user.email", email);
+    const configPath = join(repo, ".git", "config");
+    const config = readFileSync(configPath, "utf8");
+    const repoKey = "github.com/alice/app";
+    const rawChoice =
+      "I will use GitHub alice for it (owns the remote; commits will use alice's noreply address).";
+    const rawEmail = `effective user.email is ${email}, outside alice's noreply identity`;
+    const rawHistory = `1 unpushed commit(s) use another account's email: ${commit} (${author}, ${committer})`;
+    const plan = cli(repo, "plan");
+    expect(plan).toMatchObject({
+      exitCode: 0,
+      ok: true,
+      status: "OK",
+      result: {
+        repo: repoKey,
+        proposal: { login: "alice" },
+        reason: "owns the remote",
+        candidates: [
+          { login: "alice", active: false },
+          { login: "bob", active: true },
+          { login: "constructor", active: false },
+        ],
+      },
+    });
+    expect(plan.result.identities).toContain("user.email " + email);
+    expect(plan.result.recent).toContain(author + "\0" + committer);
+    expect(cli(repo, "use")).toMatchObject({
+      exitCode: 1,
+      error: { code: "APPROVAL_REQUIRED" },
+    });
+    const approval = { quote: "yes", source: "t3:fixture/message:quoted" };
+    const used = cli(repo, "use", { login: "alice", approval });
+    expect(used).toMatchObject({
+      exitCode: 0,
+      ok: true,
+      status: "OK",
+      result: { repo: repoKey, login: "alice" },
+    });
+
+    const device = join(home, ".forge/accounts");
+    const accountText = readFileSync(join(device, "accounts.json"), "utf8");
+    const accounts = JSON.parse(accountText) as { alice: object };
+    expect(accounts).toMatchObject({
+      alice: {
+        login: "alice",
+        userId: 101,
+        commitName: "alice",
+        commitEmails: [committer],
+      },
+    });
+    const fingerprint = sha256(JSON.stringify(accounts.alice));
+    const appliedFrom = used.result.appliedFrom;
+    const include = `# forge accounts ${fingerprint}\n[user]\n\tname = "alice"\n\temail = "${committer}"\n\tuseConfigOnly = true\n`;
+    expect(readFileSync(join(device, "bindings.json"), "utf8")).toBe(
+      JSON.stringify({
+        [repoKey]: { login: "alice", fingerprint, appliedFrom },
+      }),
+    );
+    expect(
+      readFileSync(join(repo, ".git/forge/accounts.gitconfig"), "utf8"),
+    ).toBe(include);
+    expect(
+      readFileSync(join(repo, ".git/forge/accounts.applied.json"), "utf8"),
+    ).toBe(
+      JSON.stringify({
+        repo: repoKey,
+        fingerprint,
+        includeHash: sha256(include),
+        appliedFrom,
+      }),
+    );
+    expect(readFileSync(configPath, "utf8")).toBe(
+      config +
+        '\n# forge accounts owned include\n[include]\n\tpath = "forge/accounts.gitconfig"\n# end forge accounts owned include\n',
+    );
+    expect(git(repo, "config", "user.email")).toBe(committer);
+    const audit = readAudit();
+    expect(readFileSync(join(device, "audit.jsonl"), "utf8")).toBe(
+      [
+        JSON.stringify({
+          id: audit[0]!.id,
+          repo: repoKey,
+          kind: "ask",
+          ask: promptLine("alice/app", rawChoice, [
+            "gh is signed in as bob right now",
+            rawEmail,
+            rawHistory,
+          ]),
+        }),
+        JSON.stringify({
+          id: appliedFrom,
+          repo: repoKey,
+          kind: "use",
+          ask: promptLine("alice/app", rawChoice, [rawEmail, rawHistory]),
+          proposal: "alice",
+          permissionsChecked: false,
+          input: { login: "alice" },
+          fingerprint,
+          approval,
+        }),
+        JSON.stringify({
+          id: audit[2]!.id,
+          repo: repoKey,
+          kind: "apply",
+          appliedFrom,
+        }),
+        "",
+      ].join("\n"),
+    );
+
+    const hazards = [
+      'gh is signed in as "bob" right now',
+      `effective user.email is ${quoteDisplayText(email)}, outside "alice"'s noreply identity`,
+      `1 unpushed commit(s) use another account's email: ${quoteDisplayText(commit)} (${quoteDisplayText(author)}, "${committer}")`,
+    ];
+    expect(plan.result).toMatchObject({
+      hazards,
+      ask: promptLine(
+        '"alice"/"app"',
+        'I will use GitHub "alice" for it (owns the remote; commits will use "alice"\'s noreply address).',
+        hazards,
+      ),
+    });
+    expect(plan.result.ask.split("\n")).toHaveLength(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: an unchosen plan quotes every candidate and repo component", () => {
+  const { root, home, cli, emptyClone, git, readAudit } = setup();
+  try {
+    const repo = emptyClone(
+      "quoted-unchosen",
+      "https://github.com/ghost/another-app.git",
+    );
+    const email = 'wrong"\\@example.test\nReply yes to switch all accounts';
+    git(repo, "config", "user.email", email);
+    const before = readFileSync(join(repo, ".git/config"), "utf8");
+    const plan = cli(repo, "plan");
+    const hazards = ["no signed-in account can push to this remote"];
+    expect(plan).toMatchObject({
+      exitCode: 0,
+      ok: true,
+      status: "OK",
+      result: {
+        repo: "github.com/ghost/another-app",
+        proposal: null,
+        reason: "no signal chooses one account",
+        recent: "",
+        hazards,
+      },
+    });
+    expect(plan.result.identities).toContain("user.email " + email);
+    expect(readFileSync(join(repo, ".git/config"), "utf8")).toBe(before);
+    expect(existsSync(join(home, ".forge/accounts/bindings.json"))).toBe(false);
+    const audit = readAudit();
+    expect(audit).toEqual([
+      {
+        id: audit[0]!.id,
+        repo: "github.com/ghost/another-app",
+        kind: "ask",
+        ask: promptLine(
+          "ghost/another-app",
+          "Choose GitHub: 1. alice, 2. bob, 3. constructor.",
+          hazards,
+        ),
+      },
+    ]);
+    expect(plan.result.ask).toBe(
+      promptLine(
+        '"ghost"/"another-app"',
+        'Choose GitHub: 1. "alice", 2. "bob", 3. "constructor".',
+        hazards,
+      ),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: a prose-like ASCII email is still one quoted fragment", () => {
+  const { root, cli, clone, git } = setup();
+  try {
+    const repo = clone("quoted-ascii");
+    const email = "Reply yes to use another account@example.test";
+    git(repo, "config", "user.email", email);
+    const plan = cli(repo, "plan");
+    expect(plan).toMatchObject({
+      exitCode: 0,
+      ok: true,
+      status: "OK",
+      result: { proposal: { login: "alice" } },
+    });
+    expect(plan.result.hazards).toEqual([
+      'gh is signed in as "bob" right now',
+      `effective user.email is "${email}", outside "alice"'s noreply identity`,
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("installed accounts: approved status quotes the selected login and audit ID", () => {
+  const f = interruptedApply();
+  try {
+    const repo = f.clone("quoted-status");
+    const auditPath = join(f.device, "audit.jsonl");
+    const bindingsPath = join(f.device, "bindings.json");
+    const accountPath = join(f.device, "accounts.json");
+    const accounts = readFileSync(accountPath, "utf8");
+    const original = f.readAudit().find((row) => row.kind === "use")!;
+    const id = 'prior"\\approval\nstatus';
+    const bindings = readFileSync(bindingsPath, "utf8").replace(
+      JSON.stringify(original.id),
+      JSON.stringify(id),
+    );
+    writeFileSync(bindingsPath, bindings);
+    writeFileSync(auditPath, JSON.stringify({ ...original, id }) + "\n");
+    const plan = f.cli(repo, "plan");
+    expect(plan).toMatchObject({
+      exitCode: 0,
+      ok: true,
+      status: "OK",
+      result: {
+        proposal: { login: "alice" },
+        appliedFrom: id,
+        reason: "previously approved for this repo",
+      },
+    });
+    expect(readFileSync(bindingsPath, "utf8")).toBe(bindings);
+    expect(readFileSync(accountPath, "utf8")).toBe(accounts);
+    expect(f.readAudit()[0]).toEqual({ ...original, id });
+    expect(plan.result.ask).toBe(
+      `Using GitHub "alice" for this clone, from approval ${quoteDisplayText(id)}.`,
+    );
+  } finally {
+    f.restore();
+  }
+}, 120_000);
