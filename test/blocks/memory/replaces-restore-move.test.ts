@@ -35,7 +35,7 @@ const item = (id: string, replaces?: readonly string[]) => ({
 });
 const bundle = (notes: ReturnType<typeof item>[]) => ({
   format: "forge.memory.export/2",
-  level: "device",
+  level: notes[0]?.id.startsWith("project/") ? "project" : "device",
   notes,
   approval,
 });
@@ -54,9 +54,8 @@ test(
     await source.add("wren obsolete", fields);
     await source.add("wren current", { ...fields, replaces: [old] });
     const exported = (await source.call("memory.export", fields)) as object;
-    expect(
-      await call("memory.restore", { ...exported, approval }),
-    ).toMatchObject({
+    const input = { ...exported, approval };
+    expect(await call("memory.restore", input)).toMatchObject({
       added: 2,
       conflicts: [],
     });
@@ -99,6 +98,7 @@ for (const [reason, id, targets] of [
   ["self link", currentId, [currentId]],
   ["forward link", currentId, ["device/note-3"]],
   ["other level", currentId, [`${sourcePrefix}/note-1`]],
+  ["other project", `${sourcePrefix}/note-2`, [`${targetPrefix}/note-1`]],
   [
     "more than eight links",
     "device/note-10",
@@ -108,11 +108,12 @@ for (const [reason, id, targets] of [
   test(
     `restore refuses ${reason} before writing any note or the counter`,
     async () => {
-      const { state, call } = fixture();
+      const { state, project, call } = fixture();
+      const first = id.replace(/note-\d+$/, "note-1");
       await expect(
-        call("memory.restore", bundle([item(oldId), item(id, targets)])),
+        call("memory.restore", bundle([item(first), item(id, targets)])),
       ).rejects.toMatchObject({ error: { code: "INPUT_INVALID" } });
-      expect(state.counts.puttedRecords).toBe(0);
+      expect(state.counts.puttedRecords + project.counts.puttedRecords).toBe(0);
     },
     timeout,
   );
@@ -212,7 +213,7 @@ test(
       skipped: 1,
       complete: false,
     });
-    expect(moveOutput(result)).toEqual([]);
+    expect(moveOutput(JSON.parse(JSON.stringify(result)))).toEqual([]);
     expect(state.get("note/000000002")?.revision).toBe(1);
     expect(await call("memory.move", input)).toMatchObject({
       moved: [],
