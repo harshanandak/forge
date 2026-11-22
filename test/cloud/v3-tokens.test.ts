@@ -18,6 +18,7 @@ import {
   noWrites,
   probe,
   type SealSetup,
+  trustedManifest,
 } from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -193,18 +194,19 @@ async function withActivated(
       .query<{ body: string }, []>("SELECT body FROM cloud_v3_root")
       .get()!.body,
   ) as Record<string, unknown>;
-  const manifest = {
-    format: "forge-cloud-portable/3",
+  const manifest = trustedManifest(target.seal(), {
+    format: "forge-cloud-portable/4",
     head: 1,
-    eventWatermark: root.eventWatermark,
+    eventWatermark: root.eventWatermark as number,
     recordFloor: 0,
-    publicDigest: root.publicDigest,
+    publicDigest: root.publicDigest as string,
     pages: pages.map(({ id, body: text }) => ({
       id,
       bytes: Buffer.byteLength(text),
       hash: digestBytes(text),
     })),
-  };
+    source: String(source.context.id),
+  });
   const pin = digestBytes(canonicalJson(manifest));
   const upload = (page: number) =>
     target.send(
