@@ -5,7 +5,7 @@ import {
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
 import { Project } from "../../cloud/src/project.ts";
-import { canonicalJson } from "../../src/core/config/pointer.ts";
+import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { authorityFault } from "../../cloud/src/v3-authority.ts";
 import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
@@ -130,9 +130,24 @@ function record(f: Fixture, key = "r1") {
 
 async function checkpoint(f: Fixture) {
   const db = writableStore(f.storage);
-  const image = viewV3(recoverV3(db, f.seal())).image;
+  const { image, coveredHead: start } = viewV3(recoverV3(db, f.seal()));
   const { head } = image;
-  expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject({
+  let coveredHead = start;
+  let reply: Awaited<ReturnType<Fixture["send"]>>;
+  do {
+    reply = await f.send(`${probe}/checkpoint`, {});
+    expect(reply.status).toBe(200);
+    const { value } = reply.body as {
+      value: { coveredHead: number; more: boolean };
+    };
+    if (coveredHead < head)
+      expect(value.coveredHead).toBeGreaterThan(coveredHead);
+    expect(value.coveredHead).toBeLessThanOrEqual(head);
+    expect(value.coveredHead - coveredHead).toBeLessThanOrEqual(12);
+    coveredHead = value.coveredHead;
+    expect(value.more).toBe(coveredHead < head);
+  } while (coveredHead < head);
+  expect(reply).toMatchObject({
     status: 200,
     body: { value: { coveredHead: head, more: false } },
   });
@@ -747,6 +762,449 @@ test(
     const replay = f.observeEffects();
     expect(await rawClaim(f)).toEqual(first);
     expect(replay()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+const typedClaim = {
+  op: "issue.claim",
+  requestId: "typed-claim",
+  input: { id: "forge-1", ttlSeconds: 60 },
+  context: holder,
+};
+
+test(
+  "v3 typed claim writes one lease, read set, result and witness and rechecks replay",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await oneRow(f, () => send(f, create));
+    const first = await oneRow(f, () => send(f, typedClaim));
+    const principal = ["owner", "laptop", "laptop"] as const;
+    const id = scopeRequestId("command", principal, typedClaim.requestId);
+    const expiresAt = new Date(time + 60_000).toISOString();
+    const result = { id: "forge-1", generation: 1, expiresAt };
+    expect(first.body).toMatchObject({ ok: true, result });
+    const frame = frames(f).at(-1)!;
+    expect(frame).toMatchObject({
+      operation: typedClaim.op,
+      events: [{ readSet: [{ key: subject, expectRevision: 1 }] }],
+      lease: {
+        subject,
+        holder: { actor, session: { ...session, device: "laptop" } },
+        generation: 1,
+        expiresAt,
+      },
+      outcome: {
+        id,
+        scope: { family: "command", ...receiptScope(principal) },
+        status: "ok",
+        result,
+      },
+      witness: {
+        id,
+        namespace: "forge/work",
+        subject,
+        generation: 1,
+        digest: digestBytes(String((frame.outcome as Json).fingerprint)),
+      },
+    });
+    expect(frame.changes).toBeUndefined();
+    await claimRefusal(f, typedClaim, 409, "LEASE_HELD", "tablet");
+    await oneRow(f, () => send(f, update));
+    await oneRow(f, () =>
+      f.send(
+        `${probe}/renew`,
+        { requestId: "renew", subject, holder, generation: 1, ttlMs },
+        headers(),
+      ),
+    );
+    await checkpoint(f);
+    const replay = f.observeEffects();
+    expect(await send(f, typedClaim)).toEqual(first);
+    expect(
+      await send(f, {
+        ...typedClaim,
+        input: { ...typedClaim.input, ttlSeconds: 30 },
+      }),
+    ).toMatchObject(error(409, "INPUT_CONFLICT"));
+    for (const changed of [
+      { ...typedClaim, input: { ...typedClaim.input, id: "forge-2" } },
+      { ...typedClaim, context: { ...holder, session: { id: "second" } } },
+    ]) {
+      expect(await send(f, changed)).toMatchObject(
+        error(409, "INPUT_CONFLICT"),
+      );
+    }
+    expect(replay()).toEqual(noWrites);
+
+    await oneRow(f, () =>
+      f.send(
+        `${probe}/release`,
+        { requestId: "release", subject, holder, generation: 1 },
+        headers(),
+      ),
+    );
+    const released = f.observeEffects();
+    expect(await send(f, typedClaim)).toMatchObject(error(409, "LEASE_STALE"));
+    expect(released()).toEqual(noWrites);
+    expect(
+      (
+        await oneRow(f, () =>
+          send(f, { ...typedClaim, requestId: "next-claim" }),
+        )
+      ).body,
+    ).toMatchObject({ result: { generation: 2 } });
+    const db = writableStore(f.storage);
+    expect(
+      readV3Value(db, recoverV3(db, f.seal()), "lease", subject),
+    ).toMatchObject({
+      generation: 2,
+    });
+    await checkpoint(f);
+  },
+  timeout,
+);
+
+async function claimRefusal(
+  f: Fixture,
+  body: typeof typedClaim,
+  status: number,
+  code: string,
+  owner?: string,
+) {
+  const before = frames(f).length;
+  const effects = f.observeEffects();
+  const reply = await send(f, body, owner);
+  expect(reply).toMatchObject(error(status, code));
+  expect(frames(f)).toHaveLength(before + 1);
+  expect(effects()).toMatchObject({ sqlWriteAttempts: 1, alarmWrites: 0 });
+  const frame = frames(f).at(-1)!;
+  expect(frame).toMatchObject({
+    operation: typedClaim.op,
+    events: [],
+    outcome: { status: code },
+  });
+  for (const member of ["changes", "lease", "witness"])
+    expect(frame[member]).toBeUndefined();
+  const replay = f.observeEffects();
+  expect(await send(f, body, owner)).toEqual(reply);
+  expect(replay()).toEqual(noWrites);
+  return reply;
+}
+
+async function fixtureIssue(
+  f: Fixture,
+  value: Omit<typeof initial, "dependsOn"> & { dependsOn: string[] } = initial,
+  revision = 1,
+) {
+  const key = `r${value.id.slice(5)}`;
+  expect(
+    await f.send(`${probe}/commits`, {
+      frames: [
+        {
+          operation: "fixture.put",
+          time,
+          events: [{ key, revision, value }],
+          changes: [{ key, value: { revision, value } }],
+        },
+      ],
+    }),
+  ).toMatchObject({ status: 200 });
+}
+
+test(
+  "v3 typed claim records v2 refusals in check order without changing the issue or lease",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const body = (name: string, ttlSeconds = 60, id = "forge-1") => ({
+      ...typedClaim,
+      requestId: name,
+      input: { id, ttlSeconds },
+    });
+    await claimRefusal(f, body("not-found"), 404, "NOT_FOUND");
+    await claimRefusal(f, body("bad-schema", 0), 400, "INPUT_INVALID");
+    await fixtureIssue(f, { ...initial, status: "closed" });
+    await claimRefusal(f, body("closed", 7_201), 409, "INPUT_CONFLICT");
+    await fixtureIssue(f, { ...initial, id: "work-2", dependsOn: ["work-1"] });
+    await oneRow(f, () => send(f, body("unblocked", 60, "forge-2")));
+    await fixtureIssue(f, initial, 2);
+    await claimRefusal(
+      f,
+      body("held-and-blocked", 60, "forge-2"),
+      409,
+      "LEASE_HELD",
+    );
+    await rawClaim(f);
+    await fixtureIssue(f, {
+      ...initial,
+      id: "work-3",
+      dependsOn: ["work-1", "work-9"],
+    });
+    const blocked = await claimRefusal(
+      f,
+      body("blocked", 7_201, "forge-3"),
+      409,
+      "CLAIM_BLOCKED",
+    );
+    expect(blocked.body).toMatchObject({
+      error: {
+        observed: {
+          blockers: [
+            {
+              id: "forge-1",
+              holder: { actor, session: { ...session, device: "laptop" } },
+              holderUnverified: true,
+            },
+            { id: "forge-9" },
+          ],
+        },
+      },
+    });
+    expect(
+      (blocked.body as { error: { message: string } }).error.message,
+    ).toContain("forge-1 (open)");
+    expect(
+      (blocked.body as { error: { message: string } }).error.message,
+    ).toContain("forge-9 (missing)");
+    await claimRefusal(f, body("ttl-before-held", 7_201), 400, "INPUT_INVALID");
+    await claimRefusal(f, body("same-holder"), 409, "LEASE_HELD");
+    await claimRefusal(
+      f,
+      {
+        ...body("same-device"),
+        context: { ...holder, session: { id: "second" } },
+      },
+      409,
+      "LEASE_HELD",
+    );
+    setSystemTime(time + ttlMs);
+    expect(
+      (
+        await claimRefusal(
+          f,
+          body("expired-blocker-holder", 60, "forge-3"),
+          409,
+          "CLAIM_BLOCKED",
+        )
+      ).body,
+    ).toMatchObject({
+      error: {
+        observed: {
+          blockers: [
+            {
+              id: "forge-1",
+              holder: { actor, session: { ...session, device: "laptop" } },
+              holderUnverified: true,
+            },
+            { id: "forge-9" },
+          ],
+        },
+      },
+    });
+    expect(record(f)).toEqual({ value: initial, revision: 2 });
+    expect(record(f, "r3").revision).toBe(1);
+    await checkpoint(f);
+  },
+  timeout,
+);
+
+for (const loss of [
+  "expiry",
+  "takeover after expiry",
+  "takeover after release",
+] as const) {
+  test(
+    `v3 typed claim replay refuses ${loss} without replacing its receipt`,
+    async () => {
+      const f = guardFixture(env);
+      using _db = f.db;
+      await provision(f);
+      await fixtureIssue(f);
+      await oneRow(f, () => send(f, typedClaim));
+      if (loss === "takeover after release") {
+        await oneRow(f, () =>
+          f.send(
+            `${probe}/release`,
+            {
+              requestId: "release",
+              subject,
+              holder,
+              generation: 1,
+            },
+            headers(),
+          ),
+        );
+      } else {
+        setSystemTime(time + 60_000);
+      }
+      if (loss !== "expiry") {
+        const next = {
+          ...typedClaim,
+          requestId: "takeover",
+          context: { ...holder, session: { id: "second" } },
+        };
+        const owner = loss === "takeover after release" ? "tablet" : "laptop";
+        expect(
+          (await oneRow(f, () => send(f, next, owner))).body,
+        ).toMatchObject({
+          result: { generation: 2 },
+        });
+      }
+      const effects = f.observeEffects();
+      const replay = await send(f, typedClaim);
+      expect(replay).toMatchObject(error(409, "LEASE_STALE"));
+      expect((replay.body as Json).result).toBeUndefined();
+      expect(
+        await send(f, {
+          ...typedClaim,
+          input: { ...typedClaim.input, ttlSeconds: 61 },
+        }),
+      ).toMatchObject(error(409, "INPUT_CONFLICT"));
+      expect(effects()).toEqual(noWrites);
+    },
+    timeout,
+  );
+}
+
+const claimEdits: Record<string, (frame: Json) => void> = {
+  lease: (frame) => {
+    (frame.lease as Json).expiresAt = new Date(time + 61_000).toISOString();
+  },
+  witness: (frame) => {
+    (frame.witness as Json).digest = `sha256:${"0".repeat(64)}`;
+  },
+  result: (frame) => {
+    ((frame.outcome as Json).result as Json).id = "forge-2";
+  },
+  "read set": (frame) => {
+    ((frame.events as Json[])[0]!.readSet as Json[])[0]!.expectRevision = 9;
+  },
+  generation: (frame) => {
+    (frame.lease as Json).generation = 1;
+    (frame.witness as Json).generation = 1;
+    ((frame.outcome as Json).result as Json).generation = 1;
+  },
+};
+
+for (const [field, edit] of Object.entries(claimEdits)) {
+  test(
+    `v3 recovery, replay and checkpoint reject a signed claim row with an inconsistent ${field}`,
+    async () => {
+      const f = guardFixture(env);
+      using _db = f.db;
+      await provision(f);
+      await fixtureIssue(f);
+      await rawClaim(f);
+      setSystemTime(time + ttlMs);
+      await oneRow(f, () => send(f, typedClaim));
+      const frame = frames(f)[2]!;
+      edit(frame);
+      const body = canonicalJson(frame);
+      f.db.run("UPDATE cloud_v3_commits SET body=?, mac=? WHERE sequence=3", [
+        body,
+        f.sign(3, body),
+      ]);
+      f.restart();
+      const effects = f.observeEffects();
+      expect(await f.send(probe)).toMatchObject(error(503, "UNAVAILABLE"));
+      expect(await send(f, typedClaim)).toMatchObject(
+        error(503, "UNAVAILABLE"),
+      );
+      expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject(
+        error(503, "UNAVAILABLE"),
+      );
+      expect(effects()).toEqual(noWrites);
+    },
+    timeout,
+  );
+}
+
+test(
+  "v3 rejects a coordinated storage edit to the typed claim holder",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await fixtureIssue(f);
+    await oneRow(f, () => send(f, typedClaim));
+    const replacement = {
+      actor: { ...actor, id: "other" },
+      session: { id: "other", device: "tablet" },
+    };
+    tamper(f, 2, (frame) => {
+      (frame.events as Json[])[0]!.holder = replacement;
+      (frame.lease as Json).holder = replacement;
+    });
+    const effects = f.observeEffects();
+    expect(await f.send(probe)).toMatchObject(error(503, "UNAVAILABLE"));
+    expect(await send(f, typedClaim)).toMatchObject(error(503, "UNAVAILABLE"));
+    expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject(
+      error(503, "UNAVAILABLE"),
+    );
+    expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+test(
+  "portable v3 recovery rederives the claim and checks the archived result digest",
+  async () => {
+    const f = guardFixture(env);
+    using db = f.db;
+    await provision(f);
+    await fixtureIssue(f);
+    await oneRow(f, () => send(f, typedClaim));
+    await checkpoint(f);
+    const transcript = db
+      .query<{ body: string }, []>(
+        "SELECT body FROM cloud_v3_pages WHERE id='transcript:0'",
+      )
+      .get()!.body;
+    const store = writableStore(f.storage);
+    const verify = (portableTranscript: string) =>
+      recoverV3(store, f.seal(), {
+        admit: Project.admitLeaseRequest,
+        portableTranscript,
+      });
+    expect(
+      readV3Value(store, verify(transcript), "lease", subject),
+    ).toMatchObject({ generation: 1 });
+    for (const edit of [
+      claimEdits.lease!,
+      claimEdits.witness!,
+      (frame: Json) => {
+        (frame.outcome as Json).resultDigest = `sha256:${"0".repeat(64)}`;
+      },
+    ]) {
+      const edited = JSON.parse(transcript) as Json[];
+      edit(edited[1]!);
+      expect(() => verify(canonicalJson(edited))).toThrow(
+        "Cloud v3 root is unavailable",
+      );
+    }
+  },
+  timeout,
+);
+
+test(
+  "the ordinary command route and disabled selector refuse typed claim on v3",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const effects = f.observeEffects();
+    expect(await f.send("command", typedClaim, headers())).toMatchObject(
+      error(403, "AUTH_FORBIDDEN"),
+    );
+    f.restart(false);
+    expect(await send(f, typedClaim)).toMatchObject(
+      error(404, "UNKNOWN_COMMAND"),
+    );
+    expect(effects()).toEqual(noWrites);
   },
   timeout,
 );

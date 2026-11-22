@@ -1723,6 +1723,76 @@ test(
 );
 
 test(
+  "v3 restore replays refused typed claims without writing",
+  async () => {
+    const env = { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" };
+    const source = guardFixture(env);
+    const target = guardFixture(env);
+    using _source = source.db;
+    using _target = target.db;
+    const claim = (f: Fixture, id: string) =>
+      f.send(
+        `${probe}/command`,
+        {
+          op: "issue.claim",
+          requestId: `refused-claim-${id}`,
+          input: { id },
+          context: holder,
+        },
+        {
+          "X-Forge-Owner": "owner-a",
+          "X-Forge-Owner-Expires": String(E1),
+        },
+      );
+
+    expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+    const missing = await claim(source, "forge-9");
+    expect(missing).toMatchObject({
+      status: 404,
+      body: { ok: false, error: { code: "NOT_FOUND" } },
+    });
+    const record = { id: "work-1", status: "open", dependsOn: [] };
+    expect(await append(source, putRecord("r1", 1, record))).toMatchObject({
+      status: 200,
+    });
+    expect(
+      await sendLease(source, "claim", "owner-a", {
+        subject: "issue:work-1",
+        requestId: "raw-held",
+        ttlMs: HOUR,
+      }),
+    ).toMatchObject({ status: 200 });
+    const held = await claim(source, "forge-1");
+    expect(held).toMatchObject({
+      status: 409,
+      body: { ok: false, error: { code: "LEASE_HELD" } },
+    });
+    await drain(source, 0, 4);
+    const { head, eventWatermark, recordFloor, root } = recoverV3(
+      writableStore(source.storage),
+      source.seal(),
+    );
+    const data = {
+      pages: pages(source),
+      head,
+      eventWatermark,
+      recordFloor,
+      publicDigest: root.publicDigest as string,
+    };
+    const upload = await stageRestore(target, data);
+    expect(await upload(2)).toMatchObject(restoreResult(2, true));
+    expect(pages(target)).toEqual(data.pages);
+
+    target.restart();
+    const effects = target.observeEffects();
+    expect(await claim(target, "forge-9")).toEqual(missing);
+    expect(await claim(target, "forge-1")).toEqual(held);
+    expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+test(
   "v3 restore refuses exact retries when staged bytes have changed",
   () =>
     withPortable(async (target, data) => {

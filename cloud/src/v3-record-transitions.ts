@@ -66,6 +66,11 @@ export function updateEffect(
   };
 }
 
+export const resultMatches = (
+  { result, resultDigest }: NonNullable<Frame["outcome"]>,
+  expected: unknown,
+) => (resultDigest ?? digestValue(result)) === digestValue(expected);
+
 export function verifyRecordFrame(
   frame: Frame,
   floor: number,
@@ -106,11 +111,10 @@ export function verifyRecordFrame(
         frame.time,
         load("lease", `issue:${id}`),
       );
-      const { result, resultDigest } = frame.outcome;
       if (
         canonicalJson(frame.events) !== canonicalJson(effect.events) ||
         canonicalJson(frame.changes) !== canonicalJson(effect.changes) ||
-        (resultDigest ?? digestValue(result)) !== digestValue(effect.result)
+        !resultMatches(frame.outcome, effect.result)
       )
         throw refuse();
       return { floor, changes: effect.changes };

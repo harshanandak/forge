@@ -20,6 +20,13 @@ const REFUSAL_KEYS = "fingerprint,id,result,retryUntil,scope,status";
 const ARCHIVED_KEYS = "fingerprint,id,resultDigest,retryUntil,scope,status";
 const WITNESS_KEYS = "digest,generation,id,namespace,subject";
 const OPERATIONS = ["lease.claim", "lease.renew", "lease.release"];
+export const CLAIM_REFUSALS = [
+  "INPUT_INVALID",
+  "NOT_FOUND",
+  "INPUT_CONFLICT",
+  "CLAIM_BLOCKED",
+  "LEASE_HELD",
+];
 export const UPDATE_REFUSALS = REFUSALS.filter(
   (code) => code !== "LEASE_HELD",
 ).concat("NOT_FOUND", "REVISION_CONFLICT");
@@ -47,7 +54,7 @@ function fingerprintTied(
 ): boolean {
   try {
     const input: unknown = JSON.parse(String(outcome.fingerprint));
-    if (operation === "issue.create" || operation === "issue.update") {
+    if (String(operation).startsWith("issue.")) {
       if (!isObject(input) || !isObject(outcome.scope)) return false;
       const { family: _family, ...scope } = outcome.scope;
       return (
@@ -72,10 +79,16 @@ function fingerprintTied(
   }
 }
 
-function outcomeFault(outcome: unknown, typed?: boolean, portable = false) {
+function outcomeFault(
+  outcome: unknown,
+  typed?: boolean,
+  portable = false,
+  grant = false,
+) {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
   const { scope, result } = outcome;
   const command = typed ?? scope.family === "command";
+  const codes = !command ? REFUSALS : grant ? CLAIM_REFUSALS : UPDATE_REFUSALS;
   const archived = portable && (command || outcome.status !== "ok");
   const liveKeys = result === undefined ? OUTCOME_KEYS : REFUSAL_KEYS;
   if (
@@ -100,19 +113,17 @@ function outcomeFault(outcome: unknown, typed?: boolean, portable = false) {
   if (
     command &&
     (!/^c2:[a-f0-9]{64}$/.test(outcome.id) ||
-      (outcome.status !== "ok" &&
-        !UPDATE_REFUSALS.includes(String(outcome.status))))
+      (outcome.status !== "ok" && !codes.includes(String(outcome.status))))
   )
     return "command outcome";
   if (archived) return undefined;
   if (command && outcome.status === "ok")
-    return validators.validateTrackerItem(result).ok
+    return (grant
+      ? validators.validateLeaseGrant
+      : validators.validateTrackerItem)(result).ok
       ? undefined
       : "command result";
-  const status =
-    result === undefined
-      ? "ok"
-      : refusalCode(result, command ? UPDATE_REFUSALS : REFUSALS);
+  const status = result === undefined ? "ok" : refusalCode(result, codes);
   return status !== undefined && outcome.status === status
     ? undefined
     : "outcome status";
@@ -150,12 +161,12 @@ export function sealedAuthorityValid(
       validLease(lease) &&
       witnessMatches(witness, lease, key)
     );
+  if (!isNat(time) || !isObject(outcome) || outcome.id !== key) return false;
+  const grant =
+    lease !== undefined || CLAIM_REFUSALS.includes(String(outcome.status));
   return (
-    isNat(time) &&
-    isObject(outcome) &&
-    outcome.id === key &&
-    outcomeFault(outcome) === undefined &&
-    (outcome.status === "ok" && !("result" in outcome)
+    outcomeFault(outcome, undefined, false, grant) === undefined &&
+    (outcome.status === "ok" && (lease !== undefined || !("result" in outcome))
       ? validLease(lease)
       : lease === undefined)
   );
@@ -172,13 +183,14 @@ export function authorityFault(
   )
     return "lease release marker";
   const create = operation === "issue.create";
-  const command = create || operation === "issue.update";
+  const claim = operation === "issue.claim";
+  const command = create || operation === "issue.update" || claim;
   const outcomeError =
     outcome === undefined
       ? undefined
-      : outcomeFault(outcome, command, portable);
+      : outcomeFault(outcome, command, portable, claim);
   if (outcomeError !== undefined) return outcomeError;
-  if (command)
+  if (command && !claim)
     return (!create || !portable) &&
       lease === undefined &&
       witness === undefined &&
@@ -187,12 +199,16 @@ export function authorityFault(
       fingerprintTied(operation, lease, outcome)
       ? undefined
       : "command frame";
-  if ((outcome !== undefined) !== OPERATIONS.includes(String(operation)))
+  if (
+    (outcome !== undefined) !==
+    (claim || OPERATIONS.includes(String(operation)))
+  )
     return "outcome operation";
   if (isObject(outcome)) {
     if (!fingerprintTied(operation, lease, outcome))
       return "outcome fingerprint";
     if (
+      !claim &&
       !["ok", "INPUT_INVALID"].includes(String(outcome.status)) &&
       (outcome.status === "LEASE_HELD") !== (operation === "lease.claim")
     )
@@ -202,7 +218,7 @@ export function authorityFault(
     return "lease and ok outcome pairing";
   if (
     (witness !== undefined) !==
-    (operation === "lease.claim" && lease !== undefined)
+    ((claim || operation === "lease.claim") && lease !== undefined)
   )
     return "witness";
   if (
