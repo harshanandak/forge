@@ -81,6 +81,14 @@ export interface DeviceInput {
   ttlMs: number;
 }
 
+export function mint(): { id: string; secret: string } {
+  const secret = btoa(String.fromCharCode(...random(32)))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+  return { id: hex(random(8)), secret };
+}
+
 export async function issueToken(
   db: SqlDatabase,
   input: DeviceInput,
@@ -88,11 +96,7 @@ export async function issueToken(
 ): Promise<Record<string, unknown>> {
   if (input.ttlMs > MAX_TTL_MS)
     throw denied("INPUT_INVALID", "ttlMs is over 90 days");
-  const id = hex(random(8));
-  const secret = btoa(String.fromCharCode(...random(32)))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
+  const { id, secret } = mint();
   const expiresAt = now + input.ttlMs;
   const row: SqlRow = { ...input, expires_at: expiresAt };
   db.run(
