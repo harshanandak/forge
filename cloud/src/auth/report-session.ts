@@ -152,10 +152,11 @@ export async function report(req: Request, env: LoginEnv, setup: Configure) {
   const until = await live();
   const [issue, duplicate] = url.searchParams.getAll("issue");
   if (issue === undefined) return appPage(until !== undefined);
-  if (until === undefined) return appPage(false, 401);
-  if (duplicate !== undefined || !validIssue(issue)) return appReply(400);
+  const valid = duplicate === undefined && validIssue(issue);
+  if (until === undefined) return appPage(false, "", valid ? { issue } : {});
+  if (!valid) return appReply(400);
   const reply = await fetchReport(project, issue, until);
   if ((await live()) === until) return reply;
   void reply.body?.cancel().catch(() => undefined);
-  return appPage(false, 401);
+  return appPage(false, "", {});
 }

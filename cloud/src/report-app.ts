@@ -19,11 +19,16 @@ const escape = (text: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
-export async function appPage(signedIn: boolean, status = 200, content = "") {
+type Login = { issue?: string };
+export async function appPage(signedIn: boolean, body = "", login?: Login) {
   const page = reportPage(signedIn);
+  const issue = login?.issue;
+  const query = issue ? `?${new URLSearchParams({ issue })}` : "";
   const html = (await page.text())
     .replace("<title>", head + "<title>")
-    .replace("</html>", () => form + content + "</html>");
+    .replace('href="/app/sign-in"', `href="/app/sign-in${escape(query)}"`)
+    .replace("</html>", () => form + body + "</html>");
+  const status = login ? 401 : 200;
   return new Response(html, { status, headers: page.headers });
 }
 
@@ -31,7 +36,6 @@ export function renderIssue({ id, title, status, body = "" }: TrackerItem) {
   const clipped = body.length > 8_000 ? "<p>Issue body clipped.</p>" : "";
   return appPage(
     true,
-    200,
     `<article><h1>${escape(title)}</h1><p>${escape(id)} · ${escape(status)}</p><pre>${escape(body.slice(0, 8_000))}</pre>${clipped}</article>`,
   );
 }
