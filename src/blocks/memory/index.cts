@@ -230,9 +230,9 @@ const removedOwnerTags = (
   to: readonly string[],
   config: MemoryConfig,
 ) =>
-  from.filter(
-    (tag) => !to.includes(tag) && ownerTag([tag], config) !== undefined,
-  );
+  from
+    .filter((tag) => !to.includes(tag) && ownerTag([tag], config) !== undefined)
+    .sort();
 function words(text: string): string[] {
   return text
     .normalize("NFKC")
@@ -1084,7 +1084,8 @@ async function decide(
     );
     if (
       decision === "accept" &&
-      canonical(dropped) !== canonical(item.removedOwnerTags ?? [])
+      canonical(dropped) !==
+        canonical([...(item.removedOwnerTags ?? [])].sort())
     )
       fail(
         "PROPOSAL_CHANGED",
