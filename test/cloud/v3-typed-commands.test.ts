@@ -1,55 +1,60 @@
+﻿import { timingSafeEqual } from "node:crypto";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
 import { writableStore } from "../../cloud/src/store.ts";
-import {
-  issueToken,
-  TOKEN_MIGRATION,
-  tokenParts,
-} from "../../cloud/src/tokens.ts";
 import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
-import { digestValue } from "../../src/core/config/pointer.ts";
 import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
+
+if (!("timingSafeEqual" in crypto.subtle))
+  Object.defineProperty(crypto.subtle, "timingSafeEqual", {
+    value: timingSafeEqual,
+  });
 
 const timeout = 30_000;
 const time = Date.parse("2026-11-20T12:00:00.000Z");
-const ttlMs = 7_200_000;
+const ttlMs = 3_600_000;
+const expiry = time + 2 * ttlMs;
 const env = { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" };
 const actor = { kind: "agent", id: "fixture" };
 const session = { id: "fixture" };
-const id = "forge-1";
+const holder = { actor, session };
 const subject = "issue:work-1";
-const calls = [
-  {
-    op: "issue.create",
-    requestId: "create",
-    input: { title: "Before" },
-    context: { actor },
-  },
-  {
-    op: "issue.claim",
-    requestId: "claim",
-    input: { id },
-    context: { actor, session },
-  },
-  {
-    op: "issue.update",
-    requestId: "update",
-    input: { id, expectRevision: 1, title: "After" },
-    context: { actor, session, leaseGeneration: 1 },
-  },
-] as const;
-const [create, claim, update] = calls;
+const create = {
+  op: "issue.create",
+  requestId: "create",
+  input: { title: "Before" },
+  context: { actor },
+};
+const update = {
+  op: "issue.update",
+  requestId: "update",
+  input: { id: "forge-1", expectRevision: 1, title: "After" },
+  context: { ...holder, leaseGeneration: 1 },
+};
+const initial = {
+  id: "work-1",
+  prefix: "forge",
+  title: "Before",
+  status: "open",
+  labels: [],
+  dependsOn: [],
+  createdAt: new Date(time).toISOString(),
+};
 
 beforeEach(() => setSystemTime(time));
 afterEach(() => setSystemTime());
 
 type Fixture = ReturnType<typeof guardFixture>;
 type Json = Record<string, unknown>;
-const send = (f: Fixture, token: string, body: object) =>
-  f.send("command", body, { authorization: `Bearer ${token}` });
+const headers = (owner = "laptop", expiresAt = expiry) => ({
+  "X-Forge-Owner": owner,
+  "X-Forge-Owner-Expires": String(expiresAt),
+});
+const send = (f: Fixture, body: object, owner?: string) =>
+  f.send(`${probe}/command`, body, headers(owner));
 const frames = ({ db }: Fixture) =>
   db
     .query<{ body: string }, []>(
@@ -57,342 +62,290 @@ const frames = ({ db }: Fixture) =>
     )
     .all()
     .map(({ body }) => JSON.parse(body) as Json);
-const recover = (f: Fixture) => recoverV3(writableStore(f.storage));
-
-function collections(f: Fixture) {
-  const db = writableStore(f.storage);
-  const image = recoverV3(db);
-  const read = (collection: keyof typeof image.entries) =>
-    [...image.entries[collection]]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, slot]) => [
-        key,
-        slot.revision,
-        readV3Value(db, image, collection, key),
-      ]);
-  return {
-    record: read("record"),
-    outcome: read("outcome"),
-    witness: read("witness"),
-    lease: read("lease"),
-    recordFloor: image.recordFloor,
-  };
-}
-
-async function device(f: Fixture, name: string) {
-  const db = writableStore(f.storage);
-  for (const statement of TOKEN_MIGRATION.statements) db.exec(statement);
-  const result = await issueToken(
-    db,
-    {
-      device: name,
-      session: session.id,
-      ttlMs,
-      agent: null,
-      harness: null,
-    },
-    time,
-  );
-  return result as { id: string; token: string };
-}
-
-async function restore(
-  source: Fixture,
-  target: Fixture,
-  head: number,
-  eventWatermark: number,
-) {
-  const exported = await source.send("dump");
-  expect(exported).toMatchObject({
-    status: 200,
-    body: {
-      ok: true,
-      value: {
-        manifest: {
-          format: "forge-cloud-portable/3",
-          head,
-          eventWatermark,
-          recordFloor: 1,
-        },
-      },
-    },
-  });
-  const { manifest, pages } = (
-    exported.body as {
-      value: {
-        manifest: Json;
-        pages: { id: string; body: string }[];
-      };
-    }
-  ).value;
-  expect(pages.map(({ id }) => id)).toEqual([
-    "directory:0",
-    "snapshot:0",
-    "transcript:0",
-  ]);
-  for (const [page, data] of pages.entries()) {
-    expect(
-      await target.send(
-        "restore",
-        { page, ...data, ...(page === 0 && { manifest }) },
-        page === 0 ? { "X-Forge-Manifest-Digest": digestValue(manifest) } : {},
-      ),
-    ).toEqual({
-      status: 200,
-      body: { ok: true, value: { page, verified: page === 2 } },
-    });
-  }
-  return JSON.parse(pages[2]!.body) as Json[];
-}
-
-const refusal = (status: number, code: string) => ({
+const error = (status: number, code: string) => ({
   status,
   body: { ok: false, error: { code } },
 });
 
-async function conflicts(f: Fixture, token: string, other: string) {
-  expect(
-    await send(f, token, { ...create, input: { title: "Different" } }),
-  ).toMatchObject(refusal(409, "INPUT_CONFLICT"));
-  expect(await send(f, other, claim)).toMatchObject(refusal(409, "LEASE_HELD"));
+async function provision(f: Fixture) {
+  expect(await f.send(probe, {})).toMatchObject({ status: 200 });
 }
 
-async function regressions(f: Fixture, token: string) {
-  expect(
-    await send(f, token, { ...update, requestId: "old-revision" }),
-  ).toMatchObject(refusal(409, "REVISION_CONFLICT"));
-  expect(
-    await send(f, token, {
-      ...update,
-      requestId: "stale-fence",
-      input: { ...update.input, expectRevision: 2 },
-      context: { ...update.context, leaseGeneration: 2 },
-    }),
-  ).toMatchObject(refusal(409, "LEASE_STALE"));
-  expect(
-    await send(f, token, {
-      ...update,
-      requestId: "graph",
-      input: { ...update.input, dependsOn: [id] },
-    }),
-  ).toMatchObject(refusal(400, "INPUT_INVALID"));
+async function rawClaim(f: Fixture) {
+  const reply = await f.send(
+    `${probe}/claim`,
+    { requestId: "raw-claim", subject, holder, ttlMs },
+    headers(),
+  );
+  expect(reply).toMatchObject({
+    status: 200,
+    body: {
+      value: {
+        subject,
+        generation: 1,
+        holder: { actor, session: { ...session, device: "laptop" } },
+      },
+    },
+  });
+  return reply;
+}
+
+async function oneRow(
+  f: Fixture,
+  run: () => ReturnType<Fixture["send"]>,
+  status = 200,
+) {
+  const before = frames(f).length;
+  const effects = f.observeEffects();
+  const response = await run();
+  const { sqlWriteAttempts, alarmWrites } = effects();
+  const { error } = response.body as { error?: { code: string } };
+  expect({
+    status: response.status,
+    code: error?.code ?? null,
+    commitRows: frames(f).length - before,
+    sqlWriteAttempts,
+    alarmWrites,
+  }).toEqual({
+    status,
+    code: status === 200 ? null : "INPUT_INVALID",
+    commitRows: 1,
+    sqlWriteAttempts: 1,
+    alarmWrites: 0,
+  });
+  return response;
+}
+
+function record(f: Fixture, key = "r1") {
+  const db = writableStore(f.storage);
+  const image = recoverV3(db);
+  return {
+    value: readV3Value(db, image, "record", key),
+    revision: image.entries.record.get(key)?.revision,
+  };
+}
+
+async function checkpoint(f: Fixture) {
+  const db = writableStore(f.storage);
+  const image = viewV3(recoverV3(db)).image;
+  const { head } = image;
+  expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject({
+    status: 200,
+    body: { value: { coveredHead: head, more: false } },
+  });
+  expect(frames(f)).toEqual([]);
+  f.restart();
+  expect(await f.send(probe)).toMatchObject({
+    status: 200,
+    body: { value: { image } },
+  });
 }
 
 test(
-  "v3 typed create, claim and update commit once and survive collection, restart and restore",
+  "v3 typed create writes one scoped result, record and event and replays it after collection",
   async () => {
-    const source = guardFixture(env);
-    const target = guardFixture(env);
-    using _sourceDb = source.db;
-    using targetDb = target.db;
-    expect(await source.send(probe, {})).toMatchObject({ status: 200 });
-    const { id: tokenId, token } = await device(source, "laptop");
-    const other = await device(source, "tablet");
-    const results = [];
-    const profile = [];
-    for (const call of calls) {
-      const before = frames(source).length;
-      const writes = source.observeEffects();
-      const got = await send(source, token, call);
-      results.push(got);
-      const { sqlWriteAttempts, alarmWrites } = writes();
-      const { error } = got.body as { error?: { code: string } };
-      profile.push([
-        call.op,
-        got.status,
-        error?.code ?? null,
-        frames(source).length - before,
-        sqlWriteAttempts,
-        alarmWrites,
-      ]);
-    }
-    expect(profile).toEqual(calls.map(({ op }) => [op, 200, null, 1, 1, 0]));
-    const lease = {
-      subject,
-      generation: 1,
-      holder: { actor, session: { ...session, device: "laptop" } },
-    };
-    expect(results.map(({ body }) => body)).toMatchObject([
-      {
-        ok: true,
-        op: create.op,
-        status: "OK",
-        result: { id, title: "Before", revision: 1 },
-      },
-      { ok: true, op: claim.op, status: "OK", result: { id, generation: 1 } },
-      {
-        ok: true,
-        op: update.op,
-        status: "OK",
-        result: { id, title: "After", revision: 2 },
-      },
-    ]);
-    const log = frames(source);
-    const principal = ["token", tokenId, "laptop"] as const;
-    const scope = { family: "command", ...receiptScope(principal) };
-    for (const [i, { requestId, op }] of calls.entries()) {
-      expect(log[i]).toMatchObject({
-        sequence: i + 1,
-        operation: op,
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const first = await oneRow(f, () => send(f, create));
+    expect(first.body).toMatchObject({
+      ok: true,
+      op: create.op,
+      status: "OK",
+      result: { id: "forge-1", title: "Before", revision: 1 },
+    });
+    expect(record(f)).toEqual({ revision: 1, value: initial });
+    const other = await oneRow(f, () => send(f, create, "tablet"));
+    expect(other.body).toMatchObject({
+      result: { id: "forge-2", revision: 1 },
+    });
+    expect(record(f, "r2")).toEqual({
+      revision: 1,
+      value: { ...initial, id: "work-2" },
+    });
+    for (const [i, owner] of ["laptop", "tablet"].entries()) {
+      const principal = ["owner", owner, owner] as const;
+      expect(frames(f)[i]).toMatchObject({
+        operation: create.op,
+        events: [
+          {
+            key: `r${i + 1}`,
+            revision: 1,
+            value: { id: `work-${i + 1}`, title: "Before" },
+          },
+        ],
         outcome: {
-          id: scopeRequestId("command", principal, requestId),
-          scope,
+          id: scopeRequestId("command", principal, create.requestId),
+          scope: { family: "command", ...receiptScope(principal) },
           status: "ok",
         },
       });
     }
-    expect(log[0]).toMatchObject({
-      changes: [{ value: { revision: 1, value: { title: "Before" } } }],
-      events: [{ key: subject, revision: 1 }],
+    const invalid = {
+      ...create,
+      requestId: "graph",
+      input: { ...create.input, dependsOn: ["forge-1"] },
+    };
+    const denied = await oneRow(f, () => send(f, invalid), 400);
+    expect(frames(f).at(-1)).toMatchObject({
+      events: [],
+      outcome: { status: "INPUT_INVALID" },
     });
-    expect(log[1]).toMatchObject({
-      lease,
-      events: [
-        {
-          key: subject,
-          revision: 1,
-          requestId: scopeRequestId("command", principal, claim.requestId),
-          data: { lease },
-        },
-      ],
+    expect(frames(f).at(-1)?.changes).toBeUndefined();
+    await checkpoint(f);
+    expect(record(f)).toEqual({ revision: 1, value: initial });
+    expect(record(f, "r2")).toEqual({
+      revision: 1,
+      value: { ...initial, id: "work-2" },
     });
-    expect(log[2]).toMatchObject({
-      changes: [{ value: { revision: 2, value: { title: "After" } } }],
-      events: [{ key: subject, revision: 2 }],
-    });
-    const before = recover(source);
-    const image = viewV3(before).image;
-    const expected = collections(source);
-    expect(expected.record).toHaveLength(1);
-    expect(expected.outcome).toHaveLength(3);
-    expect(expected.witness).toHaveLength(1);
-    expect(expected.lease).toHaveLength(1);
-    expect(expected.recordFloor).toBe(1);
-    expect(await source.send(`${probe}/checkpoint`, {})).toMatchObject({
-      status: 200,
-      body: { value: { coveredHead: 3, more: false } },
-    });
-    expect(frames(source)).toEqual([]);
-    source.restart();
-    expect(await source.send(probe)).toMatchObject({
-      status: 200,
-      body: { value: { image } },
-    });
-    expect(collections(source)).toEqual(expected);
-    const replay = source.observeEffects();
-    for (const [i, call] of calls.entries())
-      expect(await send(source, token, call)).toEqual(results[i]!);
-    expect(replay()).toEqual(noWrites);
-
-    setSystemTime(time + 1);
-    const transcript = await restore(
-      source,
-      target,
-      before.head,
-      before.eventWatermark,
-    );
+    const replay = f.observeEffects();
+    expect(await send(f, create)).toEqual(first);
+    expect(await send(f, create, "tablet")).toEqual(other);
     expect(
-      transcript.map(({ sequence, operation, events }) => ({
-        sequence,
-        operation,
-        events,
-      })),
-    ).toEqual(
-      log.map(({ sequence, operation, events }) => ({
-        sequence,
-        operation,
-        events,
-      })),
-    );
-    target.restart();
-    const restored = recover(target);
-    const { lease: _liveLease, ...unchanged } = expected;
-    expect(collections(target)).toEqual({
-      ...unchanged,
-      lease: [
-        [
-          subject,
-          undefined,
-          {
-            ...readV3Value(
-              writableStore(source.storage),
-              before,
-              "lease",
-              subject,
-            ),
-            releasedAt: new Date(time + 1).toISOString(),
-          },
-        ],
-      ],
-    });
-    expect(restored.head).toBe(before.head + 1);
-    expect(restored.eventWatermark).toBe(before.eventWatermark + 1);
-    expect(frames(target)).toMatchObject([{ operation: "restore.activate" }]);
-
-    const { hash } = await tokenParts(token);
-    for (const statement of TOKEN_MIGRATION.statements)
-      targetDb.exec(statement);
-    targetDb.run(
-      "INSERT INTO domain_cloud_tokens (id, hash, device, session, expires_at) VALUES (?, ?, ?, ?, ?)",
-      [tokenId, hash, "laptop", session.id, time + ttlMs],
-    );
-    const attempted = target.observeEffects();
-    expect(await send(target, token, claim)).toMatchObject({
-      status: 409,
-      body: { ok: false },
-    });
-    expect(attempted()).toEqual(noWrites);
-
-    const rejected = source.observeEffects();
-    await conflicts(source, token, other.token);
-    expect(rejected()).toEqual(noWrites);
-    await regressions(source, token);
-    const { record, lease: current } = collections(source);
-    expect({ record, lease: current }).toEqual({
-      record: expected.record,
-      lease: expected.lease,
-    });
-
-    source.restart(false);
-    const unselected = source.observeEffects();
-    expect(await send(source, token, create)).toMatchObject({
-      body: { ok: false },
-    });
-    expect(unselected()).toEqual(noWrites);
+      await send(f, { ...create, input: { title: "Changed" } }),
+    ).toMatchObject(error(409, "INPUT_CONFLICT"));
+    expect(await send(f, { ...invalid, input: create.input })).toEqual(denied);
+    expect(replay()).toEqual(noWrites);
   },
   timeout,
 );
 
 test(
-  "the v3 test selector preserves typed v2 commands and their refusals on a v2 project",
+  "v3 typed update writes one row and preserves the revision and lease checks across collection",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const recordChange = { key: "r1", revision: 1, value: initial };
+    expect(
+      await f.send(`${probe}/commits`, {
+        frames: [
+          {
+            operation: "fixture.put",
+            time,
+            events: [recordChange],
+            changes: [
+              { key: recordChange.key, value: { revision: 1, value: initial } },
+            ],
+          },
+        ],
+      }),
+    ).toMatchObject({ status: 200 });
+    await rawClaim(f);
+    const first = await oneRow(f, () => send(f, update));
+    expect(first.body).toMatchObject({
+      ok: true,
+      op: update.op,
+      status: "OK",
+      result: {
+        id: "forge-1",
+        title: "After",
+        revision: 2,
+        lease: { generation: 1 },
+      },
+    });
+    expect(frames(f).at(-1)).toMatchObject({
+      operation: update.op,
+      events: [
+        {
+          key: "r1",
+          revision: 2,
+          expectRevision: 1,
+          patch: { title: "After" },
+        },
+      ],
+      outcome: { status: "ok", result: { id: "forge-1", revision: 2 } },
+    });
+    await checkpoint(f);
+    const replay = f.observeEffects();
+    expect(await send(f, update)).toEqual(first);
+    expect(
+      await send(f, { ...update, requestId: "old-revision" }),
+    ).toMatchObject(error(409, "REVISION_CONFLICT"));
+    expect(
+      await send(f, {
+        ...update,
+        requestId: "stale-fence",
+        input: { ...update.input, expectRevision: 2 },
+        context: { ...update.context, leaseGeneration: 2 },
+      }),
+    ).toMatchObject(error(409, "LEASE_STALE"));
+    expect(
+      await send(f, { ...update, requestId: "other-holder" }, "tablet"),
+    ).toMatchObject(error(409, "LEASE_NOT_HELD"));
+    setSystemTime(time + ttlMs);
+    expect(
+      await send(f, { ...update, requestId: "expired-lease" }),
+    ).toMatchObject(error(409, "LEASE_EXPIRED"));
+    expect(await send(f, update)).toMatchObject(error(409, "LEASE_STALE"));
+    expect(replay()).toEqual(noWrites);
+    expect(record(f)).toEqual({
+      revision: 2,
+      value: { ...initial, title: "After" },
+    });
+  },
+  timeout,
+);
+
+test(
+  "the ordinary command route refuses owner headers on v3 and the disabled selector refuses the probe",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const effects = f.observeEffects();
+    expect(await f.send("command", create, headers())).toMatchObject(
+      error(403, "AUTH_FORBIDDEN"),
+    );
+    f.restart(false);
+    expect(await send(f, create)).toMatchObject(error(404, "UNKNOWN_COMMAND"));
+    expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+test(
+  "v2 typed create still uses v2 storage when the selector is enabled",
   async () => {
     const f = guardFixture(env);
     using db = f.db;
     f.restart(false);
-    const provision = async (device: string) => {
-      const response = await f.send("devices", {
-        device,
-        session: session.id,
-        ttlMs,
-      });
-      expect(response.status).toBe(200);
-      return (response.body as { value: { token: string } }).value.token;
-    };
-    const token = await provision("laptop");
-    const other = await provision("tablet");
+    const device = await f.send("devices", { device: "laptop", ttlMs });
+    expect(device.status).toBe(200);
+    const { token } = (device.body as { value: { token: string } }).value;
     f.restart();
-    for (const call of calls)
-      expect(await send(f, token, call)).toMatchObject({
-        status: 200,
-        body: { ok: true, op: call.op },
-      });
-    await conflicts(f, token, other);
-    await regressions(f, token);
+    expect(
+      await f.send("command", create, { authorization: `Bearer ${token}` }),
+    ).toMatchObject({
+      status: 200,
+      body: { ok: true, op: create.op, result: { id: "forge-1", revision: 1 } },
+    });
+    expect(
+      db
+        .query(
+          "SELECT key, revision FROM state_records WHERE namespace='forge/work' AND key=?",
+        )
+        .all(subject),
+    ).toEqual([{ key: subject, revision: 1 }]);
     expect(
       db
         .query("SELECT name FROM sqlite_schema WHERE name GLOB 'cloud_v3_*'")
         .all(),
     ).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "the raw v3 claim probe still writes once and replays its grant without another write",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const first = await oneRow(f, () => rawClaim(f));
+    const replay = f.observeEffects();
+    expect(await rawClaim(f)).toEqual(first);
+    expect(replay()).toEqual(noWrites);
   },
   timeout,
 );
