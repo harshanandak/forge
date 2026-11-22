@@ -1,426 +1,422 @@
 import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
 
 const head = "a".repeat(40);
 const old = "b".repeat(40);
-const start = Date.parse("2026-11-22T09:00:00Z");
-const deadline = start + 600_000;
-const codex = { type: "Bot", login: "chatgpt-codex-connector[bot]" };
-const rabbit = { type: "Bot", login: "coderabbitai[bot]" };
-const summaryMarker = "<!-- codex-pull-request-review-summary -->";
-const codexQuota = "You have reached your Codex usage limits for code reviews.";
-
-function summary(commit = head, any = false, unresolved = false) {
-  const code_review = {
-    commit_sha: commit,
-    status: "completed",
-    has_any_findings: any,
-    has_unresolved_findings: unresolved,
-  };
-  return {
-    author: codex,
-    at: start + 10,
-    body: `${summaryMarker}\n<!-- codex-review-state:v1 ${JSON.stringify({ code_review })} -->`,
-  };
-}
-
-const rabbitReview = {
-  author: rabbit,
-  at: start + 20,
+const pushedAt = "2026-11-22T09:00:00Z";
+const now = "2026-11-22T09:01:00.000Z";
+const before = "2026-11-22T08:59:59.999Z";
+const quotaAt = "2026-11-22T09:00:00.030Z";
+const findingAt = "2026-11-22T09:00:00.040Z";
+const deadline = "2026-11-22T09:10:00Z";
+const sol = {
   head,
-  id: 24,
-  state: "COMMENTED",
-  body: "<!-- coderabbit-ai-generated:v1 -->\n\n**Actionable comments posted: 0**",
+  at: "2026-11-22T09:00:01Z",
+  kind: "sol",
+  verdict: "PASS",
+  p1: 0,
+  scope: "findings",
 };
-const historicalRabbit = { ...rabbitReview, head: old, id: 23 };
-const rabbitFinding = {
-  author: rabbit,
-  at: start + 40,
-  reviewId: historicalRabbit.id,
+const full = { ...sol, scope: "full" };
+const p1 = { ...sol, head: old, at: pushedAt, kind: "sonnet-temp", p1: 1 };
+const absent = { status: "none", reviewedHead: null, reviewedAt: null };
+const codex = {
+  reviewer: "codex",
+  status: "completed",
+  reviewedHead: head as string | null,
+  reviewedAt: pushedAt as string | null,
+  quotaAt: null as string | null,
+  findingAts: [] as string[],
 };
-const quota = { author: codex, at: start + 30, body: codexQuota };
-const finding = { author: codex, at: start + 40 };
-
-type Finding = typeof finding & { reviewId?: number };
-const clean = {
-  head,
-  pushedAt: start,
-  now: start + 60_000,
-  comments: [summary()],
-  reviews: [rabbitReview],
-  findings: [] as Finding[],
-  threads: [true],
-  truncated: false,
-};
+const rabbit = { ...codex, reviewer: "coderabbit" };
 const guard = {
   mainRed: false,
   securityPathNeedsSol: false,
   securitySolPass: false,
 };
-const security = { securityPathNeedsSol: true, securitySolPass: true };
-const sol = {
-  at: start + 1000,
-  head,
-  kind: "sol",
-  verdict: "PASS",
-  p1: 0,
-  note: "findings checked",
+const security = {
+  ...guard,
+  securityPathNeedsSol: true,
+  securitySolPass: true,
 };
-const full = { ...sol, note: "review finished scope=full" };
-const p1 = {
-  ...sol,
-  at: start,
-  head: old,
-  kind: "sonnet-temp",
-  verdict: "PASS",
-  p1: 1,
+const clean = {
+  version: "review-gate-input/1",
+  prHead: head,
+  pushedAt,
+  now,
+  reviews: [codex, rabbit],
+  codexFindings: "clean",
+  history: [] as (typeof sol)[],
+  guard,
+  unresolvedThreads: 0,
+  threadsComplete: true,
+};
+const missingCodex = { ...codex, ...absent };
+const missingRabbit = { ...rabbit, ...absent };
+const withFinding = {
+  codexFindings: "findings_resolved",
+  reviews: [{ ...codex, findingAts: [findingAt] }, rabbit],
 };
 
-type Decision = { state: "success" | "failure"; description: string };
-type Case = {
-  name: string;
-  expected: Decision;
-  evidence?: Partial<typeof clean>;
-  rows?: (typeof sol)[];
-  guards?: Partial<typeof guard>;
+type Decision = {
+  state: "success" | "failure";
+  head: string | null;
+  reason: string;
+  description: string;
 };
-const passed = (description = "codex; coderabbit"): Decision => ({
+type Gate = {
+  decide(input: unknown): Decision;
+  validateReviewGateInput?(input: unknown): string | null;
+};
+const modulePath = "../../tools/ci/review-gate.ts";
+const gate = (await import(modulePath)) as Gate;
+const pass = (description = "codex; coderabbit"): Decision => ({
   state: "success",
+  head,
+  reason: "pass",
   description,
 });
-const blocked = (description: string): Decision => ({
-  state: "failure",
-  description,
-});
-const withFinding = { comments: [summary(head, true)], findings: [finding] };
-const conflictingState = summary(head, true, true).body.slice(
-  summaryMarker.length,
-);
+const fail = (
+  reason: string,
+  description: string,
+  reviewedHead: string | null = head,
+): Decision => ({ state: "failure", head: reviewedHead, reason, description });
 
-const cases: Case[] = [
-  { name: "clean exact-head reviews pass without Sol", expected: passed() },
-  {
-    name: "a clock earlier than the push cannot pass",
-    evidence: { now: start - 1 },
-    expected: blocked("invalid clock"),
-  },
-  {
-    name: "a non-finite elapsed time cannot pass",
-    evidence: { now: NaN },
-    expected: blocked("invalid clock"),
-  },
-  ...[
-    { name: "a future ledger pass", row: { ...sol, at: clean.now + 1 } },
-    { name: "a negative P1 count", row: { ...sol, p1: -1 } },
-    { name: "a fractional P1 count", row: { ...sol, p1: 0.5 } },
+type Rule = [string, Partial<typeof clean>, Decision];
+const rules: Rule[] = [
+  ["clean exact-head reviews pass without Sol", {}, pass()],
+  [
+    "stale Codex completion does not cover the head",
+    { reviews: [{ ...codex, reviewedHead: old, reviewedAt: before }, rabbit] },
+    fail("waiting", "waiting for codex"),
+  ],
+  [
+    "stale CodeRabbit completion does not cover the head",
+    { reviews: [codex, { ...rabbit, reviewedHead: old, reviewedAt: before }] },
+    fail("waiting", "waiting for coderabbit"),
+  ],
+  [
+    "an in-progress review does not cover the head",
+    { reviews: [{ ...codex, status: "in_progress" }, rabbit] },
+    fail("waiting", "waiting for codex"),
+  ],
+  [
+    "fresh Codex quota still requires a full Sol review",
+    { reviews: [{ ...missingCodex, quotaAt }, rabbit], history: [sol] },
+    fail("sol_needed", "Sol needed: codex quota"),
+  ],
+  [
+    "full exact-head Sol can stand in on Codex quota",
+    { reviews: [{ ...missingCodex, quotaAt }, rabbit], history: [full] },
+    pass("sol stand-in: codex quota; coderabbit"),
+  ],
+  [
+    "old quota does not start a stand-in early",
     {
-      name: "an unknown ledger kind",
-      row: { ...sol, kind: "sol-v2", verdict: "BLOCK" },
+      reviews: [{ ...missingCodex, quotaAt: before }, rabbit],
+      history: [full],
     },
-    { name: "an unknown ledger verdict", row: { ...sol, verdict: "UNKNOWN" } },
-  ].map(({ name, row }) => ({
-    name: `${name} is invalid`,
-    rows: [row],
-    expected: blocked("invalid ledger row"),
-  })),
-  {
-    name: "a ledger pass with a malformed head cannot cover a finding",
-    evidence: withFinding,
-    rows: [{ ...sol, head: "not-a-sha" }],
-    expected: blocked("invalid ledger row"),
-  },
-  {
-    name: "stale Codex summary withholds success",
-    evidence: { comments: [summary(old)] },
-    expected: blocked("waiting for codex"),
-  },
-  {
-    name: "two Codex summary comments fail closed even across heads",
-    evidence: { comments: [summary(old), summary()] },
-    expected: blocked("unknown codex summary"),
-  },
-  {
-    name: "a conflicting second state record blocks a clean Codex summary",
-    evidence: {
-      comments: [{ ...summary(), body: summary().body + conflictingState }],
+    fail("waiting", "waiting for codex"),
+  ],
+  [
+    "CodeRabbit quota uses the same stand-in rule",
+    { reviews: [codex, { ...missingRabbit, quotaAt }], history: [full] },
+    pass("codex; sol stand-in: coderabbit quota"),
+  ],
+  [
+    "a millisecond before the deadline still waits",
+    {
+      reviews: [missingCodex, rabbit],
+      now: "2026-11-22T09:09:59.999Z",
+      history: [full],
     },
-    expected: blocked("unknown codex summary"),
-  },
-  {
-    name: "an unknown second state record also blocks a clean Codex summary",
-    evidence: {
-      comments: [
-        {
-          ...summary(),
-          body:
-            summary().body + conflictingState.replace("state:v1", "state:v2"),
-        },
-      ],
+    fail("waiting", "waiting for codex"),
+  ],
+  [
+    "the deadline alone cannot pass",
+    { reviews: [missingCodex, rabbit], now: deadline },
+    fail("sol_needed", "Sol needed: codex timeout"),
+  ],
+  [
+    "a full Sol review of another head cannot stand in",
+    {
+      reviews: [missingCodex, rabbit],
+      now: deadline,
+      history: [{ ...full, head: old }],
     },
-    expected: blocked("unknown codex summary"),
-  },
-  {
-    name: "CodeRabbit formal review must cover the exact head",
-    evidence: { reviews: [{ ...rabbitReview, head: old }] },
-    expected: blocked("waiting for coderabbit"),
-  },
-  {
-    name: "fresh Codex quota requires a full Sol review",
-    evidence: { comments: [quota] },
-    rows: [sol],
-    expected: blocked("Sol needed: codex quota"),
-  },
-  {
-    name: "full exact-head Sol can stand in for Codex on quota",
-    evidence: { comments: [quota] },
-    rows: [full],
-    expected: passed("sol stand-in: codex quota; coderabbit"),
-  },
-  {
-    name: "old quota does not start a stand-in early",
-    evidence: { comments: [{ ...quota, at: start - 1 }] },
-    rows: [full],
-    expected: blocked("waiting for codex"),
-  },
-  {
-    name: "CodeRabbit quota uses the same stand-in rule",
-    evidence: {
-      reviews: [],
-      comments: [
-        summary(),
-        { ...quota, author: rabbit, body: "Review rate limit exceeded" },
-      ],
-    },
-    rows: [full],
-    expected: passed("codex; sol stand-in: coderabbit quota"),
-  },
-  {
-    name: "the ten-minute deadline uses the CI run timestamp",
-    evidence: { comments: [], now: deadline - 1 },
-    rows: [full],
-    expected: blocked("waiting for codex"),
-  },
-  {
-    name: "the ten-minute timeout alone cannot pass",
-    evidence: { comments: [], now: deadline },
-    expected: blocked("Sol needed: codex timeout"),
-  },
-  {
-    name: "one full exact-head Sol review can cover both timed-out bots",
-    evidence: { comments: [], reviews: [], now: deadline },
-    rows: [full],
-    expected: passed(
-      "sol stand-in: codex timeout; sol stand-in: coderabbit timeout",
-    ),
-  },
-  {
-    name: "a finding created after the previous Sol pass blocks",
-    evidence: withFinding,
-    rows: [{ ...sol, at: finding.at - 1 }],
-    expected: blocked("unchecked codex findings"),
-  },
-  {
-    name: "the Sol pass must be strictly later than the finding",
-    evidence: withFinding,
-    rows: [{ ...sol, at: finding.at }],
-    expected: blocked("unchecked codex findings"),
-  },
-  {
-    name: "a cumulative finding can be covered by a Sol pass on an older head",
-    evidence: withFinding,
-    rows: [{ ...sol, head: old }],
-    expected: passed(),
-  },
-  {
-    name: "a completed summary with missing finding evidence blocks",
-    evidence: { comments: [summary(head, true)] },
-    rows: [full],
-    expected: blocked("incomplete codex findings"),
-  },
-  {
-    name: "an unresolved Codex finding blocks even after a Sol pass",
-    evidence: { ...withFinding, comments: [summary(head, true, true)] },
-    rows: [full],
-    expected: blocked("incomplete codex findings"),
-  },
-  {
-    name: "an exact-head CodeRabbit review with missing reported findings blocks",
-    evidence: {
-      reviews: [
-        { ...rabbitReview, body: rabbitReview.body.replace(": 0**", ": 1**") },
-      ],
-    },
-    rows: [sol],
-    expected: blocked("incomplete coderabbit review"),
-  },
-  {
-    name: "resolved CodeRabbit findings still need a later Sol pass",
-    evidence: {
-      findings: [{ ...finding, author: rabbit, reviewId: rabbitReview.id }],
-    },
-    expected: blocked("unchecked coderabbit findings"),
-  },
-  {
-    name: "two CodeRabbit counts in one review cannot grant coverage",
-    evidence: {
-      reviews: [
-        {
-          ...rabbitReview,
-          body: rabbitReview.body + "\n\n**Actionable comments posted: 1**",
-        },
-      ],
-    },
-    expected: blocked("incomplete coderabbit review"),
-  },
-  ...[
-    ["unaccounted findings", rabbitReview.body.replace(": 0**", ": 1**")],
-    ["a missing count", "<!-- coderabbit-ai-generated:v1 -->"],
-    ["a malformed count", rabbitReview.body.replace(": 0**", ": unknown**")],
-  ].map(([caseName, body]) => ({
-    name: `historical CodeRabbit review with ${caseName} blocks a clean head`,
-    evidence: { reviews: [rabbitReview, { ...historicalRabbit, body: body! }] },
-    expected: blocked("incomplete coderabbit review"),
-  })),
-  {
-    name: "a checked historical CodeRabbit finding permits current coverage",
-    evidence: {
-      reviews: [
-        rabbitReview,
-        {
-          ...historicalRabbit,
-          body: historicalRabbit.body.replace(": 0**", ": 1**"),
-        },
-      ],
-      findings: [rabbitFinding],
-    },
-    rows: [sol],
-    expected: passed(),
-  },
-  ...[
-    { ...sol, kind: "lead-check" },
-    { ...sol, kind: "sonnet-temp" },
-    { ...sol, head: old },
-    { ...sol, at: p1.at },
-  ].map((pass, i) => ({
-    name: `P1 stays blocked with ${["lead-check", "sonnet-temp", "a stale Sol pass", "a tied Sol pass"][i]}`,
-    rows: [p1, pass],
-    expected: blocked("Sol blocked"),
-  })),
-  {
-    name: "P1 clears with a later Sol pass on this head",
-    rows: [sol, p1],
-    expected: passed(),
-  },
-  {
-    name: "P1 clearance still needs both bots or full stand-ins",
-    evidence: { comments: [summary(old)] },
-    rows: [p1, sol],
-    expected: blocked("waiting for codex"),
-  },
-  {
-    name: "a new Sol block on this head overrides an earlier pass",
-    rows: [sol, { ...sol, at: sol.at + 1, verdict: "BLOCK" }],
-    expected: blocked("Sol blocked"),
-  },
-  ...["not a full review", "scope=full-summary", "other-scope=full"].map(
-    (note) => ({
-      name: `a finding check with note "${note}" cannot stand in for a missing bot review`,
-      evidence: { comments: [], now: deadline },
-      rows: [{ ...sol, note }],
-      expected: blocked("Sol needed: codex timeout"),
-    }),
-  ),
-  {
-    name: "security paths need a Sol pass on this head",
-    rows: [{ ...sol, head: old }],
-    guards: security,
-    expected: blocked("security path needs Sol"),
-  },
-  {
-    name: "security paths also need the supplied guard pass",
-    rows: [sol],
-    guards: { ...security, securitySolPass: false },
-    expected: blocked("security path needs Sol"),
-  },
-  {
-    name: "security paths pass with both sources of exact-head Sol evidence",
-    rows: [sol],
-    guards: security,
-    expected: passed(),
-  },
-  {
-    name: "red main withholds success",
-    guards: { mainRed: true },
-    expected: blocked("main CI is red"),
-  },
-  {
-    name: "truncated threads withhold success",
-    evidence: { truncated: true },
-    expected: blocked("truncated threads"),
-  },
-  {
-    name: "any unresolved thread withholds success",
-    evidence: { threads: [true, false] },
-    expected: blocked("open threads"),
-  },
-  {
-    name: "a human cannot forge Codex coverage using the bot login",
-    evidence: {
-      comments: [{ ...summary(), author: { ...codex, type: "User" } }],
-    },
-    expected: blocked("waiting for codex"),
-  },
-  {
-    name: "a different bot cannot grant CodeRabbit coverage",
-    evidence: { reviews: [{ ...rabbitReview, author: codex }] },
-    expected: blocked("waiting for coderabbit"),
-  },
-  ...[
+    fail("sol_needed", "Sol needed: codex timeout"),
+  ],
+  [
+    "one full exact-head Sol review can cover both timed-out bots",
+    { reviews: [missingCodex, missingRabbit], now: deadline, history: [full] },
+    pass("sol stand-in: codex timeout; sol stand-in: coderabbit timeout"),
+  ],
+  [
+    "a finding created after the previous Sol pass blocks",
+    { ...withFinding, history: [{ ...sol, at: quotaAt }] },
+    fail("findings", "unchecked codex findings"),
+  ],
+  [
+    "the Sol pass must be strictly later than the finding",
+    { ...withFinding, history: [{ ...sol, at: findingAt }] },
+    fail("findings", "unchecked codex findings"),
+  ],
+  [
+    "a cumulative Codex finding can be covered by a Sol pass on an older head",
+    { ...withFinding, history: [{ ...sol, head: old }] },
+    pass(),
+  ],
+  [
+    "a completed Codex review with missing finding evidence blocks",
+    { codexFindings: "findings_resolved", history: [full] },
+    fail("findings", "incomplete codex findings"),
+  ],
+  [
+    "an unresolved Codex finding blocks even after a Sol pass",
+    { ...withFinding, codexFindings: "unresolved", history: [full] },
+    fail("findings", "incomplete codex findings"),
+  ],
+  [
+    "resolved CodeRabbit findings still need a later Sol pass",
+    { reviews: [codex, { ...rabbit, findingAts: [findingAt] }] },
+    fail("findings", "unchecked coderabbit findings"),
+  ],
+  [
+    "a checked historical CodeRabbit finding permits current coverage",
+    { reviews: [codex, { ...rabbit, findingAts: [before] }], history: [sol] },
+    pass(),
+  ],
+  ...(
     [
-      "malformed JSON",
-      `${summaryMarker}\n<!-- codex-review-state:v1 {broken} -->`,
-    ],
-    ["unknown state version", summary().body.replace("state:v1", "state:v2")],
-    [
-      "unknown summary version",
-      summary().body.replace("summary -->", "summary:v2 -->"),
-    ],
-    ["short SHA", summary(head.slice(0, 7)).body],
-    [
-      "unknown findings boolean",
-      summary().body.replace(
-        '"has_any_findings":false',
-        '"has_any_findings":null',
-      ),
-    ],
-  ].map(([format, body]) => ({
-    name: `Codex ${format} fails even after timeout`,
-    evidence: { comments: [{ ...summary(), body: body! }], now: deadline },
-    rows: [full],
-    expected: blocked("unknown codex summary"),
-  })),
+      ["lead-check", { ...sol, kind: "lead-check" }],
+      ["sonnet-temp", { ...sol, kind: "sonnet-temp" }],
+      ["a stale Sol pass", { ...sol, head: old }],
+      ["a tied Sol pass", { ...sol, at: p1.at }],
+    ] satisfies [string, typeof sol][]
+  ).map(([name, row]): Rule => [
+    `P1 stays blocked with ${name}`,
+    { history: [p1, row] },
+    fail("sol_blocked", "Sol blocked"),
+  ]),
+  [
+    "P1 clears with a later Sol pass on this head",
+    { history: [sol, p1] },
+    pass(),
+  ],
+  [
+    "P1 clearance still needs both bots or full stand-ins",
+    { reviews: [missingCodex, rabbit], history: [p1, sol] },
+    fail("waiting", "waiting for codex"),
+  ],
+  [
+    "a new Sol block on this head overrides an earlier pass",
+    { history: [sol, { ...sol, at: now, verdict: "BLOCK" }] },
+    fail("sol_blocked", "Sol blocked"),
+  ],
+  [
+    "a finding check cannot stand in for a missing bot review",
+    { reviews: [missingCodex, rabbit], now: deadline, history: [sol] },
+    fail("sol_needed", "Sol needed: codex timeout"),
+  ],
+  [
+    "security paths need a Sol pass on this head",
+    { history: [{ ...sol, head: old }], guard: security },
+    fail("security", "security path needs Sol"),
+  ],
+  [
+    "security paths also need the supplied guard pass",
+    { history: [sol], guard: { ...security, securitySolPass: false } },
+    fail("security", "security path needs Sol"),
+  ],
+  [
+    "security paths pass with both sources of Sol evidence",
+    { history: [sol], guard: security },
+    pass(),
+  ],
+  [
+    "red main withholds success",
+    { guard: { ...guard, mainRed: true } },
+    fail("main_red", "main CI is red"),
+  ],
+  [
+    "any unresolved thread withholds success",
+    { unresolvedThreads: 1 },
+    fail("open_threads", "open threads"),
+  ],
 ];
 
-const modulePath = "../../tools/ci/review-gate.ts";
-const gate = existsSync(new URL(modulePath, import.meta.url))
-  ? ((await import(modulePath)) as {
-      decide(
-        evidence: typeof clean,
-        rows: (typeof sol)[],
-        guards: typeof guard,
-      ): Decision;
-    })
-  : undefined;
+test.each(rules)(
+  "%s",
+  (_name, overrides, expected) => {
+    const input = { ...clean, ...overrides };
+    expect(gate.decide(input)).toEqual(expected);
+    expect(gate.validateReviewGateInput?.(input)).toBeNull();
+  },
+  1000,
+);
 
-test.each(cases)(
-  "$name",
-  ({ expected, evidence, rows, guards }) => {
-    expect(
-      gate?.decide({ ...clean, ...evidence }, rows ?? [], {
-        ...guard,
-        ...guards,
-      }),
-    ).toEqual(expected);
+const invalidInputs: [string, unknown, string][] = [
+  ["null", null, "input"],
+  ["non-object", 42, "input"],
+  ["array input", [clean], "input"],
+  ["inherited fields", Object.create(clean), "input"],
+  [
+    "throwing proxy",
+    new Proxy(clean, {
+      ownKeys() {
+        throw Error("ownKeys");
+      },
+    }),
+    "input",
+  ],
+  [
+    "throwing getter",
+    {
+      ...clean,
+      get prHead() {
+        throw Error("prHead");
+      },
+    },
+    "prHead",
+  ],
+  ["earlier clock", { ...clean, now: before }, "pushedAt"],
+  ["no reviewers", { ...clean, reviews: [] }, "reviews"],
+  ["missing CodeRabbit", { ...clean, reviews: [codex] }, "reviews"],
+  [
+    "duplicate reviewer",
+    { ...clean, reviews: [codex, codex] },
+    "reviews[1].reviewer",
+  ],
+  ["sparse reviewer list", { ...clean, reviews: Array(2) }, "reviews[0]"],
+];
+
+const badRootFields = [
+  ["version", "review-gate-input/2"],
+  ["prHead", head.toUpperCase()],
+  ["prHead", head.slice(1)],
+  ["prHead", 1],
+  ["extra", true],
+  ["__proto__", {}],
+  ["now", "2026-11-22 09:01:00Z"],
+  ["now", "2026-02-30T09:01:00Z"],
+  ["now", NaN],
+  ["pushedAt", "2026-11-22T09:00:00"],
+  ["pushedAt", "2026-11-22T09:00:00+00:00"],
+  ["codexFindings", "resolved"],
+  ["history", {}],
+  ["guard", []],
+  ["threadsComplete", false],
+  ...[-1, 0.5, NaN, Infinity, 2 ** 53, "0"].map((count): [string, unknown] => [
+    "unresolvedThreads",
+    count,
+  ]),
+] as const;
+for (const [key, value] of badRootFields) {
+  invalidInputs.push([
+    `invalid ${key} = ${JSON.stringify(value)} (${typeof value})`,
+    { ...clean, [key]: value },
+    key,
+  ]);
+}
+invalidInputs.push([
+  "symbol key",
+  { ...clean, [Symbol("unknown")]: true },
+  "input",
+]);
+
+for (const key of Object.keys(clean)) {
+  const incomplete = { ...clean };
+  Reflect.deleteProperty(incomplete, key);
+  invalidInputs.push([`missing ${key}`, incomplete, key]);
+}
+
+const nested = [
+  [
+    "reviews[0]",
+    codex,
+    (record: unknown) => ({ ...clean, reviews: [record, rabbit] }),
+  ],
+  ["history[0]", sol, (record: unknown) => ({ ...clean, history: [record] })],
+  ["guard", guard, (record: unknown) => ({ ...clean, guard: record })],
+] as const;
+for (const [path, record, input] of nested) {
+  for (const key of Object.keys(record)) {
+    const incomplete = { ...record };
+    Reflect.deleteProperty(incomplete, key);
+    invalidInputs.push([
+      `missing ${path}.${key}`,
+      input(incomplete),
+      `${path}.${key}`,
+    ]);
+  }
+  invalidInputs.push([
+    `extra field in ${path}`,
+    input({ ...record, extra: 1 }),
+    `${path}.extra`,
+  ]);
+}
+
+const badReviewFields = [
+  ["reviewer", "Codex"],
+  ["reviewer", "sol"],
+  ["status", "Completed"],
+  ["status", "completed "],
+  ["reviewedHead", "A".repeat(40)],
+  ["reviewedHead", null],
+  ["reviewedAt", null],
+  ["reviewedAt", before],
+  ["reviewedAt", deadline],
+  ["quotaAt", deadline],
+  ["quotaAt", "2026-11-22T09:00:60Z"],
+  ["findingAts", findingAt],
+  ["findingAts[0]", [deadline]],
+  ["findingAts[0]", [null]],
+] as const;
+for (const [path, value] of badReviewFields) {
+  const key = path === "findingAts[0]" ? "findingAts" : path;
+  const record = { ...codex, [key]: value };
+  invalidInputs.push([
+    `invalid ${path} = ${JSON.stringify(value)}`,
+    { ...clean, reviews: [record, rabbit] },
+    `reviews[0].${path}`,
+  ]);
+}
+
+const badHistoryFields = [
+  ["head", "not-a-sha"],
+  ["at", deadline],
+  ["kind", "Sol"],
+  ["kind", "sol-v2"],
+  ["verdict", "UNKNOWN"],
+  ["verdict", "pass"],
+  ["p1", -1],
+  ["p1", 0.5],
+  ["p1", 2 ** 53],
+  ["scope", "FULL"],
+  ["scope", "scope=full"],
+] as const;
+for (const [key, value] of badHistoryFields) {
+  invalidInputs.push([
+    `invalid ledger ${key} = ${value}`,
+    { ...clean, history: [{ ...sol, [key]: value }] },
+    `history[0].${key}`,
+  ]);
+}
+
+for (const key of Object.keys(guard)) {
+  invalidInputs.push([
+    `wrong type for guard.${key}`,
+    { ...clean, guard: { ...guard, [key]: "false" } },
+    `guard.${key}`,
+  ]);
+}
+
+test.each(invalidInputs)(
+  "rejects %s and names the field without throwing",
+  (_name, input, field) => {
+    expect(gate.validateReviewGateInput?.(input)).toBe(field);
+    expect(gate.decide(input)).toEqual(
+      fail("invalid", `invalid ${field}`, null),
+    );
   },
   1000,
 );
