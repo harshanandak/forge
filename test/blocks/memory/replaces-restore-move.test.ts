@@ -160,6 +160,51 @@ for (const continued of [false, true]) {
   );
 }
 
+for (const matches of [false, true]) {
+  test(
+    `re-exporting a filled slot carries only a matched replacement (matches: ${matches})`,
+    async () => {
+      const intermediate = fixture();
+      const destination = fixture("1111111111111111");
+      const older = `${sourcePrefix}/note-1`;
+      const newer = `${sourcePrefix}/note-2`;
+      const first = (await intermediate.call("memory.restore", {
+        ...bundle([item(newer, [older])]),
+        truncated: matches,
+      })) as RestorePage;
+      await intermediate.call("memory.restore", {
+        ...bundle([item(matches ? older : "project/aaaaaaaaaaaaaaaa/note-1")]),
+        ...(matches
+          ? {
+              restoreId: first.restoreId ?? unissuedId,
+              approval: ownerApproval,
+            }
+          : {}),
+      });
+      const exported = (await intermediate.call("memory.export", {
+        level: "project",
+      })) as object;
+      expect(
+        await destination.call("memory.restore", { ...exported, approval }),
+      ).toMatchObject({
+        added: 2,
+        conflicts: [],
+      });
+      const found = (await destination.call("memory.search", {
+        query: "wren",
+      })) as {
+        hits: { id: string }[];
+      };
+      const expected = matches ? [2] : [1, 2];
+      expect(found.hits.map(({ id }) => id).sort()).toEqual(
+        expected.map((number) => `project/1111111111111111/note-${number}`),
+      );
+      expect(destination.project.count("replaced-by/")).toBe(matches ? 1 : 0);
+    },
+    timeout,
+  );
+}
+
 test(
   "a device backup with the same note numbers cannot replace a note from a different restore",
   async () => {
