@@ -46,9 +46,8 @@ function fingerprintTied(
     const input: unknown = JSON.parse(String(outcome.fingerprint));
     if (operation === "issue.create") {
       if (!isObject(input) || !isObject(outcome.scope)) return false;
-      const { family, ...scope } = outcome.scope;
+      const { family: _family, ...scope } = outcome.scope;
       return (
-        family === "command" &&
         isDigest(input.input) &&
         canonicalJson({ scope, input: input.input }) === outcome.fingerprint
       );
@@ -57,7 +56,7 @@ function fingerprintTied(
       isObject(input) &&
       canonicalJson(input) === outcome.fingerprint &&
       operation === `lease.${String(input.route)}` &&
-      canonicalJson({ ...Object(input.scope), family: "lease" }) ===
+      canonicalJson({ family: "lease", ...Object(input.scope) }) ===
         canonicalJson(outcome.scope) &&
       (!isObject(lease) ||
         (input.subject === lease.subject &&
@@ -70,10 +69,10 @@ function fingerprintTied(
   }
 }
 
-function outcomeFault(outcome: unknown, portable = false): string | undefined {
+function outcomeFault(outcome: unknown, typed?: boolean, portable = false) {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
   const { scope, result } = outcome;
-  const command = scope.family === "command";
+  const command = typed ?? scope.family === "command";
   const archived = portable && outcome.status !== "ok";
   const liveKeys = result === undefined ? OUTCOME_KEYS : REFUSAL_KEYS;
   if (
@@ -90,7 +89,7 @@ function outcomeFault(outcome: unknown, portable = false): string | undefined {
     return "outcome fields";
   if (
     keysOf(scope) !== "family,principal,version" ||
-    (!command && scope.family !== "lease") ||
+    scope.family !== (command ? "command" : "lease") ||
     scope.version !== 2 ||
     !isDigest(scope.principal)
   )
@@ -165,10 +164,11 @@ export function authorityFault(
     (lease.releasedAt !== undefined) !== (operation === "lease.release")
   )
     return "lease release marker";
+  const create = operation === "issue.create";
   const outcomeError =
-    outcome === undefined ? undefined : outcomeFault(outcome, portable);
+    outcome === undefined ? undefined : outcomeFault(outcome, create, portable);
   if (outcomeError !== undefined) return outcomeError;
-  if (operation === "issue.create")
+  if (create)
     return !portable &&
       lease === undefined &&
       witness === undefined &&
