@@ -690,6 +690,43 @@ function altered(data: Backup, title: string): Backup {
   };
 }
 
+function repack(
+  data: Backup,
+  collection: string,
+  key: string,
+  edit: (body: string) => string,
+): Backup {
+  const [directory, snapshot] = data.pages as [Pages[0], Pages[0]];
+  const bytes = Buffer.from(snapshot.body);
+  const items: (readonly [string, string, string, number])[] = [];
+  let offset = 0;
+  const entries = (JSON.parse(directory.body) as Json[]).map((entry) => {
+    const start = entry.offset as number;
+    const old = bytes.subarray(start, start + (entry.length as number));
+    const [c, k, revision] = [entry.collection, entry.key, entry.revision];
+    const hit = c === collection && k === key;
+    const text = hit ? edit(old.toString()) : old.toString();
+    items.push([c as string, k as string, text, revision as number]);
+    const length = Buffer.byteLength(text);
+    offset += length;
+    return {
+      ...entry,
+      offset: offset - length,
+      length,
+      digest: digestBytes(text),
+    };
+  });
+  return {
+    ...data,
+    publicDigest: digestProjection(items),
+    pages: [
+      { ...directory, body: canonicalJson(entries) },
+      { ...snapshot, body: items.map(([, , text]) => text).join("") },
+      data.pages[2]!,
+    ],
+  };
+}
+
 test(
   "v3 restore refuses create backups whose pages disagree with themselves (end to end)",
   async () => {
@@ -718,6 +755,28 @@ test(
         (change(first!).value as Json).value = entry(first!).value;
       });
       expect(() => verifyAt(frames(hostile)[0]!)).toThrow("refused");
+      await refused(hostile);
+    }
+  },
+  timeout,
+);
+
+test(
+  "v3 restore answers 400 when a saved refusal status cannot become text",
+  async () => {
+    const { source, data } = await backupOf([refusedCreate]);
+    using _source = source.db;
+    const id = receipt(refusedCreate.requestId);
+    expect(repack(data, "outcome", id, (body) => body)).toEqual(data);
+    for (const text of ["null", "1"]) {
+      const hostile = repack(data, "outcome", id, (body) => {
+        const next = body.replace(
+          '"status":"INPUT_INVALID"',
+          `"status":{"toString":${text}}`,
+        );
+        expect(next).not.toBe(body);
+        return next;
+      });
       await refused(hostile);
     }
   },
