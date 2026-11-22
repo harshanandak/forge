@@ -3,6 +3,13 @@ import {
   acceptancePassCases,
   acceptanceTable,
 } from "./lane-brief-fixture.ts";
+import {
+  laneBrief,
+  laneCommands,
+  laneGit,
+  laneRepository,
+  pullFiles,
+} from "./lane-repository-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -31,34 +38,19 @@ let repo: string;
 let origin: string;
 let sequence = 0;
 const brief = ".worktrees/briefs/lane.md";
-const text = [
-  "Goal",
-  "Acceptance test",
-  "Files",
-  "Forbidden actions",
-  "Stop point",
-  "Prior art",
-]
-  .map(
-    (name) =>
-      `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
-  )
-  .join("\n");
-function git(args: string[], cwd = repo) {
-  const result = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 10000,
-  });
-  expect(result.status, result.stderr).toBe(0);
-  return result.stdout.trim();
-}
-function cli(args: string[], cwd = repo, session = "lane-acceptance") {
+const text = laneBrief;
+const git = (args: string[], cwd = repo) => laneGit(args, cwd);
+function cli(
+  args: string[],
+  cwd = repo,
+  session = "lane-acceptance",
+  path = process.env.PATH,
+) {
   const result = spawnSync("node", [bin, ...args], {
     cwd,
     env: {
       ...process.env,
+      PATH: path,
       FORGE_DEVICE_ROOT: join(root, "device"),
       FORGE_SESSION: session,
     },
@@ -124,25 +116,7 @@ function configure(max: number, base?: string) {
 }
 beforeAll(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "forge-lane-cli-")));
-  origin = join(root, "origin.git");
-  repo = join(root, "project");
-  git(["init", "--bare", "--initial-branch=main", origin], root);
-  git(["clone", origin, repo], root);
-  git(["config", "user.name", "Lane test"]);
-  git(["config", "user.email", "lane@example.test"]);
-  writeFileSync(join(repo, "tracked"), "base\n");
-  git(["add", "tracked"]);
-  git(["commit", "-m", "base"]);
-  git(["push", "origin", "main"]);
-  git(["remote", "set-head", "origin", "main"]);
-  mkdirSync(join(repo, ".forge"));
-  writeFileSync(
-    join(repo, ".forge/config.yaml"),
-    "schemaVersion: forge.config/1\nblocks:\n  work:\n    source: { builtin: forge/work }\n    bind: { state: core }\n    config: { idPrefix: sample }\n",
-  );
-  mkdirSync(join(repo, ".worktrees/briefs"), { recursive: true });
-  writeFileSync(join(repo, brief), text);
-  mkdirSync(join(root, "bin"));
+  ({ repo, origin } = laneRepository(root, brief, { max: 1, checkExit: 0 }));
   writeFileSync(
     join(root, "bin/forge"),
     `#!/bin/sh\nexec node "${bin.replaceAll("\\", "/")}" "$@"\n`,
@@ -151,81 +125,119 @@ beforeAll(() => {
 }, 30000);
 afterAll(() => rmSync(root, { recursive: true, force: true }), 30000);
 
-test("hosted lane close records CI Gate evidence and frees the cap without changing a failed receipt", () => {
-  const { id, head, pull } = closeFixture();
-  configure(1);
-  const blocked = issue();
-  expect(start(blocked).error?.code).toBe("LIMIT_REACHED");
-  const failedReceipt = receipt(1);
-  const failedBefore = call("check.show", { id: failedReceipt }).result;
-  expect(failedBefore).toMatchObject({ status: "FAIL" });
-  const url = "https://github.com/harshanandak/forge/pull/42";
-  const pr = {
-    ...pull,
-    url,
-    baseRefOid: head,
-    mergeStateStatus: "UNKNOWN",
-    changedFiles: 1,
-  };
-  const pages = [
-    {
-      data: {
-        repository: {
-          object: {
-            oid: head,
-            statusCheckRollup: {
-              contexts: {
-                totalCount: 1,
-                pageInfo: { hasNextPage: false, endCursor: null },
-                nodes: [
-                  {
-                    __typename: "CheckRun",
-                    databaseId: 17,
-                    name: "CI Gate",
-                    status: "COMPLETED",
-                    conclusion: "SUCCESS",
-                    isRequired: true,
-                    checkSuite: {
-                      app: { slug: "github-actions" },
-                      workflowRun: { workflow: { databaseId: 10 } },
-                      commit: { oid: head },
-                      repository: { nameWithOwner: "harshanandak/forge" },
+test("hosted lane close records CI Gate evidence and frees the cap without changing a failed receipt", async () => {
+  const sandbox = realpathSync(
+    mkdtempSync(join(tmpdir(), "forge-hosted-close-")),
+  );
+  let commands: Awaited<ReturnType<typeof laneCommands>> | undefined;
+  try {
+    const { repo } = laneRepository(sandbox, brief, { max: 1, checkExit: 1 });
+    const head = laneGit(["rev-parse", "HEAD"], repo);
+    commands = await laneCommands(sandbox, repo);
+    const { call, cli, good } = commands;
+    const start = (id: string) =>
+      call("lane.start", { id, branch: `feat/${id}`, brief });
+    const id = String(
+      (await good("issue.create", { title: "Hosted lane" })).id,
+    );
+    expect((await start(id)).ok).toBe(true);
+    await good("issue.claim", { id });
+    const blocked = String(
+      (await good("issue.create", { title: "Replacement lane" })).id,
+    );
+    expect((await start(blocked)).error?.code).toBe("LIMIT_REACHED");
+    const failed = await call("check.run", { checks: ["acceptance"] });
+    expect(failed.ok, JSON.stringify(failed)).toBe(false);
+    expect(failed.error?.code).toBe("CHECK_FAIL");
+    const failedReceipt = String(failed.result.id);
+    const failedBefore = (await call("check.show", { id: failedReceipt }))
+      .result;
+    expect(failedBefore).toMatchObject({ status: "FAIL" });
+    const url = "https://github.com/harshanandak/forge/pull/42";
+    const pr = {
+      state: "MERGED",
+      headRefName: `feat/${id}`,
+      baseRefName: "main",
+      headRefOid: head,
+      mergeCommit: { oid: head },
+      url,
+      baseRefOid: head,
+      mergeStateStatus: "UNKNOWN",
+      changedFiles: 1,
+    };
+    const pages = [
+      {
+        data: {
+          repository: {
+            object: {
+              oid: head,
+              statusCheckRollup: {
+                contexts: {
+                  totalCount: 1,
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    {
+                      __typename: "CheckRun",
+                      databaseId: 17,
+                      name: "CI Gate",
+                      status: "COMPLETED",
+                      conclusion: "SUCCESS",
+                      isRequired: true,
+                      checkSuite: {
+                        app: { slug: "github-actions" },
+                        workflowRun: { workflow: { databaseId: 10 } },
+                        commit: { oid: head },
+                        repository: { nameWithOwner: "harshanandak/forge" },
+                      },
                     },
-                  },
-                ],
+                  ],
+                },
               },
             },
           },
         },
       },
-    },
-  ];
-  writeFileSync(
-    join(root, "bin/gh.cjs"),
-    `process.stdout.write(process.argv[2] === 'api' ? ${JSON.stringify(JSON.stringify(pages))} : ${JSON.stringify(JSON.stringify(pr))});`,
-  );
-  const result = close(id, { hostedEvidence: true });
-  expect(result.result, JSON.stringify(result)).toMatchObject({
-    status: "closed",
-    removed: true,
-  });
-  const evidence = `github-actions:check-run:17:${head}:success`;
-  expect(call("issue.show", { id }).result).toMatchObject({
-    receipt: evidence,
-  });
-  expect(call("check.show", { id: failedReceipt }).result).toEqual(
-    failedBefore,
-  );
-  expect(call("check.show", { id: evidence }).error?.code).toBe(
-    "INPUT_INVALID",
-  );
-  expect(registry().some((lane) => lane.issue === id)).toBe(false);
-  expect(start(blocked).ok).toBe(true);
-  expect(call("issue.claim", { id: blocked }).ok).toBe(true);
-  expect(
-    close(blocked, { pr: undefined, noPr: true, dropped: "Fixture complete" })
-      .ok,
-  ).toBe(true);
+    ];
+    pullFiles(sandbox, true);
+    writeFileSync(join(sandbox, "bin/pull.json"), JSON.stringify(pr));
+    writeFileSync(join(sandbox, "bin/checks.json"), JSON.stringify(pages));
+    const result = await cli(
+      ["lane", "close", id, "--pr", "42", "--hosted-evidence"],
+      "coordinator",
+    );
+    expect(result.result, JSON.stringify(result)).toMatchObject({
+      status: "closed",
+      removed: true,
+    });
+    const evidence = `github-actions:check-run:17:${head}:success`;
+    expect((await call("issue.show", { id })).result).toMatchObject({
+      receipt: evidence,
+    });
+    expect((await call("check.show", { id: failedReceipt })).result).toEqual(
+      failedBefore,
+    );
+    expect((await call("check.show", { id: evidence })).error?.code).toBe(
+      "INPUT_INVALID",
+    );
+    expect(registry(repo).some((lane) => lane.issue === id)).toBe(false);
+    expect((await start(blocked)).ok).toBe(true);
+    expect((await call("issue.claim", { id: blocked })).ok).toBe(true);
+    expect(
+      (
+        await call("lane.close", {
+          id: blocked,
+          noPr: true,
+          dropped: "Fixture complete",
+        })
+      ).ok,
+    ).toBe(true);
+  } finally {
+    try {
+      await commands?.dispose();
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }
 }, 30_000);
 
 test("lane CLI starts and shows a recorded worktree and deduplicates the issue", () => {
@@ -639,24 +651,13 @@ function close(
   cwd = repo,
   session = "lane-acceptance",
 ) {
-  const args =
-    extra.hostedEvidence === true && Object.keys(extra).length === 1
-      ? [id, "--pr", "42", "--hosted-evidence"]
-      : ["--input", JSON.stringify({ id, pr: 42, ...extra })];
-  const result = spawnSync("node", [bin, "lane", "close", ...args], {
+  const args = ["--input", JSON.stringify({ id, pr: 42, ...extra })];
+  return cli(
+    ["lane", "close", ...args],
     cwd,
-    env: {
-      ...process.env,
-      PATH: join(root, "bin") + delimiter + process.env.PATH,
-      FORGE_DEVICE_ROOT: join(root, "device"),
-      FORGE_SESSION: session,
-    },
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20000,
-  });
-  expect(result.error).toBeUndefined();
-  return JSON.parse(result.stdout) as ReturnType<typeof cli>;
+    session,
+    join(root, "bin") + delimiter + process.env.PATH,
+  );
 }
 
 test("lane close drops a clean no-PR lane at base and records the reason", () => {
@@ -768,38 +769,14 @@ test("lane close invoked inside the lane finishes post-removal cleanup", () => {
   expect(registry().some((row) => row.issue === id)).toBe(false);
 }, 30000);
 
-function receipt(exitCode = 0) {
-  const current = cli(["config", "show"]);
-  expect(
-    call("config.apply", {
-      expectRevision: current.result.revision,
-      patch: [
-        {
-          op: "set",
-          path: "/blocks/check",
-          value: {
-            source: { builtin: "forge/check" },
-            bind: { state: "core" },
-            config: {
-              commands: {
-                acceptance: {
-                  argv: ["node", "-e", `process.exit(${exitCode})`],
-                },
-              },
-            },
-          },
-        },
-      ],
-    }).ok,
-  ).toBe(true);
+function receipt() {
   const result = call("check.run", { checks: ["acceptance"] });
-  expect(result.ok, JSON.stringify(result)).toBe(exitCode === 0);
-  if (exitCode) expect(result.error?.code).toBe("CHECK_FAIL");
+  expect(result.ok, JSON.stringify(result)).toBe(true);
   return String(result.result.id);
 }
-function registry() {
+function registry(cwd = repo) {
   return JSON.parse(
-    readFileSync(join(repo, ".git/forge-lanes.json"), "utf8"),
+    readFileSync(join(cwd, ".git/forge-lanes.json"), "utf8"),
   ) as Record<string, unknown>[];
 }
 

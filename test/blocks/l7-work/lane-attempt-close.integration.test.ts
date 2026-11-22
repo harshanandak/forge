@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,7 +11,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { acceptanceTable } from "./lane-brief-fixture.ts";
+import {
+  laneCommands,
+  laneGit,
+  laneRepository,
+  pullFiles,
+} from "./lane-repository-fixture.ts";
 
 type Lane = {
   issue: string;
@@ -29,16 +33,8 @@ type Reply = {
 const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 const brief = ".worktrees/briefs/attempt.md";
 let root: string, repo: string, id: string, head: string;
-function git(args: string[], cwd = repo) {
-  const r = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 10000,
-  });
-  expect(r.status, r.stderr).toBe(0);
-  return r.stdout.trim();
-}
+let commands: Awaited<ReturnType<typeof laneCommands>> | undefined;
+const git = (args: string[]) => laneGit(args, repo);
 function call(op: string, input: object = {}, session = "coordinator"): Reply {
   const r = spawnSync(
     "node",
@@ -49,6 +45,7 @@ function call(op: string, input: object = {}, session = "coordinator"): Reply {
         ...process.env,
         PATH: join(root, "bin") + delimiter + process.env.PATH,
         FORGE_DEVICE_ROOT: join(root, "device"),
+        FORGE_DEVICE_ID: "lane-fixture",
         FORGE_SESSION: session,
       },
       encoding: "utf8",
@@ -90,10 +87,12 @@ function snapshot() {
     issue: good("issue.show", { id }),
   };
 }
-function startAttempts() {
+async function startAttempts(
+  fixture: Awaited<ReturnType<typeof laneCommands>>,
+) {
   for (const n of [1, 2]) {
-    good("attempt.reserve", { id }, `builder-${n}`);
-    good(
+    await fixture.good("attempt.reserve", { id }, `builder-${n}`);
+    await fixture.good(
       "lane.attempt",
       { id, attempt: attempt(n), branch: branch(n), brief },
       `builder-${n}`,
@@ -110,7 +109,7 @@ function select() {
 }
 function pull(n: number, merged: boolean) {
   writeFileSync(
-    join(root, "pull.json"),
+    join(root, "bin/pull.json"),
     JSON.stringify({
       state: merged ? "MERGED" : "CLOSED",
       headRefName: branch(n),
@@ -122,19 +121,6 @@ function pull(n: number, merged: boolean) {
   );
 }
 function receipt() {
-  configure([
-    {
-      op: "set",
-      path: "/blocks/check",
-      value: {
-        source: { builtin: "forge/check" },
-        bind: { state: "core" },
-        config: {
-          commands: { acceptance: { argv: ["node", "-e", "process.exit(0)"] } },
-        },
-      },
-    },
-  ]);
   return String(good("check.run", { checks: ["acceptance"] }).id);
 }
 function close(n: number, extra: object) {
@@ -167,59 +153,34 @@ function newLane() {
   return { id: next, branch: `feat/${next}`, brief };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "forge-attempt-close-")));
-  repo = join(root, "project");
-  const origin = join(root, "origin.git");
-  git(["init", "--bare", "--initial-branch=main", origin], root);
-  git(["clone", origin, repo], root);
-  git(["config", "user.name", "Lane test"]);
-  git(["config", "user.email", "lane@example.test"]);
-  writeFileSync(join(repo, "tracked"), "base\n");
-  writeFileSync(join(repo, ".gitignore"), ".forge/\n.worktrees/\nprivate/\n");
-  git(["add", "tracked", ".gitignore"]);
-  git(["commit", "-m", "base"]);
-  git(["push", "origin", "main"]);
-  git(["remote", "set-head", "origin", "main"]);
+  repo = laneRepository(root, brief, {
+    ignore: ".forge/\n.worktrees/\nprivate/\n",
+    checkExit: 0,
+  }).repo;
   head = git(["rev-parse", "HEAD"]);
-  mkdirSync(join(repo, ".forge"));
-  writeFileSync(
-    join(repo, ".forge/config.yaml"),
-    "schemaVersion: forge.config/1\nblocks:\n  work:\n    source: { builtin: forge/work }\n    bind: { state: core }\n    config: { idPrefix: sample }\n",
+  pullFiles(root);
+  commands = await laneCommands(root, repo);
+  id = String(
+    (
+      await commands.good("issue.create", {
+        title: "Competing attempt cleanup",
+      })
+    ).id,
   );
-  mkdirSync(join(repo, ".worktrees/briefs"), { recursive: true });
-  writeFileSync(
-    join(repo, brief),
-    "Goal|Acceptance test|Files|Forbidden actions|Stop point|Prior art"
-      .split("|")
-      .map(
-        (name) =>
-          `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
-      )
-      .join("\n"),
-  );
-  mkdirSync(join(root, "bin"));
-  const script = join(root, "bin/gh.cjs");
-  writeFileSync(
-    script,
-    `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(join(root, "pull.json"))}, 'utf8'));`,
-  );
-  writeFileSync(
-    join(root, "bin/gh"),
-    `#!/bin/sh\nexec node "${script.replaceAll("\\", "/")}" "$@"\n`,
-  );
-  chmodSync(join(root, "bin/gh"), 0o755);
-  writeFileSync(
-    join(root, "bin/gh.cmd"),
-    `@echo off\r\nnode "${script}" %*\r\n`,
-  );
-  cap(3);
-  id = String(good("issue.create", { title: "Competing attempt cleanup" }).id);
-  good("issue.claim", { id });
-  good("attempt.slots", { id, count: 2 });
-  startAttempts();
+  await commands.good("issue.claim", { id });
+  await commands.good("attempt.slots", { id, count: 2 });
+  await startAttempts(commands);
 }, 30000);
-afterEach(() => rmSync(root, { recursive: true, force: true }), 30000);
+afterEach(async () => {
+  try {
+    await commands?.dispose();
+  } finally {
+    commands = undefined;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30000);
 
 test("closing the selected merged attempt removes only its tree and keeps both branches", () => {
   select();
@@ -331,20 +292,51 @@ test("an invalid selected-attempt receipt preserves both attempts", () => {
   refusedClose(2, { receipt: "missing" }, "RECEIPT_INVALID");
 }, 30000);
 
-test("two explicitly closed attempts free the cap alongside a live normal lane", () => {
-  select();
-  const live = newLane();
-  good("lane.start", live);
+test("two explicitly closed attempts free the cap alongside a live normal lane", async () => {
+  const { call, good } = commands!;
+  const nextLane = async () => {
+    const next = String(
+      (await good("issue.create", { title: "Next lane" })).id,
+    );
+    return { id: next, branch: `feat/${next}`, brief };
+  };
+  await good(
+    "attempt.evidence",
+    { id, attempt: attempt(2), sha: head },
+    "builder-2",
+  );
+  await good("attempt.select", {
+    id,
+    attempt: attempt(2),
+    reason: "Choose the second attempt",
+  });
+  const live = await nextLane();
+  await good("lane.start", live);
   pull(1, false);
-  expect(close(1, { dropped: "superseded" }).ok).toBe(true);
-  pull(2, true);
-  expect(close(2, { receipt: receipt() }).ok).toBe(true);
-  expect(registry().map((lane) => lane.issue)).toEqual([live.id]);
   expect(
-    (good("lane.status").lanes as { id: string }[]).map((lane) => lane.id),
-  ).toEqual([live.id]);
-  expect(good("lane.status").hold ?? "").not.toContain("lane cap");
-  good("lane.start", newLane());
+    (
+      await call("lane.close", {
+        id,
+        attempt: attempt(1),
+        pr: 1,
+        dropped: "superseded",
+      })
+    ).ok,
+  ).toBe(true);
+  pull(2, true);
+  const receipt = String(
+    (await good("check.run", { checks: ["acceptance"] })).id,
+  );
+  expect(
+    (await call("lane.close", { id, attempt: attempt(2), pr: 2, receipt })).ok,
+  ).toBe(true);
+  expect(registry().map((lane) => lane.issue)).toEqual([live.id]);
+  const status = await good("lane.status");
+  expect((status.lanes as { id: string }[]).map((lane) => lane.id)).toEqual([
+    live.id,
+  ]);
+  expect(status.hold ?? "").not.toContain("lane cap");
+  await good("lane.start", await nextLane());
   removed(1);
   removed(2);
 }, 30000);
