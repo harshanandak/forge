@@ -170,7 +170,8 @@ test(
 async function ordinary(setup: SealSetup) {
   const f = guardFixture(env, setup);
   using _db = f.db;
-  const project = new Project({ storage: f.storage }, f.env);
+  const { testV3: _testV3, ...context } = f.context;
+  const project = new Project(context, f.env);
   const statements = watch(f);
   const report = new Request("https://fixture.example/__forge/report?issue=x", {
     headers: { [REPORT_UNTIL]: String(Date.now() + 60_000) },
@@ -180,11 +181,14 @@ async function ordinary(setup: SealSetup) {
     f.request("loginstart", {}),
     f.request("loginpoll", {}),
     f.request("state/read", {}),
+    f.request("revoke", { id: "unknown" }),
+    f.request("restore", {}),
     report,
     f.request("status"),
     f.request("dump"),
     f.request("upgrade"),
     f.request("devices", device),
+    f.request("revoke", { id: "unknown" }),
     f.request("status"),
     f.request("loginstart", {}),
     f.request("holder"),
@@ -253,21 +257,28 @@ test(
   timeout,
 );
 
-test(
-  "v3 refuses a second commit row at or below the covered head of an activated root",
-  () =>
-    withActivated(async (f) => {
-      f.restart();
-      expect(await f.send("status")).toMatchObject(stopped);
-      f.db.run("INSERT INTO cloud_v3_commits VALUES (1, 'junk', '')");
-      f.restart();
-      const effects = f.observeEffects();
-      for (const route of ["status", probe])
-        expect(await f.send(route)).toMatchObject(refused);
-      expect(effects()).toEqual(noWrites);
-    }),
-  timeout,
-);
+for (const [at, where] of [
+  [1, "at or below the covered head of an activated root, end to end"],
+  [
+    3,
+    "after the authentic activation row, so only the extra-row check can refuse",
+  ],
+] as const)
+  test(
+    `v3 refuses a second commit row ${where}`,
+    () =>
+      withActivated(async (f) => {
+        f.restart();
+        expect(await f.send("status")).toMatchObject(stopped);
+        f.db.run("INSERT INTO cloud_v3_commits VALUES (?, 'junk', '')", [at]);
+        f.restart();
+        const effects = f.observeEffects();
+        for (const route of ["status", probe])
+          expect(await f.send(route)).toMatchObject(refused);
+        expect(effects()).toEqual(noWrites);
+      }),
+    timeout,
+  );
 
 const put = (revision: number, value: string) => ({
   operation: "fixture.put",
@@ -416,6 +427,37 @@ test(
       generation: 1,
       coveredHead: 2,
     });
+  },
+  timeout,
+);
+
+test(
+  "v3 seal serves the already verified cached image on a warm read after the commit table is swapped for an old one, and refuses the next write (stated limit: a warm read does not re-read storage)",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await history(f, 1);
+    const warm = await f.send(probe);
+    expect(warm.status).toBe(200);
+    const [row] = rows(f);
+    f.db.run("DROP TABLE cloud_v3_commits");
+    f.db.run(
+      "CREATE TABLE cloud_v3_commits (sequence INTEGER PRIMARY KEY CHECK(sequence>0), body TEXT NOT NULL)",
+    );
+    f.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?)", [
+      row!.sequence,
+      row!.body,
+    ]);
+    const statements = watch(f);
+    const effects = f.observeEffects();
+    expect(await f.send(probe)).toEqual(warm);
+    expect(effects()).toEqual(noWrites);
+    expect(await append(f, note)).toMatchObject(refused);
+    expect(effects()).toEqual(noWrites);
+    expect(namesMac(statements)).toEqual([]);
+    f.restart();
+    expect(await f.send(probe)).toMatchObject(refused);
+    expect(effects()).toEqual(noWrites);
   },
   timeout,
 );
