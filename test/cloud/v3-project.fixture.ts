@@ -1,5 +1,8 @@
+import { randomBytes } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
+import type { DurableState } from "../../cloud/src/store.ts";
+import { sealOf, signRow } from "../../cloud/src/v3-seal.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 
 export const probe = "test-v3";
@@ -11,7 +14,28 @@ export const noWrites = {
   sqlAndKvIntact: true,
 };
 
-export function fixture(before?: (sql: string) => void, env?: unknown) {
+export interface SealSetup {
+  key?: string | null;
+  previous?: string;
+  id?: string | null;
+}
+export const newKey = () => randomBytes(32).toString("base64url");
+
+export function fixture(
+  before?: (sql: string) => void,
+  env?: unknown,
+  setup: SealSetup = {},
+) {
+  const {
+    key = newKey(),
+    previous,
+    id = randomBytes(32).toString("hex"),
+  } = setup;
+  const sealed = {
+    ...(env as Record<string, unknown> | undefined),
+    ...(key === null ? {} : { V3_SEAL_KEY: key }),
+    ...(previous === undefined ? {} : { V3_SEAL_KEY_PREVIOUS: previous }),
+  };
   const db = new Database(":memory:");
   const { storage, values } = browserStorage(db, before);
   const reads = { rows: 0, bytes: 0 };
@@ -36,8 +60,26 @@ export function fixture(before?: (sql: string) => void, env?: unknown) {
     alarms.push(time);
     return Promise.resolve();
   };
-  const context = { storage, testV3: true };
-  let project = new Project(context, env);
+  const context: DurableState = {
+    storage,
+    testV3: true,
+    ...(id === null ? {} : { id: { toString: () => id } }),
+  };
+  let project = new Project(context, sealed);
+  const seal = () => sealOf(sealed, context.id);
+  const sign = (sequence: number, body: string) =>
+    signRow(
+      seal(),
+      (
+        JSON.parse(
+          db
+            .query<{ body: string }, []>("SELECT body FROM cloud_v3_root")
+            .get()!.body,
+        ) as { incarnation: string }
+      ).incarnation,
+      sequence,
+      body,
+    );
   const request = (
     route: string,
     body?: unknown,
@@ -56,8 +98,12 @@ export function fixture(before?: (sql: string) => void, env?: unknown) {
     alarms,
     alarm: () => project.alarm(),
     request,
+    env: sealed,
+    context,
+    seal,
+    sign,
     restart: (testV3 = true) => {
-      project = new Project(testV3 ? context : { storage }, env);
+      project = new Project(testV3 ? context : { storage }, sealed);
     },
     send: async (
       route: string,
@@ -74,11 +120,15 @@ export function fixture(before?: (sql: string) => void, env?: unknown) {
   };
 }
 
-export function guardFixture(env?: unknown) {
+export function guardFixture(env?: unknown, setup?: SealSetup) {
   let sqlWriteAttempts = 0;
-  const f = fixture((sql) => {
-    if (sqlMutation.test(sql)) sqlWriteAttempts++;
-  }, env);
+  const f = fixture(
+    (sql) => {
+      if (sqlMutation.test(sql)) sqlWriteAttempts++;
+    },
+    env,
+    setup,
+  );
   return {
     ...f,
     observeEffects() {

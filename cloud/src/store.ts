@@ -7,6 +7,7 @@ type Binding = string | number | null | ArrayBuffer;
 export interface DurableState {
   readonly storage: DurableStorage;
   readonly testV3?: boolean;
+  readonly id?: { toString(): string };
 }
 export interface DurableStorage {
   readonly sql: {

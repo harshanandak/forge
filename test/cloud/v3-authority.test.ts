@@ -94,7 +94,7 @@ test(
       expect((await f.send(probe, {})).status).toBe(200);
       expect((await send("owner-a", "work-1", "acq-1")).status).toBe(200);
       const db = writableStore(f.storage);
-      const image = recoverV3(db);
+      const image = recoverV3(db, f.seal());
       expect(
         f.db.run(
           "UPDATE cloud_v3_commits SET body=json_set(body,'$.lease.generation',0) WHERE sequence=1",
@@ -129,7 +129,7 @@ test(
         }) as LeaseCommand;
       let thrown: unknown;
       try {
-        leaseV3(db, image, command("work-1", "acq-2"), E1);
+        leaseV3(db, f.seal(), image, command("work-1", "acq-2"), E1);
       } catch (error) {
         thrown = error;
       }
@@ -140,7 +140,9 @@ test(
       );
       expect(rows()).toEqual(stored);
       expect(f.snapshot()).toEqual(before);
-      expect(leaseV3(db, image, command("work-2", "acq-3"), E1)).toMatchObject({
+      expect(
+        leaseV3(db, f.seal(), image, command("work-2", "acq-3"), E1),
+      ).toMatchObject({
         subject: "work-2",
         generation: 1,
       });

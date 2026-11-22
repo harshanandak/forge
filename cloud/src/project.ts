@@ -133,6 +133,7 @@ import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { checkpointV3 } from "./v3-checkpoint.ts";
 import { commandV3 } from "./v3-commands.ts";
 import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
+import { type Seal, sealOf } from "./v3-seal.ts";
 import {
   appendV3Frames,
   hasV3Root,
@@ -355,6 +356,7 @@ export class Project {
   readonly #env: LoginEnv;
   readonly #browser: DeviceBrowserOptions;
   readonly #testV3: boolean;
+  readonly #id: DurableState["id"];
 
   // The existing parser resolves DUMP_PAGE_BYTES, DUMP_MAX_ROWS and DUMP_MAX_BYTES once.
   constructor(
@@ -367,6 +369,7 @@ export class Project {
     this.#env = (env ?? {}) as LoginEnv;
     this.#browser = browser;
     this.#testV3 = ctx.testV3 === true;
+    this.#id = ctx.id;
   }
 
   async alarm(): Promise<void> {
@@ -405,9 +408,13 @@ export class Project {
     return (this.#v3Root ??= hasV3Root(writableStore(this.#storage)));
   }
 
-  #image(db: SqlDatabase): V3Image {
+  #seal(): Seal {
+    return sealOf(this.#env, this.#id);
+  }
+
+  #image(db: SqlDatabase, seal: Seal): V3Image {
     if (this.#v3Image === undefined || this.#v3Image.stale)
-      this.#v3Image = recoverV3(db);
+      this.#v3Image = recoverV3(db, seal);
     return this.#v3Image;
   }
 
@@ -538,14 +545,19 @@ export class Project {
           url.pathname,
         );
       if (probe && !url.search) {
+        const seal = this.#seal();
         const db = writableStore(this.#storage);
         if (!probe[1] && request.method === "GET")
-          return Response.json({ ok: true, value: viewV3(this.#image(db)) });
+          return Response.json({
+            ok: true,
+            value: viewV3(this.#image(db, seal)),
+          });
         if (probe[1] === "checkpoint" && request.method === "POST") {
           if (Object.keys(object(await bounded(request))).length)
             throw fail("INPUT_INVALID", "Expected an empty checkpoint body");
           const value = await checkpointV3(
             db,
+            seal,
             this.#storage,
             this.#v3Image,
             (image) => {
@@ -571,7 +583,7 @@ export class Project {
             const now = Date.now();
             if (typed) {
               tokenLive(expiresAt, now);
-              return commandV3(db, this.#image(db), body, {
+              return commandV3(db, seal, this.#image(db, seal), body, {
                 project: url.pathname.split("/")[2]!,
                 device: owner,
                 prefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: string })
@@ -589,14 +601,14 @@ export class Project {
               expiresAt,
               now,
             );
-            const image = this.#image(db);
-            const value = leaseV3(db, image, command, expiresAt, now);
+            const image = this.#image(db, seal);
+            const value = leaseV3(db, seal, image, command, expiresAt, now);
             return Response.json({ ok: true, value });
           }
           const input = object(body);
           if (probe[1]) {
-            const value = appendV3Frames(db, input.frames, () =>
-              this.#image(db),
+            const value = appendV3Frames(db, seal, input.frames, () =>
+              this.#image(db, seal),
             );
             publishV3(this.#v3Image!);
             return Response.json({ ok: true, value });
@@ -606,12 +618,13 @@ export class Project {
           const legacy =
             (await this.#storage.get(PROVISIONED)) !== undefined ||
             (await this.#storage.get(STAGED)) !== undefined;
-          this.#v3Image = provisionV3(db, legacy || hasV3Restore(db));
+          this.#v3Image = provisionV3(db, seal, legacy || hasV3Restore(db));
           this.#v3Root = true;
           return Response.json({ ok: true, value: viewV3(this.#v3Image) });
         }
       }
       if (route === "restore" && request.method === "POST" && this.#testV3) {
+        const seal = this.#seal();
         const db = writableStore(this.#storage);
         if (this.#hasV3Root() && readV3Root(db).activationDigest === undefined)
           this.#requireV2();
@@ -627,6 +640,7 @@ export class Project {
         this.#v3Root = this.#v3Image = undefined;
         const value = restoreV3Page(
           db,
+          seal,
           body,
           request.headers.get("X-Forge-Manifest-Digest"),
           legacy,
@@ -799,9 +813,10 @@ export class Project {
       }
       if (request.method === "GET" && route === "status") {
         if (this.#testV3 && this.#hasV3Root()) {
+          const seal = this.#seal();
           const db = writableStore(this.#storage);
           if (readV3Root(db).activationDigest !== undefined) {
-            this.#image(db);
+            this.#image(db, seal);
             return Response.json({
               ok: true,
               value: { initialized: true, stopped: true },

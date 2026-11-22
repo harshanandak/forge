@@ -21,6 +21,7 @@ import {
   roster,
   storedPages,
 } from "./v3-checkpoint.ts";
+import type { Seal } from "./v3-seal.ts";
 import {
   activateV3,
   fail,
@@ -129,6 +130,7 @@ function completeRefusals(image: V3Image, pages: ReadonlyMap<string, string>) {
 
 function verify(
   db: SqlDatabase,
+  seal: Seal,
   manifest: ReturnType<typeof manifestOf>,
   admit: AdmitLeaseRequest,
   table: string,
@@ -139,7 +141,7 @@ function verify(
     for (const member of manifest.members)
       check(matches(pages.get(member.id), member));
     const portableTranscript = pages.get("transcript:0")!;
-    const image = recoverV3(db, { admit, portableTranscript });
+    const image = recoverV3(db, seal, { admit, portableTranscript });
     completeRefusals(image, pages);
     const expected = inventory(image, new Map());
     reconcile(pages, expected, portableTranscript);
@@ -157,6 +159,7 @@ function verify(
 
 export function restoreV3Page(
   db: SqlDatabase,
+  seal: Seal,
   text: string,
   pin: string | null,
   legacy: boolean,
@@ -192,14 +195,20 @@ export function restoreV3Page(
     const verified = page === IDS.length - 1;
     const finish = () => {
       if (verified) {
-        const { pages, expected, image } = verify(db, manifest, admit, table);
+        const { pages, expected, image } = verify(
+          db,
+          seal,
+          manifest,
+          admit,
+          table,
+        );
         if (!restored) {
           const projection = roster(pages, expected, image.head);
-          activateV3(db, image, projection, pages, manifest.publicDigest);
+          activateV3(db, seal, image, projection, pages, manifest.publicDigest);
           db.run(`UPDATE ${STAGE} SET body=''`);
         }
       }
-      if (restored || verified) recoverV3(db);
+      if (restored || verified) recoverV3(db, seal);
     };
     if (prior) {
       check(prior.id === id && prior.request === request && prior.pin === pin);

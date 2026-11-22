@@ -21,6 +21,7 @@ import {
   TAIL_ROWS,
   type V3Image,
 } from "./v3-store.ts";
+import { type Seal, verifyRow } from "./v3-seal.ts";
 
 const STAGE = "cloud_v3_checkpoint";
 const STAGED = "cloud_v3_checkpoint_pages";
@@ -257,6 +258,7 @@ type ReplaceWarm = (image: V3Image | undefined) => void;
 
 export async function checkpointV3(
   db: SqlDatabase,
+  commitSeal: Seal,
   storage: DurableStorage,
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
@@ -265,7 +267,7 @@ export async function checkpointV3(
   requireCheckpoint(!activeStages.has(storage));
   activeStages.add(storage);
   try {
-    return await checkpoint(db, storage, warm, replaceWarm, admit);
+    return await checkpoint(db, commitSeal, storage, warm, replaceWarm, admit);
   } finally {
     activeStages.delete(storage);
   }
@@ -273,6 +275,7 @@ export async function checkpointV3(
 
 async function checkpoint(
   db: SqlDatabase,
+  commitSeal: Seal,
   storage: DurableStorage,
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
@@ -295,12 +298,14 @@ async function checkpoint(
       }),
   );
   const frames = db.all(
-    `SELECT CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TURN_TAIL_BYTES} THEN body END AS body FROM ${COMMITS} WHERE sequence>? AND sequence<=? ORDER BY sequence`,
+    `SELECT sequence, mac, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TURN_TAIL_BYTES} THEN body END AS body FROM ${COMMITS} WHERE sequence>? AND sequence<=? ORDER BY sequence`,
     [root.coveredHead, cut],
   );
   requireCheckpoint(
     frames.length === cut - root.coveredHead &&
-      frames.every(({ body }) => typeof body === "string"),
+      frames.every(({ sequence, body, mac }) =>
+        verifyRow(commitSeal, root.incarnation, sequence, body, mac),
+      ),
   );
   const archived = parse(prior.get("transcript:0") ?? "null");
   requireCheckpoint(
@@ -315,6 +320,7 @@ async function checkpoint(
   );
   const image = recoverV3(
     db,
+    commitSeal,
     {
       admit,
       pages: previous,
@@ -395,7 +401,9 @@ async function checkpoint(
         manifest,
         digestBytes(manifest),
       ]);
-      const verifiedRoot = recoverV3(db, undefined, { through: cut });
+      const verifiedRoot = recoverV3(db, commitSeal, undefined, {
+        through: cut,
+      });
       return head === cut ? verifiedRoot : undefined;
     });
     try {

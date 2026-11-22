@@ -279,13 +279,13 @@ function checkpoint(f: Fixture) {
 }
 
 function tail(
-  db: Database,
+  f: Fixture,
   from: number,
   rows: number,
   rowBytes: (i: number) => number,
   keys: readonly string[] = [],
 ) {
-  const insert = db.prepare("INSERT INTO cloud_v3_commits VALUES (?, ?)");
+  const insert = f.db.prepare("INSERT INTO cloud_v3_commits VALUES (?, ?, ?)");
   for (let i = 0; i < rows; i++) {
     const sequence = from + i + 1;
     const key = keys[i];
@@ -301,7 +301,8 @@ function tail(
     const remaining = rowBytes(i) - bytesOf(frame(""));
     const time = key !== undefined && remaining % 2 ? Math.floor(T0 / 10) : T0;
     const padding = key === undefined ? remaining : Math.ceil(remaining / 2);
-    insert.run(sequence, frame("x".repeat(padding), time));
+    const body = frame("x".repeat(padding), time);
+    insert.run(sequence, body, f.sign(sequence, body));
   }
 }
 
@@ -350,7 +351,7 @@ async function capacity(f: Fixture, shape: Capacity = {}) {
     roster - directoryPages - 1,
   );
   tail(
-    f.db,
+    f,
     COVERED,
     tailRows,
     rowBytes,
@@ -455,7 +456,7 @@ test(
     try {
       expect((await f.send(probe, {})).status).toBe(200);
       const full = TAIL_BYTES / TAIL_ROWS;
-      tail(f.db, 0, TAIL_ROWS - 1, (i) =>
+      tail(f, 0, TAIL_ROWS - 1, (i) =>
         i === TAIL_ROWS - 2 ? TAIL_BYTES - 4096 - (TAIL_ROWS - 2) * full : full,
       );
       f.restart();
@@ -526,7 +527,7 @@ for (const at of ["tail", "directory"] as const) {
           },
         });
         const db = writableStore(f.storage);
-        const recovered = recoverV3(db);
+        const recovered = recoverV3(db, f.seal());
         const before = { ...f.reads };
         expect(readV3Value(db, recovered, "record", "r1")).toBeUndefined();
         expect(f.reads).toEqual(before);
@@ -577,7 +578,7 @@ test(
     try {
       expect((await f.send(probe, {})).status).toBe(200);
       expect(await commit(f, note)).toMatchObject({ status: 200 });
-      tail(f.db, 1, 1, () => 256);
+      tail(f, 1, 1, () => 256);
       const stored = f.snapshot();
       expect(await commit(f, note)).toMatchObject(unavailable);
       expect(f.snapshot()).toEqual(stored);
@@ -916,7 +917,10 @@ test(
       expect((await f.send(probe, {})).status).toBe(200);
       const nested = "[".repeat(10_000) + "0" + "]".repeat(10_000);
       const frame = `{"events":[${nested}],"format":"forge-cloud-commit/3","operation":"fixture.note","sequence":1,"time":${T0}}`;
-      f.db.run("INSERT INTO cloud_v3_commits VALUES (1, ?)", [frame]);
+      f.db.run("INSERT INTO cloud_v3_commits VALUES (1, ?, ?)", [
+        frame,
+        f.sign(1, frame),
+      ]);
       const before = f.snapshot();
       f.restart();
       expect(await f.send(probe)).toMatchObject(unavailable);
