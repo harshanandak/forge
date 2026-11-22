@@ -43,11 +43,13 @@ import { TABLE_PROBE } from "./store.ts";
 import {
   BOUNDED_MAC,
   bounded,
+  isVerifiedManifest,
   type Seal,
   signRoot,
   signRow,
   verifyRoot,
   verifyRow,
+  type VerifiedManifest,
 } from "./v3-seal.ts";
 
 export { withinDepth };
@@ -488,7 +490,7 @@ export function recoverV3(
 export function recoverV3(
   db: SqlDatabase,
   seal: Seal,
-  verification?: Verification,
+  verification?: Verification & { readonly portableTranscript?: never },
   options?: { through: number },
 ): V3Image;
 export function recoverV3(
@@ -574,14 +576,22 @@ export function recoverV3(
 
 interface PortableVerification {
   admit: AdmitLeaseRequest;
+  manifest: VerifiedManifest;
   portableTranscript: string;
 }
 
 function recoverPortableV3(
   db: SqlDatabase,
-  { admit, portableTranscript }: PortableVerification,
+  { admit, manifest, portableTranscript }: PortableVerification,
 ): V3Image {
-  if (Buffer.byteLength(portableTranscript) > PAGE_BYTES) throw unavailable();
+  const bytes = Buffer.byteLength(portableTranscript);
+  if (
+    bytes > PAGE_BYTES ||
+    !isVerifiedManifest(manifest) ||
+    bytes !== manifest.transcript.bytes ||
+    digestBytes(portableTranscript) !== manifest.transcript.hash
+  )
+    throw unavailable();
   const frames = parse(portableTranscript, MAX_JSON_DEPTH + 1);
   if (!Array.isArray(frames) || storedCanonical(frames) !== portableTranscript)
     throw unavailable();

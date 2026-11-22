@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { canonicalJson } from "../../src/core/config/pointer.ts";
+import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 
 export interface Key {
   readonly id: string;
@@ -110,6 +110,66 @@ export const verifyRow = (
   typeof body === "string" &&
   typeof sequence === "number" &&
   authentic(seal, rowParts(seal, incarnation, sequence, body), mac);
+
+declare const verified: unique symbol;
+export interface Member {
+  readonly id: string;
+  readonly bytes: number;
+  readonly hash: string;
+}
+export interface Manifest {
+  readonly format: string;
+  readonly head: number;
+  readonly eventWatermark: number;
+  readonly recordFloor: number;
+  readonly publicDigest: string;
+  readonly pages: readonly Member[];
+  readonly source: string;
+  readonly mac: string;
+}
+export interface VerifiedManifest {
+  readonly [verified]: true;
+  readonly head: number;
+  readonly eventWatermark: number;
+  readonly recordFloor: number;
+  readonly publicDigest: string;
+  readonly members: readonly Member[];
+  readonly transcript: Member;
+}
+const issued = new WeakSet<object>();
+
+const manifestParts = ({ mac: _mac, ...manifest }: Manifest) => [
+  "forge/v3/manifest/1",
+  manifest,
+];
+
+export const verifyManifest = (seal: Seal, manifest: Manifest) =>
+  authentic(seal, manifestParts(manifest), manifest.mac);
+
+export function authenticateManifest(
+  seal: Seal,
+  manifest: Manifest,
+  pin: unknown,
+): VerifiedManifest | undefined {
+  if (digestValue(manifest) !== pin || !verifyManifest(seal, manifest))
+    return undefined;
+  const members = manifest.pages.map(({ id, bytes, hash }) =>
+    Object.freeze({ id, bytes, hash }),
+  );
+  const value = Object.freeze({
+    head: manifest.head,
+    eventWatermark: manifest.eventWatermark,
+    recordFloor: manifest.recordFloor,
+    publicDigest: manifest.publicDigest,
+    members: Object.freeze(members),
+    transcript: members.find(({ id }) => id === "transcript:0")!,
+  }) as unknown as VerifiedManifest;
+  issued.add(value);
+  return value;
+}
+
+export const isVerifiedManifest = (value: unknown): value is VerifiedManifest =>
+  typeof value === "object" && value !== null && issued.has(value);
 
 export interface TokenFields {
   readonly id: string;

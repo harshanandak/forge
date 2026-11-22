@@ -13,7 +13,9 @@ import {
   guardFixture,
   noWrites,
   probe,
+  trustedManifest,
   trustedSeal,
+  verifiedPortable,
 } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
@@ -1391,11 +1393,11 @@ const portableHistory = async (source: Fixture) => {
 };
 
 function replayPortable(target: Fixture, frames: readonly unknown[]) {
+  const portableTranscript = canonicalJson(frames);
   const verification = {
     admit: Project.admitLeaseRequest,
-    pages: new Map<string, Buffer>(),
-    sealed: () => {},
-    portableTranscript: canonicalJson(frames),
+    manifest: verifiedPortable(target.seal(), portableTranscript),
+    portableTranscript,
   };
   return recoverV3(writableStore(target.storage), target.seal(), verification);
 }
@@ -1566,6 +1568,7 @@ type Portable = {
   eventWatermark: number;
   recordFloor: number;
   publicDigest: string;
+  source: string;
 };
 
 async function withPortable(
@@ -1607,6 +1610,7 @@ async function withPortable(
         eventWatermark: manifest.eventWatermark,
         recordFloor: 3,
         publicDigest: manifest.publicDigest,
+        source: String(source.context.id),
       };
       await run(target, data, source);
     });
@@ -1659,15 +1663,15 @@ function editProjection(
 }
 
 function portableUpload(target: Fixture, { pages, ...projection }: Portable) {
-  const manifest = {
+  const manifest = trustedManifest(target.seal(), {
     ...projection,
-    format: "forge-cloud-portable/3",
+    format: "forge-cloud-portable/4",
     pages: pages.map(({ id, body }) => ({
       id,
       bytes: Buffer.byteLength(body),
       hash: digestBytes(body),
     })),
-  };
+  });
   const digest = digestBytes(canonicalJson(manifest));
   return (page: number, member = pages[page] ?? pages[0]!, pin = digest) =>
     target.send(
@@ -1783,6 +1787,7 @@ test(
       eventWatermark,
       recordFloor,
       publicDigest: root.publicDigest as string,
+      source: String(source.context.id),
     };
     const upload = await stageRestore(target, data);
     expect(await upload(2)).toMatchObject(restoreResult(2, true));
@@ -2007,6 +2012,7 @@ function typedBackup(source: Fixture): Portable {
     eventWatermark,
     recordFloor,
     publicDigest: root.publicDigest as string,
+    source: String(source.context.id),
   };
 }
 

@@ -9,7 +9,12 @@ import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { authorityFault } from "../../cloud/src/v3-authority.ts";
 import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
-import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
+import {
+  guardFixture,
+  noWrites,
+  probe,
+  verifiedPortable,
+} from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -575,6 +580,7 @@ test(
     const verify = (portableTranscript: string) =>
       recoverV3(store, f.seal(), {
         admit: Project.admitLeaseRequest,
+        manifest: verifiedPortable(f.seal(), portableTranscript),
         portableTranscript,
       });
     expect(readV3Value(store, verify(transcript), "record", "r1")).toEqual({
@@ -1168,6 +1174,7 @@ test(
     const verify = (portableTranscript: string) =>
       recoverV3(store, f.seal(), {
         admit: Project.admitLeaseRequest,
+        manifest: verifiedPortable(f.seal(), portableTranscript),
         portableTranscript,
       });
     expect(
