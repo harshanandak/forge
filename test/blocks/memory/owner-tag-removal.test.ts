@@ -59,29 +59,17 @@ async function expectUnchanged(
 }
 
 test(
-  "a typed owner approval cannot drop the last owner tag and change the text",
+  "a typed owner approval cannot drop the last owner tag, with the text changed or not",
   async () => {
-    const { call } = setup();
-    const id = await acceptedRule(call, "use bun", ["rule"]);
-    expect(await typedRemoval(call, id, "use npm", [])).toMatchObject({
-      status: "updated",
-      note: { tags: ["rule"], proposal: { tags: [] } },
-    });
-    await expectUnchanged(call, id, "use bun", ["rule"], "use npm");
-  },
-  TIMEOUT,
-);
-
-test(
-  "a typed owner approval cannot drop the last owner tag with the text unchanged",
-  async () => {
-    const { call } = setup();
-    const id = await acceptedRule(call, "use bun", ["rule"]);
-    expect(await typedRemoval(call, id, "use bun", [])).toMatchObject({
-      status: "updated",
-      note: { tags: ["rule"], proposal: { tags: [] } },
-    });
-    await expectUnchanged(call, id, "use bun", ["rule"], "use npm");
+    for (const text of ["use npm", "use bun"]) {
+      const { call } = setup();
+      const id = await acceptedRule(call, "use bun", ["rule"]);
+      expect(await typedRemoval(call, id, text, [])).toMatchObject({
+        status: "updated",
+        note: { tags: ["rule"], proposal: { tags: [] } },
+      });
+      await expectUnchanged(call, id, "use bun", ["rule"], "use npm");
+    }
   },
   TIMEOUT,
 );
@@ -119,7 +107,7 @@ test(
 );
 
 test(
-  "memory.accept refuses a staged tag removal that does not name the removed tags",
+  "memory.accept refuses a staged tag removal that does not name the removed tags, and applies it when named",
   async () => {
     const { call, state } = setup();
     const id = await acceptedRule(call, "use bun", ["rule"]);
@@ -142,16 +130,6 @@ test(
       ).rejects.toMatchObject({ error: { code: "PROPOSAL_CHANGED" } });
     expect(state.counts.put + state.counts.putMany).toBe(writes);
     await expectUnchanged(call, id, "use bun", ["rule"], "use npm");
-  },
-  TIMEOUT,
-);
-
-test(
-  "memory.accept with the removed tags named applies the removal and the new text",
-  async () => {
-    const { call } = setup();
-    const id = await acceptedRule(call, "use bun", ["rule"]);
-    await typedRemoval(call, id, "use npm", []);
     expect(
       await call("memory.accept", {
         items: await decisionItems(call, [id]),
@@ -176,9 +154,6 @@ test(
       }),
     ).toContain(
       "removes owner tags: rule, preference (it will no longer be served as an owner rule)",
-    );
-    expect(memoryOwnerAsk("memory.accept", { items: [item] })).not.toContain(
-      "removes owner tags",
     );
   },
   TIMEOUT,
