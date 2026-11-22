@@ -12,7 +12,7 @@ import {
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { AdmitLeaseRequest } from "./project.ts";
 import { TABLE_PROBE } from "./store.ts";
-import { isDigest, isNat } from "./v3-authority.ts";
+import { isDigest, isNat, sealedAuthorityValid } from "./v3-authority.ts";
 import {
   digestProjection,
   inventory,
@@ -29,6 +29,8 @@ import {
   PAGES,
   readV3Root,
   recoverV3,
+  type V3Image,
+  withinDepth,
 } from "./v3-store.ts";
 
 const STAGE = "cloud_v3_restore";
@@ -41,6 +43,10 @@ function check(value: unknown, code = "RESTORE_INVALID_ROW"): asserts value {
 
 function decode(text: unknown): unknown {
   check(typeof text === "string" && withinRestoreBudget(text));
+  return parse(text);
+}
+
+function parse(text: string): unknown {
   try {
     return parseRestoreJson(text);
   } catch {
@@ -86,6 +92,41 @@ const matches = (
 export const hasV3Restore = (db: SqlDatabase) =>
   db.get(TABLE_PROBE, [STAGE]) !== undefined;
 
+function completeRefusals(image: V3Image, pages: ReadonlyMap<string, string>) {
+  const directory = parse(pages.get("directory:0")!);
+  check(Array.isArray(directory));
+  const entries = new Map(
+    (directory as unknown[])
+      .filter(isObject)
+      .filter((entry) => entry.collection === "outcome")
+      .map((entry) => [entry.key, entry]),
+  );
+  const snapshot = Buffer.from(pages.get("snapshot:0")!);
+  for (const [key, slot] of image.entries.outcome) {
+    if (!("value" in slot) || !isObject(slot.value)) continue;
+    const { outcome } = slot.value;
+    if (
+      !isObject(outcome) ||
+      outcome.status === "ok" ||
+      !isDigest(outcome.resultDigest)
+    )
+      continue;
+    const { offset, length } = entries.get(key) ?? {};
+    check(isNat(offset) && isNat(length) && offset + length <= snapshot.length);
+    const saved = parse(snapshot.subarray(offset, offset + length).toString());
+    check(isObject(saved) && isObject(saved.outcome) && withinDepth(saved));
+    const { result, ...receipt } = saved.outcome;
+    check(
+      sealedAuthorityValid("outcome", key, saved) &&
+        canonicalJson({
+          ...saved,
+          outcome: { ...receipt, resultDigest: digestValue(result) },
+        }) === canonicalJson(slot.value),
+    );
+    image.entries.outcome.set(key, { value: saved });
+  }
+}
+
 function verify(
   db: SqlDatabase,
   manifest: ReturnType<typeof manifestOf>,
@@ -99,6 +140,7 @@ function verify(
       check(matches(pages.get(member.id), member));
     const portableTranscript = pages.get("transcript:0")!;
     const image = recoverV3(db, { admit, portableTranscript });
+    completeRefusals(image, pages);
     const expected = inventory(image, new Map());
     reconcile(pages, expected, portableTranscript);
     check(image.head === manifest.head);
