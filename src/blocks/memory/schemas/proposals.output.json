@@ -49,6 +49,8 @@
                 "tags": {
                   "$ref": "defs.json#/$defs/Tags"
                 },
+                "replaces": { "$ref": "defs.json#/$defs/Replaces" },
+                "replacedBy": { "$ref": "defs.json#/$defs/ReplacedBy" },
                 "text": {
                   "$ref": "defs.json#/$defs/Untrusted"
                 },

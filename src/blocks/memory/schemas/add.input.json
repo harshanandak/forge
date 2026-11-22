@@ -31,6 +31,7 @@
       "$ref": "defs.json#/$defs/LinkRefs",
       "description": "On an edit, leave out to keep the stored links, or send [] to clear them."
     },
+    "replaces": { "$ref": "defs.json#/$defs/Replaces" },
     "id": {
       "$ref": "defs.json#/$defs/NoteRef",
       "description": "Edit this note instead of adding a new one. An edit changes only the fields you send."
