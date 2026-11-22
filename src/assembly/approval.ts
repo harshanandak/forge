@@ -293,10 +293,12 @@ export function memoryOwnerClaim(
   };
 }
 const shown = (value: unknown) =>
-  String(value).replace(
-    /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
-    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
+  String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (character) => {
+    let escaped = "";
+    for (let i = 0; i < character.length; i++)
+      escaped += `\\u${character.charCodeAt(i).toString(16).padStart(4, "0")}`;
+    return escaped;
+  });
 export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
   return memoryAsk(declaredOp, input, false);
 }
@@ -331,7 +333,7 @@ function memoryAsk(
               ? quoteDisplayText(item.text)
               : item.text.split(/\r?\n/u).map(shown).join("\n    ")
             : "(text not shown)";
-        return `- ${field(item?.id)} (revision ${field(item?.revision)}):\n    ${text}${Array.isArray(item?.removedOwnerTags) && item.removedOwnerTags.length > 0 ? `\nremoves owner tags: ${item.removedOwnerTags.map(field).join(", ")}` : ""}`;
+        return `- ${field(item?.id)} (revision ${field(item?.revision)}):\n    ${text}${declaredOp === "memory.accept" && Array.isArray(item?.removedOwnerTags) && item.removedOwnerTags.length > 0 ? `\nremoves owner tags: ${item.removedOwnerTags.map(field).join(", ")}` : ""}`;
       },
     );
     return declaredOp === "memory.accept"

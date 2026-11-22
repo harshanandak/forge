@@ -26,7 +26,7 @@
             "type": "array",
             "maxItems": 16,
             "items": { "type": "string", "maxLength": 64 },
-            "description": "The owner tags this proposal removes from the accepted note, as memory.add reported. The call refuses if the list differs from what the proposal removes."
+            "description": "The owner tags this proposal removes from the accepted note, as memory.add or memory.proposals reported. The call refuses if the list differs from what the proposal removes."
           }
         },
         "additionalProperties": false,
