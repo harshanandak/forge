@@ -6768,6 +6768,11 @@ test(
       expect(required).toMatchObject({
         ok: false,
         error: { code: "APPROVAL_REQUIRED" },
+        result: {
+          request: {
+            ask: "Resume every stopped lane. Forge starts spending calls and time again.",
+          },
+        },
       });
       const approval = approvalReply(required, {
         harness: "fixture",
@@ -6809,6 +6814,11 @@ test(
       expect(required).toMatchObject({
         ok: false,
         error: { code: "APPROVAL_REQUIRED" },
+        result: {
+          request: {
+            ask: "Unfreeze the local tracker store. Sessions on this machine can write issues to it again.",
+          },
+        },
       });
       expect(
         await call("issue.create", { title: "blocked", kind: "task" }),

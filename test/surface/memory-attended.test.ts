@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { join } from "node:path";
 import { AGENT_MARKERS } from "../../src/assembly/identity.ts";
+import { LocalState } from "../../src/assembly/state.ts";
+import { record } from "../../src/surface/dispatch.ts";
 import {
   decisionItem,
   done,
@@ -31,7 +34,13 @@ const terminal = (stdin: boolean, answer: boolean) => ({
 });
 
 async function forget(stdin: boolean, answer: boolean) {
-  h = await openHarness(["memory"], {}, { terminal: terminal(stdin, answer) });
+  let ask: string | undefined;
+  const tty = terminal(stdin, answer);
+  const confirm = (_op: string, prompt: string) => {
+    ask = prompt;
+    return tty.confirm();
+  };
+  h = await openHarness(["memory"], {}, { terminal: { ...tty, confirm } });
   const note = done(
     await h.call("memory.add", { level: "device", text: "temporary" }),
   ) as { id: string };
@@ -39,16 +48,32 @@ async function forget(stdin: boolean, answer: boolean) {
   const result = await h.call("memory.forget", { id: note.id });
   live.on = false;
   const shown = done(await h.call("memory.show", { id: note.id }));
-  return { result, shown };
+  return { result, shown, ask, id: note.id };
 }
 
 test("a person at a terminal who types the phrase can forget a note without a relayed reply", async () => {
-  const { result, shown } = await forget(true, true);
+  const { result, shown, ask, id } = await forget(true, true);
   expect(result).toMatchObject({ ok: true, result: { status: "forgotten" } });
   expect(shown).toMatchObject({
     status: "forgotten",
     approval: { by: "owner" },
   });
+  expect(ask).toBe(
+    `Forget note "${id}". Its text is hidden and kept only as a private backup.`,
+  );
+  const trust = new LocalState(join(h!.deviceRoot, "trust.sqlite"));
+  try {
+    const rows = (await trust.open(false))?.list("forge/core-approvals");
+    const saved = rows?.find(
+      (row) => record(row.value)?.op === "memory.forget",
+    );
+    expect(saved?.value).toMatchObject({
+      method: "attended",
+      ask: `Forget note ${id}. Its text is hidden and kept only as a private backup.`,
+    });
+  } finally {
+    await trust.close();
+  }
 }, 30_000);
 
 test("piped input, a wrong phrase or an agent session keep the existing refusal", async () => {

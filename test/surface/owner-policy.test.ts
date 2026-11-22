@@ -247,12 +247,21 @@ test("an attended approval uses the host's configured terminal, not the process'
             "attended",
             "attended",
           ]);
-          expect(rows?.map((row) => String(record(row.value)?.ask))).toContain(
+          expect(
+            rows?.map((row) => String(record(row.value)?.ask)).sort(),
+          ).toEqual([
             `Admit block example.org/hello at ${digest} so its captured code can run. Declared effects: none.`,
-          );
+            `Grant effects none to block example.org/hello at ${digest}.`,
+            "Let scripts and CI with no agent session run block.admit, config.grant without asking, by writing owner.json in the device folder.",
+          ]);
         } finally {
           await trust.close();
         }
+        expect(asked.map(([, ask]) => ask)).toEqual([
+          `Admit block "example.org/hello" at "${digest}" so its captured code can run. Declared effects: none.`,
+          'Let scripts and CI with no agent session run "block.admit", "config.grant" without asking, by writing owner.json in the device folder.',
+          `Grant effects none to block "example.org/hello" at "${digest}".`,
+        ]);
       } else {
         expect(admitted).toMatchObject({
           ok: false,
@@ -269,11 +278,6 @@ test("an attended approval uses the host's configured terminal, not the process'
     "owner.policy",
     "config.grant",
   ]);
-  expect(asked[0]?.[1]).toContain('Admit block "example.org/hello" at "');
-  expect(asked[1]?.[1]).toContain('"block.admit", "config.grant"');
-  expect(asked[2]?.[1]).toContain(
-    'Grant effects none to block "example.org/hello" at "',
-  );
 }, 30_000);
 
 test.each(["project.init", "store.reinit"])(

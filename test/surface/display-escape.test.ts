@@ -179,6 +179,8 @@ test("display modes preserve selected code units and ordinary Unicode", async ()
 const inputText = "é漢\u202e\u{e0020}\u009b\\u0009\u{1f642}";
 const escapedText = "é漢\\u202e\\udb40\\udc20\\u009b\\u0009\u{1f642}";
 const base = candidate();
+const quotedAsk =
+  'Forget note "example\\u0009\\\\u0009". Its text is hidden and kept only as a private backup.';
 const catalog = fakeCatalog([
   { ...base, docs: { ...base.docs, summary: inputText } },
 ]);
@@ -187,6 +189,7 @@ const commands = {
   JSON: ["sample.echo", inputText],
   hook: ["--hook", "sample.echo"],
   text: ["sample.echo", inputText, "--text"],
+  approval: ["sample.echo", quotedAsk, "--text"],
   help: ["sample.echo", "--help"],
   version: ["--version"],
   MCP: ["--mcp"],
@@ -237,6 +240,8 @@ test.each(Object.entries(commands))(
         );
       } else if (mode === "text")
         expect(written).toContain(`value: ${escapedText}\n`);
+      else if (mode === "approval")
+        expect(written).toContain(`value: ${quotedAsk}\n`);
       else if (mode === "help")
         expect(written).toContain(`    ${escapedText}\n`);
       else if (mode === "version") expect(written).toBe(`${escapedText}\n`);
