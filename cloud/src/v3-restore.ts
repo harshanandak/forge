@@ -21,7 +21,12 @@ import {
   roster,
   storedPages,
 } from "./v3-checkpoint.ts";
-import type { Seal } from "./v3-seal.ts";
+import {
+  authenticateManifest,
+  type Manifest,
+  type Seal,
+  type VerifiedManifest,
+} from "./v3-seal.ts";
 import {
   activateV3,
   fail,
@@ -56,19 +61,22 @@ function parse(text: string): unknown {
   }
 }
 
-function manifestOf(value: unknown, pin: unknown) {
+function manifestOf(seal: Seal, value: unknown, pin: unknown) {
   check(isObject(value));
   const { format, head, eventWatermark, recordFloor, publicDigest, pages } =
     value;
   check(
-    Object.keys(value).length === 6 &&
-      format === "forge-cloud-portable/3" &&
+    Object.keys(value).length === 8 &&
+      format === "forge-cloud-portable/4" &&
       [head, eventWatermark, recordFloor].every(isNat) &&
       isDigest(publicDigest) &&
+      typeof value.source === "string" &&
+      value.source !== "" &&
+      typeof value.mac === "string" &&
       Array.isArray(pages) &&
       pages.length === IDS.length,
   );
-  const members = pages.map((member: unknown, i) => {
+  pages.forEach((member: unknown, i) =>
     check(
       isObject(member) &&
         Object.keys(member).length === 3 &&
@@ -76,11 +84,15 @@ function manifestOf(value: unknown, pin: unknown) {
         isNat(member.bytes) &&
         member.bytes <= PAGE_BYTES &&
         isDigest(member.hash),
-    );
-    return { id: IDS[i]!, bytes: member.bytes, hash: member.hash };
-  });
-  check(digestValue(value) === pin);
-  return { head, eventWatermark, recordFloor, publicDigest, members };
+    ),
+  );
+  const verified = authenticateManifest(
+    seal,
+    value as unknown as Manifest,
+    pin,
+  );
+  check(verified);
+  return verified;
 }
 
 const matches = (
@@ -132,7 +144,7 @@ function completeRefusals(image: V3Image, pages: ReadonlyMap<string, string>) {
 function verify(
   db: SqlDatabase,
   seal: Seal,
-  manifest: ReturnType<typeof manifestOf>,
+  manifest: VerifiedManifest,
   admit: AdmitLeaseRequest,
   table: string,
 ) {
@@ -142,7 +154,7 @@ function verify(
     for (const member of manifest.members)
       check(matches(pages.get(member.id), member));
     const portableTranscript = pages.get("transcript:0")!;
-    const image = recoverV3(db, seal, { admit, portableTranscript });
+    const image = recoverV3(db, seal, { admit, manifest, portableTranscript });
     completeRefusals(image, pages);
     const expected = inventory(image, new Map());
     reconcile(pages, expected, portableTranscript);
@@ -191,8 +203,8 @@ export function restoreV3Page(
     check(prior || (!restored && page === staged.length));
     const first = staged[0];
     const manifest = first
-      ? manifestOf(decode(first.manifest), first.pin)
-      : manifestOf(input.manifest, pin);
+      ? manifestOf(seal, decode(first.manifest), first.pin)
+      : manifestOf(seal, input.manifest, pin);
     check(matches(body, manifest.members[page]!));
     const verified = page === IDS.length - 1;
     const finish = () => {

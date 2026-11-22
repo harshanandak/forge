@@ -1,8 +1,15 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
+import {
+  canonicalJson,
+  digestBytes,
+  digestValue,
+} from "../../src/core/config/pointer.ts";
 import type { DurableState } from "../../cloud/src/store.ts";
 import {
+  authenticateManifest,
+  type Manifest,
   type Seal,
   sealOf,
   signRoot,
@@ -22,6 +29,38 @@ export const noWrites = {
 const sealers = new WeakMap<Database, () => Seal>();
 export const trustedSeal = (db: Database, body: string) =>
   signRoot(sealers.get(db)!(), body);
+
+export const trustedManifest = (
+  { keys: [key] }: Seal,
+  manifest: Omit<Manifest, "mac">,
+): Manifest => ({
+  ...manifest,
+  mac: `${key.id}.${createHmac("sha256", key.bytes)
+    .update(canonicalJson(["forge/v3/manifest/1", manifest]))
+    .digest("hex")}`,
+});
+
+export function verifiedPortable(seal: Seal, transcript: string) {
+  const member = (id: string, body: string) => ({
+    id,
+    bytes: Buffer.byteLength(body),
+    hash: digestBytes(body),
+  });
+  const manifest = trustedManifest(seal, {
+    format: "forge-cloud-portable/4",
+    head: 0,
+    eventWatermark: 0,
+    recordFloor: 0,
+    publicDigest: digestBytes("[]"),
+    pages: [
+      member("directory:0", "[]"),
+      member("snapshot:0", ""),
+      member("transcript:0", transcript),
+    ],
+    source: "direct-fold-source",
+  });
+  return authenticateManifest(seal, manifest, digestValue(manifest))!;
+}
 
 export interface SealSetup {
   key?: string | null;

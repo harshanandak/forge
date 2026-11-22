@@ -10,6 +10,7 @@ import {
   noWrites,
   probe,
   type SealSetup,
+  trustedManifest,
   trustedSeal,
 } from "./v3-project.fixture.ts";
 
@@ -103,18 +104,19 @@ async function withActivated(run: (target: Fixture) => Promise<void>) {
         : page,
     );
   const root = JSON.parse(rootBody(source)) as Record<string, unknown>;
-  const manifest = {
-    format: "forge-cloud-portable/3",
+  const manifest = trustedManifest(target.seal(), {
+    format: "forge-cloud-portable/4",
     head: 1,
-    eventWatermark: root.eventWatermark,
+    eventWatermark: root.eventWatermark as number,
     recordFloor: 0,
-    publicDigest: root.publicDigest,
+    publicDigest: root.publicDigest as string,
     pages: pages.map(({ id, body }) => ({
       id,
       bytes: Buffer.byteLength(body),
       hash: digestBytes(body),
     })),
-  };
+    source: String(source.context.id),
+  });
   const pin = digestBytes(canonicalJson(manifest));
   for (const [page, member] of pages.entries())
     expect(
@@ -193,6 +195,21 @@ async function ordinary(setup: SealSetup) {
     f.request("status"),
     f.request("loginstart", {}),
     f.request("holder"),
+    f.request("upgrade", {}),
+    ...["command", "claim", "renew", "release", "state/commit"].map((route) =>
+      f.request(route, {}),
+    ),
+    new Request("https://fixture.example/device"),
+    ...["/device", "/device/approve", "/device/deny"].map(
+      (path) =>
+        new Request(`https://fixture.example${path}`, {
+          method: "POST",
+          body: "{}",
+        }),
+    ),
+    new Request(
+      "https://fixture.example/callback?state=forge-device.unknown&code=fixture",
+    ),
   ];
   const results: unknown[] = [];
   for (const request of requests) {
