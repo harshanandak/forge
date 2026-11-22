@@ -204,7 +204,10 @@ test(
     expect(
       await send(f, { ...create, input: { title: "Changed" } }),
     ).toMatchObject(error(409, "INPUT_CONFLICT"));
-    expect(await send(f, { ...invalid, input: create.input })).toEqual(denied);
+    expect(await send(f, invalid)).toEqual(denied);
+    expect(await send(f, { ...invalid, input: create.input })).toMatchObject(
+      error(409, "INPUT_CONFLICT"),
+    );
     expect(replay()).toEqual(noWrites);
   },
   timeout,
