@@ -3013,7 +3013,14 @@ module.exports = {
       const queued = new Set<string>();
       // The exported ids of the notes this call restores: added, or already here unchanged.
       const restored = new Set<string>();
-      const adding: { key: string; note: (typeof input.notes)[number] }[] = [];
+      const restoredTargets = new Map<string, boolean>();
+      const adding: {
+        key: string;
+        note: (typeof input.notes)[number];
+        source: string;
+        number: number;
+        replacements: Set<number>;
+      }[] = [];
       let highest = 0;
       for (const { note, ref, replacements } of notes) {
         if (!ref || ref.level !== level) {
@@ -3022,6 +3029,10 @@ module.exports = {
         }
         const key = noteKey(ref.number);
         const id = idIn(target, ref.number);
+        const source = ref.project ?? ref.level;
+        const sourceId = `${source}/${ref.number}`;
+        if (!restoredTargets.has(sourceId))
+          restoredTargets.set(sourceId, false);
         // A note is either never accepted (status) or accepted with a pending revision (proposal).
         if (note.status !== undefined && note.proposal !== undefined) {
           conflicts.push(id);
@@ -3035,6 +3046,7 @@ module.exports = {
           if (old.deleted !== true && old.text === note.text.text) {
             skipped += 1;
             restored.add(qualified(note.id));
+            restoredTargets.set(sourceId, true);
           } else conflicts.push(id);
           continue;
         }
@@ -3044,16 +3056,8 @@ module.exports = {
         }
         queued.add(key);
         restored.add(qualified(note.id));
-        const replaces = [...replacements].map((number) =>
-          idIn(target, number),
-        );
-        adding.push({ key, note: { ...note, replaces } });
-        for (const number of replacements)
-          entries.push({
-            key: numberKey(numberKey(REPLACED_BY, number) + "/", ref.number),
-            value: ref.number,
-            expectRevision: 0,
-          });
+        restoredTargets.set(sourceId, true);
+        adding.push({ key, note, source, number: ref.number, replacements });
       }
       const approval = approved(
         input.approval,
@@ -3088,7 +3092,7 @@ module.exports = {
       // A bundle's own fields are never proof that the owner accepted a note: a new owner-tagged
       // note comes back proposed, whatever status the bundle claims, and only memory.accept serves it.
       let proposals = 0;
-      for (const { key, note } of adding) {
+      for (const { key, note, source, number, replacements } of adding) {
         const ownerTagged = ownerTag(note.tags, config) !== undefined;
         const status =
           note.status === "withdrawn"
@@ -3113,6 +3117,16 @@ module.exports = {
             `${qualified(note.id)} waits for owner accept but its text is longer than ${MAX_TEXT_CHARS} characters, the most memory.accept takes; nothing was restored. Shorten it in the export and retry.`,
           );
         if (ownerTagged && status === "proposed") proposals += 1;
+        const replaces: string[] = [];
+        for (const replaced of replacements) {
+          if (restoredTargets.get(`${source}/${replaced}`) === false) continue;
+          replaces.push(idIn(target, replaced));
+          entries.push({
+            key: numberKey(numberKey(REPLACED_BY, replaced) + "/", number),
+            value: number,
+            expectRevision: 0,
+          });
+        }
         entries.push({
           key,
           value: {
@@ -3126,7 +3140,7 @@ module.exports = {
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
             links: relinked(note.links, restored),
-            ...(note.replaces?.length ? { replaces: note.replaces } : {}),
+            ...(replaces.length ? { replaces } : {}),
             previous: [],
             // A pending revision cannot ride on a note that was never accepted.
             ...(note.proposal === undefined || status !== undefined

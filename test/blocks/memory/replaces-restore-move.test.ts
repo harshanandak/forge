@@ -76,6 +76,40 @@ test(
 );
 
 test(
+  "a conflicting restore target stays served and can still move",
+  async () => {
+    const { project, call, add } = fixture();
+    const old = `${targetPrefix}/note-1`;
+    const current = `${targetPrefix}/note-2`;
+    await add("unrelated destination note", { level: "project" });
+    const replacer = {
+      ...item(`${sourcePrefix}/note-2`, [`${sourcePrefix}/note-1`]),
+      scope: "alpha",
+    };
+    const input = bundle([replacer, item(`${sourcePrefix}/note-01`)]);
+    expect(await call("memory.restore", input)).toMatchObject({
+      added: 1,
+      skipped: 0,
+      conflicts: [old],
+    });
+    expect(project.get("replaced-by/000000001/000000002")).toBeUndefined();
+    const shown = await call("memory.show", { id: current });
+    expect(shown).toMatchObject({ status: "found", note: { id: current } });
+    expect(shown).not.toHaveProperty("note.replaces");
+    const search = { query: "unrelated", level: "project" };
+    expect(await call("memory.search", search)).toMatchObject({
+      hits: [{ id: old }],
+    });
+    const move = { id: old, to: "device", expectRevision: 1 };
+    expect(await call("memory.move", move)).toMatchObject({
+      status: "moved",
+      to: "device/note-1",
+    });
+  },
+  timeout,
+);
+
+test(
   "restore keeps an absent target, deduplicates note numbers, and advances the counter",
   async () => {
     const { state, call, add } = fixture();
