@@ -40,9 +40,10 @@ afterEach(() => {
 async function open(
   project: boolean,
   terminal?: NonNullable<Parameters<typeof createAssembly>[0]["terminal"]>,
+  rootName = "project",
 ) {
   const work = mkdtempSync(join(tmpdir(), "forge-owner-policy-"));
-  const root = join(work, "project");
+  const root = join(work, rootName);
   const deviceRoot = join(work, "device");
   mkdirSync(root);
   mkdirSync(deviceRoot);
@@ -278,29 +279,24 @@ test("an attended approval uses the host's configured terminal, not the process'
 test.each(["project.init", "store.reinit"])(
   "%s shows the quoted root while writing to the original path",
   async (op) => {
-    const work = mkdtempSync(join(tmpdir(), "forge-owner-root-"));
-    const root = join(work, "project\u2028\u2029\u202e");
-    const deviceRoot = join(work, "device");
-    mkdirSync(root);
     const asks: string[] = [];
     let attended = false;
-    const assembly = await createAssembly({
-      root,
-      deviceRoot,
-      project: true,
-      terminal: {
+    const rootName = "project\u2028\u2029\u202e";
+    const h = await open(
+      true,
+      {
         tty: () => ({ stdin: attended, stderr: attended }),
         confirm: (_op, ask) => {
           asks.push(ask);
           return Promise.resolve(true);
         },
       },
-    });
-    const trust = new LocalState(join(deviceRoot, "trust.sqlite"));
+      rootName,
+    );
+    const root = join(h.work, rootName);
+    const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
     try {
-      const call = () =>
-        dispatch(assembly.catalog, op, {}, localCall(assembly));
-      const pending = await call();
+      const pending = await h.call(op, {});
       expect(pending).toMatchObject({
         ok: false,
         status: "FAIL",
@@ -312,7 +308,7 @@ test.each(["project.init", "store.reinit"])(
         op === "project.init" ? PROJECT_MANIFEST : ".forge/state.sqlite";
       expect(existsSync(join(root, file))).toBe(false);
       attended = true;
-      expect(exitCode(await call())).toBe(0);
+      expect(exitCode(await h.call(op, {}))).toBe(0);
       expect(existsSync(join(root, file))).toBe(true);
       const stored = (await trust.open(false))?.list("forge/core-approvals");
       const pendingRow = stored?.find((row) => row.key === request?.id)?.value;
@@ -342,8 +338,8 @@ test.each(["project.init", "store.reinit"])(
       ]);
     } finally {
       await trust.close();
-      await assembly.close();
-      rmSync(work, { recursive: true, force: true });
+      await h.assembly.close();
+      rmSync(h.work, { recursive: true, force: true });
     }
   },
   30_000,

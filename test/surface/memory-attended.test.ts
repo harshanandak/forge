@@ -76,43 +76,30 @@ test("piped input, a wrong phrase or an agent session keep the existing refusal"
 
 test("attended accept and reject receive the original note text as one quoted fragment", async () => {
   const asks: string[] = [];
-  h = await openHarness(
-    ["memory"],
-    {},
-    {
-      terminal: {
-        ...terminal(true, true),
-        confirm: (_op, ask) => {
-          asks.push(ask);
-          return Promise.resolve(true);
-        },
-      },
-    },
-  );
+  const tty = terminal(true, true);
+  const confirm = (_op: string, ask: string) => {
+    asks.push(ask);
+    return Promise.resolve(true);
+  };
+  h = await openHarness(["memory"], {}, { terminal: { ...tty, confirm } });
   const text = 'Keep\r\nthe full text. "\\u0009\t\u{e0001}';
-  for (const [op, status] of [
-    ["memory.accept", "accepted"],
-    ["memory.reject", "rejected"],
-  ]) {
-    const { id } = done(
+  for (const op of ["memory.accept", "memory.reject"]) {
+    const added = done(
       await h.call("memory.add", {
         level: "device",
         text: `${op}: ${text}`,
         tags: ["rule"],
       }),
-    ) as { id: string };
-    const item = decisionItem(
-      id,
-      done(await h.call("memory.show", { id })) as Parameters<
-        typeof decisionItem
-      >[1],
-    );
+    ) as { id: string } & Parameters<typeof decisionItem>[1];
+    const id = added.id;
     live.on = true;
-    expect(await h.call(op!, { items: [item] })).toMatchObject({
+    const reply = await h.call(op, { items: [decisionItem(id, added)] });
+    live.on = false;
+    const status = op === "memory.accept" ? "accepted" : "rejected";
+    expect(reply).toMatchObject({
       ok: true,
       result: { results: [{ id, status }] },
     });
-    live.on = false;
   }
   expect(asks.map((ask) => ask.split("\n").at(-1))).toEqual([
     '    "memory.accept: Keep\\u000d\\u000athe full text. \\"\\\\u0009\\u0009\\udb40\\udc01"',
