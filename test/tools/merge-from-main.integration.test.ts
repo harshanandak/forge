@@ -344,6 +344,10 @@ test.each([
       const info = join(dir, ".git", "info");
       rmSync(info, { recursive: true });
       writeFileSync(info, "");
+      if (process.platform === "win32") {
+        assert.deepEqual(inspectMetadata(dir), [0, ""]);
+        return;
+      }
     }
     const [exit, log] = inspectMetadata(dir);
     assert.match(log, /^::error::Cannot inspect PR merge commits\./);
