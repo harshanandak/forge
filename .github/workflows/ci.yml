@@ -117,6 +117,13 @@ jobs:
           bun run lint
           bun run fmt --check
           bun run check
+      - name: Check merges from main
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: bun tools/ci/merge-from-main.ts
       - &write-record
         if: always()
         run: bun tools/ci/ci-record.ts
