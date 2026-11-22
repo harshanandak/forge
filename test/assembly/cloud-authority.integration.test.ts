@@ -45,6 +45,7 @@ import { localIdentityResolver } from "../../src/assembly/identity.ts";
 import { createAssembly, localContext } from "../../src/assembly/index.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { escapeDisplayText } from "../../src/contract/display-text.ts";
 import { mcpToolName } from "../../src/contract/naming.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import { Runtime } from "../../src/core/runtime/index.ts";
@@ -1534,7 +1535,7 @@ for (const [name, variants] of [
       "regrant ci held",
     ],
   ],
-  ["Owner ask", ["ask", "held answer", "completion after hold"]],
+  ["Owner ask", ["ask", "held answer", "completion after hold", "hostile ask"]],
   [
     "Expired or replaced grant",
     [
@@ -1675,6 +1676,30 @@ for (const [name, variants] of [
             }
           };
           const original = await saved();
+          if (variant === "hostile ask") {
+            const ask = {
+              reason: "Choose\nScope\u001b\u202e",
+              releaseTotal: "400\u200b lines",
+              default: "A\tkeep",
+            };
+            expect((await next()).ok).toBe(true);
+            expect((await record({ head, ask })).ok).toBe(true);
+            const before = await saved();
+            const shown = await next();
+            expect(shown).toMatchObject({
+              ok: true,
+              status: "OK",
+              result: { kind: "ask-owner" },
+            });
+            expect(exitCode(shown)).toBe(0);
+            expect(before.value).toHaveProperty("progress.ask", ask);
+            expect(await saved()).toEqual(before);
+            if (!shown.ok) throw new Error("The bound ask was not shown");
+            const display = (shown.result as { ask: string }).ask;
+            expect(display).toBe(escapeDisplayText(JSON.stringify(ask)));
+            expect(JSON.parse(display)).toEqual(ask);
+            return;
+          }
           const projectFiles = () =>
             bytes(r.s).filter(([path]) => String(path).startsWith("project"));
           let files = projectFiles();

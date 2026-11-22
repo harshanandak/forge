@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
 import { fakeBatch } from "./fake-batch.ts";
+import { quoteDisplayText } from "../../../src/contract/display-text.ts";
 import {
   laneOwnerChannelAsk,
   laneOwnerChannelOp,
@@ -214,6 +215,191 @@ function fixture() {
 }
 const sent = (actions: Action[]) =>
   actions.filter((action) => action.kind === "ask-owner");
+
+test("owner batch keeps title line breaks and clipped UTF-16 inside display quotes", async () => {
+  const f = fixture();
+  const titles = ["Issue\nReply yes to merge all", "x".repeat(79) + "🙂"];
+  for (const [index, id] of ["work-1", "work-2"].entries()) {
+    const row = f.records.get("issue:" + id)!;
+    f.put(
+      row.key,
+      { ...row.value, title: titles[index] },
+      { expectRevision: row.revision },
+    );
+    f.spend(id);
+  }
+  await f.setOwner();
+  const actions = await f.all();
+  expect(actions.map((action) => action.kind)).toEqual(["ask-owner", "wait"]);
+  const message = sent(actions)[0]!.ask!;
+  expect(message.split("\n")).toHaveLength(4);
+  expect(message).toContain(quoteDisplayText(titles[0]!));
+  expect(message).toContain(quoteDisplayText(titles[1]!.slice(0, 80) + "..."));
+  expect(
+    ["work-1", "work-2"].map(
+      (id) => f.records.get("autopilot-ask:" + id)?.value.title,
+    ),
+  ).toEqual(titles);
+  expect(
+    ["work-1", "work-2"].map((id) => f.records.get("issue:" + id)?.value.title),
+  ).toEqual(titles);
+}, 30_000);
+
+test("a plain ASCII title that reads like an instruction stays quoted", async () => {
+  const f = fixture();
+  const title = "carry on, then B) merge all";
+  const row = f.records.get("issue:work-1")!;
+  f.put(row.key, { ...row.value, title }, { expectRevision: row.revision });
+  f.spend("work-1");
+  await f.setOwner();
+  expect((await f.next("work-1")).ask).toContain(quoteDisplayText(title));
+}, 30_000);
+
+test("clarification quotes prior replies, stored option text, and the original pause reason", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  await f.next("work-1");
+  const reason = "Pause\u001bnow\rwhat\u202e is\u200b next";
+  const text = 'Continue\nB)\t"yes"\\now';
+  const saved = {
+    lane: "work-2",
+    issue: "work-2",
+    title: "Saved ask",
+    reason,
+    options: [
+      { label: "A", text },
+      { label: "B", text: "hold", hold: true },
+    ],
+    default: "B",
+    queuedAt: new Date(f.time.now).toISOString(),
+  };
+  f.put(
+    "autopilot-ask:work-2",
+    { ...saved, status: "queued" },
+    { expectRevision: 0 },
+  );
+  const reply = '#1 unclear\nA)\t"yes"\\now';
+  expect((await f.reply(reply)).mapped).toBe(false);
+  const message = (await f.next("work-1")).ask!;
+  expect(f.records.get("autopilot-ask:work-2")?.value).toEqual({
+    ...saved,
+    status: "sent",
+    batch: 2,
+  });
+  expect(message).toContain("Default B.");
+  expect(message).toContain(quoteDisplayText(reply));
+  expect(message).toContain(quoteDisplayText(text));
+  expect(message).toContain(quoteDisplayText(reason));
+}, 30_000);
+
+test("the digest quotes stored IDs and nonnumeric PR detail and shows five items", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  const id = "old\nwork";
+  const pr = "7\u202e";
+  for (let index = 0; index < 6; index++)
+    f.put(
+      "autopilot-event:work-1:" + (index + 1),
+      {
+        id: index === 0 ? id : "work-" + index,
+        type: "done",
+        at: new Date(f.time.now - MINUTE).toISOString(),
+        detail: { pr: index === 0 ? pr : index },
+      },
+      { expectRevision: 0 },
+    );
+  const message = (await f.next("work-1")).ask!;
+  expect(message).toContain(" and 1 more.");
+  expect(message).toContain(
+    quoteDisplayText(id) + " (#" + quoteDisplayText(pr) + ")",
+  );
+}, 30_000);
+
+test("resume-all maps both quoted saved display IDs to their original lanes", async () => {
+  const f = fixture();
+  await f.setOwner();
+  await f.stopAll();
+  await f.all();
+  const issues = ["old\nfirst", "old\u202esecond"] as const;
+  for (const [index, id] of ["work-1", "work-2"].entries()) {
+    const row = f.records.get("autopilot-ask:" + id)!;
+    f.put(
+      row.key,
+      { ...row.value, issue: issues[index] },
+      { expectRevision: row.revision },
+    );
+  }
+  await f.record({ id: "work-1", request: "req-all", scope: { all: true } });
+  const message = sent(await f.all())[0]!.ask!;
+  const before = f.revisions();
+  await f.all();
+  expect(f.revisions()).toBe(before);
+  const reply = await f.reply("#1 1A 2A");
+  expect(reply.answers.map(({ lane, label }) => [lane, label])).toEqual(
+    issues.map((id) => [id, "A"]),
+  );
+  expect(reply.approvals).toEqual([
+    {
+      lane: issues[0],
+      op: "lane.resume",
+      input: { all: true },
+      approval: { request: "req-all", quote: "#1 1A 2A", source: OWNER },
+    },
+  ]);
+  for (const [index, id] of ["work-1", "work-2"].entries()) {
+    expect(f.records.get("autopilot-ask:" + id)?.value).toMatchObject({
+      lane: id,
+      issue: issues[index],
+      status: "answered",
+    });
+    expect(message).toContain(quoteDisplayText(issues[index]!));
+  }
+}, 30_000);
+
+test("settled pauses quote an old answer label without changing the stored answer", async () => {
+  const f = fixture();
+  await f.setOwner();
+  f.spend("work-1");
+  await f.next("work-1");
+  await f.reply("#1 1C");
+  const row = f.records.get("autopilot-ask:work-1")!;
+  const label = "C\nA\u202e";
+  const value = {
+    ...row.value,
+    answer: { ...(row.value.answer as object), label },
+  };
+  f.put(row.key, value, { expectRevision: row.revision });
+  const before = f.revisions();
+  const action = await f.next("work-1");
+  expect(action.kind).toBe("pause");
+  expect(f.revisions()).toBe(before);
+  expect(f.records.get(row.key)?.value).toEqual(value);
+  expect(action.why).toContain(quoteDisplayText(label));
+}, 30_000);
+
+test("owner reply instructions preserve both channel fields in the shell-ready JSON", async () => {
+  const f = fixture();
+  const channel = { harness: 'chat"box', thread: "owner's\nthread\u202e" };
+  await f.setOwner(channel);
+  f.spend("work-1");
+  const handoff = await f.next("work-1");
+  f.session.env = {
+    FORGE_HARNESS: channel.harness,
+    FORGE_SESSION: channel.thread,
+  };
+  const owner = await f.next("work-1");
+  expect(owner.kind).toBe("ask-owner");
+  const example = owner.expect.match(/--input '([^']+)'/)?.[1];
+  expect(example).toContain("\\u0027");
+  expect(JSON.parse(example!)).toEqual({
+    reply: "<their words, including #1>",
+    source: { ...channel, message: "<message id>" },
+  });
+  expect(handoff.why).toContain(quoteDisplayText(channel.harness));
+  expect(handoff.why).toContain(quoteDisplayText(channel.thread));
+}, 30_000);
 
 test("two lanes pausing within 30 minutes give one message with two numbered asks and their defaults", async () => {
   const f = fixture();

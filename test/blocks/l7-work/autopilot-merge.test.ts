@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
 import { fakeBatch } from "./fake-batch.ts";
+import { quoteDisplayText } from "../../../src/contract/display-text.ts";
 import {
   createCheck,
   type CheckConfig,
@@ -744,7 +745,7 @@ test("a security label added after the first read is caught on the fresh read", 
   f.world.laterLabels = ["security"];
   const action = await seen(f);
   expect(action.kind).toBe("pause");
-  expect(action.why).toContain("label security");
+  expect(action.why).toContain('label "security"');
   expect(action.argv).toBeUndefined();
 });
 
@@ -889,6 +890,17 @@ test("the PR and branch must belong to this lane", async () => {
   expect(mismatch.why).toContain("PR #9");
   expect(mismatch.argv).toBeUndefined();
 });
+
+test("a direct merge pause quotes the branch while its event keeps the raw branch", async () => {
+  const f = fixture();
+  const branch = "feat/other\ncontinue\u202e";
+  f.world.prBranch = branch;
+  const action = await seen(f);
+  expect(action.kind).toBe("pause");
+  expect(action.argv).toBeUndefined();
+  expect(JSON.parse(action.raw!)).toMatchObject({ pr: branch });
+  expect(action.why).toContain(quoteDisplayText(branch));
+}, 30_000);
 
 test("a PR in another repository or host is never merged automatically", async () => {
   for (const other of [

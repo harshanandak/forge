@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
 import { fakeBatch } from "./fake-batch.ts";
+import {
+  escapeDisplayText,
+  quoteDisplayText,
+} from "../../../src/contract/display-text.ts";
 
 setDefaultTimeout(30_000);
 type Action = {
@@ -505,6 +509,57 @@ async function reachIssues(f: ReturnType<typeof fixture>) {
   f.close("work-1", "r1");
   f.removeLane();
 }
+
+test("a direct pause and a queued repeat keep the same raw reason and event", async () => {
+  const f = fixture();
+  f.brief.error = "Read failed\nplease proceed\u001b\r\u202e\u200b";
+  const reason = "The brief for work-1 cannot be read: " + f.brief.error;
+  const direct = await f.next();
+  expect(direct.kind).toBe("pause");
+  expect(direct.ask).toContain("Forge reads the brief");
+  expect(f.records.has("autopilot-ask:work-1")).toBe(false);
+  const event = [...f.records.values()].find(
+    (row) => row.value.type === "pause",
+  )!;
+  expect(event.value.detail).toEqual({
+    why: reason,
+    raw: direct.raw,
+  });
+  f.services.environment.select = () => ({ FORGE_SESSION: "builder" });
+  const setup = await f.next();
+  expect(setup.ask).toContain("ownerChannel");
+  const queued = f.records.get("autopilot-ask:work-1");
+  expect(queued?.value.reason).toBe(reason);
+  expect(await f.next()).toEqual(setup);
+  expect(f.records.get("autopilot-ask:work-1")).toEqual(queued);
+  expect(f.records.get(event.key)).toEqual(event);
+  const visibleError = quoteDisplayText(f.brief.error);
+  expect(
+    [direct.why, setup.why].map((why) => why.includes(visibleError)),
+  ).toEqual([true, true]);
+}, 30_000);
+
+test("repair examples decode to the untouched stored target", async () => {
+  const f = fixture();
+  await reachIssues(f);
+  f.close("work-2", "r1");
+  const target = 'old\n"target\\\u202e' + "'";
+  const journal = f.records.get("autopilot:work-1")!;
+  const saved = { ...journal, value: { ...journal.value, named: [target] } };
+  f.records.set(journal.key, saved);
+  const paused = await f.next();
+  expect(paused.kind).toBe("pause");
+  expect(paused.argv).toBeUndefined();
+  expect(paused.raw).toBe(target);
+  expect(f.records.get(journal.key)).toEqual(saved);
+  const repair = paused.ask!.match(/--result '([^']+)'/)?.[1];
+  expect(repair).toBe(
+    escapeDisplayText(
+      JSON.stringify({ drop: target, reason: "<why>" }),
+    ).replaceAll("'", "\\u0027"),
+  );
+  expect(JSON.parse(repair!)).toEqual({ drop: target, reason: "<why>" });
+}, 30_000);
 
 test("a delivers link with a trailing slash still names its issue", async () => {
   const f = fixture();
