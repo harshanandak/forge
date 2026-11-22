@@ -59,6 +59,11 @@
         "$ref": "defs.json#/$defs/NoteId"
       }
     },
+    "Replaces": { "$ref": "defs.json#/$defs/Links", "maxItems": 8 },
+    "ReplacedBy": {
+      "type": "array",
+      "items": { "$ref": "defs.json#/$defs/NoteId" }
+    },
     "Version": {
       "type": "object",
       "properties": {
@@ -170,6 +175,8 @@
         "approval": {
           "$ref": "defs.json#/$defs/ApprovalAudit"
         },
+        "replaces": { "$ref": "defs.json#/$defs/Replaces" },
+        "replacedBy": { "$ref": "defs.json#/$defs/ReplacedBy" },
         "movedFrom": { "$ref": "defs.json#/$defs/NoteId" }
       },
       "additionalProperties": false,

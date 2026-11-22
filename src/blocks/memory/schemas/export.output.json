@@ -49,6 +49,8 @@
           "text": {
             "$ref": "defs.json#/$defs/Untrusted"
           },
+          "replaces": { "$ref": "defs.json#/$defs/Replaces" },
+          "replacedBy": { "$ref": "defs.json#/$defs/ReplacedBy" },
           "status": {
             "$ref": "defs.json#/$defs/NoteStatus"
           },

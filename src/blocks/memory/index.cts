@@ -52,6 +52,8 @@ interface NoteValue {
   readonly previous: readonly Version[];
   /** Metadata writes keep the current text's original revision without consuming retention. */
   readonly textRevision?: number;
+  readonly replaces?: readonly string[];
+  readonly restoredReplaces?: readonly string[];
   /** The note this one was moved or copied from: the transfer's identity. */
   readonly from?: string;
   readonly deleted?: true;
@@ -161,6 +163,7 @@ interface Source {
 const NOTE_PREFIX = "note/";
 const NOTE_END = "note/\u{10FFFF}";
 const NOTE_COUNTER = "meta/note-counter";
+const REPLACED_BY = "replaced-by/";
 const TRANSFER_PREFIX = "transfer/";
 const DECISION_PREFIX = "decision/";
 const DECISION_END = "decision/\u{10FFFF}";
@@ -666,6 +669,78 @@ function noteOf(
     record,
   };
 }
+type Note = ReturnType<typeof noteOf>;
+type Replacements = Map<string, Target[]>;
+type Target = Pick<Note, "id" | "value">;
+function replacementScope(replacer: NoteValue, target: NoteValue) {
+  return replacer.scope === target.scope || replacer.scope === "general";
+}
+
+function indexNotes(notes: Note[], index: Replacements = new Map()) {
+  for (const note of notes) {
+    const { value } = note;
+    if (value?.deleted || value?.status) continue;
+    for (const id of value?.replaces ?? []) {
+      const entries = index.get(id);
+      if (entries) entries.push(note);
+      else index.set(id, [note]);
+    }
+  }
+  return index;
+}
+
+function replacers(index: Replacements, note: Target, config: MemoryConfig) {
+  const candidates = index.get(note.id);
+  if (!candidates) return [];
+  const owner = ownerTag(note.value.tags ?? [], config) !== undefined;
+  return candidates
+    .filter(
+      ({ value }) =>
+        (!owner || value.approval?.by === "owner") &&
+        replacementScope(value, note.value),
+    )
+    .map(({ id }) => id)
+    .sort();
+}
+
+function relationFields(
+  index: Replacements,
+  note: Target,
+  config: MemoryConfig,
+) {
+  const replacedBy = replacers(index, note, config);
+  return {
+    ...replaceRefs(note.value),
+    ...(replacedBy.length ? { replacedBy } : {}),
+  };
+}
+
+function replaceRefs(value: NoteValue) {
+  const replaces = value.replaces ?? value.restoredReplaces;
+  return replaces ? { replaces } : {};
+}
+
+function readReplacements(source: Source, notes: readonly Note[]) {
+  const index: Replacements = new Map();
+  if (!notes.length || !source.state.count(REPLACED_BY)) return index;
+  const first = notes[0]!.number;
+  const last = notes.at(-1)!.number;
+  let from = numberKey(REPLACED_BY, Math.min(first, last));
+  const to = numberKey(REPLACED_BY, Math.max(first, last)) + "~";
+  const seen = new Set<number>();
+  for (;;) {
+    const page = source.state.listRange({ from, to, limit: LIST_LIMIT });
+    for (const marker of page) {
+      const number = marker.value as number;
+      if (seen.has(number)) continue;
+      seen.add(number);
+      const record = source.state.get(noteKey(number));
+      if (record) indexNotes([noteOf(source, record)], index);
+    }
+    if (page.length < LIST_LIMIT) return index;
+    from = page.at(-1)!.key + "/";
+  }
+}
 function movedPointer(to: string) {
   const project = parseRef(to)?.project;
   return {
@@ -751,13 +826,16 @@ function present(
   text: string,
   versions = shown(source.state, record, value),
   movedFrom?: string,
+  replacedBy: string[] = [],
 ) {
   return {
     id,
+    ...(replacedBy.length ? { replacedBy } : {}),
     ...label(source),
     revision: record.revision,
     ...(value.scope === undefined ? {} : { scope: value.scope }),
     tags: [...value.tags],
+    ...replaceRefs(value),
     links: qualifiedLinks(value.links),
     ...(value.from === undefined ? {} : { from: value.from }),
     ...(movedFrom === undefined ? {} : { movedFrom }),
@@ -1106,13 +1184,15 @@ module.exports = {
       number: number;
     }[] = [];
     for (const [sourceIndex, source] of sources.entries()) {
-      let after = 0;
+      const replacements: Replacements = new Map();
+      let before: number | undefined;
       for (;;) {
         const records = notePage(source, {
-          after,
+          ...(before === undefined ? {} : { before }),
           limit: LIST_LIMIT,
-          descending: false,
+          descending: true,
         });
+        indexNotes(records, replacements);
         for (const note of records) {
           const value = note.value as Partial<NoteValue> | null;
           if (
@@ -1125,6 +1205,7 @@ module.exports = {
           if (value.proposal !== undefined || value.status === "proposed")
             waiting += 1;
           if (value.status !== undefined) continue;
+          if (replacers(replacements, note, config).length) continue;
           const noteScope =
             value.scope ??
             (source.level === "project" ? scope : undefined) ??
@@ -1153,7 +1234,7 @@ module.exports = {
         }
         const last = records.at(-1);
         if (records.length < LIST_LIMIT || !last) break;
-        after = last.number;
+        before = last.number;
       }
     }
     const text = [
@@ -1319,7 +1400,9 @@ module.exports = {
       line: string;
       number: number;
       source: number;
+      value: NoteValue;
     })[] = [];
+    const replacements: Replacements = new Map();
     const byId = new Map<string, Selection>();
     const moved: (ReturnType<typeof movedPointer> & { id: string })[] = [];
     for (const [sourceIndex, source] of sources.entries()) {
@@ -1330,6 +1413,7 @@ module.exports = {
           limit: LIST_LIMIT,
           descending: false,
         });
+        indexNotes(records, replacements);
         for (const original of records) {
           const resolved =
             original.value?.deleted && ids.has(original.id)
@@ -1394,6 +1478,7 @@ module.exports = {
             revision: note.record.revision,
             scope: noteScope,
             reasons,
+            value: note.value,
             line,
             number: note.number,
             source: noteSource.level === "project" ? 1 : sourceIndex,
@@ -1447,6 +1532,7 @@ module.exports = {
     // Even an 8000-character add note made entirely of JSON escapes fits on its own.
     const responseLimit = 131072;
     for (const note of candidates) {
+      if (replacers(replacements, note, config).length) continue;
       const identity = {
         id: note.id,
         ...(note.movedFrom === undefined ? {} : { movedFrom: note.movedFrom }),
@@ -1533,10 +1619,13 @@ module.exports = {
       level?: Level;
       expectRevision?: number;
       approval?: Approval;
+      replaces?: readonly string[];
     };
     config?: MemoryConfig;
     services: Services;
   }) => {
+    if (input.id !== undefined && input.replaces !== undefined)
+      fail("INPUT_INVALID", "Only a new note can replace other notes");
     // An edit is a partial update: a field left out keeps its stored value, and clearing is said
     // outright (null for the scope, an empty list for tags or links). A new note has nothing to keep.
     const at = new Date().toISOString();
@@ -1566,6 +1655,10 @@ module.exports = {
         ...(scope === undefined ? {} : { scope }),
         tags,
         links: qualifiedLinks(input.links ?? kept?.links ?? []),
+        ...(kept?.replaces ? { replaces: kept.replaces } : {}),
+        ...(kept?.restoredReplaces
+          ? { restoredReplaces: kept.restoredReplaces }
+          : {}),
         previous,
         ...(kept?.approval === undefined ? {} : { approval: kept.approval }),
         ...(kept?.from === undefined ? {} : { from: kept.from }),
@@ -1744,7 +1837,29 @@ module.exports = {
       );
       // An owner tag never reaches the served rules on an agent's say-so: the note starts proposed
       // and only the owner's relayed memory.accept activates it, whatever approval the add carries.
-      const tag = ownerTag(value.tags, config);
+      const targets = new Map<number, number>();
+      let tag = ownerTag(value.tags, config);
+      if ((input.replaces?.length ?? 0) > 8)
+        fail("INPUT_INVALID", "A note can replace at most eight notes");
+      for (const id of input.replaces ?? []) {
+        const n = parseRef(id)?.number;
+        if (!n || n >= number || !id.startsWith(target.prefix + "/"))
+          fail(
+            "INPUT_INVALID",
+            `Expected an earlier note in this store: ${id}`,
+          );
+        if (targets.has(n)) fail("INPUT_INVALID", `Duplicate target ${id}`);
+        const record = target.state.get(noteKey(n));
+        const old = record?.value as NoteValue | undefined;
+        if (!record || !old || old.deleted)
+          fail("INPUT_INVALID", `Replacement target ${id} was not found`);
+        if (!replacementScope(value, old))
+          fail("INPUT_INVALID", `Replacement target ${id} is in another scope`);
+        targets.set(n, record.revision);
+        tag ??= ownerTag(old.tags, config);
+      }
+      const replaces = [...targets.keys()].map((n) => idIn(target, n));
+      if (replaces.length) Object.assign(value, { replaces });
       const twins =
         tag === undefined
           ? undefined
@@ -1759,7 +1874,7 @@ module.exports = {
       const stored: NoteValue =
         tag === undefined ? value : { ...value, status: "proposed" };
       const expected = canonical(stored);
-      const [, record] = target.state.putMany([
+      const entries: BatchEntry[] = [
         {
           key: NOTE_COUNTER,
           value: { last: number },
@@ -1770,7 +1885,16 @@ module.exports = {
           value: stored,
           expectRevision: 0,
         },
-      ]);
+      ];
+      for (const n of targets.keys()) {
+        const key = numberKey(numberKey(REPLACED_BY, n) + "/", number);
+        entries.push({ key, value: number, expectRevision: 0 });
+      }
+      const readSet = [...targets].map(([n, expectRevision]) => ({
+        key: noteKey(n),
+        expectRevision,
+      }));
+      const [, record] = target.state.putMany(entries, { readSet });
       const read = target.state.get(noteKey(number));
       if (
         !record ||
@@ -1806,6 +1930,7 @@ module.exports = {
 
   "memory.search": async ({
     input,
+    config = {},
     services,
   }: {
     input: {
@@ -1817,6 +1942,7 @@ module.exports = {
       limit?: number;
       cursor?: string;
     };
+    config?: MemoryConfig;
     services: Services;
   }) => {
     // Inside a project a search covers that project and the device. Another project is searched
@@ -1871,6 +1997,8 @@ module.exports = {
         index,
         bound,
         records,
+        replacements:
+          bound === 0 ? indexNotes(records) : readReplacements(source, records),
         older: records.length === window,
       };
     });
@@ -1879,6 +2007,7 @@ module.exports = {
         .filter(
           (note) =>
             note.value.deleted !== true &&
+            !replacers(page.replacements, note, config).length &&
             (input.scope === undefined ||
               note.value.scope === input.scope ||
               note.value.proposal?.scope === input.scope) &&
@@ -2009,9 +2138,11 @@ module.exports = {
 
   "memory.show": async ({
     input,
+    config = {},
     services,
   }: {
     input: { id: string; revision?: number };
+    config?: MemoryConfig;
     services: Services;
   }) => {
     const found = await sourceFor(services, qualified(input.id));
@@ -2039,6 +2170,8 @@ module.exports = {
             ...audit(value.approval, `memory:${qualified(input.id)}`),
           }
         : movedPointer(value.movedTo);
+    const index = readReplacements(source, [resolved]);
+    const replacedBy = replacers(index, resolved, config);
     if (
       input.revision === undefined ||
       (input.revision === record.revision &&
@@ -2055,6 +2188,7 @@ module.exports = {
           value.text,
           shown(source.state, record, value),
           movedFrom,
+          replacedBy,
         ),
       };
     const older = value.previous.find(
@@ -2071,6 +2205,7 @@ module.exports = {
         older.text,
         shown(source.state, record, value),
         movedFrom,
+        replacedBy,
       ),
     };
   },
@@ -2611,9 +2746,11 @@ module.exports = {
 
   "memory.export": async ({
     input,
+    config = {},
     services,
   }: {
     input: { level: Level; scope?: string; after?: number };
+    config?: MemoryConfig;
     services: Services;
   }) => {
     const source =
@@ -2675,6 +2812,7 @@ module.exports = {
       examined = note.number;
     }
     const more = stopped || records.length === EXPORT_READ;
+    const replacements = readReplacements(source, chosen);
     // A bundle that carries proposal state is a newer format, so a restorer that predates it
     // refuses the bundle instead of reading a proposed note as an accepted one.
     const waiting = chosen.some(
@@ -2721,6 +2859,7 @@ module.exports = {
         revision: note.record.revision,
         ...(note.value.scope === undefined ? {} : { scope: note.value.scope }),
         tags: [...note.value.tags],
+        ...relationFields(replacements, note, config),
         links: qualifiedLinks(note.value.links),
         text: {
           kind: "untrusted" as const,
@@ -2762,6 +2901,7 @@ module.exports = {
         scope?: string;
         tags: readonly string[];
         links: readonly string[];
+        replaces?: readonly string[];
         text: { text: string };
         status?: "proposed" | "rejected" | "withdrawn";
         proposal?: RestoredProposal;
@@ -2914,6 +3054,7 @@ module.exports = {
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
             links: relinked(note.links, restored),
+            ...(note.replaces ? { restoredReplaces: note.replaces } : {}),
             previous: [],
             // A pending revision cannot ride on a note that was never accepted.
             ...(note.proposal === undefined || status !== undefined
@@ -3028,9 +3169,11 @@ module.exports = {
   /** What waits for the owner, in batches: similar proposals sit together and each item is ready for memory.accept. */
   "memory.proposals": async ({
     input = {},
+    config = {},
     services,
   }: {
     input?: { limit?: number; skip?: number };
+    config?: MemoryConfig;
     services: Services;
   }) => {
     const sources = [deviceSource(services.state)];
@@ -3038,6 +3181,7 @@ module.exports = {
       ? await ownProject(services)
       : undefined;
     if (project) sources.push(project);
+    const replacements: Replacements = new Map();
     const entries: {
       id: string;
       revision: number;
@@ -3047,6 +3191,7 @@ module.exports = {
       tags: readonly string[];
       text: string;
       proposedBy: { kind: string; id: string };
+      value: NoteValue;
       proposedAt: string;
     }[] = [];
     for (const source of sources) {
@@ -3057,6 +3202,7 @@ module.exports = {
           limit: LIST_LIMIT,
           descending: false,
         });
+        indexNotes(page, replacements);
         for (const { id, value, record } of page) {
           if (value.deleted === true) continue;
           const waiting = value.proposal;
@@ -3070,6 +3216,7 @@ module.exports = {
             ...(scope === undefined ? {} : { scope }),
             tags: waiting === undefined ? value.tags : waiting.tags,
             text: waiting === undefined ? value.text : waiting.text,
+            value,
             proposedBy: {
               kind: record.updatedBy.kind,
               id: record.updatedBy.id,
@@ -3118,8 +3265,9 @@ module.exports = {
       returned,
       ...(skip + returned < flat.length ? { next: skip + returned } : {}),
       groups: shownGroups.map((group) => ({
-        items: group.map(({ text, ...entry }) => ({
+        items: group.map(({ text, value, ...entry }) => ({
           ...entry,
+          ...relationFields(replacements, { id: entry.id, value }, config),
           tags: [...entry.tags],
           text: fence(text, `memory:${entry.id}:proposal`, entry.proposedAt),
         })),

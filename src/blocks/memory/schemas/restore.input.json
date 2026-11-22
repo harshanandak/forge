@@ -48,6 +48,8 @@
               "links": {
                 "$ref": "defs.json#/$defs/Links"
               },
+              "replaces": { "$ref": "defs.json#/$defs/Replaces" },
+              "replacedBy": { "$ref": "defs.json#/$defs/ReplacedBy" },
               "text": {
                 "$ref": "defs.json#/$defs/Untrusted"
               }
@@ -117,6 +119,8 @@
               "links": {
                 "$ref": "defs.json#/$defs/Links"
               },
+              "replaces": { "$ref": "defs.json#/$defs/Replaces" },
+              "replacedBy": { "$ref": "defs.json#/$defs/ReplacedBy" },
               "text": {
                 "$ref": "defs.json#/$defs/Untrusted"
               },
