@@ -2973,6 +2973,8 @@ module.exports = {
             "INPUT_INVALID",
             `Expected a replacement at the same level: ${id}`,
           );
+        if (link.project !== ref.project)
+          fail("INPUT_INVALID", `Replacement is in another project: ${id}`);
         if (link.number === 0 || link.number >= ref.number)
           fail("INPUT_INVALID", `Expected an earlier note: ${id}`);
         replacements.add(link.number);
