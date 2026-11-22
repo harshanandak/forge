@@ -8,7 +8,7 @@ import { expect, test } from "bun:test";
 import { createWorker } from "../../cloud/src/worker.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { tokenParts } from "../../cloud/src/tokens.ts";
-import { authorizeV3Token } from "../../cloud/src/v3-tokens.ts";
+import { authorizeV3Token, TOKEN_READ } from "../../cloud/src/v3-tokens.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import {
@@ -96,6 +96,25 @@ const core = (f: Base) =>
       f.db.query(`SELECT * FROM ${table} ORDER BY 1`).all(),
     ),
   );
+const readable = (f: Base) =>
+  JSON.stringify(
+    ["cloud_v3_root", "cloud_v3_pages", "cloud_v3_commits"].map((table) =>
+      f.db
+        .query<Record<string, unknown>, []>(`SELECT * FROM ${table}`)
+        .all()
+        .map((row) =>
+          Object.values(row).map((value) =>
+            ArrayBuffer.isView(value)
+              ? Buffer.from(
+                  value.buffer,
+                  value.byteOffset,
+                  value.byteLength,
+                ).toString("latin1")
+              : value,
+          ),
+        ),
+    ),
+  );
 const refusal = (run: () => unknown): string => {
   try {
     run();
@@ -149,14 +168,12 @@ interface Portable {
 
 async function withActivated(
   run: (target: Fixture, portable: Portable) => Promise<void>,
-  prepare?: (source: Fixture) => Promise<void>,
 ) {
   const source = guardFixture(env);
   const target = guardFixture(env);
   using _source = source.db;
   using _target = target.db;
   await provision(source);
-  await prepare?.(source);
   const sent = (route: string, input: object) =>
     source.send(`${probe}/${route}`, input);
   answers(await sent("commits", { frames: [note] }), 200);
@@ -630,6 +647,7 @@ const matrix: [string, string, unknown][] = [
   ["agent", "a blob", Buffer.from("blob")],
   ["harness", "big text", big],
   ["harness", "empty text", ""],
+  ["harness", "a number", 5],
   ["harness", "a blob", Buffer.from("blob")],
   ["mac", "big text", big],
   ["mac", "a number", 5],
@@ -642,35 +660,78 @@ const matrix: [string, string, unknown][] = [
   ["expires_at", "a time past the Date range", late],
   ["expires_at", "a negative time", -1],
   ["revoked_at", "big text", big],
+  ["revoked_at", "empty text", ""],
+  ["revoked_at", "a negative time", -1],
   ["revoked_at", "a big blob", Buffer.alloc(100_000)],
   ["revoked_at", "a fraction", 1.5],
   ["revoked_at", "an unsafe integer", unsafe],
   ["revoked_at", "a time past the Date range", late],
 ];
 
-v3test("the check refuses each malformed column without loading it", (f) => {
-  f.db.run(relaxed);
-  const parts = { id: String(valid.id), hash: String(valid.hash) };
-  for (const [column, label, value] of matrix) {
-    f.db.run("DELETE FROM cloud_v3_tokens");
-    insertRow(f, { ...valid, [column]: value });
-    const stored = f.db
-      .query<{ kind: string }, []>(
-        `SELECT typeof(${column}) AS kind FROM cloud_v3_tokens`,
-      )
-      .get()!;
-    expect([column, label, stored.kind]).toEqual([
-      column,
-      label,
-      kindOf(value),
-    ]);
-    const reads = f.reads.bytes;
-    const code = column === "id" ? "AUTH_INVALID" : "UNAVAILABLE";
-    const got = checked(f, { id: parts.id, token: "", parts });
-    expect([column, label, got]).toEqual([column, label, code]);
-    expect(f.reads.bytes - reads).toBeLessThan(1024);
-  }
-});
+const nullable = new Set(["agent", "harness", "revoked_at"]);
+const refusedInJs = new Set(["non-hex text"]);
+const projection = (f: Base, id: string) =>
+  f.db.query<Stored & { shape_ok: number }, [string]>(TOKEN_READ).get(id);
+
+v3test(
+  "the shape guard refuses each malformed column of a really issued row",
+  async (f) => {
+    const t = await issued(f);
+    const row = only(f);
+    f.db.run("DROP TABLE cloud_v3_tokens");
+    f.db.run(relaxed);
+    for (const [column, label, value] of matrix) {
+      f.db.run("DELETE FROM cloud_v3_tokens");
+      insertRow(f, { ...row });
+      expect(checked(f, t)).toBe("ok");
+      f.db.run(`UPDATE cloud_v3_tokens SET ${column}=?`, [value as never]);
+      const kind = f.db
+        .query<{ kind: string }, []>(
+          `SELECT typeof(${column}) AS kind FROM cloud_v3_tokens`,
+        )
+        .get()!;
+      expect([column, label, kind.kind]).toEqual([
+        column,
+        label,
+        kindOf(value),
+      ]);
+      const shape = projection(f, t.id);
+      if (column !== "id") {
+        const expected = refusedInJs.has(label) ? 1 : 0;
+        expect([column, label, shape?.shape_ok]).toEqual([
+          column,
+          label,
+          expected,
+        ]);
+        if (nullable.has(column))
+          expect([column, label, macOf(f, shape!)]).toEqual([
+            column,
+            label,
+            row.mac,
+          ]);
+      }
+      const reads = f.reads.bytes;
+      const code = column === "id" ? "AUTH_INVALID" : "UNAVAILABLE";
+      expect([column, label, checked(f, t)]).toEqual([column, label, code]);
+      expect(f.reads.bytes - reads).toBeLessThan(1024);
+    }
+  },
+);
+
+v3test(
+  "the check refuses a hash set from a chosen secret even when that secret is presented",
+  async (f) => {
+    const t = await issued(f);
+    const { mac } = only(f);
+    const chosen = randomBytes(32).toString("base64url");
+    tamper(f, "hash", sha(chosen));
+    const parts = await tokenParts(`fct_${t.id}.${chosen}`);
+    expect(parts.hash).toBe(only(f).hash);
+    expect(only(f).mac).toBe(mac);
+    expect(projection(f, t.id)?.shape_ok).toBe(1);
+    expect(checked(f, { ...t, parts })).toBe("UNAVAILABLE");
+  },
+);
 
 v3test(
   "the check refuses a made-up MAC and accepts real NULL labels",
@@ -685,7 +746,7 @@ v3test(
 );
 
 v3test(
-  "v3 token rows survive a checkpoint and restart and stay out of pages",
+  "v3 token rows survive a real checkpoint and restart and stay out of root, pages and commits",
   async (f) => {
     const t = await issued(f, { agent: "claude" });
     const before = JSON.stringify(tokenRows(f));
@@ -695,30 +756,26 @@ v3test(
     answers(await f.send(probe), 200);
     expect(JSON.stringify(tokenRows(f))).toBe(before);
     expect(checked(f, t)).toBe("ok");
-    expect(core(f)).not.toContain(t.id);
-    expect(core(f)).not.toContain(only(f).hash);
+    const row = only(f);
+    const secret = t.token.split(".")[1]!;
+    for (const needle of [t.id, row.hash, row.mac, secret, "laptop", "run-1"])
+      expect(readable(f)).not.toContain(needle);
   },
 );
 
 test(
-  "a real backup holds no token and an exact restore retry keeps new tokens",
+  "an exact restore retry on an activated target keeps tokens issued after activation valid and unchanged",
   () =>
-    withActivated(
-      async (target, portable) => {
-        const text = JSON.stringify(portable.pages);
-        expect(text).not.toContain("fct_");
-        expect(text).not.toContain("laptop");
-        const t = await issued(target);
-        const rows = JSON.stringify(tokenRows(target));
-        expect(await portable.upload(2)).toMatchObject({
-          status: 200,
-          body: { ok: true, value: { page: 2, verified: true } },
-        });
-        expect(JSON.stringify(tokenRows(target))).toBe(rows);
-        expect(checked(target, t)).toBe("ok");
-      },
-      async (source) => void (await issued(source)),
-    ),
+    withActivated(async (target, portable) => {
+      const t = await issued(target);
+      const rows = JSON.stringify(tokenRows(target));
+      expect(await portable.upload(2)).toMatchObject({
+        status: 200,
+        body: { ok: true, value: { page: 2, verified: true } },
+      });
+      expect(JSON.stringify(tokenRows(target))).toBe(rows);
+      expect(checked(target, t)).toBe("ok");
+    }),
   timeout,
 );
 
