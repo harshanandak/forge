@@ -5,7 +5,8 @@ import type {
   ClerkResult,
   ClerkUpstream,
 } from "../../../cloud/src/adapters/workers-oauth/clerk/upstream.ts";
-import { Project } from "../../../cloud/src/project.ts";
+import { Project, STATUS } from "../../../cloud/src/project.ts";
+import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { browserStorage } from "../browser-storage.fixture.ts";
 import { stockIngress } from "../stock-ingress.fixture.ts";
 import { createWorker } from "../../../cloud/src/worker.ts";
@@ -340,6 +341,7 @@ function fixture(
       worker = next;
     },
     upstream,
+    redemption,
     admin: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
     provision: () =>
       send("/p/p/devices", {
@@ -476,6 +478,54 @@ test.each([
       }
     } finally {
       network.mockRestore();
+      f.close();
+    }
+  },
+  30_000,
+);
+
+test.each([
+  ["verify", "AUTH_EXPIRED"],
+  ["claimOnce", "INPUT_CONFLICT"],
+  ["verify", ""],
+  ["claimOnce", ""],
+] as const)(
+  "bound callback preserves %s rejection (%s)",
+  async (dependency, code) => {
+    const f = fixture();
+    try {
+      expect((await f.provision()).status).toBe(200);
+      const flow = await f.through("approve", "owner");
+      expect(flow.decision.status).toBe(302);
+      const failure = code
+        ? new ForgeFailure({
+            code,
+            message: "Credential refused",
+            retry: "never",
+          })
+        : new Error("private callback dependency detail");
+      const reject = () => Promise.reject(failure);
+      if (dependency === "verify") f.upstream.verify = reject;
+      else f.redemption.claimOnce = reject;
+      const done = await flow.done();
+      expect(done.status).toBe(code ? STATUS[code]! : 503);
+      if (failure instanceof ForgeFailure)
+        expect(JSON.parse(done.text)).toEqual({
+          ok: false,
+          error: failure.error,
+        });
+      else {
+        expect(done.text).toContain(
+          "Temporarily unavailable. Start a new login.",
+        );
+        expect(done.text).not.toContain("private callback dependency detail");
+      }
+      expect(f.tokens()).toBe(1);
+      expect(await f.pending(flow.login)).toEqual([
+        400,
+        "authorization_pending",
+      ]);
+    } finally {
       f.close();
     }
   },
