@@ -2417,7 +2417,7 @@ for (const [fault, tamper] of [
     (d: Portable) =>
       forgeRefusal(d, (r) =>
         Object.assign(r, {
-          observed: JSON.parse("[".repeat(70) + "]".repeat(70)),
+          observed: JSON.parse("[".repeat(70) + "]".repeat(70)) as unknown,
         }),
       ),
   ],
