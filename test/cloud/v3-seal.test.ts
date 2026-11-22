@@ -11,6 +11,7 @@ import {
 } from "../../cloud/src/v3-seal.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import {
+  copyTables,
   guardFixture,
   newKey,
   noWrites,
@@ -428,21 +429,6 @@ test(
   },
   timeout,
 );
-
-function copyTables(from: Fixture, to: Fixture) {
-  for (const table of ["cloud_v3_commits", "cloud_v3_pages", "cloud_v3_root"]) {
-    to.db.run(`DELETE FROM ${table}`);
-    for (const row of from.db
-      .query<Record<string, string | number>, []>(`SELECT * FROM ${table}`)
-      .all()) {
-      const names = Object.keys(row);
-      to.db.run(
-        `INSERT INTO ${table} (${names.join()}) VALUES (${names.map(() => "?").join()})`,
-        Object.values(row),
-      );
-    }
-  }
-}
 
 test(
   "v3 refuses the rows of another object that shares the key and accepts them under the same object id",
