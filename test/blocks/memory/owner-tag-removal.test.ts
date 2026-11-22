@@ -211,9 +211,13 @@ test(
       memoryOwnerAsk("memory.accept", {
         items: [{ ...item, removedOwnerTags: ["rule", "preference"] }],
       }),
-    ).toContain(
-      "removes owner tags: rule, preference (it will no longer be served as an owner rule)",
-    );
+    ).toContain("\n    removes owner tags: rule, preference");
+    const partial = memoryOwnerAsk("memory.accept", {
+      items: [{ ...item, removedOwnerTags: ["preference"] }],
+    });
+    expect(partial).toContain("removes owner tags: preference");
+    expect(partial).not.toContain("rule");
+    expect(partial).not.toContain("served as an owner rule");
   },
   TIMEOUT,
 );
