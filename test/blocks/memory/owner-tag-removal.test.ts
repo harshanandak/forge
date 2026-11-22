@@ -308,3 +308,157 @@ test(
   },
   TIMEOUT,
 );
+
+test(
+  "removing the last owner tag stages an edit whose proposed text matches another rule",
+  async () => {
+    const { call } = setup();
+    await acceptedRule(call, "use bun", ["rule"]);
+    const id = await acceptedRule(call, "use npm", ["rule"]);
+    const edited = await typedRemoval(call, id, "use bun", []);
+    expect(edited).toMatchObject({
+      id,
+      status: "updated",
+      note: { proposal: { tags: [], text: { text: "use bun" } } },
+    });
+    expect(edited).not.toHaveProperty("similarTo");
+  },
+  TIMEOUT,
+);
+
+test(
+  "staged edits still check for twins when an owner tag is added or retained",
+  async () => {
+    const { call } = setup();
+    const twin = await acceptedRule(call, "use bun", ["rule"]);
+    const plain = await call<{ id: string }>("memory.add", {
+      level: "device",
+      text: "install Node",
+    });
+    const tagged = await acceptedRule(call, "pin tool versions", [
+      "rule",
+      "preference",
+    ]);
+    const expected = { status: "exists", id: twin };
+    const added = await typedRemoval(call, plain.id, "use bun", ["rule"]);
+    const retained = await typedRemoval(call, tagged, "use bun", [
+      "preference",
+    ]);
+    expect(added).toMatchObject(expected);
+    expect(retained).toMatchObject(expected);
+  },
+  TIMEOUT,
+);
+
+test(
+  "removing the last owner tag from a unique rule still stages a revision",
+  async () => {
+    const { call } = setup();
+    const id = await acceptedRule(call, "use bun", ["rule"]);
+    expect(await typedRemoval(call, id, "use bun", [])).toMatchObject({
+      id,
+      status: "updated",
+      note: { proposal: { tags: [] } },
+    });
+  },
+  TIMEOUT,
+);
+
+test(
+  "memory.accept takes a genuinely unsorted list of removed owner tags",
+  async () => {
+    const { call } = setup();
+    const id = await acceptedRule(call, "use bun", ["rule", "preference"]);
+    await typedRemoval(call, id, "use npm", []);
+    const items = await decisionItems(call, [id]);
+    expect(items[0]?.removedOwnerTags).toEqual(["rule", "preference"]);
+    expect(
+      await call("memory.accept", { items, approval: ownerApproval }),
+    ).toEqual({
+      results: [{ id, status: "accepted" }],
+    });
+  },
+  TIMEOUT,
+);
+
+const bmpCodes =
+  "0085 200b 2060 feff 202a 202b 202c 202d 202e 2066 2067 2068 2069 2028 2029".split(
+    " ",
+  );
+const bmpControls = bmpCodes
+  .map((hex) => String.fromCharCode(parseInt(hex, 16)))
+  .join("");
+const bmpEscapes = bmpCodes.map((hex) => "\\u" + hex).join("");
+const supplementaryControls = "\u{e0001}\u{e0020}";
+const supplementaryEscapes = "\\udb40\\udc01\\udb40\\udc20";
+const rawControls = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const hostileItem = (controls: string) => ({
+  id: "id" + controls,
+  revision: "rev" + controls,
+  text: "text" + controls,
+  removedOwnerTags: ["tag" + controls],
+});
+
+test.each([
+  ["BMP controls", bmpControls, bmpEscapes],
+  [
+    "both UTF-16 units of supplementary controls",
+    supplementaryControls,
+    supplementaryEscapes,
+  ],
+] as const)(
+  "stored ask builder robustness: escapes %s in every field",
+  (_case, controls, escapes) => {
+    const ask = memoryOwnerAsk("memory.accept", {
+      items: [hostileItem(controls)],
+    });
+    expect(ask.split("\n").slice(1)).toEqual([
+      "- id" + escapes + " (revision rev" + escapes + "):",
+      "    text" + escapes,
+      "removes owner tags: tag" + escapes,
+    ]);
+    expect(rawControls.test(ask.replaceAll("\n", ""))).toBe(false);
+  },
+  TIMEOUT,
+);
+
+test(
+  "accept and reject display asks quote and escape each displayed field",
+  () => {
+    const escapes = bmpEscapes + supplementaryEscapes;
+    const { removedOwnerTags, ...item } = hostileItem(
+      bmpControls + supplementaryControls,
+    );
+    const asks = [
+      approval.memoryOwnerDisplayAsk("memory.accept", {
+        items: [{ ...item, removedOwnerTags }],
+      }),
+      approval.memoryOwnerDisplayAsk("memory.reject", { items: [item] }),
+    ];
+    const lines = [
+      '- "id' + escapes + '" (revision "rev' + escapes + '"):',
+      '    "text' + escapes + '"',
+    ];
+    expect(asks.map((ask) => ask.split("\n").slice(1))).toEqual([
+      [...lines, 'removes owner tags: "tag' + escapes + '"'],
+      lines,
+    ]);
+    for (const ask of asks)
+      expect(rawControls.test(ask.replaceAll("\n", ""))).toBe(false);
+  },
+  TIMEOUT,
+);
+
+test(
+  "only accept asks show the removal line even if a reject item supplies tags",
+  () => {
+    const item = { id: "device/note-1", revision: 2, text: "use npm" };
+    const input = { items: [{ ...item, removedOwnerTags: ["rule"] }] };
+    const builders = [memoryOwnerAsk, approval.memoryOwnerDisplayAsk];
+    const showsRemoval = (op: string) =>
+      builders.map((ask) => ask(op, input).includes("\nremoves owner tags: "));
+    expect(showsRemoval("memory.accept")).toEqual([true, true]);
+    expect(showsRemoval("memory.reject")).toEqual([false, false]);
+  },
+  TIMEOUT,
+);
