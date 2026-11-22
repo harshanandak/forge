@@ -27,7 +27,7 @@ interface Fields {
 }
 
 // Parent and dependencies are refused by name, never dropped: the graph arrives in a later slice.
-function checked(input: unknown): Fields {
+export function checked(input: unknown): Fields {
   if (
     typeof input === "object" &&
     input !== null &&

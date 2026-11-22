@@ -5,7 +5,7 @@ import {
 } from "../../src/core/config/pointer.ts";
 import { checkLeaseRecord } from "../../src/core/state/index.ts";
 import type { ForgeError, LeaseRecord } from "../../src/generated/types.ts";
-import { validateForgeError } from "../../src/generated/validators.ts";
+import * as validators from "../../src/generated/validators.ts";
 import { NAMESPACE, REFUSALS } from "./lease-command.ts";
 
 export const isDigest = (value: unknown): value is string =>
@@ -31,7 +31,7 @@ function validLease(lease: unknown): boolean {
 }
 
 function refusalCode(result: unknown): unknown {
-  return validateForgeError(result).ok &&
+  return validators.validateForgeError(result).ok &&
     REFUSALS.includes((result as ForgeError).code)
     ? (result as ForgeError).code
     : undefined;
@@ -44,6 +44,14 @@ function fingerprintTied(
 ): boolean {
   try {
     const input: unknown = JSON.parse(String(outcome.fingerprint));
+    if (operation === "issue.create") {
+      if (!isObject(input) || !isObject(outcome.scope)) return false;
+      const { family: _family, ...scope } = outcome.scope;
+      return (
+        isDigest(input.input) &&
+        canonicalJson({ scope, input: input.input }) === outcome.fingerprint
+      );
+    }
     return (
       isObject(input) &&
       canonicalJson(input) === outcome.fingerprint &&
@@ -61,9 +69,10 @@ function fingerprintTied(
   }
 }
 
-function outcomeFault(outcome: unknown, portable = false): string | undefined {
+function outcomeFault(outcome: unknown, typed?: boolean, portable = false) {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
   const { scope, result } = outcome;
+  const command = typed ?? scope.family === "command";
   const archived = portable && outcome.status !== "ok";
   const liveKeys = result === undefined ? OUTCOME_KEYS : REFUSAL_KEYS;
   if (
@@ -80,12 +89,22 @@ function outcomeFault(outcome: unknown, portable = false): string | undefined {
     return "outcome fields";
   if (
     keysOf(scope) !== "family,principal,version" ||
-    scope.family !== "lease" ||
+    scope.family !== (command ? "command" : "lease") ||
     scope.version !== 2 ||
     !isDigest(scope.principal)
   )
     return "outcome scope";
+  if (
+    command &&
+    (!/^c2:[a-f0-9]{64}$/.test(outcome.id) ||
+      !["ok", "INPUT_INVALID"].includes(String(outcome.status)))
+  )
+    return "command outcome";
   if (archived) return undefined;
+  if (command && outcome.status === "ok")
+    return validators.validateTrackerItem(result).ok
+      ? undefined
+      : "command result";
   const status = result === undefined ? "ok" : refusalCode(result);
   return status !== undefined && outcome.status === status
     ? undefined
@@ -129,7 +148,9 @@ export function sealedAuthorityValid(
     isObject(outcome) &&
     outcome.id === key &&
     outcomeFault(outcome) === undefined &&
-    (outcome.status === "ok" ? validLease(lease) : lease === undefined)
+    (outcome.status === "ok" && !("result" in outcome)
+      ? validLease(lease)
+      : lease === undefined)
   );
 }
 
@@ -143,9 +164,18 @@ export function authorityFault(
     (lease.releasedAt !== undefined) !== (operation === "lease.release")
   )
     return "lease release marker";
+  const create = operation === "issue.create";
   const outcomeError =
-    outcome === undefined ? undefined : outcomeFault(outcome, portable);
+    outcome === undefined ? undefined : outcomeFault(outcome, create, portable);
   if (outcomeError !== undefined) return outcomeError;
+  if (create)
+    return !portable &&
+      lease === undefined &&
+      witness === undefined &&
+      isObject(outcome) &&
+      fingerprintTied(operation, lease, outcome)
+      ? undefined
+      : "command frame";
   if ((outcome !== undefined) !== OPERATIONS.includes(String(operation)))
     return "outcome operation";
   if (isObject(outcome)) {

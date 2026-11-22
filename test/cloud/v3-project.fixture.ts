@@ -11,7 +11,7 @@ export const noWrites = {
   sqlAndKvIntact: true,
 };
 
-export function fixture(before?: (sql: string) => void) {
+export function fixture(before?: (sql: string) => void, env?: unknown) {
   const db = new Database(":memory:");
   const { storage, values } = browserStorage(db, before);
   const reads = { rows: 0, bytes: 0 };
@@ -37,7 +37,7 @@ export function fixture(before?: (sql: string) => void) {
     return Promise.resolve();
   };
   const context = { storage, testV3: true };
-  let project = new Project(context);
+  let project = new Project(context, env);
   const request = (
     route: string,
     body?: unknown,
@@ -57,7 +57,7 @@ export function fixture(before?: (sql: string) => void) {
     alarm: () => project.alarm(),
     request,
     restart: (testV3 = true) => {
-      project = new Project(testV3 ? context : { storage });
+      project = new Project(testV3 ? context : { storage }, env);
     },
     send: async (
       route: string,
@@ -74,11 +74,11 @@ export function fixture(before?: (sql: string) => void) {
   };
 }
 
-export function guardFixture() {
+export function guardFixture(env?: unknown) {
   let sqlWriteAttempts = 0;
   const f = fixture((sql) => {
     if (sqlMutation.test(sql)) sqlWriteAttempts++;
-  });
+  }, env);
   return {
     ...f,
     observeEffects() {

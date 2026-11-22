@@ -12,7 +12,7 @@ import {
   checkLeaseSubject,
   leaseExpiry,
 } from "../../src/core/state/index.ts";
-import type { ForgeError, LeaseRecord } from "../../src/generated/types.ts";
+import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
 import type { ReceiptScope } from "./issue-request-id.ts";
@@ -508,9 +508,7 @@ export function recoverV3(
     through === undefined ? [root.coveredHead] : [root.coveredHead, through],
   );
   if (rows.length > TAIL_ROWS) throw unavailable();
-  const verify =
-    verification &&
-    ((frame: Frame) => verifyLeaseFrame(db, image, frame, verification));
+  const verify = (row: Frame) => verifyLeaseFrame(db, image, row, verification);
   for (const { sequence, body } of rows) foldRow(image, sequence, body, verify);
   return image;
 }
@@ -724,6 +722,8 @@ export function appendV3Frames(
   return append(db, image(), batch);
 }
 
+export { append };
+
 function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
   if (!batch.every(validAppendFrame))
     throw fail("INPUT_INVALID", "Invalid v3 frame");
@@ -782,10 +782,10 @@ export interface Frame {
   readonly lease?: LeaseRecord;
   readonly outcome?: {
     readonly id: string;
-    readonly scope: ReceiptScope & { readonly family: "lease" };
+    readonly scope: ReceiptScope & { readonly family: "lease" | "command" };
     readonly fingerprint: string;
     readonly status: string;
-    readonly result?: ForgeError;
+    readonly result?: unknown;
     readonly resultDigest?: string;
     readonly retryUntil: number;
   };
@@ -890,10 +890,16 @@ function verifyLeaseFrame(
   db: SqlDatabase,
   image: V3Image,
   frame: Frame,
-  { pages, admit }: Pick<Verification, "pages" | "admit">,
+  verification?: Pick<Verification, "pages" | "admit">,
 ): Frame {
   const { outcome, time } = frame;
-  if (!outcome) return frame;
+  if (outcome?.scope.family === "command") {
+    const { id } = outcome;
+    const prior = readV3Value(db, image, "outcome", id, verification?.pages);
+    if (prior && prior.outcome.retryUntil > time) throw unavailable();
+  }
+  if (!verification || outcome?.scope.family !== "lease") return frame;
+  const { pages, admit } = verification;
   const input = parse(outcome.fingerprint);
   if (
     frame.events.length !== 0 ||
