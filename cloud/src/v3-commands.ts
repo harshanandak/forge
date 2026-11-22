@@ -6,13 +6,14 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 import { prepareReceipt } from "./command-write.ts";
 import * as api from "./issue-commands.ts";
 import { checked } from "./issue-create.ts";
-import { configured, shownId, shownItem, storedId } from "./issue-read.ts";
+import { configured, shownId, storedId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
 import { receiptScope } from "./issue-request-id.ts";
 import { checkedUpdateInput, fence } from "./issue-update.ts";
 import { requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
 import { UPDATE_REFUSALS } from "./v3-authority.ts";
+import { updateEffect } from "./v3-record-transitions.ts";
 import * as store from "./v3-store.ts";
 
 type CommandOptions = { prefix: string; expiresAt: number; now: number };
@@ -102,20 +103,12 @@ const commands: Readonly<Record<string, Command>> = {
           retry: "reconcile_first",
           currentRevision: prior,
         });
-      const value = { ...current, ...patch };
-      const revision = prior + 1;
-      const record = {
-        namespace: "forge/work",
-        key: `issue:${id}`,
-        value,
-        revision,
-        updatedAt: new Date(now).toISOString(),
-      };
-      return {
-        events: [{ key, revision, expectRevision, patch }],
-        changes: [{ key, value: { revision, value } }],
-        result: shownItem(record, id, { ...lease }, now, prefix),
-      };
+      return updateEffect(
+        { key, prefix, expectRevision, patch },
+        current,
+        now,
+        lease,
+      );
     },
     replay(state) {
       const { id } = checkedUpdateInput(state.call.input);

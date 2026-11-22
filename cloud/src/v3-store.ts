@@ -162,7 +162,7 @@ export interface V3Image {
   tailBytes: number;
   stale: boolean;
   readonly staged: [sequence: number, body: string][];
-  readonly readRecord?: (key: string) => unknown;
+  readonly load: (collection: "record" | "lease", key: string) => unknown;
 }
 
 export const fail = (code: string, message: string) =>
@@ -365,8 +365,13 @@ interface Verification {
   sealed: (image: V3Image) => void;
 }
 
-function recoveryImage(root: V3Image["root"], eventWatermark: number): V3Image {
-  return {
+function recoveryImage(
+  db: SqlDatabase,
+  root: V3Image["root"],
+  eventWatermark: number,
+  pages?: Verification["pages"],
+): V3Image {
+  const image: V3Image = {
     root,
     entries: {
       lease: new Map(),
@@ -380,7 +385,9 @@ function recoveryImage(root: V3Image["root"], eventWatermark: number): V3Image {
     tailBytes: 0,
     stale: false,
     staged: [],
+    load: (collection, key) => readV3Value(db, image, collection, key, pages),
   };
+  return image;
 }
 
 function activationFrame(root: V3Image["root"], time: number) {
@@ -460,11 +467,12 @@ export function recoverV3(
     headers.some(({ id, bytes }) => byId.get(String(id))?.bytes !== bytes)
   )
     throw unavailable();
-  const image: V3Image = {
-    ...recoveryImage(root, root.eventWatermark),
-    readRecord: (key) =>
-      readV3Value(db, image, "record", key, verification?.pages),
-  };
+  const image = recoveryImage(
+    db,
+    root,
+    root.eventWatermark,
+    verification?.pages,
+  );
   const bodies = new Map(
     db
       .all(
@@ -531,7 +539,7 @@ function recoverPortableV3(
   const frames = parse(portableTranscript, MAX_JSON_DEPTH + 1);
   if (!Array.isArray(frames) || storedCanonical(frames) !== portableTranscript)
     throw unavailable();
-  const image = recoveryImage(genesis("portable", "portable"), 0);
+  const image = recoveryImage(db, genesis("portable", "portable"), 0);
   const verification = { admit, pages: new Map<string, Buffer>() };
   const verify = (frame: Frame) =>
     verifyLeaseFrame(db, image, frame, verification);
@@ -578,7 +586,7 @@ function foldRow(
     image.recordFloor,
     read,
     unavailable,
-    image.readRecord,
+    image.load,
   );
   apply(image, verify ? verify(frame) : frame, nat(sequence));
   image.recordFloor = records.floor;
@@ -767,13 +775,7 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
       const fault = authorityFault(frame);
       if (fault !== undefined)
         throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
-      const records = verifyRecordFrame(
-        frame,
-        floor,
-        read,
-        refuse,
-        image.readRecord,
-      );
+      const records = verifyRecordFrame(frame, floor, read, refuse, image.load);
       floor = records.floor;
       for (const { key, value } of records.changes) pending.set(key, value);
     }

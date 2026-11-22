@@ -1,7 +1,12 @@
-import { canonicalJson, isObject } from "../../src/core/config/pointer.ts";
+import {
+  canonicalJson,
+  digestValue,
+  isObject,
+} from "../../src/core/config/pointer.ts";
+import { shownItem } from "./issue-read.ts";
 import { checkedUpdateInput } from "./issue-update.ts";
 import { isNat } from "./v3-authority.ts";
-import type { Frame } from "./v3-store.ts";
+import type { Frame, V3Image } from "./v3-store.ts";
 
 type RecordValue = { revision: number } & (
   { value: unknown } | { deleted: true }
@@ -24,43 +29,114 @@ function created(frame: Frame, number: number, input: unknown) {
   );
 }
 
+type Update = {
+  key: string;
+  prefix: string;
+  expectRevision: number;
+  patch: Readonly<Record<string, unknown>>;
+};
+
+export function updateEffect(
+  event: Update,
+  current: Record<string, unknown>,
+  time: number,
+  lease: unknown,
+) {
+  const { key, prefix, expectRevision, patch } = event;
+  const id = `work-${key.slice(1)}`;
+  const value = { ...current, ...patch };
+  const revision = expectRevision + 1;
+  const record = {
+    namespace: "forge/work",
+    key: `issue:${id}`,
+    value,
+    revision,
+    updatedAt: new Date(time).toJSON(),
+  };
+  return {
+    events: [{ ...event, revision }],
+    changes: [{ key, value: { revision, value } }],
+    result: shownItem(
+      record,
+      id,
+      isObject(lease) ? lease : undefined,
+      time,
+      prefix,
+    ),
+  };
+}
+
 export function verifyRecordFrame(
   frame: Frame,
   floor: number,
-  read: (
-    key: string,
-  ) => { readonly revision?: number; readonly value?: unknown } | undefined,
+  read: (key: string) => { readonly revision?: number } | undefined,
   refuse: () => Error,
-  readValue?: (key: string) => unknown,
+  load: V3Image["load"],
 ) {
   const changes: { key: string; value: RecordValue }[] = [];
   const create = frame.operation === "issue.create";
   const update = frame.operation === "issue.update";
-  const command = create || update;
+  if (update && frame.outcome?.status === "ok") {
+    const event = frame.events[0];
+    if (!isObject(event)) throw refuse();
+    const { key, prefix, patch, expectRevision } = event;
+    if (
+      typeof key !== "string" ||
+      !recordNumber(key) ||
+      typeof prefix !== "string" ||
+      !isObject(patch) ||
+      !isNat(event.revision)
+    )
+      throw refuse();
+    const prior = read(key);
+    if (!prior || "deleted" in prior || prior.revision !== expectRevision)
+      throw refuse();
+    const id = `work-${key.slice(1)}`;
+    const current = "value" in prior ? prior.value : load("record", key);
+    if (!isObject(current)) throw refuse();
+    try {
+      const {
+        id: _id,
+        expectRevision: expected,
+        ...fields
+      } = checkedUpdateInput({ ...patch, id, expectRevision });
+      const effect = updateEffect(
+        { key, prefix, expectRevision: expected, patch: fields },
+        current,
+        frame.time,
+        load("lease", `issue:${id}`),
+      );
+      const { result, resultDigest } = frame.outcome;
+      if (
+        canonicalJson(frame.events) !== canonicalJson(effect.events) ||
+        canonicalJson(frame.changes) !== canonicalJson(effect.changes) ||
+        (resultDigest ?? digestValue(result)) !== digestValue(effect.result)
+      )
+        throw refuse();
+      return { floor, changes: effect.changes };
+    } catch {
+      throw refuse();
+    }
+  }
   const put =
-    (command && frame.outcome?.status === "ok") ||
+    (create && frame.outcome?.status === "ok") ||
     frame.operation === "fixture.put";
   if (!put && frame.operation !== "fixture.delete") {
     if (
       frame.changes !== undefined ||
-      (command && frame.events.length !== 0) ||
+      ((create || update) && frame.events.length !== 0) ||
       (frame.operation !== "fixture.note" && !frame.outcome)
     )
       throw refuse();
     return { floor, changes };
   }
-  if (frame.events.length === 0 || (command && frame.events.length !== 1))
+  if (frame.events.length === 0 || (create && frame.events.length !== 1))
     throw refuse();
-  const keys = update
-    ? "expectRevision,key,patch,revision"
-    : put
-      ? "key,revision,value"
-      : "key,revision";
+  const keys = put ? "key,revision,value" : "key,revision";
   const seen = new Set<string>();
   for (const input of frame.events) {
     if (!isObject(input)) throw refuse();
-    const { key, revision } = input;
-    let { value } = input;
+    const { key, revision, value } = input;
     if (
       typeof key !== "string" ||
       !isNat(revision) ||
@@ -69,26 +145,6 @@ export function verifyRecordFrame(
       throw refuse();
     const number = recordNumber(key);
     const prior = read(key);
-    if (update) {
-      const { expectRevision, patch } = input;
-      const current =
-        prior && "value" in prior ? prior.value : readValue?.(key);
-      if (
-        prior?.revision !== expectRevision ||
-        revision !== Number(expectRevision) + 1 ||
-        !isObject(current) ||
-        !isObject(patch) ||
-        "id" in patch ||
-        "expectRevision" in patch
-      )
-        throw refuse();
-      try {
-        checkedUpdateInput({ ...patch, id: `work-${number}`, expectRevision });
-      } catch {
-        throw refuse();
-      }
-      value = { ...current, ...patch };
-    }
     if (
       !number ||
       (create && (prior || number !== floor + 1 || revision !== 1)) ||

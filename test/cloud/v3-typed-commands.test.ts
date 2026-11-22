@@ -418,6 +418,29 @@ test(
 );
 
 test(
+  "v3 recovery, replay and checkpoint refuse a forged update result",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await oneRow(f, () => send(f, create));
+    await rawClaim(f);
+    await oneRow(f, () => send(f, update));
+    tamper(f, 3, (frame) => {
+      ((frame.outcome as Json).result as Json).title = "Invented";
+    });
+    const effects = f.observeEffects();
+    expect(await f.send(probe)).toMatchObject(error(503, "UNAVAILABLE"));
+    expect(await send(f, update)).toMatchObject(error(503, "UNAVAILABLE"));
+    expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject(
+      error(503, "UNAVAILABLE"),
+    );
+    expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+test(
   "portable v3 recovery derives an update from its patch and refuses a forged change",
   async () => {
     const f = guardFixture(env);
@@ -453,6 +476,12 @@ test(
       ...initial,
       title: "After",
     });
+    const receiptEdited = JSON.parse(transcript) as Json[];
+    const outcome = receiptEdited[2]!.outcome as Json;
+    outcome.resultDigest = `sha256:${"0".repeat(64)}`;
+    expect(() => verify(canonicalJson(receiptEdited))).toThrow(
+      "Cloud v3 root is unavailable",
+    );
     const archived = JSON.parse(transcript) as Json[];
     const [change] = archived[2]!.changes as Json[];
     ((change!.value as Json).value as Json).title = "Tampered";
