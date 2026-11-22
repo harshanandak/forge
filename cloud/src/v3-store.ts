@@ -14,6 +14,7 @@ import {
 } from "../../src/core/state/index.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import { checkedValue, configured, holds, shownId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
 import type { ReceiptScope } from "./issue-request-id.ts";
 import {
@@ -33,7 +34,11 @@ import {
   sealedAuthorityValid,
 } from "./v3-authority.ts";
 import type { roster as checkpointRoster } from "./v3-checkpoint.ts";
-import { recordNumber, verifyRecordFrame } from "./v3-record-transitions.ts";
+import {
+  recordNumber,
+  resultMatches,
+  verifyRecordFrame,
+} from "./v3-record-transitions.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 export { withinDepth };
@@ -775,6 +780,7 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
       const fault = authorityFault(frame);
       if (fault !== undefined)
         throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
+      if (frame.operation === "issue.claim") verifyClaimFrame(image, frame);
       const records = verifyRecordFrame(frame, floor, read, refuse, image.load);
       floor = records.floor;
       for (const { key, value } of records.changes) pending.set(key, value);
@@ -850,10 +856,11 @@ function apply(image: V3Image, frame: Frame, sequence: number) {
 }
 
 function transition(
-  { route, subject, holder, ttlMs, generation }: LeaseCommand,
+  command: Omit<LeaseCommand, "scope" | "rawId" | "requestId">,
   current: LeaseRecord | undefined,
   now: number,
 ): LeaseRecord {
+  const { route, subject, holder, ttlMs, generation } = command;
   const decision = decideLease(current, {
     mode: route === "claim" ? "acquire" : "held",
     subject,
@@ -873,6 +880,114 @@ function transition(
   return route === "renew"
     ? { ...current!, holder, expiresAt: expiresAt() }
     : { ...current!, holder, releasedAt: new Date(now).toISOString() };
+}
+
+type IssueClaim = Pick<LeaseCommand, "subject" | "holder"> & {
+  prefix: string;
+  ttlMs: number;
+};
+
+export function claimEffect(
+  image: V3Image,
+  claim: IssueClaim,
+  time: number,
+  expiresAt: number,
+) {
+  const { subject, prefix, holder, ttlMs } = claim;
+  configured(prefix);
+  const id = subject.slice(6);
+  const read = (id: string) => {
+    const key = /^work-\d+$/.test(id) ? `r${id.slice(5)}` : "";
+    const value = image.load("record", key);
+    return {
+      value,
+      revision:
+        value === undefined ? 0 : image.entries.record.get(key)!.revision!,
+    };
+  };
+  const record = read(id);
+  if (record.value === undefined)
+    throw fail("NOT_FOUND", `Issue ${shownId(id, prefix)} was not found`);
+  const issue = checkedValue(
+    { ...record, namespace: NAMESPACE, key: subject },
+    id,
+  );
+  if (issue.status !== "open")
+    throw fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
+  const current = image.load("lease", subject) as Frame["lease"];
+  const dependencies = issue.dependsOn.map((id) => ({ id, ...read(id) }));
+  const unfinished = dependencies.filter(
+    ({ value }) => !isObject(value) || value.status !== "closed",
+  );
+  if (unfinished.length && !holds(current && { ...current }, time)) {
+    const blockers = unfinished.map(({ id, value }) => {
+      const lease = image.load("lease", `issue:${id}`) as Frame["lease"];
+      const holder =
+        lease?.releasedAt === undefined ? lease?.holder : undefined;
+      const shown = { id: shownId(id, prefix) };
+      const edge = holder
+        ? { ...shown, holder, holderUnverified: true }
+        : shown;
+      const state = value === undefined ? "(missing)" : "(open)";
+      return {
+        edge,
+        text: [shown.id, state, holder ? JSON.stringify(holder) : ""].join(" "),
+      };
+    });
+    throw new ForgeFailure({
+      code: "CLAIM_BLOCKED",
+      message: blockers.map(({ text }) => text).join(", "),
+      retry: "never",
+      observed: { blockers: blockers.map(({ edge }) => edge) },
+    });
+  }
+  checkTtl(ttlMs, expiresAt, time);
+  const lease = transition(
+    { route: "claim", subject, holder, ttlMs, generation: null },
+    current,
+    time,
+  );
+  checkLeaseRecord(lease);
+  const readSet = [{ id, ...record }, ...dependencies].map(
+    ({ id, revision }) => ({
+      key: `issue:${id}`,
+      expectRevision: revision,
+    }),
+  );
+  const { generation, expiresAt: expiry } = lease;
+  return {
+    lease,
+    events: [{ subject, prefix, holder, ttlMs, readSet }],
+    result: { id: shownId(id, prefix), generation, expiresAt: expiry },
+  };
+}
+
+function verifyClaimFrame(image: V3Image, frame: Frame): Frame {
+  const outcome = frame.outcome!;
+  if (outcome.status !== "ok") {
+    if (frame.events.length !== 0) throw unavailable();
+    return frame;
+  }
+  const claim = frame.events[0] as IssueClaim;
+  if (image.entries.witness.has(outcome.id)) throw unavailable();
+  try {
+    const { lease, events, result } = claimEffect(
+      image,
+      claim,
+      frame.time,
+      outcome.retryUntil,
+    );
+    const { resultDigest: _digest, ...receipt } = outcome;
+    if (
+      canonicalJson(frame.lease) !== canonicalJson(lease) ||
+      canonicalJson(frame.events) !== canonicalJson(events) ||
+      !resultMatches(outcome, result)
+    )
+      throw unavailable();
+    return { ...frame, outcome: { ...receipt, result } };
+  } catch {
+    throw unavailable();
+  }
 }
 
 function admitLease(
@@ -912,6 +1027,7 @@ function verifyLeaseFrame(
     const prior = readV3Value(db, image, "outcome", id, verification?.pages);
     if (prior && prior.outcome.retryUntil > time) throw unavailable();
   }
+  if (frame.operation === "issue.claim") return verifyClaimFrame(image, frame);
   if (!verification || outcome?.scope.family !== "lease") return frame;
   const { pages, admit } = verification;
   const input = parse(outcome.fingerprint);

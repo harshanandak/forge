@@ -708,6 +708,13 @@ test(
     expect(frame.changes).toBeUndefined();
     await claimRefusal(f, typedClaim, 409, "LEASE_HELD", "tablet");
     await oneRow(f, () => send(f, update));
+    await oneRow(f, () =>
+      f.send(
+        `${probe}/renew`,
+        { requestId: "renew", subject, holder, generation: 1, ttlMs },
+        headers(),
+      ),
+    );
     await checkpoint(f);
     const replay = f.observeEffects();
     expect(await send(f, typedClaim)).toEqual(first);
@@ -717,6 +724,14 @@ test(
         input: { ...typedClaim.input, ttlSeconds: 30 },
       }),
     ).toMatchObject(error(409, "INPUT_CONFLICT"));
+    for (const changed of [
+      { ...typedClaim, input: { ...typedClaim.input, id: "forge-2" } },
+      { ...typedClaim, context: { ...holder, session: { id: "second" } } },
+    ]) {
+      expect(await send(f, changed)).toMatchObject(
+        error(409, "INPUT_CONFLICT"),
+      );
+    }
     expect(replay()).toEqual(noWrites);
 
     await oneRow(f, () =>
@@ -810,8 +825,18 @@ test(
     await fixtureIssue(f, { ...initial, id: "work-2", dependsOn: ["work-1"] });
     await oneRow(f, () => send(f, body("unblocked", 60, "forge-2")));
     await fixtureIssue(f, initial, 2);
+    await claimRefusal(
+      f,
+      body("held-and-blocked", 60, "forge-2"),
+      409,
+      "LEASE_HELD",
+    );
     await rawClaim(f);
-    await fixtureIssue(f, { ...initial, id: "work-3", dependsOn: ["work-1"] });
+    await fixtureIssue(f, {
+      ...initial,
+      id: "work-3",
+      dependsOn: ["work-1", "work-9"],
+    });
     const blocked = await claimRefusal(
       f,
       body("blocked", 7_201, "forge-3"),
@@ -827,18 +852,116 @@ test(
               holder: { actor, session: { ...session, device: "laptop" } },
               holderUnverified: true,
             },
+            { id: "forge-9" },
           ],
         },
       },
     });
+    expect(
+      (blocked.body as { error: { message: string } }).error.message,
+    ).toContain("forge-1 (open)");
+    expect(
+      (blocked.body as { error: { message: string } }).error.message,
+    ).toContain("forge-9 (missing)");
     await claimRefusal(f, body("ttl-before-held", 7_201), 400, "INPUT_INVALID");
     await claimRefusal(f, body("same-holder"), 409, "LEASE_HELD");
+    await claimRefusal(
+      f,
+      {
+        ...body("same-device"),
+        context: { ...holder, session: { id: "second" } },
+      },
+      409,
+      "LEASE_HELD",
+    );
+    setSystemTime(time + ttlMs);
+    expect(
+      (
+        await claimRefusal(
+          f,
+          body("expired-blocker-holder", 60, "forge-3"),
+          409,
+          "CLAIM_BLOCKED",
+        )
+      ).body,
+    ).toMatchObject({
+      error: {
+        observed: {
+          blockers: [
+            {
+              id: "forge-1",
+              holder: { actor, session: { ...session, device: "laptop" } },
+              holderUnverified: true,
+            },
+            { id: "forge-9" },
+          ],
+        },
+      },
+    });
     expect(record(f)).toEqual({ value: initial, revision: 2 });
     expect(record(f, "r3").revision).toBe(1);
     await checkpoint(f);
   },
   timeout,
 );
+
+for (const loss of [
+  "expiry",
+  "takeover after expiry",
+  "takeover after release",
+] as const) {
+  test(
+    `v3 typed claim replay refuses ${loss} without replacing its receipt`,
+    async () => {
+      const f = guardFixture(env);
+      using _db = f.db;
+      await provision(f);
+      await fixtureIssue(f);
+      await oneRow(f, () => send(f, typedClaim));
+      if (loss === "takeover after release") {
+        await oneRow(f, () =>
+          f.send(
+            `${probe}/release`,
+            {
+              requestId: "release",
+              subject,
+              holder,
+              generation: 1,
+            },
+            headers(),
+          ),
+        );
+      } else {
+        setSystemTime(time + 60_000);
+      }
+      if (loss !== "expiry") {
+        const next = {
+          ...typedClaim,
+          requestId: "takeover",
+          context: { ...holder, session: { id: "second" } },
+        };
+        const owner = loss === "takeover after release" ? "tablet" : "laptop";
+        expect(
+          (await oneRow(f, () => send(f, next, owner))).body,
+        ).toMatchObject({
+          result: { generation: 2 },
+        });
+      }
+      const effects = f.observeEffects();
+      const replay = await send(f, typedClaim);
+      expect(replay).toMatchObject(error(409, "LEASE_STALE"));
+      expect((replay.body as Json).result).toBeUndefined();
+      expect(
+        await send(f, {
+          ...typedClaim,
+          input: { ...typedClaim.input, ttlSeconds: 61 },
+        }),
+      ).toMatchObject(error(409, "INPUT_CONFLICT"));
+      expect(effects()).toEqual(noWrites);
+    },
+    timeout,
+  );
+}
 
 const claimEdits: Record<string, (frame: Json) => void> = {
   lease: (frame) => {

@@ -30,7 +30,7 @@ import { checkTtl } from "./lease-ttl.ts";
 
 const NAMESPACE = "forge/work";
 // The cloud has no claimTtlSeconds setting: the local default applies.
-const DEFAULT_TTL_SECONDS = 3600;
+export const DEFAULT_TTL_SECONDS = 3600;
 const claim = manifest.operations["issue.claim"];
 if (
   claim.input !== "schemas/claim.input.json" ||
@@ -52,7 +52,7 @@ interface Edge {
 }
 
 // The context's actor and session; the route set the session's device from the token.
-function holderOf(context: BoundContext): LeaseHolder {
+export function holderOf(context: BoundContext): LeaseHolder {
   if (context.variant !== "leased" || context.leaseMode !== "acquire")
     throw fail("INTERNAL", "issue.claim needs an acquire lease context");
   return { actor: context.actor, session: context.session };

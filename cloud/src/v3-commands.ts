@@ -1,18 +1,20 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
-import { isObject } from "../../src/core/config/pointer.ts";
-import type { ForgeError } from "../../src/generated/types.ts";
+import { digestBytes, isObject } from "../../src/core/config/pointer.ts";
+import type { ForgeError, LeaseGrant } from "../../src/generated/types.ts";
+import { validateClaimInput } from "../../src/generated/validators.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { prepareReceipt } from "./command-write.ts";
 import * as api from "./issue-commands.ts";
 import { checked } from "./issue-create.ts";
+import { DEFAULT_TTL_SECONDS, holderOf } from "./issue-claim.ts";
 import { configured, shownId, storedId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
 import { receiptScope } from "./issue-request-id.ts";
 import { checkedUpdateInput, fence } from "./issue-update.ts";
-import { requestConflict } from "./lease-command.ts";
+import { NAMESPACE, requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
-import { UPDATE_REFUSALS } from "./v3-authority.ts";
+import { CLAIM_REFUSALS, UPDATE_REFUSALS } from "./v3-authority.ts";
 import { updateEffect } from "./v3-record-transitions.ts";
 import * as store from "./v3-store.ts";
 
@@ -67,6 +69,70 @@ const commands: Readonly<Record<string, Command>> = {
         changes: [{ key, value: { revision, value } }],
         result: { ...item, id: shownId(id, prefix), revision, updatedAt },
       };
+    },
+  },
+  "issue.claim": {
+    refusalCodes: CLAIM_REFUSALS,
+    write({ image, call, device, prefix, now, expiresAt }) {
+      const { op, requestId, input, context } = call;
+      const checked = validateClaimInput(input);
+      if (!checked.ok)
+        throw store.fail("INPUT_INVALID", "Expected a valid issue claim");
+      const { id: given, ttlSeconds = DEFAULT_TTL_SECONDS } = checked.value;
+      const id = storedId(given, prefix, (alias) =>
+        [...image.entries.record.keys()].some((key) => {
+          const value = image.load("record", key);
+          return (
+            isObject(value) &&
+            value.id === `work-${key.slice(1)}` &&
+            (value.prefix ?? "work") === alias
+          );
+        }),
+      );
+      const identity = prepareReceipt(
+        "command",
+        ["owner", device, device],
+        requestId,
+        { op, input, context, device },
+      );
+      if (image.entries.witness.has(identity.requestId))
+        throw store.fail("LEASE_STALE", "The claim receipt expired");
+      const subject = `issue:${id}`;
+      const claim = {
+        subject,
+        prefix,
+        holder: holderOf(context),
+        ttlMs: ttlSeconds * 1000,
+      };
+      const effect = store.claimEffect(image, claim, now, expiresAt);
+      return {
+        ...effect,
+        witness: {
+          namespace: NAMESPACE,
+          id: identity.requestId,
+          subject,
+          generation: effect.lease.generation,
+          digest: digestBytes(identity.fingerprint),
+        },
+      };
+    },
+    replay({ image, call, now }, result) {
+      const { id, generation } = result as LeaseGrant;
+      const subject = `issue:work-${id.replace(/^.*-/, "")}`;
+      const lease = image.load("lease", subject) as store.Frame["lease"];
+      const decision = decideLease(lease, {
+        subject,
+        generation,
+        holder: holderOf(call.context),
+        mode: "held",
+        nowMs: now,
+      });
+      if (!decision.ok)
+        throw new ForgeFailure({
+          ...decision.error,
+          code: "LEASE_STALE",
+          message: `Request no longer matches the current lease on ${subject}`,
+        });
     },
   },
   "issue.update": {
