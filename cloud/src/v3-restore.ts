@@ -151,7 +151,11 @@ function verify(
     check(digestProjection(expected) === manifest.publicDigest);
     return { pages, expected, image };
   } catch (error) {
-    if (error instanceof ForgeFailure && error.error.code === "UNAVAILABLE")
+    if (
+      (error instanceof ForgeFailure && error.error.code === "UNAVAILABLE") ||
+      error instanceof TypeError ||
+      error instanceof RangeError
+    )
       check(false);
     throw error;
   }
