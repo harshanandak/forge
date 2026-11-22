@@ -2289,17 +2289,26 @@ test(
   timeout,
 );
 
+async function withTyped(
+  run: (target: Fixture, data: Portable) => Promise<void>,
+) {
+  const source = guardFixture(typedEnv);
+  const target = guardFixture(typedEnv);
+  using _source = source.db;
+  using _target = target.db;
+  expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+  expect((await typed(source, missingUpdate)).status).toBe(404);
+  expect((await typed(source, invalidUpdate)).status).toBe(400);
+  await drain(source, 0, 2);
+  await run(target, typedBackup(source));
+}
+
 function refusalEntry(data: Portable) {
   const entries = JSON.parse(data.pages[0]!.body) as DirectoryItem[];
   const bytes = Buffer.from(data.pages[1]!.body);
   const text = ({ offset, length }: DirectoryItem) =>
     bytes.subarray(offset, offset! + length!).toString();
-  const item = entries.find(
-    (e) =>
-      e.collection === "outcome" &&
-      e.length !== undefined &&
-      text(e).includes('"status":"LEASE_HELD"'),
-  )!;
+  const item = entries.find((e) => text(e).includes('"code":"NOT_FOUND"'))!;
   return { entries, item, text, size: bytes.length };
 }
 
@@ -2308,20 +2317,22 @@ function forgeRefusal(data: Portable, edit: (result: Json) => unknown) {
   const saved = JSON.parse(text(item)) as { outcome: { result: Json } };
   edit(saved.outcome.result);
   const parts = entries.map((e) =>
-    e === item ? canonicalJson(saved) : e.length === undefined ? "" : text(e),
+    e === item ? canonicalJson(saved) : text(e),
   );
   let offset = 0;
   for (const [i, e] of entries.entries()) {
     const length = Buffer.byteLength(parts[i]!);
-    if (e.length !== undefined)
-      Object.assign(e, { offset, length, digest: digestBytes(parts[i]!) });
+    Object.assign(e, { offset, length, digest: digestBytes(parts[i]!) });
     offset += length;
   }
   data.pages[1]!.body = parts.join("");
   data.pages[0]!.body = canonicalJson(entries);
   editProjection(data, item.collection, item.key, (same) => same);
-  editHistory(data, (f) => {
-    (f[2]!.outcome as Json).resultDigest = digestBytes(
+  editHistory(data, (frames) => {
+    const { outcome } = frames.find(
+      (f) => (f.outcome as Json).id === item.key,
+    )!;
+    (outcome as Json).resultDigest = digestBytes(
       canonicalJson(saved.outcome.result),
     );
   });
@@ -2352,14 +2363,17 @@ const splitAccent = (data: Portable, atEnd: boolean) => {
 };
 
 test(
-  "v3 restore accepts a saved refusal with a multi-byte message",
+  "v3 restore restores and replays a refused typed update with a multi-byte message",
   () =>
-    withPortable(async (target, data) => {
+    withTyped(async (target, data) => {
       forgeRefusal(data, accent);
-      const upload = portableUpload(target, data);
-      expect([await upload(0), await upload(1), await upload(2)]).toMatchObject(
-        [restoreResult(0), restoreResult(1), restoreResult(2, true)],
-      );
+      const upload = await stageRestore(target, data);
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+      target.restart();
+      expect(await typed(target, missingUpdate)).toMatchObject({
+        status: 404,
+        body: { error: { code: "NOT_FOUND", message: "caf\u00e9" } },
+      });
     }),
   timeout,
 );
@@ -2372,7 +2386,7 @@ for (const [fault, tamper] of [
   [
     "a result code that contradicts the status",
     (d: Portable) =>
-      forgeRefusal(d, (r) => Object.assign(r, { code: "LEASE_STALE" })),
+      forgeRefusal(d, (r) => Object.assign(r, { code: "INPUT_INVALID" })),
   ],
   [
     "a result with an extra field",
@@ -2406,10 +2420,7 @@ for (const [fault, tamper] of [
     "an entry that overlaps another outcome",
     (d: Portable) =>
       retarget(d, ({ entries, item }) => {
-        const { offset, length } = entries.find(
-          (e) =>
-            e.collection === "outcome" && e !== item && e.length !== undefined,
-        )!;
+        const { offset, length } = entries.find((e) => e !== item)!;
         Object.assign(item, { offset, length });
       }),
   ],
@@ -2431,18 +2442,12 @@ for (const [fault, tamper] of [
   test(
     `v3 restore guards a saved refusal against ${fault}`,
     () =>
-      withPortable(async (target, data) => {
+      withTyped(async (target, data) => {
         tamper(data);
-        const upload = portableUpload(target, data);
-        const replies = [await upload(0), await upload(1)];
+        const upload = await stageRestore(target, data);
         const staged = target.snapshot();
-        replies.push(await upload(2));
+        expect(await upload(2)).toMatchObject(restoreRefusal);
         await unprovisioned(target);
-        expect(replies).toMatchObject([
-          restoreResult(0),
-          restoreResult(1),
-          restoreRefusal,
-        ]);
         expect(target.snapshot()).toEqual(staged);
       }),
     timeout,
