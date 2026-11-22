@@ -678,9 +678,8 @@ function replacementScope(replacer: NoteValue, target: NoteValue) {
 
 function indexNotes(notes: Note[], index: Replacements = new Map()) {
   for (const note of notes) {
-    const { value } = note;
-    if (value?.deleted || value?.status) continue;
-    for (const id of value?.replaces ?? []) {
+    if (note.value?.deleted || note.value?.status) continue;
+    for (const id of note.value?.replaces ?? []) {
       const entries = index.get(id);
       if (entries) entries.push(note);
       else index.set(id, [note]);
@@ -694,20 +693,14 @@ function replacers(index: Replacements, note: Target, config: MemoryConfig) {
   if (!candidates) return [];
   const owner = ownerTag(note.value.tags ?? [], config) !== undefined;
   return candidates
-    .filter(
-      ({ value }) =>
-        (!owner || value.approval?.by === "owner") &&
-        replacementScope(value, note.value),
-    )
-    .map(({ id }) => id)
+    .flatMap(({ id, value }) => {
+      if (owner && value.approval?.by !== "owner") return [];
+      return replacementScope(value, note.value) ? [id] : [];
+    })
     .sort();
 }
 
-function relationFields(
-  index: Replacements,
-  note: Target,
-  config: MemoryConfig,
-) {
+function relations(index: Replacements, note: Target, config: MemoryConfig) {
   const replacedBy = replacers(index, note, config);
   return {
     ...replaceRefs(note.value),
@@ -1864,6 +1857,13 @@ module.exports = {
         tag === undefined
           ? undefined
           : twinsOf(target, value.text, value.scope, config);
+      if (twins?.exact && replaces.length) {
+        const { id } = twins.exact;
+        const key = noteKey(parseRef(id)!.number);
+        const twin = target.state.get(key)?.value as NoteValue | undefined;
+        if (replaces.some((target) => !twin?.replaces?.includes(target)))
+          fail("INPUT_INVALID", `${id} lacks requested replacements`);
+      }
       if (twins?.exact)
         return {
           status: "exists" as const,
@@ -1886,14 +1886,12 @@ module.exports = {
           expectRevision: 0,
         },
       ];
-      for (const n of targets.keys()) {
+      const readSet: { key: string; expectRevision: number }[] = [];
+      for (const [n, expectRevision] of targets) {
         const key = numberKey(numberKey(REPLACED_BY, n) + "/", number);
         entries.push({ key, value: number, expectRevision: 0 });
+        readSet.push({ key: noteKey(n), expectRevision });
       }
-      const readSet = [...targets].map(([n, expectRevision]) => ({
-        key: noteKey(n),
-        expectRevision,
-      }));
       const [, record] = target.state.putMany(entries, { readSet });
       const read = target.state.get(noteKey(number));
       if (
@@ -1919,7 +1917,7 @@ module.exports = {
         ...(tag === undefined
           ? {}
           : {
-              notice: `${id} has the owner tag ${tag}, so it waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
+              notice: `${id} requires owner approval for the tag ${tag}, so it waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
               ...(hint.similarTo === undefined
                 ? {}
                 : { similarTo: hint.similarTo }),
@@ -2859,7 +2857,7 @@ module.exports = {
         revision: note.record.revision,
         ...(note.value.scope === undefined ? {} : { scope: note.value.scope }),
         tags: [...note.value.tags],
-        ...relationFields(replacements, note, config),
+        ...relations(replacements, note, config),
         links: qualifiedLinks(note.value.links),
         text: {
           kind: "untrusted" as const,
@@ -3267,7 +3265,7 @@ module.exports = {
       groups: shownGroups.map((group) => ({
         items: group.map(({ text, value, ...entry }) => ({
           ...entry,
-          ...relationFields(replacements, { id: entry.id, value }, config),
+          ...relations(replacements, { id: entry.id, value }, config),
           tags: [...entry.tags],
           text: fence(text, `memory:${entry.id}:proposal`, entry.proposedAt),
         })),

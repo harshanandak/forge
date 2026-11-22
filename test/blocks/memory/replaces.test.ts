@@ -3,9 +3,12 @@ import {
   accepted,
   blockSchema,
   decisionItems,
+  done,
   loadEntry,
   memoryState,
+  openHarness,
   ownerApproval,
+  type Harness,
 } from "./lib.ts";
 
 const level = "device";
@@ -237,10 +240,12 @@ test(
     expect(
       await call("memory.search", { ...input, cursor: first.next }),
     ).toMatchObject({ hits: [] });
-    expect(await call("memory.export", { level })).toMatchObject({
-      notes: expect.arrayContaining([
-        { id: old.id, replacedBy: [current.id] },
-      ]) as unknown,
+    const exported = (await call("memory.export", { level })) as {
+      notes: unknown[];
+    };
+    expect(exported.notes[0]).toMatchObject({
+      id: old.id,
+      replacedBy: [current.id],
     });
   },
   timeout,
@@ -284,26 +289,98 @@ test(
 test(
   "restoring a replacement bundle keeps its references inert",
   async () => {
-    const source = fixture();
-    const old = await source.add("swift obsolete");
-    const current = await source.add("swift current", { replaces: [old.id] });
-    const bundle = (await source.call("memory.export", { level })) as object;
-    const input = { ...bundle, approval };
-    expect(blockSchema("memory", "restore.input.json")(input)).toEqual([]);
-    const target = fixture();
-    expect(await target.call("memory.restore", input)).toMatchObject({
-      added: 2,
-      conflicts: [],
+    const source = await openHarness(["memory"]);
+    let target: Harness | undefined;
+    const add = async (text: string, fields: object = {}) =>
+      done(
+        await source.call("memory.add", { level, scope, text, ...fields }),
+      ) as { id: string };
+    try {
+      const old = await add("swift obsolete");
+      const current = await add("swift current", { replaces: [old.id] });
+      const bundle = done(
+        await source.call("memory.export", { level }),
+      ) as object;
+      target = await openHarness(["memory"]);
+      expect(
+        done(await target.call("memory.restore", { ...bundle, approval })),
+      ).toMatchObject({
+        added: 2,
+        conflicts: [],
+      });
+      expect(
+        done(await target.call("memory.show", { id: current.id })),
+      ).toMatchObject({
+        note: { replaces: [old.id] },
+      });
+      const search = done(
+        await target.call("memory.search", { query: "swift" }),
+      ) as { hits: { id: string }[] };
+      expect(search.hits.map(({ id }) => id).sort()).toEqual(
+        [old.id, current.id].sort(),
+      );
+      const packet = done(
+        await target.call("memory.attach", { ids: [old.id, current.id] }),
+      ) as { receipt: { selected: { id: string }[] } };
+      expect(packet.receipt.selected.map(({ id }) => id)).toEqual([
+        old.id,
+        current.id,
+      ]);
+    } finally {
+      await Promise.all([source.close(), target?.close()]);
+    }
+  },
+  timeout,
+);
+
+test(
+  "an exact owner-note twin missing the replacement fails before writing",
+  async () => {
+    const { state, call, add } = fixture();
+    const text = "Owner chose the tern procedure";
+    const tags = ["rule"];
+    const old = await add("obsolete finch procedure");
+    const twin = await accepted<{ id: string }>(call, {
+      level,
+      scope,
+      text,
+      tags,
     });
-    expect(await target.call("memory.show", { id: current.id })).toMatchObject({
-      note: { replaces: [old.id] },
-    });
-    expect((await target.search("swift")).sort()).toEqual(
-      [old.id, current.id].sort(),
+    const writes = state.counts.puttedRecords;
+    await expect(add(text, { tags, replaces: [old.id] })).rejects.toMatchObject(
+      {
+        error: {
+          code: "INPUT_INVALID",
+          message: `${twin.id} lacks requested replacements`,
+        },
+      },
     );
-    expect(
-      await target.packet("memory.attach", { ids: [old.id, current.id] }),
-    ).toEqual([old.id, current.id]);
+    expect(state.counts.puttedRecords).toBe(writes);
+  },
+  timeout,
+);
+
+test(
+  "an exact owner-note twin covering the requested target returns exists",
+  async () => {
+    const { state, call, add } = fixture();
+    const text = "Owner chose the swift procedure";
+    const tags = ["rule"];
+    const first = await add("obsolete wren procedure");
+    const second = await add("obsolete shrike procedure");
+    const twin = await accepted<{ id: string }>(call, {
+      level,
+      scope,
+      text,
+      tags,
+      replaces: [first.id, second.id],
+    });
+    const writes = state.counts.puttedRecords;
+    expect(await add(text, { tags, replaces: [first.id] })).toMatchObject({
+      id: twin.id,
+      status: "exists",
+    });
+    expect(state.counts.puttedRecords).toBe(writes);
   },
   timeout,
 );
