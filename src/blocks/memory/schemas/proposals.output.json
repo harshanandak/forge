@@ -49,6 +49,12 @@
                 "tags": {
                   "$ref": "defs.json#/$defs/Tags"
                 },
+                "removedOwnerTags": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": { "type": "string", "maxLength": 64 },
+                  "description": "The owner tags this proposal removes from the accepted note. Omitted when none are removed."
+                },
                 "replaces": { "$ref": "defs.json#/$defs/Replaces" },
                 "replacedBy": { "$ref": "defs.json#/$defs/ReplacedBy" },
                 "text": {
