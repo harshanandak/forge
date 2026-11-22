@@ -3119,7 +3119,13 @@ module.exports = {
         if (ownerTagged && status === "proposed") proposals += 1;
         const replaces: string[] = [];
         for (const replaced of replacements) {
-          if (restoredTargets.get(`${source}/${replaced}`) === false) continue;
+          const restoredTarget = restoredTargets.get(`${source}/${replaced}`);
+          if (restoredTarget === false) continue;
+          if (restoredTarget === undefined) {
+            const targetKey = noteKey(replaced);
+            if (queued.has(targetKey) || state.get(targetKey)) continue;
+            read.push({ key: targetKey, expectRevision: 0 });
+          }
           replaces.push(idIn(target, replaced));
           entries.push({
             key: numberKey(numberKey(REPLACED_BY, replaced) + "/", number),

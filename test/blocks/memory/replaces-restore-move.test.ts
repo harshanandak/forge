@@ -109,6 +109,89 @@ test(
   timeout,
 );
 
+for (const scenario of [
+  "omitted",
+  "conflicted",
+  "restored",
+  "queued",
+] as const) {
+  test(
+    `a restore keeps an older target served when it was ${scenario}`,
+    async () => {
+      const { project, call, add } = fixture();
+      const old = `${targetPrefix}/note-1`;
+      const current = `${targetPrefix}/note-26`;
+      const first = item(
+        `${scenario === "queued" ? targetPrefix : sourcePrefix}/note-1`,
+      );
+      const older = {
+        ...first,
+        scope: "alpha",
+        text: { ...first.text, text: "original platypus note" },
+      };
+      if (scenario === "omitted" || scenario === "conflicted")
+        await add("unrelated platypus note", { level: "project" });
+      if (scenario === "conflicted" || scenario === "restored") {
+        const conflicts = scenario === "conflicted" ? [old] : [];
+        expect(await call("memory.restore", bundle([older]))).toMatchObject({
+          added: scenario === "restored" ? 1 : 0,
+          conflicts,
+        });
+      }
+      const replacer = {
+        ...item(`${sourcePrefix}/note-26`, [`${sourcePrefix}/note-1`]),
+        scope: "alpha",
+      };
+      const notes = scenario === "queued" ? [replacer, older] : [replacer];
+      expect(await call("memory.restore", bundle(notes))).toMatchObject({
+        added: notes.length,
+        conflicts: [],
+      });
+      expect(project.count("replaced-by/")).toBe(0);
+      const shown = await call("memory.show", { id: current });
+      expect(shown).toMatchObject({ status: "found", note: { id: current } });
+      expect(shown).not.toHaveProperty("note.replaces");
+      const search = { query: "platypus", level: "project" };
+      expect(await call("memory.search", search)).toMatchObject({
+        hits: [{ id: old }],
+      });
+      const move = { id: old, to: "device", expectRevision: 1 };
+      expect(await call("memory.move", move)).toMatchObject({
+        status: "moved",
+        to: "device/note-1",
+      });
+    },
+    timeout,
+  );
+}
+
+test(
+  "restore refuses when a concurrent write fills an absent replacement target",
+  async () => {
+    const { state, call } = fixture();
+    const commit = state.putMany.bind(state);
+    state.putMany = (entries, options) => {
+      state.put(
+        "note/000000001",
+        { text: "concurrent note", tags: [], links: [], previous: [] },
+        { expectRevision: 0 },
+      );
+      return commit(entries, options);
+    };
+    const input = bundle([item(currentId, [oldId])]);
+    await expect(call("memory.restore", input)).rejects.toMatchObject({
+      error: { code: "RESTORE_CONFLICT" },
+    });
+    expect(state.get("note/000000001")?.value).toMatchObject({
+      text: "concurrent note",
+    });
+    expect(state.get("note/000000002")).toBeUndefined();
+    expect(state.get("meta/note-counter")).toBeUndefined();
+    expect(state.count("replaced-by/")).toBe(0);
+  },
+  timeout,
+);
+
 test(
   "restore keeps an absent target, deduplicates note numbers, and advances the counter",
   async () => {
