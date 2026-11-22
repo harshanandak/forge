@@ -648,18 +648,31 @@ const withTranscript = (data: Backup, edit: (list: Json[]) => void): Backup => {
 
 function altered(data: Backup, title: string): Backup {
   const [directory, snapshot] = data.pages as [Pages[0], Pages[0]];
-  const body = snapshot.body.replace('"Before"', title);
-  const bytes = Buffer.from(body);
-  expect(bytes.length).toBe(Buffer.byteLength(snapshot.body));
   const entries = JSON.parse(directory.body) as Json[];
-  const items = entries.map(({ collection, key, revision, offset, length }) => {
-    const start = offset as number;
-    const text = bytes.subarray(start, start + (length as number)).toString();
+  const original = Buffer.from(snapshot.body);
+  const bytes = Buffer.from(original);
+  const span = ({ offset, length }: Json) =>
+    [offset as number, (offset as number) + (length as number)] as const;
+  const [start, end] = span(
+    entries.find((e) => e.collection === "record" && e.key === "r1")!,
+  );
+  const record = bytes
+    .subarray(start, end)
+    .toString()
+    .replace('"Before"', title);
+  expect(Buffer.byteLength(record)).toBe(end - start);
+  Buffer.from(record).copy(bytes, start);
+  expect(bytes.equals(original)).toBe(title === '"Before"');
+  const items = entries.map((entry) => {
+    const [from, to] = span(entry);
+    const text = bytes.subarray(from, to).toString();
+    if (entry.collection === "outcome")
+      expect(text).toBe(original.subarray(from, to).toString());
     return [
-      collection as string,
-      key as string,
+      entry.collection as string,
+      entry.key as string,
       text,
-      revision as number,
+      entry.revision as number,
     ] as const;
   });
   const fixed = entries.map((entry, i) => ({
@@ -671,7 +684,7 @@ function altered(data: Backup, title: string): Backup {
     publicDigest: digestProjection(items),
     pages: [
       { ...directory, body: canonicalJson(fixed) },
-      { ...snapshot, body },
+      { ...snapshot, body: bytes.toString() },
       data.pages[2]!,
     ],
   };
@@ -690,6 +703,23 @@ test(
     using _single = single.db;
     for (const [, edit] of broken)
       await refused(withTranscript(one, ([first]) => edit(first!)));
+  },
+  timeout,
+);
+
+test(
+  "v3 restore answers 400 when a portable create event carries a prefix that cannot become text",
+  async () => {
+    const { source, data } = await backupOf([create]);
+    using _source = source.db;
+    for (const prefix of [{ toString: null }, { toString: 1 }]) {
+      const hostile = withTranscript(data, ([first]) => {
+        entry(first!).value = { ...(entry(first!).value as Json), prefix };
+        (change(first!).value as Json).value = entry(first!).value;
+      });
+      expect(() => verifyAt(frames(hostile)[0]!)).toThrow("refused");
+      await refused(hostile);
+    }
   },
   timeout,
 );
