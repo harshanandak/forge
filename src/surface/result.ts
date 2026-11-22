@@ -1,3 +1,4 @@
+import { escapeDisplayText } from "../contract/display-text.ts";
 import type {
   FailureEnvelope,
   ResultEnvelope,
@@ -31,10 +32,7 @@ function isUpgradeHint(value: unknown): value is UpgradeHint {
 }
 
 function displayText(text: string): string {
-  return text.replace(
-    /(?![\n\t])[\p{Cc}\u2028\u2029]/gu,
-    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
+  return escapeDisplayText(text);
 }
 
 function displayMessage<T extends { readonly message: string }>(value: T): T {
@@ -99,7 +97,7 @@ export function renderText(value: unknown, depth = 0): string {
       if (key === "hint" && isUpgradeHint(child)) {
         const hint = child;
         const literal = (text: string): string =>
-          displayText(text).replaceAll("\n", "\\n").replaceAll("\t", "\\t");
+          displayText(text).replaceAll("\n", "\\n");
         return `${indent}hint: ${literal(`Running Forge ${hint.running.version} (${hint.running.commit ?? "unbuilt"}${hint.running.dirty ? "+dirty" : ""}); repo needs ${hint.required}`)}${hint.cwd === null ? "" : `\n${indent}In ${literal(hint.cwd)},`}\n${indent}run: ${literal(hint.command)}`;
       }
       const nested = child !== null && typeof child === "object";

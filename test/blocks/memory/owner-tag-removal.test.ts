@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import * as approval from "../../../src/assembly/approval.ts";
 import { memoryOwnerAsk } from "../../../src/assembly/approval.ts";
 import {
   blockSchema,
@@ -222,7 +223,7 @@ test(
   TIMEOUT,
 );
 test(
-  "the owner's accept prompt shows control characters as visible escapes and keeps the removal line apart",
+  "the stored accept prompt shows control characters as visible escapes and keeps the removal line apart",
   () => {
     const ask = (text: string, removedOwnerTags: string[]) =>
       memoryOwnerAsk("memory.accept", {
@@ -235,6 +236,54 @@ test(
     const faked = ask("harmless\nremoves owner tags: none", ["rule"]);
     expect(faked.match(/^removes.*/gmu)).toEqual(["removes owner tags: rule"]);
     expect(faked).toContain("\n    removes owner tags: none");
+  },
+  TIMEOUT,
+);
+
+test(
+  "memory display builders quote identifiers and keep static restore counts",
+  () => {
+    const { memoryOwnerDisplayAsk = memoryOwnerAsk } =
+      approval as typeof approval & {
+        memoryOwnerDisplayAsk?: typeof memoryOwnerAsk;
+      };
+    const id = 'item"\\\u0007\n\u202e';
+    const quoted = '"item\\"\\\\\\u0007\\u000a\\u202e"';
+    const cases = [
+      [
+        "memory.forget",
+        { id },
+        `Forget note ${quoted}. Its text is hidden and kept only as a private backup.`,
+      ],
+      [
+        "memory.forget",
+        { id, undo: true },
+        `Restore the forgotten note ${quoted} with its saved text and history.`,
+      ],
+      [
+        "decision.adopt",
+        { id },
+        `Adopt decision ${quoted} so it becomes a binding standing rule.`,
+      ],
+      [
+        "memory.restore",
+        { notes: [] },
+        "Restore 0 notes from an export into Forge memory.",
+      ],
+      [
+        "memory.restore",
+        { notes: [{}] },
+        "Restore 1 note from an export into Forge memory.",
+      ],
+      [
+        "memory.restore",
+        { notes: [{}, {}] },
+        "Restore 2 notes from an export into Forge memory.",
+      ],
+    ] as const;
+    expect(
+      cases.map(([op, input]) => memoryOwnerDisplayAsk(op, input)),
+    ).toEqual(cases.map(([, , expected]) => expected));
   },
   TIMEOUT,
 );

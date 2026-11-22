@@ -1,4 +1,5 @@
 import { Readable, Writable } from "node:stream";
+import { escapeDisplayText } from "../contract/display-text.ts";
 import type { McpExposure } from "../generated/types.ts";
 import type { McpTransportPort } from "../ports/mcp-transport.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
@@ -26,7 +27,7 @@ export async function runCommand(
   const output = options.output ?? process.stdout;
   const input = options.input ?? process.stdin;
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
-    output.write(`${options.version}\n`);
+    output.write(escapeDisplayText(`${options.version}\n`));
     return 0;
   }
   if (argv[0] === "--mcp") {
@@ -37,7 +38,7 @@ export async function runCommand(
           "MCP requires an assembled transport and no additional arguments.",
         ),
       );
-      output.write(response.stdout);
+      output.write(escapeDisplayText(response.stdout));
       return response.exitCode;
     }
     const opened = await options.mcp.open({
@@ -55,7 +56,7 @@ export async function runCommand(
       const response = respond(
         failure("UNAVAILABLE", opened.unavailable.reason),
       );
-      output.write(response.stdout);
+      output.write(escapeDisplayText(response.stdout));
       return response.exitCode;
     }
     await new Promise<void>((resolve) => {
@@ -71,6 +72,6 @@ export async function runCommand(
         ? await runHook(options.catalog, argv[1], input, options.call)
         : respond(failure("INPUT_INVALID", "Expected --hook <noun.verb>."))
       : await runCli(options.catalog, argv, options.call);
-  output.write(response.stdout);
+  output.write(escapeDisplayText(response.stdout));
   return response.exitCode;
 }

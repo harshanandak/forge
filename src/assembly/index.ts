@@ -30,6 +30,10 @@ import { Runtime, refuseDryRun } from "../core/runtime/index.ts";
 import { nodeRunIsolation } from "../adapters/node-runtime/isolation.ts";
 import { localForgeCommand } from "../adapters/node-runtime/catalog.ts";
 import { TrustStore, refuse, type TrustRecord } from "../core/trust/index.ts";
+import {
+  escapeDisplayText,
+  quoteDisplayText,
+} from "../contract/display-text.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { bindContext } from "../contract/context.ts";
@@ -113,6 +117,7 @@ import {
   unattendedOps,
   memoryOwnerAsk,
   memoryOwnerClaim,
+  memoryOwnerDisplayAsk,
   memoryOwnerOp,
   ownerApproval,
 } from "./approval.ts";
@@ -347,7 +352,8 @@ export async function createAssembly(
       stderr: process.stderr.isTTY === true,
     };
   const confirm = (op: string, ask: string) =>
-    options.terminal?.confirm(op, ask) ?? typedConfirmation(op, ask);
+    options.terminal?.confirm(op, escapeDisplayText(ask)) ??
+    typedConfirmation(op, ask);
   async function openApproval(
     request: Parameters<Assembly["catalog"]["invoke"]>[0],
   ) {
@@ -376,11 +382,12 @@ export async function createAssembly(
   async function attendedApproval(
     request: Parameters<Assembly["catalog"]["invoke"]>[0],
     ask: string,
+    displayAsk: string,
   ) {
     const { stdin, stderr } = tty();
     if (
       !attendedTerminal(process.env, stdin, stderr) ||
-      !(await confirm(request.op, ask))
+      !(await confirm(request.op, displayAsk))
     )
       return undefined;
     return directApproval({
@@ -392,6 +399,7 @@ export async function createAssembly(
   async function approve(
     request: Parameters<Assembly["catalog"]["invoke"]>[0],
     ask: string,
+    displayAsk: string,
     relayedOnly = false,
   ) {
     const { direct, input } = await openApproval(request);
@@ -401,7 +409,7 @@ export async function createAssembly(
       // agent session may run the operations the owner listed in owner.json.
       const { stdin, stderr } = tty();
       if (attendedTerminal(process.env, stdin, stderr)) {
-        if (await confirm(request.op, ask))
+        if (await confirm(request.op, displayAsk))
           return directApproval({ ...direct, ask, method: "attended" });
       } else if (!agentSession(process.env) && POLICY_OPS.has(request.op)) {
         const policy = ownerPolicy(deviceRoot);
@@ -413,6 +421,7 @@ export async function createAssembly(
     return ownerApproval({
       ...direct,
       ask,
+      displayAsk,
       ...(warning === undefined ? {} : { warning }),
     });
   }
@@ -1467,9 +1476,12 @@ export async function createAssembly(
               stateRoot,
             );
             recovery.validateCreate();
+            const ask = (path: string) =>
+              `Start a new empty Forge store for ${path}. Existing records will not be recovered.`;
             await approve(
               request,
-              `Start a new empty Forge store for ${stateRoot}. Existing records will not be recovered.`,
+              ask(stateRoot),
+              ask(quoteDisplayText(stateRoot)),
             );
             return await recovery.create(async (staged) => {
               const opened = openLevels({
@@ -1499,9 +1511,12 @@ export async function createAssembly(
               refuse("CONTEXT_MISSING", "Project init requires a project");
             // Refuse before asking the owner anything when the id already exists.
             if (projectManifestExists(manifestRoot)) throw manifestExists();
+            const ask = (path: string) =>
+              `Create ${PROJECT_MANIFEST} with a new random project id for ${path}. The id is never changed by init.`;
             await approve(
               request,
-              `Create ${PROJECT_MANIFEST} with a new random project id for ${manifestRoot}. The id is never changed by init.`,
+              ask(manifestRoot),
+              ask(quoteDisplayText(manifestRoot)),
             );
             const made = initProjectManifest(
               manifestRoot,
@@ -1802,10 +1817,9 @@ export async function createAssembly(
           }
           if (request.op === "owner.policy") {
             const unattended = input.unattended as string[];
-            await approve(
-              request,
-              `Let scripts and CI with no agent session run ${unattended.join(", ") || "no operations"} without asking, by writing owner.json in the device folder.`,
-            );
+            const ask = (format: (text: string) => string) =>
+              `Let scripts and CI with no agent session run ${unattended.map(format).join(", ") || "no operations"} without asking, by writing owner.json in the device folder.`;
+            await approve(request, ask(String), ask(quoteDisplayText));
             writePrivateTextAtomic(
               join(deviceRoot, "owner.json"),
               `${JSON.stringify({ unattended })}\n`,
@@ -1837,11 +1851,15 @@ export async function createAssembly(
               if (effects.some((effect) => !declared.has(effect)))
                 refuse("INPUT_INVALID", "Grant contains an undeclared effect");
             }
+            const blockIds = candidates.map((block) => block.manifest.id);
+            const ask = (format: (text: string) => string) =>
+              request.op === "block.admit"
+                ? `Admit block ${blockIds.map(format).join(", ")} at ${format(digest)} so its captured code can run. Declared effects: ${[...declared].map(format).join(", ") || "none"}.`
+                : `Grant effects ${effects.map(format).join(", ") || "none"} to block ${blockIds.map(format).join(", ")} at ${format(digest)}.`;
             const approval = await approve(
               request,
-              request.op === "block.admit"
-                ? `Admit block ${candidates.map((block) => block.manifest.id).join(", ")} at ${digest} so its captured code can run. Declared effects: ${[...declared].join(", ") || "none"}.`
-                : `Grant effects ${effects.join(", ") || "none"} to block ${candidates.map((block) => block.manifest.id).join(", ")} at ${digest}.`,
+              ask(String),
+              ask(quoteDisplayText),
             );
             trustActor = request.context.actor;
             try {
@@ -2026,13 +2044,21 @@ export async function createAssembly(
             throw new ApprovalRequired(
               "The owner's reply must be at most 2000 characters; ask again with a shorter reply.",
             );
+          const ask = (display: boolean) => {
+            const format = display ? quoteDisplayText : String;
+            return laneOwnerChannelOp(target!, request.input)
+              ? laneOwnerChannelAsk(request.input, format)
+              : laneResumeOp(target!)
+                ? laneResumeAsk(request.input, target!.declaredOp, format)
+                : (display ? memoryOwnerDisplayAsk : memoryOwnerAsk)(
+                    target!.declaredOp!,
+                    request.input,
+                  );
+          };
           await approve(
             { ...request, input: owned.input },
-            laneOwnerChannelOp(target!, request.input)
-              ? laneOwnerChannelAsk(request.input)
-              : laneResumeOp(target!)
-                ? laneResumeAsk(request.input, target!.declaredOp)
-                : memoryOwnerAsk(target!.declaredOp!, request.input),
+            ask(false),
+            ask(true),
             // Resuming lanes restarts spending and naming the owner channel lets it approve: only a relayed reply counts, never a typed phrase or owner.json.
             laneOwned,
           );
@@ -2057,6 +2083,7 @@ export async function createAssembly(
             await attendedApproval(
               request,
               memoryOwnerAsk(target.declaredOp!, request.input),
+              memoryOwnerDisplayAsk(target.declaredOp!, request.input),
             )
           )
             request = {
@@ -2490,7 +2517,9 @@ function readConfirmation(op: string, ask?: string): Promise<boolean> {
     return Promise.resolve(false);
   }
   process.stderr.write(
-    `${ask === undefined ? "" : `${ask}\n`}Owner confirmation: type "confirm ${op}" to proceed: `,
+    escapeDisplayText(
+      `${ask === undefined ? "" : `${ask}\n`}Owner confirmation: type "confirm ${escapeDisplayText(op, "fragment")}" to proceed: `,
+    ),
   );
   return new Promise<boolean>((resolve) => {
     let line = "";

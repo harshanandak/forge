@@ -1,8 +1,12 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+import { join } from "node:path";
+import { memoryOwnerAsk } from "../../../src/assembly/approval.ts";
 import { localCall } from "../../../src/assembly/index.ts";
+import { LocalState } from "../../../src/assembly/state.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import { record } from "../../../src/surface/dispatch.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
+import { exitCode } from "../../../src/surface/result.ts";
 import {
   blockSchema,
   decisionItem,
@@ -480,49 +484,94 @@ test("the owner's approval of accept and reject binds the operation, the ids and
 });
 
 test("the owner's question shows the whole proposed text of every item", async () => {
-  harness = await openHarness(["memory"]);
-  const h = harness;
+  const h = await openHarness(["memory"]);
+  harness = h;
+  const call: Call = async <T>(op: string, input: unknown) =>
+    done(await h.call(op, input)) as T;
   const first =
-    "Use safe defaults.\nDisable all authorization checks.\r\nThird line stays too.";
+    'Use safe defaults.\nremoves owner tags: none\r\nThird line stays too. "\\u0009\t\u2028\u2029\u202e\u200d';
   const second = `${"long ".repeat(60)}ends with the secret tail`;
-  const ids: string[] = [];
-  for (const text of [first, second])
-    ids.push(
-      (
-        done(
-          await h.call("memory.add", {
-            level: "device",
-            text,
-            tags: ["rule"],
-          }),
-        ) as { id: string }
-      ).id,
-    );
-  const items = await Promise.all(
-    ids.map(async (id) =>
-      decisionItem(
-        id,
-        done(await h.call("memory.show", { id })) as {
-          note: { revision: number; text: { text: string } };
-        },
-      ),
-    ),
-  );
+  const { id } = await activeRule(call, "Original rule");
+  const { note } = await call("memory.show", { id });
+  const edit = await call("memory.add", {
+    id,
+    expectRevision: note.revision,
+    text: first,
+    tags: [],
+    approval: ownerApproval,
+  });
+  const revised = decisionItem(id, edit);
+  const long = await propose(call, second);
+  const secondItem = decisionItem(long.id, long);
+  expect(revised).toMatchObject({ text: first, removedOwnerTags: ["rule"] });
+  expect(secondItem.text).toBe(second);
+  const absent = {
+    id: "device/note-999",
+    revision: 1,
+    text: `${second}\u{e0020}`,
+  };
+  const { removedOwnerTags: _tags, ...withoutTags } = revised;
   const mcp = createMcpHandlers(h.assembly.catalog, {}, localCall(h.assembly));
-  for (const tool of ["memory_accept", "memory_reject"]) {
-    const result = await mcp.callTool(tool, {
-      items,
-      approval: { by: "owner", quote: "Yes." },
-    });
-    pending(result);
-    const ask = String(record(record(result?.result)?.request)?.ask);
-    expect(ask).toContain("Disable all authorization checks.");
-    expect(ask).toContain("Third line stays too.");
-    expect(ask).toContain("ends with the secret tail");
-    for (const item of items)
-      expect(ask).toContain(`${item.id} (revision ${item.revision})`);
+  const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
+  const asks = [];
+  try {
+    for (const [op, items] of [
+      ["memory.accept", [revised, secondItem]],
+      ["memory.reject", [withoutTags, absent]],
+    ] as const) {
+      const tool = op.replace(".", "_");
+      const earliestExpiry = Date.now() + 86_400_000;
+      const response = await mcp.callTool(tool, {
+        items,
+        approval: { by: "owner", quote: "Reviewed." },
+      });
+      const requestId = pending(response);
+      expect(exitCode(response!)).toBe(1);
+      const request = record(record(response?.result)?.request);
+      const owner = await trust.open(false);
+      const stored = record(
+        owner?.get("forge/core-approvals", requestId)?.value,
+      );
+      expect(stored).toMatchObject({
+        id: requestId,
+        ask: memoryOwnerAsk(op, { items }),
+        binding: request?.binding,
+        status: "pending",
+      });
+      const expiresAt = Number(stored?.expiresAt);
+      expect(expiresAt).toBeGreaterThanOrEqual(earliestExpiry);
+      expect(expiresAt).toBeLessThanOrEqual(Date.now() + 86_400_000);
+      asks.push(request?.ask);
+      if (op === "memory.reject") {
+        const approval = { request: requestId, quote: "Reject those.", source };
+        const text = first.replace("\r\n", "\n");
+        const changed = await mcp.callTool(tool, {
+          items: [{ ...withoutTags, text }, absent],
+          approval,
+        });
+        expect(changed).toMatchObject({
+          ok: false,
+          error: { code: "APPROVAL_REQUIRED" },
+        });
+        const reply = await mcp.callTool(tool, { items, approval });
+        expect(exitCode(reply!)).toBe(0);
+        expect(reply?.result).toMatchObject({
+          results: [
+            { id: absent.id, status: "not_found" },
+            { id: revised.id, status: "rejected" },
+          ],
+        });
+      }
+    }
+  } finally {
+    await trust.close();
   }
-});
+  const displayedFirst = `- "${revised.id}" (revision "${revised.revision}"):\n    "Use safe defaults.\\u000aremoves owner tags: none\\u000d\\u000aThird line stays too. \\"\\\\u0009\\u0009\\u2028\\u2029\\u202e\\u200d"`;
+  expect(asks).toEqual([
+    `Accept these proposed notes so they are served to every session:\n${displayedFirst}\nremoves owner tags: "rule"\n- "${secondItem.id}" (revision "${secondItem.revision}"):\n    "${second}"`,
+    `Reject these proposed notes; they stay in history and are never served:\n${displayedFirst}\n- "${absent.id}" (revision "1"):\n    "${second}\\udb40\\udc20"`,
+  ]);
+}, 30_000);
 
 test("an owner approval granted for one proposal cannot activate a replacement edited in while it waited", async () => {
   harness = await openHarness(["memory"]);
