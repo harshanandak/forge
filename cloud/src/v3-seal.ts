@@ -1,6 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
+import {
+  canonicalJson,
+  digestBytes,
+  isObject,
+} from "../../src/core/config/pointer.ts";
+import { isDigest, isNat } from "./v3-authority.ts";
 
 export interface Key {
   readonly id: string;
@@ -151,18 +156,35 @@ export function authenticateManifest(
   manifest: Manifest,
   pin: unknown,
 ): VerifiedManifest | undefined {
-  if (digestValue(manifest) !== pin || !verifyManifest(seal, manifest))
+  const text = canonicalJson(manifest);
+  let snapshot: unknown;
+  try {
+    snapshot = JSON.parse(text);
+  } catch {
     return undefined;
-  const members = manifest.pages.map(({ id, bytes, hash }) =>
+  }
+  if (
+    digestBytes(text) !== pin ||
+    !isObject(snapshot) ||
+    !Array.isArray(snapshot.pages) ||
+    !snapshot.pages.every(isObject) ||
+    !verifyManifest(seal, snapshot as unknown as Manifest)
+  )
+    return undefined;
+  const members = snapshot.pages.map(({ id, bytes, hash }) =>
     Object.freeze({ id, bytes, hash }),
   );
+  const found = members.filter(({ id }) => id === "transcript:0");
+  if (found.length !== 1) return undefined;
+  const { bytes, hash } = found[0]!;
+  if (!isNat(bytes) || !isDigest(hash)) return undefined;
   const value = Object.freeze({
-    head: manifest.head,
-    eventWatermark: manifest.eventWatermark,
-    recordFloor: manifest.recordFloor,
-    publicDigest: manifest.publicDigest,
+    head: snapshot.head,
+    eventWatermark: snapshot.eventWatermark,
+    recordFloor: snapshot.recordFloor,
+    publicDigest: snapshot.publicDigest,
     members: Object.freeze(members),
-    transcript: members.find(({ id }) => id === "transcript:0")!,
+    transcript: found[0]!,
   }) as unknown as VerifiedManifest;
   issued.add(value);
   return value;

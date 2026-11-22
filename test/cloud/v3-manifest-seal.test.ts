@@ -2,8 +2,10 @@ import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { Project } from "../../cloud/src/project.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import {
+  authenticateManifest,
   isVerifiedManifest,
   type Manifest,
+  type Seal,
   sealOf,
   signRoot,
   signRow,
@@ -11,6 +13,7 @@ import {
   verifyManifest,
 } from "../../cloud/src/v3-seal.ts";
 import { readV3Value, recoverV3 } from "../../cloud/src/v3-store.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import {
   guardFixture,
@@ -628,6 +631,110 @@ test(
     const ordinary = () => recoverV3(st, seal, loose);
     refuse(raw);
     refuse(ordinary);
+  },
+  timeout,
+);
+
+const member = (id: string, body: string) => ({
+  id,
+  bytes: Buffer.byteLength(body),
+  hash: digestBytes(body),
+});
+const firstPages = [member("directory:0", "[]"), member("snapshot:0", "")];
+const signPages = async (seal: Seal, pages: unknown) =>
+  trustedManifest(seal, {
+    ...unsigned((await shared()).data),
+    pages: pages as Manifest["pages"],
+  });
+
+test.each(["Proxy", "getter", "forged first", "honest"] as const)(
+  "v3 authentication uses the pinned pages with %s input",
+  async (kind) => {
+    const f = guardFixture(typedEnv);
+    using _db = f.db;
+    expect((await f.send(probe, {})).status).toBe(200);
+    const put = (value: "a" | "b") =>
+      `[{"changes":[{"key":"r1","value":{"revision":1,"value":"${value}"}}],` +
+      `"events":[{"key":"r1","revision":1,"value":"${value}"}],` +
+      '"format":"forge-cloud-commit/3","operation":"fixture.put","sequence":1,"time":0}]';
+    const [a, b] = [put("a"), put("b")];
+    expect(Buffer.byteLength(a)).toBe(Buffer.byteLength(b));
+    const seal = f.seal();
+    const transcript = member("transcript:0", a);
+    const honest = await signPages(seal, [...firstPages, transcript]);
+    const pin = pinOf(honest);
+    const changed = [...firstPages, member("transcript:0", b)];
+    const first = kind === "forged first";
+    const answers = first ? [changed] : [honest.pages, honest.pages];
+    const readPages = () => answers.shift() ?? (first ? honest.pages : changed);
+    const get = (target: Manifest, key: PropertyKey): unknown =>
+      key === "pages" ? readPages() : Reflect.get(target, key);
+    let wrapped = honest;
+    if (kind === "getter")
+      wrapped = Object.defineProperty({ ...honest }, "pages", {
+        get: readPages,
+      });
+    else if (kind !== "honest") wrapped = new Proxy(honest, { get });
+    const value = authenticateManifest(seal, wrapped, pin);
+    if (first) return expect(value).toBeUndefined();
+    const proof = { admit: Project.admitLeaseRequest, manifest: value! };
+    const folds = [a, b].map((portableTranscript) => {
+      const effects = f.observeEffects();
+      const input = { ...proof, portableTranscript };
+      let result: unknown;
+      try {
+        result = recoverV3(store(f), seal, input).head;
+      } catch (error) {
+        result = error instanceof ForgeFailure ? error.error.code : error;
+      }
+      return [result, effects()];
+    });
+    expect([value?.transcript, value?.members, ...folds]).toEqual([
+      transcript,
+      honest.pages,
+      [1, noWrites],
+      ["UNAVAILABLE", noWrites],
+    ]);
+    expect(isVerifiedManifest(value)).toBe(true);
+    expect(Object.isFrozen(value)).toBe(true);
+  },
+  timeout,
+);
+
+const transcript = member("transcript:0", "a");
+const badMembers = [
+  ["renamed transcript", { ...transcript, id: "transcript:1" }],
+  ["empty transcript", { id: "transcript:0" }],
+  ["string bytes", { ...transcript, bytes: "12" }],
+  ["negative bytes", { ...transcript, bytes: -1 }],
+  ["fractional bytes", { ...transcript, bytes: 1.5 }],
+  ["number hash", { ...transcript, hash: 7 }],
+  ["uppercase hash", { ...transcript, hash: transcript.hash.toUpperCase() }],
+  ["short hash", { ...transcript, hash: "sha256:abc" }],
+] as const;
+test.each([
+  ...badMembers.map(([label, page]) => [label, [...firstPages, page]] as const),
+  ["missing transcript", firstPages],
+  ["duplicate transcript", [...firstPages, transcript, transcript]],
+  ["null page", [...firstPages, transcript, null]],
+  ["non-array pages", { transcript }],
+] as const)(
+  "v3 authentication refuses signed and pinned pages with %s",
+  async (_label, pages) => {
+    const seal = sealOf({ V3_SEAL_KEY: newKey() }, { toString: () => "f" });
+    const signed = await signPages(seal, pages);
+    expect(authenticateManifest(seal, signed, pinOf(signed))).toBeUndefined();
+  },
+  timeout,
+);
+
+test.each(["its own pin", "a wrong pin"] as const)(
+  "v3 authentication refuses sparse pages pinned by %s without throwing",
+  async (kind) => {
+    const seal = sealOf({ V3_SEAL_KEY: newKey() }, { toString: () => "f" });
+    const signed = await signPages(seal, new Array(2));
+    const pin = kind === "its own pin" ? pinOf(signed) : digestBytes("other");
+    expect(authenticateManifest(seal, signed, pin)).toBeUndefined();
   },
   timeout,
 );

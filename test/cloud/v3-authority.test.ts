@@ -5,6 +5,7 @@ import {
   authorityFault,
   isDigest,
   isNat,
+  sealedAuthorityValid,
 } from "../../cloud/src/v3-authority.ts";
 import { leaseV3, recoverV3 } from "../../cloud/src/v3-store.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -149,6 +150,59 @@ test(
     } finally {
       f.db.close();
     }
+  },
+  timeout,
+);
+
+const nullMethod: unknown = JSON.parse('{"toString":null}');
+const numberMethod: unknown = JSON.parse('{"toString":1}');
+function sealedOutcome({ time, outcome, lease }: Json) {
+  const key = (outcome as { id: string }).id;
+  const value = { time, outcome, ...(lease !== undefined && { lease }) };
+  return sealedAuthorityValid("outcome", key, value);
+}
+const coercible = [["LEASE_HELD"], ["ok"], 0, 1, true, null];
+test.each([
+  ["non-convertible null method", [nullMethod]],
+  ["non-convertible number method", [numberMethod]],
+  ["convertible statuses", [...coercible, { toString: () => "LEASE_HELD" }]],
+] as const)(
+  "sealed claim and refusal check %s",
+  async (_label, statuses) => {
+    for (const frame of (await writerFrames()).slice(0, 2)) {
+      expect(sealedOutcome(frame)).toBe(true);
+      for (const status of statuses)
+        expect(sealedOutcome(at("outcome.status", status)(frame))).toBe(false);
+    }
+  },
+  timeout,
+);
+
+test.each([
+  ["with string", "NOT_FOUND", "stored", true],
+  ["with array", ["NOT_FOUND"], "stored", false],
+  ["with object", nullMethod, "stored", false],
+  ["leased string", "NOT_FOUND", "leased", false],
+  ["leased object", nullMethod, "leased", false],
+  ["with array in a frame", ["NOT_FOUND"], "frame", false],
+  ["with object in a frame", nullMethod, "frame", false],
+] as const)(
+  "command refusal %s",
+  async (_label, status, kind, accepted) => {
+    const outcome = {
+      id: `c2:${"a".repeat(64)}`,
+      scope: { family: "command", version: 2, principal: digestBytes("p") },
+      fingerprint: "fixture",
+      retryUntil: 0,
+      result: { code: "NOT_FOUND", message: "missing", retry: "never" },
+      status,
+    };
+    const frame = { operation: "issue.update", outcome };
+    if (kind === "frame")
+      return expect(authorityFault(frame)).toBe("command outcome");
+    const lease =
+      kind === "leased" ? (await writerFrames())[0]!.lease : undefined;
+    expect(sealedOutcome({ time: 0, outcome, lease })).toBe(accepted);
   },
   timeout,
 );

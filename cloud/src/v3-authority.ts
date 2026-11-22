@@ -113,7 +113,8 @@ function outcomeFault(
   if (
     command &&
     (!/^c2:[a-f0-9]{64}$/.test(outcome.id) ||
-      (outcome.status !== "ok" && !codes.includes(String(outcome.status))))
+      typeof outcome.status !== "string" ||
+      (outcome.status !== "ok" && !codes.includes(outcome.status)))
   )
     return "command outcome";
   if (archived) return undefined;
@@ -163,7 +164,9 @@ export function sealedAuthorityValid(
     );
   if (!isNat(time) || !isObject(outcome) || outcome.id !== key) return false;
   const grant =
-    lease !== undefined || CLAIM_REFUSALS.includes(String(outcome.status));
+    lease !== undefined ||
+    (typeof outcome.status === "string" &&
+      CLAIM_REFUSALS.includes(outcome.status));
   return (
     outcomeFault(outcome, undefined, false, grant) === undefined &&
     (outcome.status === "ok" && (lease !== undefined || !("result" in outcome))
