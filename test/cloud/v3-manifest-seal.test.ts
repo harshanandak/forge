@@ -90,10 +90,10 @@ const rows = ({ db }: Fixture) =>
   db
     .query<{ n: number }, []>("SELECT count(*) AS n FROM cloud_v3_commits")
     .get()!.n;
-const stored = ({ db }: Fixture) =>
-  ["root", "pages", "commits", "restore"].map((name) =>
-    db.query(`SELECT * FROM cloud_v3_${name} ORDER BY 1`).all(),
-  );
+const stored = (f: Fixture) =>
+  tableNames(f)
+    .filter((name) => name.startsWith("cloud_v3_"))
+    .map((name) => f.db.query(`SELECT * FROM ${name} ORDER BY 1`).all());
 const sourceId = (f: Fixture) => String(f.context.id);
 const store = (f: Fixture) => writableStore(f.storage);
 
@@ -437,11 +437,17 @@ test(
     using _db = target.db;
     const manifest = trustedManifest(target.seal(), unsigned(data));
     const code = manifest.source.charCodeAt(0).toString(16).padStart(4, "0");
+    const reversed = (o: object) =>
+      Object.fromEntries(Object.entries(o).reverse());
     const spelled = JSON.stringify(
-      manifest,
-      Object.keys(manifest).reverse(),
+      reversed({
+        ...manifest,
+        pages: manifest.pages.map((member) => reversed(member)),
+      }),
+      null,
       2,
     ).replace(`"source": "${manifest.source[0]}`, `"source": "\\u${code}`);
+    expect(spelled).toContain("\\u");
     const first = data.pages[0]!;
     const text = `{ "manifest": ${spelled}, "body": ${JSON.stringify(first.body)}, "id": "directory:0", "page": 0 }`;
     const raw = () =>
