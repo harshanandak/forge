@@ -1,6 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
+  "$defs": {
+    "RestoreId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "Copy the restoreId returned by the first truncated page onto every continuation. Each continuation requires relayed owner approval."
+    }
+  },
   "oneOf": [
     {
       "type": "object",
@@ -22,6 +29,7 @@
         "truncated": {
           "type": "boolean"
         },
+        "restoreId": { "$ref": "#/$defs/RestoreId" },
         "next": {
           "type": "integer",
           "minimum": 1
@@ -93,6 +101,7 @@
         "truncated": {
           "type": "boolean"
         },
+        "restoreId": { "$ref": "#/$defs/RestoreId" },
         "next": {
           "type": "integer",
           "minimum": 1
@@ -170,6 +179,7 @@
         "truncated": {
           "type": "boolean"
         },
+        "restoreId": { "$ref": "#/$defs/RestoreId" },
         "next": {
           "type": "integer",
           "minimum": 1

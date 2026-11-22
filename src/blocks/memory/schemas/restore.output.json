@@ -2,6 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "restoreId": {
+      "type": "string",
+      "maxLength": 36,
+      "description": "Issued for a truncated first page and echoed on continuations."
+    },
     "added": {
       "type": "integer",
       "minimum": 0

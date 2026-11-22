@@ -206,6 +206,10 @@
     {
       "slot": "levels",
       "interface": "forge.project-state@1"
+    },
+    {
+      "slot": "crypto",
+      "interface": "forge.crypto@1"
     }
   ],
   "docs": "docs/records.json"
