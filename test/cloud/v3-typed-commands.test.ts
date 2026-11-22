@@ -30,6 +30,12 @@ const create = {
   input: { title: "Before" },
   context: { actor },
 };
+const update = {
+  op: "issue.update",
+  requestId: "update",
+  input: { id: "forge-1", expectRevision: 1, title: "After" },
+  context: { ...holder, leaseGeneration: 1 },
+};
 const initial = {
   id: "work-1",
   prefix: "forge",
@@ -230,6 +236,179 @@ function tamper(f: Fixture, sequence: number, edit: (frame: Json) => void) {
   f.restart();
 }
 
+async function updateRefusal(
+  f: Fixture,
+  body: typeof update,
+  status: number,
+  code: string,
+  owner?: string,
+) {
+  const before = frames(f).length;
+  const effects = f.observeEffects();
+  const response = await send(f, body, owner);
+  expect(response).toMatchObject(error(status, code));
+  expect(frames(f)).toHaveLength(before + 1);
+  expect(effects()).toMatchObject({ sqlWriteAttempts: 1, alarmWrites: 0 });
+  expect(frames(f).at(-1)).toMatchObject({
+    operation: update.op,
+    events: [],
+    outcome: { status: code },
+  });
+  expect(frames(f).at(-1)?.changes).toBeUndefined();
+  const replay = f.observeEffects();
+  expect(await send(f, body, owner)).toEqual(response);
+  expect(
+    await send(
+      f,
+      { ...body, input: { ...body.input, title: "Changed" } },
+      owner,
+    ),
+  ).toMatchObject(error(409, "INPUT_CONFLICT"));
+  expect(replay()).toEqual(noWrites);
+}
+
+test(
+  "v3 typed update writes one row and preserves the revision and lease checks across collection",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await oneRow(f, () => send(f, create));
+    await checkpoint(f);
+    await rawClaim(f);
+    const first = await oneRow(f, () => send(f, update));
+    expect(first.body).toMatchObject({
+      ok: true,
+      op: update.op,
+      status: "OK",
+      result: {
+        id: "forge-1",
+        title: "After",
+        revision: 2,
+        lease: { generation: 1 },
+      },
+    });
+    expect(frames(f).at(-1)).toMatchObject({
+      operation: update.op,
+      events: [
+        {
+          key: "r1",
+          revision: 2,
+          expectRevision: 1,
+          patch: { title: "After" },
+        },
+      ],
+      outcome: { status: "ok", result: { id: "forge-1", revision: 2 } },
+    });
+    await checkpoint(f);
+    const replay = f.observeEffects();
+    expect(await send(f, update)).toEqual(first);
+    expect(
+      await send(f, {
+        ...update,
+        input: { ...update.input, title: "Changed" },
+      }),
+    ).toMatchObject(error(409, "INPUT_CONFLICT"));
+    expect(replay()).toEqual(noWrites);
+
+    const current = { ...update.input, expectRevision: 2 };
+    await updateRefusal(
+      f,
+      { ...update, requestId: "old-revision" },
+      409,
+      "REVISION_CONFLICT",
+    );
+    await updateRefusal(
+      f,
+      {
+        ...update,
+        requestId: "stale-fence",
+        input: current,
+        context: { ...update.context, leaseGeneration: 2 },
+      },
+      409,
+      "LEASE_STALE",
+    );
+    await updateRefusal(
+      f,
+      { ...update, requestId: "other-holder", input: current },
+      409,
+      "LEASE_NOT_HELD",
+      "tablet",
+    );
+    setSystemTime(time + ttlMs);
+    await updateRefusal(
+      f,
+      { ...update, requestId: "expired-lease", input: current },
+      409,
+      "LEASE_EXPIRED",
+    );
+    const lost = f.observeEffects();
+    expect(await send(f, update)).toMatchObject(error(409, "LEASE_STALE"));
+    expect(lost()).toEqual(noWrites);
+    await checkpoint(f);
+    expect(record(f)).toEqual({
+      revision: 2,
+      value: { ...initial, title: "After" },
+    });
+  },
+  timeout,
+);
+
+test(
+  "v3 typed update records only refusals for bad input, a missing issue and an absent lease",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await oneRow(f, () => send(f, create));
+    const graph = { ...update.input, dependsOn: ["forge-9"] };
+    await updateRefusal(
+      f,
+      { ...update, requestId: "update-graph", input: graph },
+      400,
+      "INPUT_INVALID",
+    );
+    await updateRefusal(
+      f,
+      {
+        ...update,
+        requestId: "update-missing",
+        input: { ...update.input, id: "forge-9" },
+      },
+      404,
+      "NOT_FOUND",
+    );
+    await updateRefusal(f, update, 409, "LEASE_NOT_HELD");
+    expect(record(f)).toEqual({ revision: 1, value: initial });
+    expect(record(f, "r9")).toEqual({ revision: undefined, value: undefined });
+  },
+  timeout,
+);
+
+test(
+  "v3 checkpoint refuses an update change that differs from the frame patch",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await oneRow(f, () => send(f, create));
+    await rawClaim(f);
+    await oneRow(f, () => send(f, update));
+    tamper(f, 3, (frame) => {
+      const [change] = frame.changes as Json[];
+      ((change!.value as Json).value as Json).title = "Tampered";
+    });
+    const effects = f.observeEffects();
+    expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject(
+      error(503, "UNAVAILABLE"),
+    );
+    expect(effects()).toEqual(noWrites);
+    expect(frames(f)).toHaveLength(3);
+  },
+  timeout,
+);
+
 test(
   "v3 recovery and checkpoint refuse a create frame whose receipt id collides with a live receipt",
   async () => {
@@ -296,8 +475,12 @@ test(
     expect(await f.send("command", create, headers())).toMatchObject(
       error(403, "AUTH_FORBIDDEN"),
     );
+    expect(await f.send("command", update, headers())).toMatchObject(
+      error(403, "AUTH_FORBIDDEN"),
+    );
     f.restart(false);
     expect(await send(f, create)).toMatchObject(error(404, "UNKNOWN_COMMAND"));
+    expect(await send(f, update)).toMatchObject(error(404, "UNKNOWN_COMMAND"));
     expect(effects()).toEqual(noWrites);
   },
   timeout,
@@ -326,6 +509,52 @@ test(
         )
         .all(subject),
     ).toEqual([{ key: subject, revision: 1 }]);
+    expect(
+      db
+        .query("SELECT name FROM sqlite_schema WHERE name GLOB 'cloud_v3_*'")
+        .all(),
+    ).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "v2 typed update still uses the v2 writer when the selector is enabled",
+  async () => {
+    const f = guardFixture(env);
+    using db = f.db;
+    f.restart(false);
+    const device = await f.send("devices", { device: "laptop", ttlMs });
+    expect(device.status).toBe(200);
+    const { token } = (device.body as { value: { token: string } }).value;
+    f.restart();
+    const auth = { authorization: `Bearer ${token}` };
+    expect(await f.send("command", create, auth)).toMatchObject({
+      status: 200,
+    });
+    expect(
+      await f.send(
+        "command",
+        {
+          op: "issue.claim",
+          requestId: "claim",
+          input: { id: "forge-1", ttlSeconds: 60 },
+          context: holder,
+        },
+        auth,
+      ),
+    ).toMatchObject({ status: 200, body: { result: { generation: 1 } } });
+    expect(await f.send("command", update, auth)).toMatchObject({
+      status: 200,
+      body: { result: { id: "forge-1", title: "After", revision: 2 } },
+    });
+    expect(
+      db
+        .query(
+          "SELECT revision FROM state_records WHERE namespace='forge/work' AND key=?",
+        )
+        .get(subject),
+    ).toEqual({ revision: 2 });
     expect(
       db
         .query("SELECT name FROM sqlite_schema WHERE name GLOB 'cloud_v3_*'")
