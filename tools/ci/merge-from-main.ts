@@ -21,6 +21,8 @@ try {
     }
   };
   for (const sha of [base, head]) git(["cat-file", "-e", `${sha}^{commit}`]);
+  if (git(["rev-parse", "--is-shallow-repository"])!.trim() !== "false")
+    throw new Error();
   const range = `${base}..${head}`;
   const merges = git(["rev-list", "--merges", "--parents", range])!.trim();
   const remoteRef = `refs/remotes/origin/${ref}`;

@@ -4,16 +4,14 @@ import { afterAll, beforeAll, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { gitExecutable } from "../../tools/git-executable.ts";
 
 const tool = fileURLToPath(
   new URL("../../tools/ci/merge-from-main.ts", import.meta.url),
 );
-const reasons = [
-  "Merge-reason: conflict",
-  "Merge-reason: queue-rejection",
-] as const;
+const conflict = "Merge-reason: conflict";
+const reasons = [conflict, "Merge-reason: queue-rejection"];
 const timeout = 10_000;
 
 function createHistory(cwd: string) {
@@ -60,8 +58,8 @@ function createHistory(cwd: string) {
   ];
   const excused = [
     ...reasons.map((line) => commit(`Merge main\n\n${line}`, topic, base)),
-    commit(`Merge main\n\n${reasons[0]}\r`, topic, base),
-    followUp(`${reasons[0]} ${merge.slice(0, 7)}`),
+    commit(`Merge main\n\n${conflict}\r`, topic, base),
+    followUp(`${conflict} ${merge.slice(0, 7)}`),
   ];
   const unexcused = [
     merge,
@@ -69,17 +67,24 @@ function createHistory(cwd: string) {
     commit("Merge older main", topic, olderBase),
     commit("Octopus merge", topic, feature, base),
   ];
+  const untagged = followUp(conflict);
+  const shallow = join(cwd, "shallow");
+  git("branch", "base", base);
+  git("branch", "topic", untagged);
+  const source = pathToFileURL(cwd).href;
+  git("clone", "-q", "--depth=1", "--no-single-branch", source, shallow);
   const badReasons: [head: string, mergeSha?: string][] = [
     [commit("Merge main\n\nmerge-reason: Conflict", topic, base)],
     [commit("Merge main\n\nMerge-reason: queue rejection", topic, base)],
-    [followUp(reasons[0]), merge],
-    [followUp(`${reasons[0]} ${base}`), merge],
+    [untagged, merge],
+    [followUp(`${conflict} ${base}`), merge],
   ];
 
-  const run = (BASE_SHA: string, HEAD_SHA: string, BASE_REF = "unfetched") => {
+  const run = (base: string, head: string, ref = "unfetched", dir = cwd) => {
     const result = spawnSync(process.execPath, [tool], {
       ...options,
-      env: { ...process.env, BASE_SHA, HEAD_SHA, BASE_REF },
+      cwd: dir,
+      env: { ...process.env, BASE_SHA: base, HEAD_SHA: head, BASE_REF: ref },
     });
     if (result.error) throw result.error;
     return [result.status, (result.stdout + result.stderr).trim()] as const;
@@ -94,6 +99,7 @@ function createHistory(cwd: string) {
     unexcused,
     badReasons,
     run,
+    runShallow: () => run(base, untagged, "unfetched", shallow),
   };
 }
 
@@ -186,6 +192,16 @@ test(
       assert.equal(exit, 1, log);
       assert.match(log, diagnostic);
     }
+  },
+  timeout,
+);
+
+test(
+  "refuses shallow history",
+  () => {
+    const [exit, log] = history.runShallow();
+    assert.equal(exit, 1, log);
+    assert.match(log, /^::error::Cannot inspect PR merge commits\./);
   },
   timeout,
 );
