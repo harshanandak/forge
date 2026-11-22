@@ -225,6 +225,14 @@ function ownerTag(
     ),
   );
 }
+const removedOwnerTags = (
+  from: readonly string[],
+  to: readonly string[],
+  config: MemoryConfig,
+) =>
+  from.filter(
+    (tag) => !to.includes(tag) && ownerTag([tag], config) !== undefined,
+  );
 function words(text: string): string[] {
   return text
     .normalize("NFKC")
@@ -994,9 +1002,11 @@ interface DecideItem {
   readonly id: string;
   readonly revision: number;
   readonly text?: string;
+  readonly removedOwnerTags?: readonly string[];
 }
 interface DecideArgs {
   input: { items: DecideItem[]; approval?: Approval };
+  config?: MemoryConfig;
   services: Services;
 }
 /**
@@ -1007,7 +1017,7 @@ interface DecideArgs {
  * and the write itself is fenced to that revision.
  */
 async function decide(
-  { input, services }: DecideArgs,
+  { input, config = {}, services }: DecideArgs,
   decision: "accept" | "reject",
 ) {
   const approval = approved(
@@ -1066,6 +1076,19 @@ async function decide(
       fail(
         "PROPOSAL_CHANGED",
         `${id} is at revision ${existing.revision}, not the revision ${item.revision} the owner approved, or its proposed text differs; nothing was written. Show it again, ask the owner about what it says now, and retry with that revision and text.`,
+      );
+    const dropped = removedOwnerTags(
+      old.tags,
+      old.proposal?.tags ?? old.tags,
+      config,
+    );
+    if (
+      decision === "accept" &&
+      canonical(dropped) !== canonical(item.removedOwnerTags ?? [])
+    )
+      fail(
+        "PROPOSAL_CHANGED",
+        `${id} removes the owner tags [${dropped.join(", ")}]; nothing was written. Retry with removedOwnerTags set to that list.`,
       );
     if (written.has(id)) continue;
     written.add(id);
@@ -1671,31 +1694,22 @@ module.exports = {
       const old = existing && (existing.value as NoteValue);
       if (!existing || !old || old.deleted === true)
         return { status: "not_found" as const, id: editing };
-      const removed =
-        input.tags === undefined
-          ? undefined
-          : ownerTag(
-              old.tags.filter((tag) => !input.tags!.includes(tag)),
-              config,
-            );
+      const newTags = input.tags ?? old.tags;
+      const dropped = removedOwnerTags(old.tags, newTags, config);
+      const removed = dropped[0];
       const approval =
-        removed === undefined
+        removed === undefined || old.status === undefined
           ? old.approval
           : approved(input.approval, "memory.add", removed);
-      // An owner tag never reaches an accepted note on an agent's say-so, so nothing inline (not
-      // even an owner approval, which only the relayed accept can verify) skips the owner.
-      const newTags = input.tags ?? old.tags;
       const taggedNow = ownerTag(
         newTags.filter((tag) => !old.tags.includes(tag)),
         config,
       );
-      // Removing one owner tag never lets changed text skip the owner while another owner tag stays.
       if (
         old.status === undefined &&
         (taggedNow !== undefined ||
-          (ownerTag(old.tags, config) !== undefined &&
-            input.text !== old.text &&
-            (removed === undefined || ownerTag(newTags, config) !== undefined)))
+          removed !== undefined ||
+          (ownerTag(old.tags, config) !== undefined && input.text !== old.text))
       ) {
         const scope =
           input.scope === undefined ? old.scope : (input.scope ?? undefined);
@@ -1725,7 +1739,7 @@ module.exports = {
           status: "updated" as const,
           id: editing,
           note: present(source, editing, record, waiting, old.text),
-          notice: `This change waits for the owner. The accepted text and tags stay served until the owner accepts it with memory.accept: copy id, revision and the proposed text from memory.show ${editing} into items, then ask the owner and follow the approval request it returns.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
+          notice: `${removed === undefined ? "This change" : `This change removes the owner tag ${dropped.join(", ")}. It`} waits for the owner. The accepted text and tags stay served until the owner accepts it with memory.accept: copy id, revision and the proposed text from memory.show ${editing} into items${removed === undefined ? "" : `, and add removedOwnerTags [${dropped.join(", ")}] to the item`}, then ask the owner and follow the approval request it returns.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
           ...(hint.similarTo === undefined
             ? {}
             : { similarTo: hint.similarTo }),

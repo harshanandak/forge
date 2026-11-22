@@ -21,6 +21,12 @@
             "type": "string",
             "maxLength": 8000,
             "description": "The proposed text the owner was shown: the proposal text if the note has a pending revision, else the note text."
+          },
+          "removedOwnerTags": {
+            "type": "array",
+            "maxItems": 8,
+            "items": { "type": "string", "maxLength": 64 },
+            "description": "The owner tags this proposal removes from the accepted note, as memory.add reported. The call refuses if the list differs from what the proposal removes."
           }
         },
         "additionalProperties": false,

@@ -100,16 +100,26 @@ export async function accepted<T extends { id: string }>(
 interface Shown {
   note: {
     revision: number;
+    tags?: string[];
     text: { text: string };
-    proposal?: { text: { text: string } };
+    proposal?: { text: { text: string }; tags?: string[] };
   };
 }
-/** What the owner is shown for a proposal: its note revision and the text that would be served. */
+const OWNER_TAGS = ["rule", "preference", "decision"];
+/** What the owner is shown for a proposal: its note revision, the text that would be served, and the owner tags it removes. */
 export function decisionItem(id: string, shown: Shown) {
+  const { proposal, tags } = shown.note;
+  const removedOwnerTags = (tags ?? []).filter(
+    (tag) =>
+      OWNER_TAGS.includes(tag) &&
+      proposal?.tags !== undefined &&
+      !proposal.tags.includes(tag),
+  );
   return {
     id,
     revision: shown.note.revision,
-    text: (shown.note.proposal ?? shown.note).text.text,
+    text: (proposal ?? shown.note).text.text,
+    ...(removedOwnerTags.length === 0 ? {} : { removedOwnerTags }),
   };
 }
 /** The items memory.accept and memory.reject bind the owner's approval to, read with a direct call. */

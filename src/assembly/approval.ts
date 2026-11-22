@@ -303,7 +303,7 @@ export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
           typeof item?.text === "string"
             ? item.text.split(/\r?\n/u).join("\n    ")
             : "(text not shown)";
-        return `- ${String(item?.id)} (revision ${String(item?.revision)}):\n    ${text}`;
+        return `- ${String(item?.id)} (revision ${String(item?.revision)}):\n    ${text}${Array.isArray(item?.removedOwnerTags) && item.removedOwnerTags.length > 0 ? `\n    removes owner tags: ${item.removedOwnerTags.join(", ")} (it will no longer be served as an owner rule)` : ""}`;
       },
     );
     return declaredOp === "memory.accept"

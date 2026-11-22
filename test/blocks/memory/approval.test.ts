@@ -189,7 +189,7 @@ test("undo refuses legacy and moved tombstones without writing", async () => {
   }
 });
 
-test("partial edits allow text and added tags but require owner approval for protected tag removal", async () => {
+test("partial edits allow text and added tags, and a protected tag removal waits for the owner whatever approval comes with it", async () => {
   const { entry, state, services } = setup();
   await entry["memory.add"]!({
     input: { id: "note-1", text: "updated" },
@@ -199,32 +199,26 @@ test("partial edits allow text and added tags but require owner approval for pro
     input: { id: "note-1", text: "updated", tags: ["rule", "owner", "new"] },
     services,
   });
-  const writes = state.counts.put;
-  for (const approval of [undefined, agent])
-    await refused(
-      () =>
-        entry["memory.add"]!({
-          input: { id: "note-1", text: "updated", tags: [], approval },
-          services,
-        }),
-      "rule",
-    );
-  expect(state.counts.put).toBe(writes);
-  expect(
-    await entry["memory.add"]!({
-      input: { id: "note-1", text: "updated", tags: [], approval: owner },
-      services,
-    }),
-  ).toMatchObject({
-    note: { tags: [], approval: { by: "owner", quote: { kind: "untrusted" } } },
+  for (const approval of [undefined, agent, owner])
+    expect(
+      await entry["memory.add"]!({
+        input: { id: "note-1", text: "updated", tags: [], approval },
+        services,
+      }),
+    ).toMatchObject({
+      status: "updated",
+      note: { tags: original.tags, proposal: { tags: [] } },
+    });
+  expect(state.get(key)!.value).toMatchObject({
+    tags: original.tags,
+    proposal: { tags: [] },
   });
-  await entry["memory.add"]!({
-    input: { id: "note-1", text: "later" },
+  const shown = (await entry["memory.show"]!({
+    input: { id: "note-1" },
     services,
-  });
-  expect(
-    await entry["memory.show"]!({ input: { id: "note-1" }, services }),
-  ).toMatchObject({ note: { approval: { by: "owner" } } });
+  })) as { note: { tags: string[]; approval?: unknown } };
+  expect(shown.note.tags).toEqual(original.tags);
+  expect(shown.note.approval).toBeUndefined();
 });
 
 test("ownerTags config replaces defaults for forget, undo and tag removal", async () => {
@@ -239,15 +233,16 @@ test("ownerTags config replaces defaults for forget, undo and tag removal", asyn
       }),
     "custom",
   );
-  await refused(
-    () =>
-      entry["memory.add"]!({
-        input: { id: "note-1", text: "edit", tags: [], approval: agent },
-        config,
-        services,
-      }),
-    "custom",
-  );
+  expect(
+    await entry["memory.add"]!({
+      input: { id: "note-1", text: "edit", tags: [], approval: agent },
+      config,
+      services,
+    }),
+  ).toMatchObject({
+    status: "updated",
+    note: { tags: ["custom"], proposal: { tags: [] } },
+  });
   expect(
     await entry["memory.forget"]!({
       input: { id: "note-1", approval: agent },
