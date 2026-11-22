@@ -608,6 +608,8 @@ const deliveryMessage =
 const storeMessage =
   "The cloud project contains an unregistered storage table. Ask the project owner to inspect the store.";
 const invalidMessage = "The Forge cloud rejected the command input.";
+const approvalMessage =
+  "Owner approval is still required. Run lane resume without an approval to get a new request.";
 const hostile = "\u001b[31m\nFAKE PROMPT";
 
 for (const [name, op, code, reasonId, message, expectedExit] of [
@@ -627,6 +629,23 @@ for (const [name, op, code, reasonId, message, expectedExit] of [
     storeMessage,
     6,
   ],
+  ...(
+    [
+      ["approval with an unknown ID", "__proto__"],
+      ["approval with a mismatched ID", deliveryReason],
+      ["approval with a null ID", null],
+    ] as const
+  ).map(
+    ([name, reasonId]) =>
+      [
+        name,
+        "lane.resume",
+        "APPROVAL_REQUIRED",
+        reasonId,
+        approvalMessage,
+        1,
+      ] as const,
+  ),
   ["hostile ID", "issue.close", "INPUT_INVALID", hostile, invalidMessage, 6],
   [
     "prototype key",
@@ -709,10 +728,13 @@ for (const [name, op, code, reasonId, message, expectedExit] of [
         error: { code, message: hostile, retry: "never", reasonId },
         warnings: [],
       }),
-      code === "NOT_FOUND" ? 404 : 400,
+      code === "APPROVAL_REQUIRED" ? 409 : code === "NOT_FOUND" ? 404 : 400,
     );
     const failed = await failureOf(() =>
-      client.command({ ...cmd, op }, () => true),
+      client.command(
+        op === "lane.resume" ? RESUME_CALL : { ...cmd, op },
+        () => true,
+      ),
     );
     const envelope = {
       ok: false as const,
