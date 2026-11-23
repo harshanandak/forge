@@ -6680,9 +6680,11 @@ test.each(["in-memory", "page-backed"] as const)(
           ({ key }) => key === occupied.id,
         )!;
         expect(member.page).toBe("snapshot:0");
-        const valueBefore = pageBody(f, member.page);
+        const readSnapshot = () =>
+          pages(f).find(({ id }) => id === member.page)!.body;
+        const valueBefore = readSnapshot();
         await coldRefused(f);
-        expect(pageBody(f, member.page)).toBe(valueBefore);
+        expect(readSnapshot()).toBe(valueBefore);
       }
     }),
   timeout,
