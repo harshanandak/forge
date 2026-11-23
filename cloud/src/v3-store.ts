@@ -942,10 +942,10 @@ function apply(image: V3Image, frame: Frame, sequence: number) {
   if (lease) image.entries.lease.set(lease.subject, { value: lease });
   if (outcome)
     image.entries.outcome.set(outcome.id, {
-      value: { time, outcome, ...(lease && { lease }) },
+      value: { ...(lease && { lease }), outcome, time },
     });
   if (witness)
-    image.entries.witness.set(witness.id, { value: { witness, lease } });
+    image.entries.witness.set(witness.id, { value: { lease, witness } });
   image.head = sequence;
   image.eventWatermark += frame.events.length;
 }
