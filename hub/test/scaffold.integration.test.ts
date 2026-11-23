@@ -1,7 +1,7 @@
 /// <reference types="bun" />
 
 import { ok } from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -23,7 +23,7 @@ import {
   sep,
 } from "node:path";
 import { pathToFileURL } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { expect, test } from "bun:test";
 
 const timeout = 30_000;
@@ -33,6 +33,7 @@ const dist = join(hub, "dist");
 const mainUrl = pathToFileURL(join(dist, "main.js")).href;
 const setupUrl = pathToFileURL(join(dist, "setup/index.js")).href;
 const usage = "usage: forge-hub <command>\n";
+const execFileAsync = promisify(execFile);
 
 function node(args: string[], cwd: string, env = {}) {
   return spawnSync("node", args, {
@@ -155,7 +156,7 @@ const importGuard = `
   registerHooks({
     load(url, context, nextLoad) {
       if (url.startsWith(root) && url.endsWith(".js")) {
-        return { format: "module", shortCircuit: true, source: loadFile(new URL(url)) };
+        return { format: "module", shortCircuit: true, source: loadFile(new URL(url), "utf8") };
       }
       return nextLoad(url, context);
     },
@@ -331,7 +332,7 @@ function runtimeTargets(
   files: string[],
 ): void {
   const targets = [
-    metadata.main,
+    metadata.main === "" ? undefined : metadata.main,
     metadata.module,
     metadata.bin,
     metadata.exports,
@@ -371,23 +372,18 @@ async function packableFiles(npm: string): Promise<string[]> {
   return packlist(await new Arborist({ path: hub }).loadActual());
 }
 
-function packReport(): string[] {
-  const args = ["pack", "--dry-run", "--json", "--ignore-scripts"];
-  const options = {
+async function packReport(npm: string): Promise<string[]> {
+  const cli = join(dirname(npm), "bin/npm-cli.js");
+  const args = [cli, "pack", "--dry-run", "--json", "--ignore-scripts"];
+  const result = await execFileAsync("node", args, {
     cwd: hub,
     encoding: "utf8",
     windowsHide: true,
     maxBuffer: 8 * 1024 * 1024,
-  } as const;
-  const result =
-    process.platform === "win32"
-      ? spawnSync(
-          "cmd.exe",
-          ["/d", "/s", "/c", "npm " + args.join(" ")],
-          options,
-        )
-      : spawnSync("npm", args, options);
-  ok(result.status === 0, "npm pack inventory failed");
+    timeout,
+  }).catch(() => {
+    throw new Error("npm pack inventory failed");
+  });
   let value: unknown;
   try {
     value = JSON.parse(result.stdout);
@@ -503,13 +499,15 @@ test(
 
     const manifestPath = join(hub, "package.json");
     const before = readFileSync(manifestPath);
-    const paths = packReport();
+    const [paths, expected] = await Promise.all([
+      packReport(npm),
+      packableFiles(npm),
+    ]);
     ok(
       before.equals(readFileSync(manifestPath)),
       "npm pack changed the hub manifest",
     );
     const closure = installedClosure();
-    const expected = await packableFiles(npm);
     checkInventory(paths, expected, closure);
 
     const omitPackage = (owner: string) =>
