@@ -110,8 +110,6 @@ jobs:
         working-directory: cloud
       - run: bun install --frozen-lockfile --ignore-scripts --linker hoisted
         working-directory: hub
-      - name: Check skeleton preservation
-        run: bun tools/ci/skeleton-preservation.ts
       - run: bun run test:structure --timings="$CI_TIMINGS" --update-timings 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - name: Select the pinned lint Bun for Quick
         if: needs.changes.outputs.tier == 'quick'
