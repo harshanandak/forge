@@ -16,12 +16,7 @@ import { NAMESPACE, requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
 import { CLAIM_REFUSALS, UPDATE_REFUSALS } from "./v3-authority.ts";
 import { updateEffect } from "./v3-record-transitions.ts";
-import {
-  basisFault,
-  CLAIM_INVALID,
-  claimDecision,
-  updateDecision,
-} from "./v3-refusals.ts";
+import { CLAIM_INVALID, claimDecision, updateDecision } from "./v3-refusals.ts";
 import type { Seal } from "./v3-seal.ts";
 import * as store from "./v3-store.ts";
 
@@ -104,8 +99,6 @@ const commands: Readonly<Record<string, Command>> = {
         holder: holderOf(context),
         ttlMs: ttlSeconds * 1000,
       } as const;
-      if (basisFault("issue.claim", basis) !== undefined)
-        throw store.fail("INTERNAL", "Invalid refusal basis");
       const decided = claimDecision(
         image,
         basis,
@@ -169,8 +162,6 @@ const commands: Readonly<Record<string, Command>> = {
         holder,
         generation,
       } as const;
-      if (basisFault("issue.update", basis) !== undefined)
-        throw store.fail("INTERNAL", "Invalid refusal basis");
       const decided = updateDecision(image, basis, now);
       if ("refusal" in decided) throw new ForgeFailure(decided.refusal);
       const { key, current, lease } = decided;
