@@ -2507,6 +2507,11 @@ for (const [label, table] of [
           const source = guardFixture(env);
           using _source = source.db;
           await provision(source);
+          answers(
+            await source.send(`${probe}/commits`, { frames: [note] }),
+            200,
+          );
+          answers(await source.send(`${probe}/checkpoint`, {}), 200);
           const portable = portableOf(source);
           const control = guardFixture(env);
           using _control = control.db;
