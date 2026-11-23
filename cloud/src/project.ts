@@ -132,6 +132,11 @@ import { authorizeV3Token, issueV3Token, revokeV3Token } from "./v3-tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { requestV3Approval } from "./v3-approvals.ts";
+import {
+  isPromoteCallback,
+  isPromoteRoute,
+  promoteRoute,
+} from "./auth/promote-browser.ts";
 import { archivedCheck, checkpointV3 } from "./v3-checkpoint.ts";
 import { commandV3 } from "./v3-commands.ts";
 import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
@@ -523,6 +528,7 @@ export class Project {
   }
 
   async fetch(request: Request): Promise<Response> {
+    let promoteCallback = false;
     try {
       const url = new URL(request.url);
       if (url.pathname === REPORT_ROUTE) {
@@ -702,6 +708,25 @@ export class Project {
           request,
           url.pathname.split("/")[2]!,
         );
+      if (
+        this.#testV3 &&
+        (isPromoteRoute(request, url) || isPromoteCallback(request, url)) &&
+        this.#hasV3Root()
+      ) {
+        promoteCallback = isPromoteCallback(request, url);
+        const db = writableStore(this.#storage);
+        const seal = this.#seal();
+        return await promoteRoute(
+          db,
+          seal,
+          () => this.#image(db, seal),
+          this.#env,
+          request,
+          url,
+          this.#browser,
+          () => bounded(request, 2048),
+        );
+      }
       if (route === "upgrade" || route === "devices" || route === "restore")
         this.#requireV2();
       if (isStatePath(request)) return await this.#state(request);
@@ -984,7 +1009,10 @@ export class Project {
       }
       return Response.json({ ok: true, value });
     } catch (caught) {
-      const reconcile = request.method !== "GET" || isDeviceCallback(request);
+      const reconcile =
+        request.method !== "GET" ||
+        isDeviceCallback(request) ||
+        promoteCallback;
       const error = storageFailure(caught, reconcile) ?? caught;
       await discard(request);
       if (!(error instanceof ForgeFailure)) {
