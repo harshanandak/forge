@@ -4944,7 +4944,7 @@ type FoldObservation = {
   pending?: unknown;
 };
 
-function observedFold(image: ReturnType<typeof recoverV3>) {
+function observedFold(image: ReturnType<typeof recoverV3>): unknown {
   const fold = (image as { fold?: FoldObservation }).fold;
   return (
     fold && {
@@ -4991,7 +4991,7 @@ test(
       });
       expect(effects()).toEqual(noWrites);
       for (const image of [warm, cold]) {
-        expect(viewV3(image)).toEqual(warmReply);
+        expect<unknown>(viewV3(image)).toEqual(warmReply);
         expect(observedFold(image)).toEqual({
           context: "rooted",
           segmentIncarnation: incarnation,
@@ -5025,7 +5025,7 @@ test(
       });
       expect(effects()).toEqual(noWrites);
       for (const image of [warm, cold]) {
-        expect(viewV3(image)).toEqual(warmReply);
+        expect<unknown>(viewV3(image)).toEqual(warmReply);
         expect(observedFold(image)).toEqual({
           context: "rooted",
           segmentIncarnation: warm.root.incarnation,
