@@ -299,6 +299,8 @@ export interface TicketFields {
 export const approvalIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const browserTokenPattern = /^[A-Za-z0-9_-]{43}$/;
+export const approvalHashPattern = /^[0-9a-f]{64}$/;
+export const approvalLifetime = 600_000;
 
 const ticketParts = ({ scope }: Seal, t: TicketFields) => [
   "forge/v3/approval-ticket/1",
@@ -316,9 +318,49 @@ const ticketParts = ({ scope }: Seal, t: TicketFields) => [
 export const signTicket = (seal: Seal, ticket: TicketFields) =>
   `${Buffer.from(canonicalJson(ticket)).toString("base64url")}.${sealed(seal, ticketParts(seal, ticket))}`;
 
-export function readTicket(ticket: string): TicketFields {
-  const body = Buffer.from(ticket.split(".")[0]!, "base64url").toString();
-  return JSON.parse(body) as TicketFields;
+export function readTicket(
+  seal: Seal,
+  ticket: string,
+): TicketFields | undefined {
+  if (Buffer.byteLength(ticket) > 1024) return undefined;
+  const parts = /^([A-Za-z0-9_-]+)\.([0-9a-f]{16}\.[0-9a-f]{64})$/.exec(ticket);
+  if (!parts) return undefined;
+  const bytes = Buffer.from(parts[1]!, "base64url");
+  if (bytes.toString("base64url") !== parts[1]) return undefined;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
+  } catch {
+    return undefined;
+  }
+  if (
+    !isObject(payload) ||
+    Object.keys(payload).length !== 8 ||
+    (payload.action !== "approve" && payload.action !== "deny") ||
+    typeof payload.approvalId !== "string" ||
+    !approvalIdPattern.test(payload.approvalId) ||
+    typeof payload.cookieHash !== "string" ||
+    !approvalHashPattern.test(payload.cookieHash) ||
+    typeof payload.nonce !== "string" ||
+    !browserTokenPattern.test(payload.nonce) ||
+    !isDigest(payload.payloadDigest) ||
+    typeof payload.project !== "string" ||
+    payload.project.length === 0 ||
+    typeof payload.issuedAt !== "number" ||
+    typeof payload.expiresAt !== "number" ||
+    !Number.isSafeInteger(payload.issuedAt) ||
+    !Number.isSafeInteger(payload.expiresAt) ||
+    payload.expiresAt <= payload.issuedAt ||
+    payload.expiresAt - payload.issuedAt > approvalLifetime
+  )
+    return undefined;
+  const fields = payload as unknown as TicketFields;
+  return bytes.equals(Buffer.from(canonicalJson(payload))) &&
+    authentic(seal, ticketParts(seal, fields), parts[2])
+    ? fields
+    : undefined;
 }
 
 export interface BrowserFields extends Pick<
@@ -350,6 +392,12 @@ const browserParts = ({ scope }: Seal, b: BrowserFields) => [
 
 export const signBrowserRow = (seal: Seal, row: BrowserFields) =>
   sealed(seal, browserParts(seal, row));
+
+export const verifyBrowserRow = (
+  seal: Seal,
+  row: BrowserFields,
+  mac: unknown,
+) => authentic(seal, browserParts(seal, row), mac);
 
 export const approvalPayloadDigest = (seal: Seal, row: ApprovalFields) =>
   digestValue(approvalParts(seal, row));

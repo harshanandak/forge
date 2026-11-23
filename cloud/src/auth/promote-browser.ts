@@ -1,9 +1,11 @@
+import { digestValue } from "../../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
-import { sha256 } from "../tokens.ts";
+import { same, sha256 } from "../tokens.ts";
 import {
   type ApprovalContext,
   chooseV3Approval,
-  previewV3Approval,
+  invalidBrowser,
+  liveApproval,
 } from "../v3-approvals.ts";
 import {
   approvalIdPattern,
@@ -14,6 +16,7 @@ import {
   signTicket,
   type TicketFields,
 } from "../v3-seal.ts";
+import { fail, readV3Root, type V3Image } from "../v3-store.ts";
 import type { DeviceBrowserOptions } from "./device-browser.ts";
 import type { LoginEnv } from "./project-login.ts";
 
@@ -71,6 +74,32 @@ const once = (params: URLSearchParams, key: string) => {
   return values.length === 1 ? values[0] : undefined;
 };
 
+function promoteConfig(env: LoginEnv, url: URL, ports: DeviceBrowserOptions) {
+  const {
+    CLERK_ISSUER,
+    FORGE_OWNER_SUBJECT,
+    CLERK_CLIENT_ID,
+    CLERK_REDIRECT_URI,
+  } = env;
+  const { upstream, redemption } = ports;
+  if (
+    typeof CLERK_ISSUER !== "string" ||
+    !CLERK_ISSUER ||
+    typeof FORGE_OWNER_SUBJECT !== "string" ||
+    !FORGE_OWNER_SUBJECT ||
+    typeof CLERK_CLIENT_ID !== "string" ||
+    !CLERK_CLIENT_ID ||
+    CLERK_REDIRECT_URI !== `${url.origin}/callback` ||
+    !upstream ||
+    !redemption
+  )
+    throw fail(
+      "AUTH_CONFIG_UNAVAILABLE",
+      "Promotion approval configuration is unavailable",
+    );
+  return { upstream, redemption };
+}
+
 function pageForm(request: Request, url: URL) {
   const existing = cookieOf(request, COOKIE);
   const keep = existing !== undefined && browserTokenPattern.test(existing);
@@ -82,26 +111,42 @@ function pageForm(request: Request, url: URL) {
   );
 }
 
+function checkedForm(request: Request, url: URL, body: string) {
+  const form = new URLSearchParams(body);
+  const csrf = once(form, "csrf");
+  const cookie = cookieOf(request, COOKIE);
+  if (
+    request.headers.get("Origin") !== url.origin ||
+    cookie === undefined ||
+    !browserTokenPattern.test(cookie) ||
+    csrf === undefined ||
+    !same(csrf, cookie)
+  )
+    throw invalidBrowser();
+  return { form, cookie };
+}
+
 async function preview(
   context: ApprovalContext,
   form: URLSearchParams,
   cookie: string,
 ) {
+  const id = once(form, "id");
+  if (id === undefined || !approvalIdPattern.test(id))
+    throw fail("INPUT_INVALID", "Expected a promotion approval id");
   const cookieHash = await sha256(cookie);
   const now = Date.now();
-  const id = form.get("id") ?? "";
-  const row = previewV3Approval(context.db, id);
-  const expiresAt = row?.expiresAt ?? now + 600_000;
+  const row = liveApproval(context, id, now);
   const fields = {
-    approvalId: row?.id ?? id,
+    approvalId: row.id,
     cookieHash,
-    expiresAt,
+    expiresAt: row.expiresAt,
     issuedAt: now,
-    payloadDigest: row ? approvalPayloadDigest(context.seal, row) : "",
-    project: row?.project ?? context.project,
+    payloadDigest: approvalPayloadDigest(context.seal, row),
+    project: row.project,
   };
   return page(
-    `<h1>Promotion approval</h1><dl><dt>Project</dt><dd>${esc(row?.project ?? "")}</dd><dt>Operation</dt><dd>restore.promote</dd><dt>Activation</dt><dd>${esc(row?.activationDigest.slice(7, 19) ?? "")}</dd><dt>Device</dt><dd>${esc(row?.device ?? "")}</dd><dt>Session</dt><dd>${esc(row?.session ?? "")}</dd><dt>Expires</dt><dd>${new Date(expiresAt).toISOString()}</dd></dl>` +
+    `<h1>Promotion approval</h1><dl><dt>Project</dt><dd>${esc(row.project)}</dd><dt>Operation</dt><dd>restore.promote</dd><dt>Activation</dt><dd>${esc(row.activationDigest.slice(7, 19))}</dd><dt>Device</dt><dd>${esc(row.device)}</dd><dt>Session</dt><dd>${esc(row.session)}</dd><dt>Expires</dt><dd>${new Date(row.expiresAt).toISOString()}</dd></dl>` +
       (["approve", "deny"] as const)
         .map(
           (action) =>
@@ -111,31 +156,49 @@ async function preview(
   );
 }
 
+type PromotePorts = ReturnType<typeof promoteConfig>;
+const unavailable = () =>
+  fail("UNAVAILABLE", "Promotion approval temporarily unavailable");
+
 async function choose(
   context: ApprovalContext,
-  upstream: NonNullable<DeviceBrowserOptions["upstream"]>,
+  upstream: PromotePorts["upstream"],
   action: TicketFields["action"],
   form: URLSearchParams,
+  cookie: string,
 ) {
-  const ticket = readTicket(form.get("ticket") ?? "");
+  if (action === "approve" && once(form, "confirm") !== "yes")
+    throw invalidBrowser();
+  const input = once(form, "ticket");
+  const ticket =
+    input === undefined ? undefined : readTicket(context.seal, input);
+  if (!ticket || ticket.action !== action || ticket.project !== context.project)
+    throw invalidBrowser();
   const state = PROMOTE_STATE_PREFIX + token();
   const bind = token();
   const verifier = token();
-  const [stateHash, bindHash] = await Promise.all([
+  const [stateHash, bindHash, cookieHash] = await Promise.all([
     sha256(state),
     sha256(bind),
+    sha256(cookie),
   ]);
   const now = Date.now();
+  if (!same(ticket.cookieHash, cookieHash) || now >= ticket.expiresAt)
+    throw invalidBrowser();
   chooseV3Approval(context, {
     ...ticket,
-    action,
     stateHash,
     bindHash,
     verifier,
     createdAt: now,
     usedAt: null,
   });
-  const location = await upstream.begin(state, verifier);
+  let location: string;
+  try {
+    location = await upstream.begin(state, verifier);
+  } catch {
+    throw unavailable();
+  }
   return new Response(null, {
     status: 302,
     headers: {
@@ -149,28 +212,43 @@ async function choose(
 export async function promoteRoute(
   db: SqlDatabase,
   seal: Seal,
+  image: () => V3Image,
   env: LoginEnv,
   request: Request,
   url: URL,
   ports: DeviceBrowserOptions,
+  readBody: () => Promise<string>,
 ) {
+  if (readV3Root(db, seal).activationDigest === undefined)
+    throw fail(
+      "INPUT_CONFLICT",
+      "The restored project is not awaiting promotion",
+    );
+  const configured = promoteConfig(env, url, ports);
   const context = {
     db,
     seal,
+    image,
     project:
       typeof env.FORGE_CLOUD_PROJECT === "string"
         ? env.FORGE_CLOUD_PROJECT
         : "",
+    policyIdentity: () =>
+      digestValue([
+        env.CLERK_ISSUER,
+        env.FORGE_OWNER_SUBJECT,
+        env.CLERK_CLIENT_ID,
+      ]),
   };
   if (request.method === "GET") return pageForm(request, url);
-  const form = new URLSearchParams(await request.text());
-  const cookie = cookieOf(request, COOKIE) ?? "";
+  const { form, cookie } = checkedForm(request, url, await readBody());
   return url.pathname === PAGE_PATH
     ? await preview(context, form, cookie)
     : await choose(
         context,
-        ports.upstream!,
+        configured.upstream,
         url.pathname.endsWith("/approve") ? "approve" : "deny",
         form,
+        cookie,
       );
 }

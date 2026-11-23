@@ -709,10 +709,12 @@ export class Project {
         return await promoteRoute(
           db,
           seal,
+          () => this.#image(db, seal),
           this.#env,
           request,
           url,
           this.#browser,
+          () => bounded(request, 2048),
         );
       }
       if (route === "upgrade" || route === "devices" || route === "restore")
