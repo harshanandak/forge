@@ -18,8 +18,10 @@ test("decision checks stay private in catalog, MCP and help", async () => {
   const entries = catalog.list();
   const tools = createMcpHandlers(catalog, { budget: 100 }).listTools();
   const privateName = /\b(?:accept|reject)[#_ -]check\b/i;
+  const privateMcpName = /_(?:accept|reject)[#_ -]check\b/i;
   expect(entries.map(({ op }) => op).join("\n")).not.toMatch(privateName);
-  expect(tools.map(({ name }) => name).join("\n")).not.toMatch(privateName);
+  expect("memory_accept-check").toMatch(privateMcpName);
+  expect(tools.map(({ name }) => name).join("\n")).not.toMatch(privateMcpName);
   expect(renderHelp(entries)).not.toMatch(privateName);
 }, 30_000);
 
