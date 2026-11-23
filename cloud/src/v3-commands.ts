@@ -1,6 +1,6 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
-import { digestBytes, isObject } from "../../src/core/config/pointer.ts";
+import { digestBytes } from "../../src/core/config/pointer.ts";
 import type { ForgeError, LeaseGrant } from "../../src/generated/types.ts";
 import { validateClaimInput } from "../../src/generated/validators.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -16,6 +16,7 @@ import { NAMESPACE, requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
 import { CLAIM_REFUSALS, UPDATE_REFUSALS } from "./v3-authority.ts";
 import { updateEffect } from "./v3-record-transitions.ts";
+import { CLAIM_INVALID, claimDecision, updateDecision } from "./v3-refusals.ts";
 import type { Seal } from "./v3-seal.ts";
 import * as store from "./v3-store.ts";
 
@@ -82,35 +83,33 @@ const commands: Readonly<Record<string, Command>> = {
     write({ image, call, device, principal, prefix, now, expiresAt }) {
       const { op, requestId, input, context } = call;
       const checked = validateClaimInput(input);
-      if (!checked.ok)
-        throw store.fail("INPUT_INVALID", "Expected a valid issue claim");
+      if (!checked.ok) throw store.fail("INPUT_INVALID", CLAIM_INVALID);
       const { id: given, ttlSeconds = DEFAULT_TTL_SECONDS } = checked.value;
-      const id = storedId(given, prefix, (alias) =>
-        [...image.entries.record.keys()].some((key) => {
-          const value = image.load("record", key);
-          return (
-            isObject(value) &&
-            value.id === `work-${key.slice(1)}` &&
-            (value.prefix ?? "work") === alias
-          );
-        }),
-      );
+      storedId(given, prefix, () => true);
       const identity = prepareReceipt("command", principal, requestId, {
         op,
         input,
         context,
         device,
       });
-      if (image.entries.witness.has(identity.requestId))
-        throw store.fail("LEASE_STALE", "The claim receipt expired");
-      const subject = `issue:${id}`;
-      const claim = {
-        subject,
+      const basis = {
+        stage: "state",
+        id: given,
         prefix,
         holder: holderOf(context),
         ttlMs: ttlSeconds * 1000,
-      };
-      const effect = store.claimEffect(image, claim, now, expiresAt);
+      } as const;
+      const decided = claimDecision(
+        image,
+        basis,
+        now,
+        expiresAt,
+        image.entries.witness.has(identity.requestId),
+        store.claimEffect,
+      );
+      if ("refusal" in decided) throw new ForgeFailure(decided.refusal);
+      const { effect } = decided;
+      const { subject } = effect.events[0]!;
       return {
         ...effect,
         witness: {
@@ -144,37 +143,28 @@ const commands: Readonly<Record<string, Command>> = {
   "issue.update": {
     refusalCodes: UPDATE_REFUSALS,
     write(state) {
-      const { db, image, call, now, prefix } = state;
+      const { image, call, now, prefix } = state;
       const {
         id: given,
         expectRevision,
         ...patch
       } = checkedUpdateInput(call.input);
-      const read = (key: string) => store.readV3Value(db, image, "record", key);
-      const id = storedId(given, prefix, (alias) =>
-        [...image.entries.record.keys()].some((key) => {
-          const value = read(key);
-          return (
-            isObject(value) &&
-            value.id === `work-${key.slice(1)}` &&
-            (value.prefix ?? "work") === alias
-          );
-        }),
+      const { holder, generation } = fence(
+        call.context,
+        storedId(given, prefix, () => true),
+        call.op,
       );
-      const key = `r${id.slice(5)}`;
-      const current = read(key);
-      const prior = image.entries.record.get(key)?.revision;
-      if (current === undefined || prior === undefined)
-        throw store.fail("NOT_FOUND", "Issue was not found");
-      if (!isObject(current)) throw store.fail("INTERNAL", "Invalid issue");
-      const lease = updateLease(state, id);
-      if (prior !== expectRevision)
-        throw new ForgeFailure({
-          code: "REVISION_CONFLICT",
-          message: `Expected revision ${expectRevision}; current revision is ${prior}`,
-          retry: "reconcile_first",
-          currentRevision: prior,
-        });
+      const basis = {
+        stage: "state",
+        id: given,
+        prefix,
+        expectRevision,
+        holder,
+        generation,
+      } as const;
+      const decided = updateDecision(image, basis, now);
+      if ("refusal" in decided) throw new ForgeFailure(decided.refusal);
+      const { key, current, lease } = decided;
       return updateEffect(
         { key, prefix, expectRevision, patch },
         current,

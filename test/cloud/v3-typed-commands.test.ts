@@ -474,6 +474,7 @@ async function updateRefusal(
     "INPUT_CONFLICT",
   );
   expect(replay()).toEqual(noWrites);
+  return response;
 }
 
 test.each(modes)(
@@ -1335,6 +1336,540 @@ test(
       error(404, "UNKNOWN_COMMAND"),
     );
     expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+const never = (code: string, message: string) => ({
+  code,
+  message,
+  retry: "never",
+});
+const wire = (reply: { body: unknown }) =>
+  (reply.body as { error: unknown }).error;
+type Reply = Awaited<ReturnType<Fixture["send"]>>;
+type Seen = [object, string | undefined, Reply][];
+const upd = (
+  requestId: string,
+  input: object,
+  context: object = update.context,
+) => ({ ...update, requestId, input, context }) as typeof update;
+const clm = (requestId: string, input: object) =>
+  ({ ...typedClaim, requestId, input }) as typeof typedClaim;
+
+function lease(f: Fixture) {
+  const db = writableStore(f.storage);
+  const stored = readV3Value(db, recoverV3(db, f.seal()), "lease", subject);
+  const { holder, generation, expiresAt } = stored as unknown as {
+    holder: object;
+    generation: number;
+    expiresAt: string;
+  };
+  return { subject, holder, generation, expiresAt };
+}
+const heldBy = (l: ReturnType<typeof lease>) =>
+  `${l.subject} is leased by device laptop, agent fixture, harness unspecified, session fixture until ${l.expiresAt}`;
+const leased = (code: string, message: string, member: object) => ({
+  code,
+  message,
+  retry: "reconcile_first",
+  lease: member,
+});
+
+async function replayed(f: Fixture, seen: Seen) {
+  await checkpoint(f);
+  const effects = f.observeEffects();
+  for (const [body, owner, reply] of seen) {
+    expect(await send(f, body, owner)).toEqual(reply);
+    const changed = await send(f, { ...body, input: { changed: true } }, owner);
+    expect(wire(changed)).toEqual({
+      code: "INPUT_CONFLICT",
+      message: "Request ID belongs to a different input",
+      retry: "reconcile_first",
+    });
+    expect(changed.status).toBe(409);
+    exited(changed, "INPUT_CONFLICT");
+  }
+  expect(effects()).toEqual(noWrites);
+}
+
+test.each(modes)(
+  "v3 typed create records the exact refusal for each bad input (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enroll(f, mode);
+    const seen: Seen = [];
+    for (const [name, input, message] of [
+      [
+        "graph",
+        { title: "Before", parent: "forge-1" },
+        "Parent and dependencies are not supported in cloud yet",
+      ],
+      ["schema", {}, "input must be a valid issue.create input"],
+      [
+        "kind",
+        { title: "Before", kind: "chore" },
+        "kind must be one of task, bug, feature, epic",
+      ],
+    ] as const) {
+      const body = { ...create, requestId: name, input };
+      const before = snap(f);
+      const reply = await oneRow(f, () => send(f, body), 400);
+      expect(wire(reply)).toEqual(never("INPUT_INVALID", message));
+      expect(frames(f).at(-1)).toMatchObject({ events: [] });
+      expect(frames(f).at(-1)?.changes).toBeUndefined();
+      expect(snap(f)).toEqual(before);
+      seen.push([body, undefined, reply]);
+    }
+    expect(record(f)).toEqual({ revision: undefined, value: undefined });
+    await replayed(f, seen);
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed update records the exact error object for every refusal (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enroll(f, mode);
+    await oneRow(f, () => send(f, create));
+    const seen: Seen = [];
+    const refuse = async (
+      name: string,
+      input: object,
+      status: number,
+      error: object,
+      owner?: string,
+      context?: object,
+    ) => {
+      const body = upd(name, input, context);
+      const code = (error as ForgeError).code;
+      const before = snap(f);
+      const reply = await updateRefusal(f, body, status, code, owner);
+      expect(wire(reply)).toEqual(error);
+      expect(snap(f)).toEqual(before);
+      seen.push([body, owner, reply]);
+    };
+    const bad = (message: string) => never("INPUT_INVALID", message);
+    const graph =
+      "Kind, parent and dependencies are not supported in cloud yet";
+    await refuse("graph", { ...update.input, parent: "x" }, 400, bad(graph));
+    await refuse(
+      "schema",
+      { id: "forge-1" },
+      400,
+      bad("input must be a valid issue.update input"),
+    );
+    await refuse(
+      "shape",
+      { ...update.input, id: "bad" },
+      400,
+      bad("Invalid issue id"),
+    );
+    await refuse(
+      "prefix",
+      { ...update.input, id: "other-1" },
+      400,
+      bad("Unknown issue id prefix"),
+    );
+    await refuse(
+      "missing",
+      { ...update.input, id: "forge-9" },
+      404,
+      never("NOT_FOUND", "Issue was not found"),
+    );
+    await refuse(
+      "no-lease",
+      update.input,
+      409,
+      leased("LEASE_NOT_HELD", `${subject} has no lease`, { subject }),
+    );
+    await rawClaim(f);
+    await oneRow(f, () => send(f, update));
+    const l = lease(f);
+    const current = { ...update.input, expectRevision: 2 };
+    await refuse("revision", update.input, 409, {
+      code: "REVISION_CONFLICT",
+      message: "Expected revision 1; current revision is 2",
+      retry: "reconcile_first",
+      currentRevision: 2,
+    });
+    await refuse(
+      "stale",
+      current,
+      409,
+      leased(
+        "LEASE_STALE",
+        `generation 2 is not the current generation 1 of ${subject}`,
+        l,
+      ),
+      undefined,
+      { ...update.context, leaseGeneration: 2 },
+    );
+    const notHeld = (m: ReturnType<typeof lease>) =>
+      leased(
+        "LEASE_NOT_HELD",
+        `${heldBy(m)}; this caller does not hold that lease`,
+        m,
+      );
+    await refuse("other", current, 409, notHeld(l), "tablet");
+    setSystemTime(time + ttlMs);
+    await refuse(
+      "expired",
+      current,
+      409,
+      leased(
+        "LEASE_EXPIRED",
+        `the lease on ${subject} expired at ${l.expiresAt}; a lapsed lease is reacquired, never renewed`,
+        l,
+      ),
+    );
+    await oneRow(f, () => send(f, { ...typedClaim, requestId: "again" }));
+    await oneRow(f, () =>
+      f.send(
+        `${probe}/release`,
+        { requestId: "release", subject, holder, generation: 2 },
+        headers(),
+      ),
+    );
+    const released = lease(f);
+    await refuse("released", current, 409, notHeld(released), undefined, {
+      ...update.context,
+      leaseGeneration: 2,
+    });
+    const lost = f.observeEffects();
+    expect(wire(await send(f, update))).toEqual(
+      leased(
+        "LEASE_STALE",
+        `Request no longer matches the current lease on ${subject}`,
+        released,
+      ),
+    );
+    expect(lost()).toEqual(noWrites);
+    const again = f.observeEffects();
+    const stale = await send(f, update);
+    expect(stale.status).toBe(409);
+    exited(stale, "LEASE_STALE");
+    expect(again()).toEqual(noWrites);
+    await replayed(f, seen);
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed claim records the exact error object for every refusal (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enroll(f, mode);
+    const seen: Seen = [];
+    const refuse = async (
+      name: string,
+      input: object,
+      status: number,
+      error: object,
+    ) => {
+      const body = clm(name, input);
+      const code = (error as ForgeError).code;
+      const before = snap(f);
+      const reply = await claimRefusal(f, body, status, code);
+      expect(wire(reply)).toEqual(error);
+      expect(snap(f)).toEqual(before);
+      seen.push([body, undefined, reply]);
+    };
+    const bad = (message: string) => never("INPUT_INVALID", message);
+    const ok = { id: "forge-1", ttlSeconds: 60 };
+    await refuse("shape", {}, 400, bad("Expected a valid issue claim"));
+    await refuse("id", { ...ok, id: "bad" }, 400, bad("Invalid issue id"));
+    await refuse(
+      "prefix",
+      { ...ok, id: "other-1" },
+      400,
+      bad("Unknown issue id prefix"),
+    );
+    await refuse(
+      "missing",
+      { ...ok, id: "forge-9" },
+      404,
+      never("NOT_FOUND", "Issue forge-9 was not found"),
+    );
+    await fixtureIssue(f, { ...initial, status: "closed" });
+    await refuse(
+      "closed",
+      ok,
+      409,
+      never("INPUT_CONFLICT", "Closed issues cannot be claimed"),
+    );
+    await fixtureIssue(f, initial, 2);
+    await rawClaim(f);
+    const l = lease(f);
+    await refuse(
+      "held",
+      ok,
+      409,
+      leased(
+        "LEASE_HELD",
+        `${heldBy(l)}; read its state to reconcile instead of retrying`,
+        l,
+      ),
+    );
+    await fixtureIssue(f, {
+      ...initial,
+      id: "work-3",
+      dependsOn: ["work-1", "work-9"],
+    });
+    const owner = { actor, session: { ...session, device: "laptop" } };
+    await refuse("blocked", { ...ok, id: "forge-3" }, 409, {
+      code: "CLAIM_BLOCKED",
+      message:
+        'forge-1 (open) {"actor":{"id":"fixture","kind":"agent"},"session":{"device":"laptop","id":"fixture"}}, forge-9 (missing) ',
+      retry: "never",
+      observed: {
+        blockers: [
+          { id: "forge-1", holder: owner, holderUnverified: true },
+          { id: "forge-9" },
+        ],
+      },
+    });
+    await fixtureIssue(f, { ...initial, id: "work-4" });
+    await refuse(
+      "cap",
+      { id: "forge-4", ttlSeconds: 86_401 },
+      400,
+      bad("ttlMs is over 24 hours"),
+    );
+    await refuse(
+      "expiry",
+      { id: "forge-4", ttlSeconds: 7_201 },
+      400,
+      bad("ttlMs would exceed the token expiry"),
+    );
+    await replayed(f, seen);
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed claim replay after the lease lapsed returns the exact rewritten LEASE_STALE (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enroll(f, mode);
+    await fixtureIssue(f);
+    await oneRow(f, () => send(f, typedClaim));
+    const l = lease(f);
+    setSystemTime(time + 60_000);
+    const effects = f.observeEffects();
+    const reply = await send(f, typedClaim);
+    expect(reply.status).toBe(409);
+    exited(reply, "LEASE_STALE");
+    expect(wire(reply)).toEqual(
+      leased(
+        "LEASE_STALE",
+        `Request no longer matches the current lease on ${subject}`,
+        l,
+      ),
+    );
+    expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+test.each([
+  [
+    "structure",
+    {},
+    400,
+    never("INPUT_INVALID", "Expected a valid issue claim"),
+  ],
+  [
+    "id shape",
+    { id: "bad", ttlSeconds: 60 },
+    400,
+    never("INPUT_INVALID", "Invalid issue id"),
+  ],
+  [
+    "unknown prefix",
+    { id: "other-1", ttlSeconds: 60 },
+    400,
+    never("INPUT_INVALID", "Unknown issue id prefix"),
+  ],
+  [
+    "resolved id",
+    typedClaim.input,
+    409,
+    never("LEASE_STALE", "The claim receipt expired"),
+  ],
+] as const)(
+  "v3 typed claim with an expired receipt and a live owner: %s",
+  async (_name, input, status, error) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await fixtureIssue(f);
+    await oneRow(f, () => send(f, typedClaim));
+    const before = {
+      count: frames(f).length,
+      issue: record(f),
+      lease: lease(f),
+    };
+    setSystemTime(expiry + 1);
+    const effects = f.observeEffects();
+    const reply = await f.send(
+      `${probe}/command`,
+      { ...typedClaim, input },
+      headers("laptop", expiry + 1 + 2 * ttlMs),
+    );
+    expect(reply.status).toBe(status);
+    expect(wire(reply)).toEqual(error);
+    exited(reply, error.code);
+    expect(record(f)).toEqual(before.issue);
+    expect(lease(f)).toEqual(before.lease);
+    if (status === 409) {
+      expect(effects()).toEqual(noWrites);
+      expect(frames(f)).toHaveLength(before.count);
+      return;
+    }
+    expect(effects()).toMatchObject({ sqlWriteAttempts: 1, alarmWrites: 0 });
+    expect(frames(f)).toHaveLength(before.count + 1);
+    const frame = frames(f).at(-1)!;
+    expect(frame).toMatchObject({
+      events: [],
+      outcome: { status: "INPUT_INVALID" },
+    });
+    for (const member of ["changes", "lease", "witness"])
+      expect(frame[member]).toBeUndefined();
+  },
+  timeout,
+);
+
+test.each([
+  [
+    "a successful create",
+    { title: "Before" },
+    200,
+    "Request replay window ended; use a fresh request ID",
+  ],
+  [
+    "a refused create",
+    {},
+    400,
+    "Request ID remains refused; use a fresh request ID",
+  ],
+] as const)(
+  "v3 typed replay after the 24-hour window of %s is refused without a write",
+  async (_name, input, status, message) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const body = { ...create, input };
+    const owner = headers("laptop", time + 2 * 86_400_000);
+    const first = await f.send(`${probe}/command`, body, owner);
+    expect(first.status).toBe(status);
+    setSystemTime(time + 86_400_000 + 1);
+    const effects = f.observeEffects();
+    const reply = await f.send(`${probe}/command`, body, owner);
+    expect(reply.status).toBe(409);
+    expect(wire(reply)).toEqual(never("INPUT_CONFLICT", message));
+    exited(reply, "INPUT_CONFLICT");
+    expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+function snap(f: Fixture) {
+  const db = writableStore(f.storage);
+  const image = recoverV3(db, f.seal());
+  const keys = (collection: "record" | "lease") =>
+    [...image.entries[collection].keys()].sort();
+  return {
+    records: keys("record").map((key) => [
+      key,
+      readV3Value(db, image, "record", key),
+      image.entries.record.get(key)?.revision,
+    ]),
+    leases: keys("lease").map((key) => [
+      key,
+      readV3Value(db, image, "lease", key),
+    ]),
+  };
+}
+
+const longDevice = "d".repeat(257);
+async function enrollLong(f: Fixture, mode: Mode) {
+  await enroll(f, mode);
+  if (mode === "owner") return;
+  const reply = await f.send("devices", {
+    device: longDevice,
+    session: "fixture",
+    ttlMs: 2 * ttlMs,
+  });
+  expect(reply.status).toBe(200);
+  tokens
+    .get(f)!
+    .set(`${longDevice}/fixture`, (reply.body as { value: Issued }).value);
+}
+
+test.each(modes)(
+  "v3 typed claim records its refusals for a 257-character device label (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enrollLong(f, mode);
+    const ok = { id: "forge-1", ttlSeconds: 60 };
+    for (const [name, input, status, e] of [
+      [
+        "prefix",
+        { ...ok, id: "other-1" },
+        400,
+        never("INPUT_INVALID", "Unknown issue id prefix"),
+      ],
+      [
+        "missing",
+        { ...ok, id: "forge-9" },
+        404,
+        never("NOT_FOUND", "Issue forge-9 was not found"),
+      ],
+    ] as const) {
+      const before = snap(f);
+      const body = clm(`long-${name}`, input);
+      const reply = await claimRefusal(f, body, status, e.code, longDevice);
+      expect(wire(reply)).toEqual(e);
+      expect(snap(f)).toEqual(before);
+    }
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed update records its refusals for a 257-character device label (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enrollLong(f, mode);
+    for (const [name, id, status, e] of [
+      [
+        "prefix",
+        "other-1",
+        400,
+        never("INPUT_INVALID", "Unknown issue id prefix"),
+      ],
+      ["missing", "forge-9", 404, never("NOT_FOUND", "Issue was not found")],
+    ] as const) {
+      const before = snap(f);
+      const body = upd(`long-${name}`, { ...update.input, id });
+      const reply = await updateRefusal(f, body, status, e.code, longDevice);
+      expect(wire(reply)).toEqual(e);
+      expect(snap(f)).toEqual(before);
+    }
   },
   timeout,
 );
