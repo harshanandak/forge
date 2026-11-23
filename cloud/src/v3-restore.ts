@@ -11,6 +11,7 @@ import {
 } from "../../src/core/state/restore-json.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { AdmitLeaseRequest } from "./project.ts";
+import { storageFailure } from "./storage-failure.ts";
 import { TABLE_PROBE } from "./store.ts";
 import { isDigest, isNat, sealedAuthorityValid } from "./v3-authority.ts";
 import {
@@ -176,8 +177,8 @@ function verify(
   } catch (error) {
     if (
       (error instanceof ForgeFailure && error.error.code === "UNAVAILABLE") ||
-      error instanceof TypeError ||
-      error instanceof RangeError
+      ((error instanceof TypeError || error instanceof RangeError) &&
+        !storageFailure(error))
     )
       check(false);
     throw error;
