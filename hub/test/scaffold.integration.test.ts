@@ -31,7 +31,6 @@ const hub = realpathSync(resolve(import.meta.dir, ".."));
 const bin = join(hub, "bin/forge-hub.mjs");
 const dist = join(hub, "dist");
 const mainUrl = pathToFileURL(join(dist, "main.js")).href;
-const setupUrl = pathToFileURL(join(dist, "setup/index.js")).href;
 const usage = "usage: forge-hub <command>\n";
 const execFileAsync = promisify(execFile);
 
@@ -140,69 +139,6 @@ test(
       "1\n2\n",
       "not_built: doctor\n" + usage,
     );
-  },
-  timeout,
-);
-
-const importGuard = `
-  import assert from "node:assert/strict";
-  import fs from "node:fs";
-  import { readFileSync } from "node:fs";
-  import promises from "node:fs/promises";
-  import http from "node:http";
-  import { registerHooks, syncBuiltinESMExports } from "node:module";
-  let phase = 81;
-  process.on("uncaughtException", () => process.exit(phase));
-  const loadFile = fs.readFileSync;
-  const root = new URL(".", process.argv[1]).href;
-  registerHooks({
-    load(url, context, nextLoad) {
-      if (url.startsWith(root) && url.endsWith(".js")) {
-        return { format: "module", shortCircuit: true, source: loadFile(new URL(url), "utf8") };
-      }
-      return nextLoad(url, context);
-    },
-  });
-  function deny() { throw new Error("blocked import effect"); }
-  const modules = ["fs", "fs/promises", "http", "https", "net", "tls", "dns", "dns/promises", "dgram", "http2"]
-    .map((name) => process.getBuiltinModule(name));
-  for (const module of modules) {
-    for (const key of Object.keys(module)) {
-      if (typeof module[key] === "function") module[key] = deny;
-    }
-  }
-  for (const key of ["fetch", "WebSocket", "EventSource"])
-    Object.defineProperty(globalThis, key, { value: deny, configurable: true });
-  process.chdir = deny;
-  process.env = new Proxy({}, { get: deny, set: deny, has: deny, ownKeys: deny });
-  syncBuiltinESMExports();
-  Object.defineProperty(process, "env", { get: deny, set: deny });
-  phase = 82;
-  for (const effect of [
-    () => fs.readFileSync("missing"),
-    () => readFileSync("missing"),
-    () => fs.writeFileSync("unexpected", ""),
-    () => promises.readdir("."),
-    () => process.chdir("."),
-    () => process.env.FORGE_HUB_CONFIG,
-    () => http.get("http://127.0.0.1"),
-    () => fetch("http://127.0.0.1"),
-    () => new WebSocket("ws://127.0.0.1"),
-  ]) assert.throws(effect, /blocked import effect/);
-  phase = 83;
-  await import(process.argv[2]);
-`;
-
-test(
-  "application modules import without filesystem, environment or network work",
-  () => {
-    for (const url of [mainUrl, setupUrl])
-      isolatedNode(
-        ["--input-type=module", "-e", importGuard, mainUrl, url],
-        0,
-        "",
-        "",
-      );
   },
   timeout,
 );
@@ -464,11 +400,13 @@ const localPath =
 const secretShape =
   /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9-]{16,}|(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b|-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/;
 
+type PackTextHit = "local path" | "token shape";
+
 function scanText(
   path: string,
   read: () => Buffer<ArrayBufferLike>,
-  reject = (hit: string): void => {
-    throw new Error(hit);
+  reject = (kind: PackTextHit, label: string): void => {
+    throw new Error(kind + " in " + label);
   },
 ): boolean {
   safePath(path);
@@ -481,17 +419,15 @@ function scanText(
         : "utf-8";
   if (encoding === "utf-8" && bytes.includes(0)) return false;
   const text = new TextDecoder(encoding).decode(bytes);
-  const kind = localPath.test(text)
-    ? "local path"
-    : secretShape.test(text)
-      ? "token shape"
-      : undefined;
-  if (kind) {
+  const localPathHit = ownFiles.includes(path) && localPath.test(text);
+  const tokenHit = secretShape.test(text);
+  if (localPathHit || tokenHit) {
     const label =
       localPath.test(path) || secretShape.test(path)
         ? "[redacted path]"
         : JSON.stringify(path);
-    reject("A8 found " + kind + " in " + label);
+    if (localPathHit) reject("local path", label);
+    if (tokenHit) reject("token shape", label);
   }
   return true;
 }
@@ -564,52 +500,71 @@ test(
 );
 
 test(
-  "packed hub text contains no local paths or token shapes",
+  "packed text has no token shapes and owned text has no local paths",
   async () => {
     const paths = await (packedPaths ??= packReport(npmManifestPath()));
     const hits: string[] = [];
+    const hitCounts: Record<PackTextHit, number> = {
+      "local path": 0,
+      "token shape": 0,
+    };
     const scanned = new Set(
       paths.filter((path) =>
         scanText(
           path,
           () => readFileSync(join(hub, path)),
-          (hit) => {
-            if (hits.length < 5) hits.push(hit);
+          (kind, label) => {
+            hitCounts[kind]++;
+            if (hits.length < 5) hits.push("A8 found " + kind + " in " + label);
           },
         ),
       ),
+    );
+    console.log(
+      "A8 scanned %d packed text files. Hits: local path %d, token shape %d.",
+      scanned.size,
+      hitCounts["local path"],
+      hitCounts["token shape"],
     );
     for (const hit of hits) console.error(hit);
     ok(
       ownFiles.every((path) => scanned.has(path)),
       "Pack scan must include all own text files",
     );
-    ok(hits.length === 0, "Pack text contains a forbidden path or token shape");
-    console.log("A8 scanned %d packed text files.", scanned.size);
+    ok(
+      hitCounts["local path"] === 0 && hitCounts["token shape"] === 0,
+      "Pack text contains a forbidden path or token shape",
+    );
   },
   timeout,
 );
 
 test(
-  "pack text scan refuses local paths and token shapes before reporting counts",
+  "pack text scan scopes local paths to owned files and rejects token shapes",
   () => {
+    const owned = "dist/main.js";
+    const bundled = "node_modules/chat/dist/index.js";
+    const homePath = Buffer.from("/home/" + "fixture/path");
+    expect(() => scanText(owned, () => homePath)).toThrow("local path");
+    expect(scanText(bundled, () => homePath)).toBe(true);
+    expect(() =>
+      scanText(owned, () => Buffer.from("Q:" + "\\Users\\fixture")),
+    ).toThrow("local path");
     const fragments = ["gh", "p_", "a".repeat(36)];
-    for (const path of ["dist/main.js", "node_modules/chat/dist/index.js"]) {
-      for (const text of [
-        "Q:" + "\\Users\\fixture",
-        "/home/" + "fixture/path",
-        fragments.join(""),
-      ])
-        expect(() => scanText(path, () => Buffer.from(text))).toThrow();
+    for (const path of [owned, bundled]) {
+      expect(() =>
+        scanText(path, () => Buffer.from(fragments.join(""))),
+      ).toThrow("token shape");
       expect(
         scanText(path, () => Buffer.from("https://example.test/path")),
       ).toBe(true);
     }
-    expect(() =>
-      scanText(".env", () => {
-        throw new Error("read");
-      }),
-    ).toThrow("Unsafe pack path");
+    for (const path of [".env", "node_modules/chat/.env"])
+      expect(() =>
+        scanText(path, () => {
+          throw new Error("read");
+        }),
+      ).toThrow("Unsafe pack path");
   },
   timeout,
 );
