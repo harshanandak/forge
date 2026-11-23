@@ -19,12 +19,18 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import contextSchema from "../../schemas/context.json" with { type: "json" };
-import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import {
+  canonicalJson,
+  digestBytes,
+  digestValue,
+} from "../../src/core/config/pointer.ts";
 import {
   fixture,
   guardFixture,
   newKey,
   noWrites,
+  portableOf,
+  portableUpload,
   probe,
   type SealSetup,
   sqlMutation,
@@ -1779,3 +1785,781 @@ clocked("tokenInventory refuses 65 rows even when 5 are old", (f) => {
   fill(f, 65, (i) => (i > 0 && i < 6 ? old : {}));
   refusedList(f);
 });
+
+const approvalTable = "cloud_v3_approvals";
+const approvalSchema =
+  "CREATE TABLE IF NOT EXISTS cloud_v3_approvals (id TEXT PRIMARY KEY, project TEXT NOT NULL, incarnation TEXT NOT NULL, restore_epoch TEXT NOT NULL, activation_digest TEXT NOT NULL, operation TEXT NOT NULL, operation_digest TEXT NOT NULL, token_id TEXT NOT NULL, device TEXT NOT NULL, session TEXT NOT NULL, control_epoch INTEGER NOT NULL, policy_identity TEXT NOT NULL, status TEXT NOT NULL, requested_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, decided_at INTEGER, decider_issuer TEXT, decider_subject TEXT, spent_at INTEGER, mac TEXT NOT NULL) WITHOUT ROWID";
+const unconstrainedApprovals = approvalSchema
+  .replace(/\b(?:TEXT|INTEGER)(?: NOT NULL| PRIMARY KEY)?/g, "")
+  .replace(" WITHOUT ROWID", "");
+const approvalLifetime = 600_000;
+const approvalId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const approvalOwner = {
+  CLERK_ISSUER: "https://issuer.example",
+  FORGE_OWNER_SUBJECT: "fixture-owner",
+  CLERK_CLIENT_ID: "fixture-client",
+};
+const approvalRoot = (f: Base) =>
+  JSON.parse(
+    f.db.query<{ body: string }, []>("SELECT body FROM cloud_v3_root").get()!
+      .body,
+  ) as {
+    incarnation: string;
+    restoreEpoch: string;
+    activationDigest?: string;
+    generation: number;
+  };
+
+function approvalFields(f: Base, t: Issued, id: string) {
+  const { incarnation, restoreEpoch, activationDigest } = approvalRoot(f);
+  const { device, session } = only(f);
+  const { CLERK_ISSUER, FORGE_OWNER_SUBJECT, CLERK_CLIENT_ID } =
+    f.env as typeof f.env & Partial<typeof approvalOwner>;
+  return {
+    id,
+    project: "a",
+    incarnation,
+    restore_epoch: restoreEpoch,
+    activation_digest: activationDigest!,
+    operation: "restore.promote",
+    operation_digest: digestValue(["restore.promote", activationDigest]),
+    token_id: t.id,
+    device,
+    session: session!,
+    control_epoch: 1,
+    policy_identity: digestValue([
+      CLERK_ISSUER,
+      FORGE_OWNER_SUBJECT,
+      CLERK_CLIENT_ID,
+    ]),
+    status: "pending",
+    requested_at: base,
+    expires_at: base + approvalLifetime,
+    decided_at: null as number | null,
+    decider_issuer: null as string | null,
+    decider_subject: null as string | null,
+    spent_at: null as number | null,
+  };
+}
+
+type ApprovalFixtureFields = ReturnType<typeof approvalFields>;
+type StoredApprovalFields = Omit<ApprovalFixtureFields, "id"> & {
+  id: string | number;
+};
+type ApprovalFixtureRow = StoredApprovalFields & { mac: string };
+
+function approvalMac(
+  f: Base,
+  row: StoredApprovalFields,
+  key = f.env.V3_SEAL_KEY,
+) {
+  const bytes = Buffer.from(String(key), "base64url");
+  const signed = canonicalJson([
+    "forge/v3/approval/1",
+    f.context.id!.toString(),
+    row.id,
+    row.project,
+    row.incarnation,
+    row.restore_epoch,
+    row.activation_digest,
+    row.operation,
+    row.operation_digest,
+    row.token_id,
+    row.device,
+    row.session,
+    row.control_epoch,
+    row.policy_identity,
+    row.status,
+    row.requested_at,
+    row.expires_at,
+    row.decided_at,
+    row.decider_issuer,
+    row.decider_subject,
+    row.spent_at,
+  ]);
+  const tag = createHmac("sha256", bytes).update(signed).digest("hex");
+  return `${sha(bytes).slice(0, 16)}.${tag}`;
+}
+
+function signedApproval(
+  f: Base,
+  t: Issued,
+  patch: Partial<ApprovalFixtureFields> = {},
+) {
+  const row = { ...approvalFields(f, t, crypto.randomUUID()), ...patch };
+  return { ...row, mac: approvalMac(f, row) };
+}
+
+const expiredApproval = {
+  requested_at: base - approvalLifetime,
+  expires_at: base,
+};
+const approvedFixture = {
+  status: "approved",
+  decided_at: base,
+  decider_issuer: approvalOwner.CLERK_ISSUER,
+  decider_subject: approvalOwner.FORGE_OWNER_SUBJECT,
+};
+const deniedFixture = { ...approvedFixture, status: "denied" };
+
+const approvalRows = (f: Base) =>
+  tableNames(f).includes(approvalTable)
+    ? f.db
+        .query<ApprovalFixtureRow, []>(
+          "SELECT * FROM cloud_v3_approvals ORDER BY id",
+        )
+        .all()
+    : undefined;
+
+function plantApprovals(
+  f: Base,
+  rows: ApprovalFixtureRow[],
+  schema = approvalSchema,
+) {
+  f.db.run(schema);
+  for (const row of rows) {
+    const values = Object.values(row);
+    f.db.run(
+      `INSERT INTO cloud_v3_approvals (${Object.keys(row).join(", ")}) VALUES (${values.map(() => "?").join(", ")})`,
+      values,
+    );
+  }
+  expect(approvalRows(f)).toEqual(
+    rows.toSorted((a, b) => String(a.id).localeCompare(String(b.id))),
+  );
+}
+
+const editApproval = (f: Base, id: string, patch: Over) =>
+  f.db.run(
+    `UPDATE cloud_v3_approvals SET ${Object.keys(patch)
+      .map((column) => `${column}=?`)
+      .join(", ")} WHERE id=?`,
+    [...Object.values(patch), id] as never,
+  );
+
+function approvalCase(
+  name: string,
+  run: (f: Fixture, t: Issued, p: Portable) => Promise<void>,
+) {
+  test(
+    name,
+    async () => {
+      at(base);
+      await withActivated(async (f, p) => {
+        const t = await issued(f);
+        expect(check(f, t)).toMatchObject({
+          id: t.id,
+          device: body.device,
+          session: body.session,
+        });
+        await run(f, t, p);
+      });
+    },
+    timeout,
+  );
+}
+
+async function askApproval(
+  f: Fixture,
+  t?: Issued,
+  input: string | ReadableStream<Uint8Array> = "{}",
+  project = "a",
+  headers: Record<string, string> = {},
+): Promise<Answer> {
+  const request = new Request(
+    `https://fixture.example/p/${project}/promote/approval`,
+    {
+      method: "POST",
+      headers: { ...(t && { authorization: `Bearer ${t.token}` }), ...headers },
+      body: input,
+      duplex: "half",
+    },
+  );
+  const reply = await f.fetch(request);
+  return { status: reply.status, body: await reply.json() };
+}
+
+function approvalRefusal(
+  reply: Answer,
+  status: number,
+  code: string,
+  exit: number,
+  message?: string,
+) {
+  expect(reply.status).toBe(status);
+  const envelope = reply.body as { ok: false; error: ForgeError };
+  expect(envelope).toMatchObject({
+    ok: false,
+    error: { code, ...(message === undefined ? {} : { message }) },
+  });
+  expect(exitCode(failed(envelope.error))).toBe(exit);
+}
+
+async function approvalDeclined(
+  f: Fixture,
+  send: () => Promise<Answer>,
+  status: number,
+  code: string,
+  exit = 1,
+  message?: string,
+) {
+  const rows = approvalRows(f);
+  const effects = f.observeEffects();
+  approvalRefusal(await send(), status, code, exit, message);
+  expect(approvalRows(f)).toEqual(rows);
+  expect(effects()).toEqual(noWrites);
+}
+
+const approvalUnavailable = (f: Fixture, t: Issued) =>
+  approvalDeclined(
+    f,
+    () => askApproval(f, t),
+    503,
+    "UNAVAILABLE",
+    1,
+    "Cloud v3 approval storage is unavailable",
+  );
+
+async function requestedApproval(
+  f: Fixture,
+  t: Issued,
+  retained = approvalRows(f) ?? [],
+  input = "{}",
+) {
+  const authority = core(f);
+  const tokens = tokenRows(f);
+  const reply = await askApproval(f, t, input);
+  expect(reply.status).toBe(200);
+  const envelope = reply.body as {
+    ok: true;
+    value: { approval: string; expiresAt: number; url: string };
+  };
+  const { approval } = envelope.value;
+  expect(approval).toMatch(approvalId);
+  expect(envelope).toEqual({
+    ok: true,
+    value: {
+      approval,
+      expiresAt: base + approvalLifetime,
+      url: `/promote-approval?id=${approval}`,
+    },
+  });
+  expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+  const rows = approvalRows(f)!;
+  const fields = approvalFields(f, t, approval);
+  const expected = { ...fields, mac: approvalMac(f, fields) };
+  const fresh = rows.filter(({ id }) => id === approval);
+  expect(fresh).toEqual([expected]);
+  expect(rows.filter(({ id }) => id !== approval)).toEqual(retained);
+  expect(core(f)).toBe(authority);
+  expect(tokenRows(f)).toEqual(tokens);
+  return fresh[0]!;
+}
+
+approvalCase(
+  "CONTROL R1 issues a signed pending promotion approval",
+  async (f, t) => {
+    Object.assign(f.env, approvalOwner);
+    expect(approvalRows(f)).toBeUndefined();
+    await requestedApproval(f, t);
+  },
+);
+
+approvalCase(
+  "CONTROL R1b a retry makes a new pending approval and preserves the first",
+  async (f, t) => {
+    const first = await requestedApproval(f, t);
+    const next = await requestedApproval(f, t, [first]);
+    expect(next.id).not.toBe(first.id);
+  },
+);
+
+clocked("RED R2 a promotion approval needs an activated root", async (f) => {
+  const t = await issued(f);
+  expect(check(f, t)).toMatchObject({ id: t.id });
+  const root = approvalRoot(f);
+  expect(root.generation).toBe(0);
+  expect(root.activationDigest).toBeUndefined();
+  expect(approvalRows(f)).toBeUndefined();
+  await approvalDeclined(
+    f,
+    () => askApproval(f, t),
+    409,
+    "INPUT_CONFLICT",
+    4,
+    "The restored project is not awaiting promotion",
+  );
+});
+
+approvalCase(
+  "RED R3 eight live approvals refuse another with zero writes",
+  async (f, t) => {
+    plantApprovals(
+      f,
+      Array.from({ length: 8 }, () => signedApproval(f, t)),
+    );
+    await approvalDeclined(
+      f,
+      () => askApproval(f, t),
+      409,
+      "INPUT_CONFLICT",
+      4,
+      "Too many open promotion requests",
+    );
+  },
+);
+
+approvalCase("RED R4 a missing bearer is required", async (f) => {
+  await approvalDeclined(f, () => askApproval(f), 401, "AUTH_REQUIRED");
+});
+
+approvalCase("RED R5 a malformed bearer is forbidden", async (f, t) => {
+  await approvalDeclined(
+    f,
+    () => askApproval(f, { ...t, token: "malformed" }),
+    403,
+    "AUTH_FORBIDDEN",
+  );
+});
+
+const oversizedApprovalBody = "{}".padEnd(8193);
+
+approvalCase(
+  "RED R6 a promotion approval body is bounded to 8192 bytes",
+  async (f, t) => {
+    await approvalDeclined(
+      f,
+      () => askApproval(f, t, oversizedApprovalBody),
+      400,
+      "INPUT_INVALID",
+      6,
+    );
+  },
+);
+
+for (const [label, input] of [
+  ["a nonempty object", '{"x":1}'],
+  ["an array", "[]"],
+  ["null", "null"],
+  ["a scalar", "1"],
+  ["invalid JSON", "{"],
+])
+  approvalCase(
+    `RED R7 rejects ${label} as a promotion approval body`,
+    async (f, t) => {
+      await approvalDeclined(
+        f,
+        () => askApproval(f, t, input),
+        400,
+        "INPUT_INVALID",
+        6,
+      );
+    },
+  );
+
+approvalCase(
+  "CONTROL R7 a whitespace-padded empty object is accepted",
+  async (f, t) => {
+    await requestedApproval(f, t, [], " \n { } \t ");
+  },
+);
+
+async function approvalRevokedDuringRead(f: Fixture, t: Issued, tail: string) {
+  const before = approvalRows(f);
+  const authority = core(f);
+  let revoked: Answer | undefined;
+  let effects: ReturnType<Fixture["observeEffects"]> | undefined;
+  const encode = new TextEncoder();
+  const input = new ReadableStream<Uint8Array>(
+    {
+      start: (controller) => controller.enqueue(encode.encode("{")),
+      async pull(controller) {
+        revoked = await f.send("revoke", { id: t.id });
+        effects = f.observeEffects();
+        controller.enqueue(encode.encode(tail));
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const reply = await askApproval(f, t, input);
+  if (revoked) answers(revoked, 200);
+  approvalRefusal(reply, 401, "AUTH_REVOKED", 1);
+  expect(only(f).revoked_at).toBe(base);
+  expect(effects?.()).toEqual(noWrites);
+  expect(approvalRows(f)).toEqual(before);
+  expect(core(f)).toBe(authority);
+}
+
+approvalCase(
+  "RED R8 revocation during the body read is observed",
+  async (f, t) => {
+    await approvalRevokedDuringRead(f, t, "}");
+  },
+);
+
+const flipHex = (text: string) => (text[0] === "0" ? "1" : "0") + text.slice(1);
+
+approvalCase(
+  "RED R9 corrupt token storage refuses the request",
+  async (f, t) => {
+    const [key, tag] = only(f).mac.split(".");
+    const corrupt = `${key}.${flipHex(tag!)}`;
+    tamper(f, "mac", corrupt);
+    expect(only(f).mac).toBe(corrupt);
+    await approvalDeclined(
+      f,
+      () => askApproval(f, t),
+      503,
+      "UNAVAILABLE",
+      1,
+      "Cloud v3 token storage is unavailable",
+    );
+  },
+);
+
+const rejectedApprovalProjects: [string, string, Record<string, string>][] = [
+  ["another project", "b", {}],
+  ["the owner header", "a", { "X-Forge-Owner": "owner" }],
+  ["the owner expiry header", "a", { "X-Forge-Owner-Expires": String(base) }],
+];
+
+for (const [label, project, headers] of rejectedApprovalProjects)
+  approvalCase(
+    `RED R10 ${label} is refused before bearer and body checks`,
+    async (f) => {
+      await approvalDeclined(
+        f,
+        () =>
+          askApproval(f, undefined, oversizedApprovalBody, project, headers),
+        403,
+        "AUTH_FORBIDDEN",
+      );
+    },
+  );
+
+function wrongApprovalBearer(t: Issued): Issued {
+  const [prefix, secret] = t.token.split(".");
+  const wrong = (secret![0] === "A" ? "B" : "A") + secret!.slice(1);
+  return { ...t, token: `${prefix}.${wrong}` };
+}
+
+const firstApprovalRefusals = [
+  ["an absent token", 401, "AUTH_INVALID"],
+  ["a wrong secret", 401, "AUTH_INVALID"],
+  ["a revoked token", 401, "AUTH_REVOKED"],
+  ["an expired token", 401, "AUTH_EXPIRED"],
+  ["a malformed token row", 503, "UNAVAILABLE"],
+] as const;
+
+for (const [label, status, code] of firstApprovalRefusals)
+  approvalCase(
+    `CONTROL R11 ${label} is refused before the oversized body`,
+    async (f, t) => {
+      if (label === "an absent token") {
+        drop(f, t.id);
+        expect(tokenRows(f)).toEqual([]);
+      } else if (label === "a revoked token") {
+        answers(await f.send("revoke", { id: t.id }), 200);
+        expect(only(f).revoked_at).toBe(base);
+      } else if (label === "an expired token") {
+        const row = { ...only(f), expires_at: base };
+        edit(f, t.id, { expires_at: row.expires_at, mac: macOf(f, row) });
+        expect(only(f).expires_at).toBe(base);
+      } else if (label === "a malformed token row") {
+        tamper(f, "mac", "bad");
+        expect(only(f).mac).toBe("bad");
+      }
+      const presented = label === "a wrong secret" ? wrongApprovalBearer(t) : t;
+      await approvalDeclined(
+        f,
+        () => askApproval(f, presented, oversizedApprovalBody),
+        status,
+        code,
+      );
+    },
+  );
+
+approvalCase(
+  "RED R12 the second token check precedes the nonempty body refusal",
+  async (f, t) => {
+    await approvalRevokedDuringRead(f, t, '"x":1}');
+  },
+);
+
+approvalCase(
+  "CONTROL R13 absent Clerk settings use a null policy identity tuple",
+  async (f, t) => {
+    for (const key of Object.keys(approvalOwner))
+      expect(Object.hasOwn(f.env, key)).toBe(false);
+    const retained = signedApproval(f, t);
+    plantApprovals(f, [retained]);
+    const pending = await requestedApproval(f, t, [retained]);
+    expect(pending.policy_identity).toBe(digestValue([null, null, null]));
+  },
+);
+
+for (const [label, expired] of [
+  ["I1 eight live rows and one expired row exceed the physical bound", true],
+  ["I2 nine live rows exceed the physical bound", false],
+] as const)
+  approvalCase(`RED ${label}`, async (f, t) => {
+    const rows = Array.from({ length: 9 }, (_, i) =>
+      signedApproval(f, t, expired && i === 8 ? expiredApproval : {}),
+    );
+    plantApprovals(f, rows);
+    await approvalUnavailable(f, t);
+  });
+
+for (const [label, id] of [
+  ["a nontext id", 7],
+  ["an invalid UUID", "z".repeat(36)],
+] as const)
+  approvalCase(
+    `RED I2b rejects ${label} in a recreated table`,
+    async (f, t) => {
+      const row = { ...approvalFields(f, t, crypto.randomUUID()), id };
+      plantApprovals(
+        f,
+        [{ ...row, mac: approvalMac(f, row) }],
+        unconstrainedApprovals,
+      );
+      await approvalUnavailable(f, t);
+    },
+  );
+
+approvalCase(
+  "RED I2c rejects duplicate signed ids in a recreated table",
+  async (f, t) => {
+    const row = signedApproval(f, t);
+    plantApprovals(f, [row, row], unconstrainedApprovals);
+    await approvalUnavailable(f, t);
+  },
+);
+
+approvalCase(
+  "RED I3 an edited expiry cannot authorize cleanup",
+  async (f, t) => {
+    const row = signedApproval(f, t);
+    plantApprovals(f, [row]);
+    await requestedApproval(f, t, [row]);
+    editApproval(f, row.id, { expires_at: base - 1 });
+    expect(approvalRows(f)).toContainEqual({ ...row, expires_at: base - 1 });
+    await approvalUnavailable(f, t);
+  },
+);
+
+approvalCase(
+  "CONTROL I4 removes three authentic expired rows and keeps two live rows",
+  async (f, t) => {
+    const expired = Array.from({ length: 3 }, () =>
+      signedApproval(f, t, expiredApproval),
+    );
+    const live = Array.from({ length: 2 }, () => signedApproval(f, t));
+    plantApprovals(f, [...expired, ...live]);
+    await requestedApproval(
+      f,
+      t,
+      approvalRows(f)!.filter((row) => row.expires_at > base),
+    );
+  },
+);
+
+type ApprovalEdit = Over | ((row: ApprovalFixtureFields) => Over);
+const damagedApprovals: [
+  string,
+  Partial<ApprovalFixtureFields>,
+  ApprovalEdit?,
+][] = [
+  ["pending edited to approved with an old MAC", {}, { status: "approved" }],
+  [
+    "an edited token id with an old MAC",
+    {},
+    (row) => ({ token_id: flipHex(row.token_id) }),
+  ],
+  [
+    "denied edited to approved with an old MAC",
+    deniedFixture,
+    { status: "approved" },
+  ],
+  ["a signed unknown status", { status: "unknown" }],
+  [
+    "signed approved with no decision time",
+    { ...approvedFixture, decided_at: null },
+  ],
+  ["signed pending with a decision time", { decided_at: base + 1 }],
+  [
+    "signed spent before the decision",
+    {
+      ...approvedFixture,
+      status: "spent",
+      decided_at: base + 1,
+      spent_at: base,
+    },
+  ],
+  ["a signed inconsistent expiry", { expires_at: base + approvalLifetime + 1 }],
+  [
+    "a signed wrong operation digest",
+    { operation_digest: digestValue(["unrelated"]) },
+  ],
+  ["an edited UUID with an old MAC", {}, (row) => ({ id: flipHex(row.id) })],
+  ["a text expiry", {}, { expires_at: "not-a-time" }],
+  ["an 80-byte MAC", {}, { mac: "0".repeat(80) }],
+];
+
+for (const [label, fields, edited] of damagedApprovals)
+  approvalCase(`RED I5 rejects ${label}`, async (f, t) => {
+    const row = signedApproval(f, t, fields);
+    plantApprovals(f, [row]);
+    if (edited) {
+      const patch = typeof edited === "function" ? edited(row) : edited;
+      editApproval(f, row.id, patch);
+      expect(approvalRows(f)).toEqual([{ ...row, ...patch }]);
+      expect(approvalRows(f)![0]).not.toEqual(row);
+    }
+    await approvalUnavailable(f, t);
+  });
+
+approvalCase(
+  "CONTROL I6 authenticates all four stored approval states",
+  async (f, t) => {
+    plantApprovals(
+      f,
+      [
+        {},
+        approvedFixture,
+        deniedFixture,
+        { ...approvedFixture, status: "spent", spent_at: base },
+      ].map((fields) => signedApproval(f, t, fields)),
+    );
+    await requestedApproval(f, t);
+    expect(approvalRows(f)).toHaveLength(5);
+  },
+);
+
+approvalCase(
+  "RED I7 refuses an approval signed for another object with the same key",
+  async (f, t) => {
+    const other = guardFixture(env, { key: String(f.env.V3_SEAL_KEY) });
+    using _db = other.db;
+    expect(other.context.id!.toString()).not.toBe(f.context.id!.toString());
+    const row = signedApproval(f, t);
+    plantApprovals(f, [{ ...row, mac: approvalMac(other, row) }]);
+    await approvalUnavailable(f, t);
+  },
+);
+
+approvalCase(
+  "RED I8 refuses an approval signed by a removed key",
+  async (f, t) => {
+    const row = signedApproval(f, t);
+    Reflect.set(f.env, "V3_SEAL_KEY_PREVIOUS", newKey());
+    const removed = newKey();
+    const ring = f.seal().keys.map(({ id }) => id);
+    expect(ring).toHaveLength(2);
+    expect(ring).not.toContain(
+      sha(Buffer.from(removed, "base64url")).slice(0, 16),
+    );
+    plantApprovals(f, [{ ...row, mac: approvalMac(f, row, removed) }]);
+    await approvalUnavailable(f, t);
+  },
+);
+
+approvalCase(
+  "CONTROL I9 retains an approval signed by the previous key",
+  async (f, t) => {
+    const oldKey = String(f.env.V3_SEAL_KEY);
+    const row = signedApproval(f, t);
+    plantApprovals(f, [row]);
+    Reflect.set(f.env, "V3_SEAL_KEY", newKey());
+    Reflect.set(f.env, "V3_SEAL_KEY_PREVIOUS", oldKey);
+    expect(f.seal().keys.map(({ id }) => id)).toHaveLength(2);
+    await requestedApproval(f, t, [row]);
+  },
+);
+
+for (const [label, table] of [
+  ["P1", approvalTable],
+  ["P2", "cloud_v3_approval_browser"],
+] as const)
+  for (const route of ["restore", "provision"] as const)
+    test(
+      `RED ${label} orphan ${table} blocks ${route}`,
+      async () => {
+        at(base);
+        const f = guardFixture(env);
+        using _db = f.db;
+        f.db.run(
+          `CREATE TABLE ${table} (id TEXT PRIMARY KEY, body TEXT NOT NULL)`,
+        );
+        f.db.run(`INSERT INTO ${table} VALUES (?, ?)`, [
+          "orphan",
+          "preserve these bytes",
+        ]);
+        const orphan = () => f.db.query(`SELECT * FROM ${table}`).all();
+        const before = orphan();
+        expect(tableNames(f)).toEqual([table]);
+        let send = () => f.send(probe, {});
+        let status = 503;
+        let code = "UNAVAILABLE";
+        if (route === "restore") {
+          const source = guardFixture(env);
+          using _source = source.db;
+          await provision(source);
+          const portable = portableOf(source);
+          const control = guardFixture(env);
+          using _control = control.db;
+          expect(await portableUpload(control, portable)(0)).toEqual({
+            status: 200,
+            body: { ok: true, value: { page: 0, verified: false } },
+          });
+          const upload = portableUpload(f, portable);
+          send = () => upload(0);
+          status = 409;
+          code = "RESTORE_TARGET_NOT_EMPTY";
+        }
+        const effects = f.observeEffects();
+        approvalRefusal(await send(), status, code, 1);
+        expect(orphan()).toEqual(before);
+        expect(tableNames(f)).toEqual([table]);
+        expect(effects()).toEqual(noWrites);
+      },
+      timeout,
+    );
+
+async function preservesApprovalRetry(f: Fixture, p: Portable) {
+  const before = approvalRows(f);
+  const authority = core(f);
+  const effects = f.observeEffects();
+  const reply = await p.upload(2);
+  expect(reply).toEqual({
+    status: 200,
+    body: { ok: true, value: { page: 2, verified: true } },
+  });
+  expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+  expect(approvalRows(f)).toEqual(before);
+  expect(core(f)).toBe(authority);
+  expect(effects()).toEqual(noWrites);
+}
+
+approvalCase(
+  "CONTROL X1 exact restore retry preserves a requested pending approval",
+  async (f, t, p) => {
+    await requestedApproval(f, t);
+    await preservesApprovalRetry(f, p);
+  },
+);
+
+approvalCase(
+  "RED X2 exact restore retry preserves pending and terminal authority",
+  async (f, t, p) => {
+    plantApprovals(
+      f,
+      [{}, approvedFixture, deniedFixture].map((fields) =>
+        signedApproval(f, t, fields),
+      ),
+    );
+    await preservesApprovalRetry(f, p);
+  },
+);
