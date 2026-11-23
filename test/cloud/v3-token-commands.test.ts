@@ -459,6 +459,7 @@ row("a token changed while the body is read ends the command", async (f) => {
     unchanged(f, interleaved);
     expect(frames(f)).toEqual([]);
     if (small) expect(f.reads.bytes - bytes).toBeLessThan(4096);
+    f.db.run("DELETE FROM cloud_v3_tokens WHERE id=?", [u.id]);
     setSystemTime(time);
   }
   const u = await issue(f);
@@ -924,6 +925,7 @@ test(
       expect(await logged(() => post(f, create, secretless(u)))).toEqual([
         line,
       ]);
+      f.db.run("DELETE FROM cloud_v3_tokens WHERE id=?", [u.id]);
     }
     const gone = await issue(f);
     expect((await f.send("revoke", { id: gone.id })).status).toBe(200);
