@@ -3385,7 +3385,34 @@ for (const damage of ["missing", "altered", "extra", "mac"] as const) {
 test(
   "v3 restore refuses to activate more than sixteen imported leases",
   () =>
-    withPortable(async (target, data) => {
+    withPortable(async (target, { head }, source) => {
+      const extra = 16;
+      await withFixture(async (donor) => {
+        for (let i = 0; i < extra; i++) {
+          expect(
+            await sendLease(donor, "claim", "owner-a", {
+              subject: `work-${i + 2}`,
+              requestId: `extra-${i}`,
+              ttlMs: i === 0 ? 1 : HOUR,
+            }),
+          ).toMatchObject({ status: 200 });
+        }
+        for (const { sequence, body } of commits(donor)) {
+          const next = head + sequence;
+          const frame = JSON.parse(body) as Json;
+          insertLegacyRow(
+            source,
+            next,
+            canonicalJson({ ...frame, sequence: next }),
+          );
+        }
+      });
+      source.restart();
+      await drain(source, head, head + extra);
+      const data = typedBackup(source);
+      editHistory(data, (frames) => {
+        frames[5] = { sequence: 6 };
+      });
       const upload = await stageRestore(target, data);
       const before = target.snapshot();
       expect(await upload(2)).toMatchObject({
@@ -3394,7 +3421,7 @@ test(
       });
       await unprovisioned(target);
       expect(target.snapshot()).toEqual(before);
-    }, 16),
+    }),
   timeout,
 );
 
