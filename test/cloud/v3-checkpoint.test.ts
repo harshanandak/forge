@@ -19,6 +19,8 @@ import {
   readV3Value,
   recoverV3,
   viewV3,
+  append as appendFrameBatch,
+  appendV3Frames as appendProbeBatch,
 } from "../../cloud/src/v3-store.ts";
 import {
   guardFixture,
@@ -904,6 +906,274 @@ test(
       const effects = f.observeEffects();
       expect(await checkpoint(f)).toMatchObject(refused);
       expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test(
+  "v3 checkpoint covers only the prefix that fits its raw byte budget",
+  () =>
+    typedFixture(async (f) => {
+      await createTurnRows(f, [60_000, 60_000, 65_536]);
+      const rows = commits(f);
+      const lengths = rows.map(({ body }) => Buffer.byteLength(body));
+      const [first, second, third] = [181_126, 181_126, 197_734] as const;
+      expect(lengths).toEqual([first, second, third]);
+      expect(Math.max(...lengths)).toBeLessThanOrEqual(PAGE_BYTES);
+      expect(first + second).toBeLessThanOrEqual(512 * 1024);
+      expect(first + second + third).toBeGreaterThan(512 * 1024);
+      const projected: ReturnType<typeof pages> = [];
+      await typedFixture(async (sibling) => {
+        await createTurnRows(sibling, [60_000, 60_000]);
+        expect(commits(sibling)).toEqual(rows.slice(0, 2));
+        expect(await prefix(sibling, 0, 2)).toBe(2);
+        projected.push(...pages(sibling));
+      });
+      expect(projected.map(({ id }) => id)).toEqual([
+        "directory:0",
+        "snapshot:0",
+        "transcript:0",
+      ]);
+      for (const { body } of projected)
+        expect(Buffer.byteLength(body)).toBeLessThanOrEqual(PAGE_BYTES);
+
+      const { image } = await view(f);
+      const reads = observeTurnReads(f);
+      expect(await prefix(f, 0, 3)).toBe(2);
+      expect(reads).toEqual([
+        [
+          [1, first, first, []],
+          [2, second, second, []],
+          [3, null, third, []],
+        ],
+        [
+          [1, first, undefined, []],
+          [2, second, undefined, []],
+        ],
+        [],
+      ]);
+      expect(pages(f)).toEqual(projected);
+      expect(commits(f)).toEqual(rows.slice(2));
+      await expectWarmAndCold(f, image);
+    }),
+  timeout,
+);
+
+async function createTurnRows(f: Fixture, lengths: readonly number[]) {
+  for (const [i, size] of lengths.entries()) {
+    const reply = await typed(f, sizedCreate(`turn-${i}`, "x".repeat(size)));
+    ok(reply);
+    expect(exited(reply)).toBe(0);
+  }
+}
+
+function observeTurnReads(f: Fixture) {
+  const reads: [unknown, unknown, unknown, string[]][][] = [];
+  const sql = f.storage.sql;
+  const query = sql.exec.bind(sql);
+  sql.exec = (statement, ...bindings) => {
+    const result = query(statement, ...bindings);
+    if (
+      !/^SELECT\b/i.test(statement) ||
+      !statement.includes("cloud_v3_commits") ||
+      !/\bbody\b/i.test(statement)
+    )
+      return result;
+    const rows = result.toArray();
+    reads.push(
+      rows.map(({ sequence, body, bytes, mac: _mac, ...other }) => [
+        sequence,
+        typeof body === "string" ? Buffer.byteLength(body) : body,
+        bytes,
+        Object.keys(other),
+      ]),
+    );
+    return { toArray: () => rows };
+  };
+  return reads;
+}
+
+test(
+  "v3 checkpoint refuses a legacy oversized first row without returning its body",
+  () =>
+    withFixture(async (f) => {
+      ok(await append(f, frame()));
+      expect(await prefix(f, 0, 1)).toBe(1);
+      const body = noteBody(paddedNote(512 * 1024 + 1, 2), 2);
+      f.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?, ?)", [
+        2,
+        body,
+        f.sign(2, body),
+      ]);
+      f.restart();
+      const before = { active: active(f), commits: commits(f) };
+      expect(before.commits.map(({ body }) => Buffer.byteLength(body))).toEqual(
+        [524_289],
+      );
+      const reads = observeTurnReads(f);
+      const effects = f.observeEffects();
+      const reply = await checkpoint(f);
+      expect(reply).toMatchObject(refused);
+      expect(reply.body).toMatchObject({
+        error: {
+          message: "Cloud v3 checkpoint cannot be verified within one turn",
+          retry: "never",
+        },
+      });
+      expect(exited(reply)).toBe(1);
+      expect(effects()).toEqual(noWrites);
+      expect(
+        reads.map((rows) => rows.map(([sequence, body]) => [sequence, body])),
+      ).toEqual([[[2, null]]]);
+      expect({ active: active(f), commits: commits(f) }).toEqual(before);
+      expect(stagingTables(f)).toEqual([]);
+    }),
+  timeout,
+);
+
+const noteBody = (note: Json, sequence: number) =>
+  canonicalJson({ ...note, format: "forge-cloud-commit/3", sequence });
+
+function paddedNote(bytes: number, sequence: number) {
+  const note = { ...frame(), events: [{ pad: "" }] };
+  note.events[0]!.pad = "x".repeat(
+    bytes - Buffer.byteLength(noteBody(note, sequence)),
+  );
+  expect(Buffer.byteLength(noteBody(note, sequence))).toBe(bytes);
+  return note;
+}
+
+const oversizedWrite = {
+  code: "STORAGE_LIMIT_EXCEEDED",
+  message: "This write is too large to keep in the project's history",
+  retry: "never",
+};
+
+const frameWriters: Record<string, typeof appendFrameBatch> = {
+  append: appendFrameBatch,
+  appendV3Frames: (db, seal, image, batch) =>
+    appendProbeBatch(db, seal, batch, () => image),
+};
+
+for (const [name, write] of Object.entries(frameWriters)) {
+  test(
+    `${name} admits a v3 frame at the raw byte cap`,
+    () =>
+      withFixture((f) => {
+        const db = writableStore(f.storage);
+        const seal = f.seal();
+        expect(
+          write(db, seal, recovered(db, seal), [paddedNote(PAGE_BYTES, 1)]),
+        ).toEqual({ head: 1 });
+        expect(commits(f).map(({ body }) => Buffer.byteLength(body))).toEqual([
+          PAGE_BYTES,
+        ]);
+      }),
+    timeout,
+  );
+
+  for (const [batch, input] of [
+    [false, "a v3 frame"],
+    [true, "a batch with a v3 frame"],
+  ] as const) {
+    test(
+      `${name} refuses ${input} one byte over the cap`,
+      () =>
+        withFixture((f) => {
+          const db = writableStore(f.storage);
+          const seal = f.seal();
+          const image = recovered(db, seal);
+          const state = () => ({
+            active: active(f),
+            commits: commits(f),
+            stale: image.stale,
+            staged: [...image.staged],
+            head: image.head,
+            tailBytes: image.tailBytes,
+            recordFloor: image.recordFloor,
+          });
+          const oversized = paddedNote(PAGE_BYTES + 1, batch ? 2 : 1);
+          const before = state();
+          const effects = f.observeEffects();
+          let failure: unknown;
+          try {
+            write(db, seal, image, batch ? [frame(), oversized] : [oversized]);
+          } catch (error) {
+            failure = error;
+          }
+          expect(failure).toBeInstanceOf(ForgeFailure);
+          expect(failure).toMatchObject({ error: oversizedWrite });
+          expect(effects()).toEqual(noWrites);
+          expect(state()).toEqual(before);
+          expect(write(db, seal, image, [frame()])).toEqual({
+            head: before.head + 1,
+          });
+          expect(commits(f).map(({ sequence }) => sequence)).toEqual([
+            before.head + 1,
+          ]);
+        }),
+      timeout,
+    );
+  }
+}
+
+const sizedCreate = (requestId: string, body: string) => ({
+  ...createBody,
+  requestId,
+  input: { ...createBody.input, body },
+});
+
+test(
+  "v3 rejects an oversized escaped create and leaves the request unrecorded on retry",
+  async () => {
+    await typedFixture(async (sibling) => {
+      const reply = await typed(sibling, sizedCreate("small-sibling", "x"));
+      ok(reply);
+      expect(exited(reply)).toBe(0);
+    });
+    await typedFixture(async (f) => {
+      const db = writableStore(f.storage);
+      const request = sizedCreate("escaped-create", "\u0001".repeat(65_536));
+      const id = `c2:${digestValue([2, "command", ["owner", "owner-a", "owner-a"], request.requestId]).slice(7)}`;
+      const before = await view(f);
+      const { recordFloor } = recovered(db, f.seal());
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const effects = f.observeEffects();
+        const reply = await typed(f, request);
+        expect(reply.status).toBe(503);
+        expect(reply.body).toMatchObject({ ok: false, error: oversizedWrite });
+        expect(exited(reply)).toBe(1);
+        expect(effects()).toEqual(noWrites);
+        expect(commits(f)).toEqual([]);
+        const image = recovered(db, f.seal());
+        expect(image.entries.outcome.has(id)).toBe(false);
+        expect(image.recordFloor).toBe(recordFloor);
+        expect(await view(f)).toEqual(before);
+      }
+    });
+  },
+  timeout,
+);
+
+test(
+  "v3 checkpoints a create with a maximum-length ASCII body",
+  () =>
+    typedFixture(async (f) => {
+      const reply = await typed(
+        f,
+        sizedCreate("ascii-ceiling", "x".repeat(65_536)),
+      );
+      ok(reply);
+      expect(exited(reply)).toBe(0);
+      const rows = commits(f);
+      expect(rows).toHaveLength(1);
+      expect(Buffer.byteLength(rows[0]!.body)).toBeLessThanOrEqual(PAGE_BYTES);
+      const { image } = await view(f);
+      expect(await prefix(f, 0, 1)).toBe(1);
+      expect(commits(f)).toEqual([]);
+      for (const { body } of pages(f))
+        expect(Buffer.byteLength(body)).toBeLessThanOrEqual(PAGE_BYTES);
+      await expectWarmAndCold(f, image);
     }),
   timeout,
 );
