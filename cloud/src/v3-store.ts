@@ -123,10 +123,13 @@ const hasTable = (db: SqlDatabase, name: string): boolean =>
 export const hasV3Root = (db: SqlDatabase): boolean => hasTable(db, ROOT);
 
 export const V3_TOKENS = "cloud_v3_tokens";
+export const V3_APPROVALS = "cloud_v3_approvals";
+export const V3_APPROVAL_BROWSER = "cloud_v3_approval_browser";
+const priorV3Tables = [...tables, V3_TOKENS, V3_APPROVALS, V3_APPROVAL_BROWSER];
 
 export const hasPriorV3RestoreState = (db: SqlDatabase): boolean =>
   db.get(legacyTables) !== undefined ||
-  [...tables, V3_TOKENS].some((table) => hasTable(db, table));
+  priorV3Tables.some((table) => hasTable(db, table));
 
 function genesis(incarnation: string, restoreEpoch: string) {
   return {
@@ -770,7 +773,7 @@ export function provisionV3(
   return db.transaction(() => {
     if (legacyMarker || db.get(legacyTables))
       throw fail("INPUT_CONFLICT", "Cloud v3 requires a fresh project");
-    if (![...tables, V3_TOKENS].some((table) => hasTable(db, table))) {
+    if (!priorV3Tables.some((table) => hasTable(db, table))) {
       for (const [table, definition] of Object.entries(schema))
         db.exec(`CREATE TABLE ${table} ${definition}`);
       for (const page of pages)
