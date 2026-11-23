@@ -169,6 +169,9 @@ interface Pointer {
 type Slot = (
   { readonly value: unknown } | Pointer | { readonly deleted: true }
 ) & { readonly revision?: number };
+type Usage = { transcript: number; snapshot: number; directory: number };
+type SlotWrite = [collection: Collection, key: string, slot: Slot | undefined];
+
 interface Values {
   readonly control: LaneControlGlobal | LaneControlIssue;
   readonly lease: LeaseRecord;
@@ -186,10 +189,12 @@ interface Values {
 export interface V3Image {
   readonly root: Readonly<Record<string, unknown>> & {
     readonly activationDigest?: string;
+    readonly bytes: Readonly<Record<string, number>>;
     readonly coveredHead: number;
     readonly pages: readonly Page[];
   };
   readonly entries: Readonly<Record<Collection, Map<string, Slot>>>;
+  readonly usage: Usage;
   fold?: {
     context: "portable" | "rooted";
     segmentIncarnation?: string;
@@ -443,6 +448,11 @@ function recoveryImage(
       record: new Map(),
       witness: new Map(),
     },
+    usage: {
+      transcript: root.bytes.transcript ?? emptyBytes,
+      snapshot: 0,
+      directory: emptyBytes,
+    },
     fold: {
       context: "portable",
       incarnations: new Set(),
@@ -533,19 +543,28 @@ function foldActivation(db: SqlDatabase, image: V3Image, body: string) {
     if (!lease) throw unavailable();
     return [subject, lease] as const;
   });
+  const writes: SlotWrite[] = [];
   for (const [subject, lease] of leases) {
     if (lease.releasedAt === undefined)
-      image.entries.lease.set(subject, {
-        value: { ...lease, releasedAt: new Date(time).toISOString() },
-      });
+      writes.push([
+        "lease",
+        subject,
+        {
+          value: { ...lease, releasedAt: new Date(time).toISOString() },
+        },
+      ]);
   }
-  image.entries.control.clear();
-  image.entries.control.set("global", { value: control });
+  for (const key of image.entries.control.keys())
+    if (key !== "global") writes.push(["control", key, undefined]);
+  writes.push(["control", "global", { value: control }]);
+  countFrame(image.usage, body, writes, (collection, key) =>
+    image.entries[collection].get(key),
+  );
   fold.incarnations.add(incarnation);
   fold.restoreEpochs.add(restoreEpoch);
   fold.segmentIncarnation = incarnation;
   fold.pending = { sequence, time, digest: digestBytes(body) };
-  apply(image, { operation, time, events }, sequence);
+  apply(image, { events }, sequence, writes);
   return { incarnation, restoreEpoch };
 }
 
@@ -623,6 +642,7 @@ export function recoverV3(
         throw unavailable();
       prior = [collection, key];
       image.entries[collection].set(key, slot);
+      countSlot(image.usage, collection, key, slot, 1);
       if (collection === "record")
         image.recordFloor = Math.max(image.recordFloor, recordNumber(key));
     }
@@ -749,9 +769,16 @@ function foldRow(
   }
   const canonical =
     done === frame ? done : (parse(storedCanonical(done)) as Frame);
-  apply(image, canonical, nat(sequence));
+  const writes = ordinaryWrites(canonical, records.changes);
+  let archived = String(body);
+  if (mode === "live") archived = canonicalJson(archive(archived));
+  else if (mode === "portable" && frame.operation === "fixture.note")
+    archived = canonicalJson({ sequence });
+  countFrame(image.usage, archived, writes, (collection, key) =>
+    image.entries[collection].get(key),
+  );
+  apply(image, canonical, nat(sequence), writes);
   image.recordFloor = records.floor;
-  for (const { key, value } of records.changes) record.set(key, value);
   image.tailBytes += Buffer.byteLength(String(body));
 }
 
@@ -1065,15 +1092,88 @@ const restoreFrame = (frame: unknown) =>
 const validAppendFrame = (frame: unknown) =>
   !restoreFrame(frame) && validShape(frame) && withinDepth(frame);
 
-function apply(image: V3Image, frame: Frame, sequence: number) {
+export function archive(body: string): unknown {
+  const frame = JSON.parse(body) as Record<string, unknown>;
+  if (isObject(frame.outcome) && "result" in frame.outcome) {
+    const { result, ...receipt } = frame.outcome;
+    frame.outcome = { ...receipt, resultDigest: digestValue(result) };
+  }
+  return frame;
+}
+
+function countSlot(
+  usage: Usage,
+  collection: Collection,
+  key: string,
+  slot: Slot | undefined,
+  sign: number,
+) {
+  if (slot === undefined) return;
+  const revision =
+    slot.revision === undefined ? {} : { revision: slot.revision };
+  const entry =
+    "deleted" in slot
+      ? { collection, key, ...revision, deleted: true }
+      : {
+          collection,
+          key,
+          ...revision,
+          page: "snapshot:0",
+          offset: 999999,
+          length: 999999,
+          digest: "sha256:" + "0".repeat(64),
+        };
+  usage.directory += sign * (Buffer.byteLength(canonicalJson(entry)) + 1);
+  if ("value" in slot)
+    usage.snapshot += sign * Buffer.byteLength(canonicalJson(slot.value));
+  else if ("length" in slot) usage.snapshot += sign * slot.length;
+}
+
+function countFrame(
+  usage: Usage,
+  archived: string,
+  writes: readonly SlotWrite[],
+  readSlot: (collection: Collection, key: string) => Slot | undefined,
+) {
+  usage.transcript +=
+    Buffer.byteLength(archived) + Number(usage.transcript !== emptyBytes);
+  for (const [collection, key, slot] of writes) {
+    countSlot(usage, collection, key, readSlot(collection, key), -1);
+    countSlot(usage, collection, key, slot, 1);
+  }
+}
+
+function ordinaryWrites(
+  frame: Frame,
+  changes: ReturnType<typeof verifyRecordFrame>["changes"],
+) {
   const { time, lease, outcome, witness } = frame;
-  if (lease) image.entries.lease.set(lease.subject, { value: lease });
+  const writes: SlotWrite[] = [];
+  if (lease) writes.push(["lease", lease.subject, { value: lease }]);
   if (outcome)
-    image.entries.outcome.set(outcome.id, {
-      value: { ...(lease && { lease }), outcome, time },
-    });
+    writes.push([
+      "outcome",
+      outcome.id,
+      {
+        value: { ...(lease && { lease }), outcome, time },
+      },
+    ]);
   if (witness)
-    image.entries.witness.set(witness.id, { value: { lease, witness } });
+    writes.push(["witness", witness.id, { value: { lease, witness } }]);
+  for (const { key, value } of changes) writes.push(["record", key, value]);
+  return writes;
+}
+
+function apply(
+  image: V3Image,
+  frame: Pick<Frame, "events">,
+  sequence: number,
+  writes: readonly SlotWrite[],
+) {
+  for (const [collection, key, slot] of writes) {
+    if (slot === undefined) image.entries[collection].delete(key);
+    else image.entries[collection].set(key, slot);
+  }
   image.head = sequence;
   image.eventWatermark += frame.events.length;
 }
