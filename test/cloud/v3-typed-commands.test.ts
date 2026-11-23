@@ -1914,7 +1914,7 @@ const claimed = (id: string) => ({
 const recorded = (f: Fixture) => (frames(f).at(-1)!.outcome as Json).result;
 const storedLease = (f: Fixture) => {
   const db = writableStore(f.storage);
-  return readV3Value(db, recoverV3(db, f.seal()), "lease", subject);
+  return readV3Value(db, recovered(db, f.seal()), "lease", subject);
 };
 async function replays(
   f: Fixture,
@@ -2313,7 +2313,7 @@ for (const [name, op, input, result, mode] of oldRefusals)
         retryUntil: expiry,
       };
       const db = writableStore(f.storage);
-      const image = recoverV3(db, f.seal());
+      const image = recovered(db, f.seal());
       append(db, f.seal(), image, [
         { operation: op, time, events: [], outcome },
       ]);
@@ -2322,7 +2322,7 @@ for (const [name, op, input, result, mode] of oldRefusals)
         const store = writableStore(f.storage);
         return readV3Value(
           store,
-          recoverV3(store, f.seal()),
+          recovered(store, f.seal()),
           "outcome",
           requestId,
         );
