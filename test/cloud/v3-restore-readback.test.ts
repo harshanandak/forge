@@ -812,14 +812,14 @@ test(
         using _target = target.db;
         const finish = await stage(target, data);
         const staged = target.snapshot();
-        const exec = target.storage.sql.exec.bind(target.storage.sql);
+        const executeSql = target.storage.sql.exec.bind(target.storage.sql);
         let armed = true;
         target.storage.sql.exec = (statement, ...bindings) => {
           if (armed && /^SELECT id, CASE WHEN length/.test(statement)) {
             armed = false;
             throw failure;
           }
-          return exec(statement, ...bindings);
+          return executeSql(statement, ...bindings);
         };
         expect(await finish()).toMatchObject(error(503, code));
         expect(armed).toBe(false);
