@@ -3,12 +3,12 @@ import {
   canonicalJson,
   digestBytes,
   digestValue,
-  isObject,
 } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { AdmitLeaseRequest } from "./project.ts";
 import { type DurableStorage, TABLE_PROBE } from "./store.ts";
 import {
+  archive,
   COLLECTIONS,
   COMMITS,
   entryDigest,
@@ -103,15 +103,6 @@ export function storedPages(db: SqlDatabase, table: string) {
       return [id, body];
     }),
   );
-}
-
-function archive(body: string): unknown {
-  const frame = JSON.parse(body) as Record<string, unknown>;
-  if (isObject(frame.outcome) && "result" in frame.outcome) {
-    const { result, ...receipt } = frame.outcome;
-    frame.outcome = { ...receipt, resultDigest: digestValue(result) };
-  }
-  return frame;
 }
 
 function pack(items: readonly Item[], transcript: string) {
