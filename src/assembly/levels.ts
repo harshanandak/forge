@@ -244,6 +244,7 @@ export function openLevels(options: {
   readonly caller: Caller;
   /** The operation declared its record write effect; its stores open writable. */
   readonly write: boolean;
+  readonly checking?: () => void;
   readonly requestId: string;
   readonly warnings?: readonly Warning[];
   /** Only the explicit recovery invocation replaces registrations for this root. */
@@ -356,6 +357,7 @@ export function openLevels(options: {
     }
   }
   async function openOwn(): Promise<ProjectStore | undefined> {
+    options.checking?.();
     const lease = await options.projectState.acquire(options.write);
     handles.push(lease);
     const owner = lease.value;
@@ -370,7 +372,7 @@ export function openLevels(options: {
       owner?.get(IDENTITY_NAMESPACE, IDENTITY_KEY)?.value,
     );
     if (
-      options.write &&
+      (options.write || options.checking !== undefined) &&
       owner &&
       manifest &&
       recorded &&

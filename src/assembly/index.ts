@@ -2301,6 +2301,12 @@ export async function createAssembly(
                     write: scope.effects.includes(
                       `${current.catalog.resolve(scope.op).operation.declaredOp.split(".")[0]!}:write`,
                     ),
+                    ...(scope.checking === true
+                      ? {
+                          checking: () =>
+                            refuseUnsupportedProjectWrite(root, home),
+                        }
+                      : {}),
                     requestId: request.requestId,
                   });
                   leases.push({

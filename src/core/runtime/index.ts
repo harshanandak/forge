@@ -71,6 +71,7 @@ export interface ServiceScope {
   readonly authorizeFinalizer?: (state: FinalizerState, key: string) => void;
   readonly op: string;
   readonly effects: readonly string[];
+  readonly checking?: boolean;
   readonly signal: AbortSignal;
   readonly deadline: number;
   readonly processContainment: "supervised" | "strict";
@@ -397,8 +398,9 @@ export class Runtime {
   /** Parsed values from embeddings are trusted objects; outside text uses invokeText. */
   async invoke(
     value: unknown,
-    options: { readonly signal?: AbortSignal } = {},
+    options: { readonly signal?: AbortSignal; readonly check?: boolean } = {},
   ): Promise<ResultEnvelope> {
+    const checking = options.check === true;
     let invocation: InvocationServices | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancel: (() => void) | undefined;
@@ -504,7 +506,8 @@ export class Runtime {
               authorizeFinalizer: (state: FinalizerState, key: string) =>
                 scope.authorizeFinalizer(state, key),
               op: request.op,
-              effects: Object.freeze([...declaration.effects]),
+              effects: Object.freeze(checking ? [] : [...declaration.effects]),
+              checking,
               signal: scope.controller.signal,
               get deadline() {
                 return scope.deadline;
@@ -549,7 +552,9 @@ export class Runtime {
             opened.handle.value.run({
               source: block.text(block.manifest.entry),
               filename: block.manifest.entry,
-              operation: operation.declaredOp,
+              operation: checking
+                ? `${operation.declaredOp}#check`
+                : operation.declaredOp,
               args: Object.freeze({
                 input: freezeData(structuredClone(request.input)),
                 config: freezeData(structuredClone(config)),
