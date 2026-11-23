@@ -3,6 +3,7 @@ import {
   digestValue,
   isObject,
 } from "../../src/core/config/pointer.ts";
+import * as validators from "../../src/generated/validators.ts";
 import { shownItem } from "./issue-read.ts";
 import { checkedUpdateInput } from "./issue-update.ts";
 import { isNat } from "./v3-authority.ts";
@@ -18,15 +19,16 @@ export function recordNumber(key: string): number {
 }
 
 function created(frame: Frame, number: number, input: unknown) {
-  if (!isObject(input)) return false;
+  if (!isObject(input)) return undefined;
   const { id, prefix, ...item } = input as Record<string, string>;
   const updatedAt = new Date(frame.time).toJSON();
   const shown = { ...item, id: `${prefix}-${number}`, revision: 1, updatedAt };
-  return (
-    id === `work-${number}` &&
+  return id === `work-${number}` &&
     item.createdAt === updatedAt &&
-    canonicalJson(frame.outcome?.result) === canonicalJson(shown)
-  );
+    resultMatches(frame.outcome!, shown) &&
+    validators.validateTrackerItem(shown).ok
+    ? shown
+    : undefined;
 }
 
 type Update = {
@@ -77,7 +79,11 @@ export function verifyRecordFrame(
   read: (key: string) => { readonly revision?: number } | undefined,
   refuse: () => Error,
   load: V3Image["load"],
-) {
+): {
+  floor: number;
+  changes: { key: string; value: RecordValue }[];
+  result?: unknown;
+} {
   const changes: { key: string; value: RecordValue }[] = [];
   const create = frame.operation === "issue.create";
   const update = frame.operation === "issue.update";
@@ -117,7 +123,7 @@ export function verifyRecordFrame(
         !resultMatches(frame.outcome, effect.result)
       )
         throw refuse();
-      return { floor, changes: effect.changes };
+      return { floor, changes: effect.changes, result: effect.result };
     } catch {
       throw refuse();
     }
@@ -138,6 +144,7 @@ export function verifyRecordFrame(
     throw refuse();
   const keys = put ? "key,revision,value" : "key,revision";
   const seen = new Set<string>();
+  let result: unknown;
   for (const input of frame.events) {
     if (!isObject(input)) throw refuse();
     const { key, revision, value } = input;
@@ -149,15 +156,16 @@ export function verifyRecordFrame(
       throw refuse();
     const number = recordNumber(key);
     const prior = read(key);
+    const shown = create ? created(frame, number, value) : undefined;
     if (
       !number ||
-      (create && (prior || number !== floor + 1 || revision !== 1)) ||
-      (create && !created(frame, number, value)) ||
+      (create && (prior || number !== floor + 1 || revision !== 1 || !shown)) ||
       seen.has(key) ||
       (prior && "deleted" in prior) ||
       revision <= (prior?.revision ?? 0)
     )
       throw refuse();
+    result = shown;
     if (!prior) {
       if (!put || number <= floor) throw refuse();
       floor = number;
@@ -169,5 +177,5 @@ export function verifyRecordFrame(
     });
   }
   if (canonicalJson(frame.changes) !== canonicalJson(changes)) throw refuse();
-  return { floor, changes };
+  return { floor, changes, result };
 }

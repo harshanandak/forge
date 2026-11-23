@@ -701,6 +701,11 @@ test(
     expect(() => verify(canonicalJson(archived))).toThrow(
       "Cloud v3 root is unavailable",
     );
+    const patched = JSON.parse(transcript) as Json[];
+    ((patched[2]!.events as Json[])[0]!.patch as Json).title = "Patched";
+    expect(() => verify(canonicalJson(patched))).toThrow(
+      "Cloud v3 root is unavailable",
+    );
   },
   timeout,
 );

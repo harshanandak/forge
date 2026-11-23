@@ -82,14 +82,14 @@ function fingerprintTied(
 function outcomeFault(
   outcome: unknown,
   typed?: boolean,
-  portable = false,
+  replay = false,
   grant = false,
 ) {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
   const { scope, result } = outcome;
   const command = typed ?? scope.family === "command";
   const codes = !command ? REFUSALS : grant ? CLAIM_REFUSALS : UPDATE_REFUSALS;
-  const archived = portable && (command || outcome.status !== "ok");
+  const archived = replay && (command || outcome.status !== "ok");
   const liveKeys = result === undefined ? OUTCOME_KEYS : REFUSAL_KEYS;
   if (
     keysOf(outcome) !== (archived ? ARCHIVED_KEYS : liveKeys) ||
@@ -177,7 +177,7 @@ export function sealedAuthorityValid(
 
 export function authorityFault(
   { operation, lease, outcome, witness }: Readonly<Record<string, unknown>>,
-  portable = false,
+  replay = false,
 ): string | undefined {
   if (lease !== undefined && !validLease(lease)) return "lease";
   if (
@@ -191,11 +191,10 @@ export function authorityFault(
   const outcomeError =
     outcome === undefined
       ? undefined
-      : outcomeFault(outcome, command, portable, claim);
+      : outcomeFault(outcome, command, replay, claim);
   if (outcomeError !== undefined) return outcomeError;
   if (command && !claim)
-    return (!create || !portable) &&
-      lease === undefined &&
+    return lease === undefined &&
       witness === undefined &&
       isObject(outcome) &&
       (!create || ["ok", "INPUT_INVALID"].includes(String(outcome.status))) &&
