@@ -4144,7 +4144,8 @@ for (const mode of ["live", "archived", "portable"] as const)
           editHistory(data, (frames) => {
             frames[0] = candidate;
           });
-          return rejectedFinalPage(target, data);
+          await rejectedFinalPage(target, data);
+          return;
         }
         await coldRefused(source);
       }),
