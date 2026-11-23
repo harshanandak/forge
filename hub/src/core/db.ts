@@ -1,53 +1,13 @@
 import { lstatSync } from "node:fs";
-import { createRequire } from "node:module";
-import type {
-  HubDb,
-  HubStatement,
-  OpenHubDb,
-  SqlRow,
-  SqlValue,
-} from "../contract/runtime.ts";
+import { DatabaseSync } from "node:sqlite";
+import type { HubDb, OpenHubDb } from "../contract/runtime.ts";
 import { migrate, schemaVersion } from "./schema.ts";
 
-interface Binding extends Pick<HubDb, "exec" | "close"> {
-  prepare(sql: string): Omit<HubStatement, "get"> & {
-    get(...params: SqlValue[]): SqlRow | null | undefined;
-  };
-}
-
-type Driver = new (path: string, flags: Record<string, boolean>) => Binding;
-
-function connectSqlite(path: string, readOnly: boolean): Binding {
-  const bun = "Bun" in globalThis;
-  const driver: unknown = createRequire(import.meta.url)(
-    bun ? "bun:sqlite" : "node:sqlite",
-  );
-  const name = bun ? "Database" : "DatabaseSync";
-  if (typeof driver !== "object" || driver === null || !(name in driver))
-    throw new Error("SQLite driver unavailable");
-  const constructor: unknown = Reflect.get(driver, name);
-  if (typeof constructor !== "function")
-    throw new Error("SQLite driver unavailable");
-  return new (constructor as Driver)(
-    path,
-    bun
-      ? { readonly: readOnly, create: !readOnly, safeIntegers: false }
-      : { readOnly },
-  );
-}
-
-function handle(raw: Binding): HubDb {
+function handle(raw: DatabaseSync): HubDb {
   let active = false;
   return {
     exec: raw.exec.bind(raw),
-    prepare(sql) {
-      const statement = raw.prepare(sql);
-      return {
-        run: (...params) => statement.run(...params),
-        get: (...params) => statement.get(...params) ?? undefined,
-        all: (...params) => statement.all(...params),
-      };
-    },
+    prepare: raw.prepare.bind(raw),
     transaction<T>(work: () => T): T {
       if (active) throw new Error("Nested transactions are refused");
       raw.exec("BEGIN IMMEDIATE");
@@ -86,7 +46,7 @@ export const openHubDb: OpenHubDb = (path) => {
   if (existing !== undefined && !existing.isFile())
     throw new Error("Hub database path must be a regular file");
   if (existing !== undefined && existing.size > 0) {
-    const probe = handle(connectSqlite(path, true));
+    const probe = handle(new DatabaseSync(path, { readOnly: true }));
     try {
       probe.exec("PRAGMA busy_timeout=5000");
       schemaVersion(probe);
@@ -94,7 +54,7 @@ export const openHubDb: OpenHubDb = (path) => {
       probe.close();
     }
   }
-  const db = handle(connectSqlite(path, false));
+  const db = handle(new DatabaseSync(path));
   try {
     db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
     if (schemaVersion(db) === 0) migrate(db);

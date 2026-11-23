@@ -75,6 +75,7 @@ test.skipIf(windows)(
 );
 
 const systemPowerShellCheck = `
+$ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))
 $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User

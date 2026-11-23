@@ -37,6 +37,7 @@ export interface ProtectionDeps {
 }
 
 const windowsHelper = `
+$ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
 function Read-Descriptor($path, $isDir) {
