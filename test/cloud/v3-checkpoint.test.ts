@@ -6735,10 +6735,14 @@ const promoteSlot = () => {
   return { outcome, time };
 };
 
-test("O2/O3 v3 validates the closed promote outcome slot", () => {
-  const value = promoteSlot();
-  expect(sealedAuthorityValid("outcome", value.outcome.id, value)).toBe(true);
-});
+test(
+  "O2/O3 v3 validates the closed promote outcome slot",
+  () => {
+    const value = promoteSlot();
+    expect(sealedAuthorityValid("outcome", value.outcome.id, value)).toBe(true);
+  },
+  timeout,
+);
 
 const slotFaults: PromotionFault[] = [
   ["lease", replaceField("lease", {})],
@@ -6775,6 +6779,7 @@ test.each(slotFaults)(
     edit(value);
     expect(sealedAuthorityValid("outcome", id, value)).toBe(false);
   },
+  timeout,
 );
 
 test.each([true, false])(
