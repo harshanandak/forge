@@ -34,7 +34,14 @@ function openDb(path = ":memory:", initialize = true): HubDb {
   let closed = false;
   const db: HubDb = {
     exec: (sql) => database.exec(sql),
-    prepare: (sql) => database.query<SqlRow, SqlValue[]>(sql),
+    prepare(sql) {
+      const statement = database.query<SqlRow, SqlValue[]>(sql);
+      return {
+        run: (...params) => statement.run(...params),
+        get: (...params) => statement.get(...params) ?? undefined,
+        all: (...params) => statement.all(...params),
+      };
+    },
     transaction: (work) => database.transaction(work).immediate(),
     close() {
       if (closed) return;
@@ -213,9 +220,9 @@ test(
     await state.connect();
     await state.subscribe("thread");
     await state.subscribe("thread");
-    expect(db.prepare("select thread_id from chat_subscriptions").all()).toEqual(
-      [{ thread_id: "thread" }],
-    );
+    expect(
+      db.prepare("select thread_id from chat_subscriptions").all(),
+    ).toEqual([{ thread_id: "thread" }]);
     await state.disconnect();
     db.close();
     const reopened = createSqliteChatState(openDb(path, false));

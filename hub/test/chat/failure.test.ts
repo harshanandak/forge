@@ -54,10 +54,16 @@ for (const [row, error] of [
   ["X3 request timeout", { code: "slack_webapi_request_error" }],
   ["X4 cut-off request or response", new Error("socket closed")],
   ["X5 server failure", { code: "slack_webapi_http_error", statusCode: 500 }],
-  ["X5 unexpected success status", { code: "slack_webapi_http_error", statusCode: 201 }],
+  [
+    "X5 unexpected success status",
+    { code: "slack_webapi_http_error", statusCode: 201 },
+  ],
   ["X5 corrupt platform result", platformError(42)],
   ["X5 payload not an error", null],
-  ["X5 platform rate limit without an HTTP delay", platformError("ratelimited")],
+  [
+    "X5 platform rate limit without an HTTP delay",
+    platformError("ratelimited"),
+  ],
   ["X5 partly applied operation", platformError("internal_error")],
   ["X5 fatal error after possible application", platformError("fatal_error")],
 ] as const) {
@@ -136,7 +142,11 @@ test(
     const data = { ok: false };
     for (const seconds of [0, 99_999, 9_007_199_254_740]) {
       expect(
-        validateRetryAfterResponse(data, { "retry-after": String(seconds) }, 429),
+        validateRetryAfterResponse(
+          data,
+          { "retry-after": String(seconds) },
+          429,
+        ),
       ).toBe(data);
       expect(toChatWriteFailure(rateError(seconds)).retryAfterMs).toBe(
         seconds * 1_000,
@@ -177,7 +187,15 @@ for (const [label, header] of [
 test(
   "X8 the classifier treats invalid SDK delays as unknown",
   () => {
-    for (const value of [undefined, -1, 1.5, NaN, Infinity, "1", 9_007_199_254_741]) {
+    for (const value of [
+      undefined,
+      -1,
+      1.5,
+      NaN,
+      Infinity,
+      "1",
+      9_007_199_254_741,
+    ]) {
       const failure = toChatWriteFailure(rateError(value));
       expect(failure.effect).toBe("unknown");
       expect(Object.keys(failure)).toEqual(["effect"]);
