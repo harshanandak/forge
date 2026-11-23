@@ -1064,13 +1064,17 @@ for (const [op, body, setup] of oks) {
     const f = guardFixture(env);
     await provision(f);
     await setup?.(f);
-    await send(f, body);
+    expect((await send(f, body)).status).toBe(200);
+    expect(last(f)).toMatchObject({
+      operation: body.op,
+      outcome: { status: "ok" },
+    });
     return f;
   };
   test(`v3 append refuses an ok ${op} frame that carries a basis`, async () => {
     const f = await written();
     using _db = f.db;
-    refuses(f, undefined, attach({ ...last(f) }));
+    refuses(f, noBasis, attach({ ...last(f) }));
   });
   test(`v3 cold recovery refuses an ok ${op} frame that carries a basis`, async () => {
     const f = await written();

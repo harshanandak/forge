@@ -635,13 +635,14 @@ test(
   "v3 refusalOf refuses a frame outside the basis grammar",
   () =>
     verdict((check) => {
-      const base = frameOf("issue.update", upd, revision);
+      const base = frameOf("issue.update", conflicting, revision);
+      expect(check(base)).toEqual(revision);
       for (const frame of [
-        { ...base, basis: { ...upd, extra: 1 } },
-        { ...base, basis: { ...upd, stage: "other" } },
+        { ...base, basis: { ...conflicting, extra: 1 } },
+        { ...base, basis: { ...conflicting, stage: "other" } },
         { ...base, basis: undefined },
         { ...base, operation: "lease.claim", basis: IN },
-        { ...base, operation: "issue.create", basis: upd },
+        { ...base, operation: "issue.create", basis: conflicting },
         { ...base, outcome: undefined },
       ])
         expect(check(frame)).toBeUndefined();
