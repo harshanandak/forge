@@ -694,6 +694,7 @@ for (const at of ["tail", "directory"] as const) {
         expect(image(cold)).toEqual({
           head: 2,
           eventWatermark: 4,
+          control: {},
           lease: {},
           outcome: {},
           witness: {},

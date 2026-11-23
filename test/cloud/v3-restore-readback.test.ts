@@ -9,7 +9,7 @@ import { digestProjection, inventory } from "../../cloud/src/v3-checkpoint.ts";
 import { verifyRow } from "../../cloud/src/v3-seal.ts";
 import {
   type Frame,
-  COLLECTIONS,
+  entryDigest,
   readV3Value,
   recoverV3,
   viewV3,
@@ -259,6 +259,17 @@ async function restoreInto(target: Fixture, data: Backup) {
   return finish;
 }
 
+const controlSlot = (
+  db: Parameters<typeof readV3Value>[0],
+  image: ReturnType<typeof recoverV3>,
+) =>
+  readV3Value(
+    db,
+    image,
+    "control" as Parameters<typeof readV3Value>[2],
+    "global",
+  );
+
 function readback(source: Fixture, target: Fixture, data: Backup) {
   expect(pages(target)).toEqual(data.pages);
   const from = recovered(source);
@@ -275,12 +286,21 @@ function readback(source: Fixture, target: Fixture, data: Backup) {
   expect(actual.recordFloor).toBe(expected.recordFloor);
   const { lease: _lease, ...expectedView } = viewV3(expected).image as Json;
   const { lease: _restoredLease, ...actualView } = viewV3(actual).image as Json;
+  const global = {
+    version: 1,
+    incarnation: actual.root.incarnation,
+    epoch: 1,
+    resumeAllEpoch: 0,
+    stopAll: activatedAt,
+  };
   expect(actualView).toEqual({
     ...expectedView,
+    control: { global: entryDigest(digestValue(global)) },
     head: expected.head + 1,
     eventWatermark: expected.eventWatermark + 1,
   });
-  for (const collection of COLLECTIONS) {
+  expect(controlSlot(to.db, actual)).toEqual(global);
+  for (const collection of ["lease", "outcome", "record", "witness"] as const) {
     expect([...actual.entries[collection].keys()].sort()).toEqual(
       [...expected.entries[collection].keys()].sort(),
     );
