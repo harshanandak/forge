@@ -11,7 +11,11 @@ import {
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
-import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
+import {
+  archivedCheck,
+  digestProjection,
+  inventory,
+} from "../../cloud/src/v3-checkpoint.ts";
 import { signRow } from "../../cloud/src/v3-seal.ts";
 import {
   claimEffect,
@@ -4134,3 +4138,128 @@ test.each([
     }),
   timeout,
 );
+
+test(
+  "v3 checkpoints keep the four-collection digest for empty control",
+  () =>
+    withFixture(async (f) => {
+      await smallHistory(f);
+      const saved = pages(f);
+      const bodies = new Map(
+        saved.map(({ id, body }) => [id, Buffer.from(body)]),
+      );
+      const legacyProjection = () =>
+        digestProjection(
+          inventory(storedImage(f), bodies, [
+            "lease",
+            "outcome",
+            "record",
+            "witness",
+          ]),
+        );
+      const publicDigest = () =>
+        readV3Root(writableStore(f.storage), f.seal()).publicDigest;
+      const expected = digestValue([
+        ["record", "r1", digestValue([1, digestValue("x")])],
+      ]);
+      expect(publicDigest()).toBe(expected);
+      expect(legacyProjection()).toBe(expected);
+      ok(await checkpoint(f));
+      expect(publicDigest()).toBe(expected);
+      f.restart();
+      const before = f.observeEffects();
+      expect(pages(f)).toEqual(saved);
+      expect(publicDigest()).toBe(expected);
+      expect(legacyProjection()).toBe(expected);
+      expect((await view(f)).image.control).toEqual({});
+      expect(before()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+for (const mode of ["live", "archived", "portable"] as const)
+  test.each([["restore.activate"], ["restore.promote"]] as const)(
+    "v3 " + mode + " history refuses %s without a promotion proof",
+    (operation) =>
+      withFixture(async (source) => {
+        ok(await append(source, putRecord("r1", 1, "x"), frame()));
+        if (mode !== "live") await drain(source, 0, 2);
+        if (mode !== "portable") {
+          source.restart();
+          const before = source.observeEffects();
+          ok(await source.send(probe));
+          expect(before()).toEqual(noWrites);
+        }
+
+        const db = writableStore(source.storage);
+        const r = JSON.parse(root(source).body) as Json;
+        const activation = { ...activationRow(r, 2, T0), events: [] };
+        const candidate =
+          operation === "restore.activate"
+            ? activation
+            : {
+                format: activation.format,
+                operation,
+                sequence: 2,
+                time: T0,
+                events: [],
+                activationDigest: digestValue(activation),
+              };
+
+        if (mode === "live") {
+          const recoverThrough = (through: number) =>
+            recoverV3(
+              db,
+              source.seal(),
+              { admit: Project.admitLeaseRequest, sealed: () => undefined },
+              { through },
+            );
+          replaceSignedFrame(source, r, 2, candidate);
+          source.restart();
+          expect(recoverThrough(1).head).toBe(1);
+          unavailableRead(() => recoverThrough(2));
+          await coldRefused(source);
+          return;
+        }
+
+        const fold = (frames: Json[]) =>
+          foldTranscript(db, frames, mode, Project.admitLeaseRequest);
+        const replaceNote = (frames: Json[]) => {
+          expect(fold(frames).head).toBe(2);
+          frames[1] = candidate;
+          unavailableRead(() => fold(frames));
+        };
+        if (mode === "archived") {
+          tamperRoot(source, (data, root) =>
+            reTranscript(data, root, replaceNote),
+          );
+          await coldRefused(source);
+          return;
+        }
+
+        const data = typedBackup(source);
+        editHistory(data, (frames) => {
+          frames[1] = { sequence: 2 };
+        });
+        const honest = guardFixture();
+        using _honest = honest.db;
+        const upload = await stageRestore(honest, data);
+        const final = await upload(2);
+        expect(final).toMatchObject(restoreResult(2, true));
+        expect(exited(final)).toBe(0);
+        expect(
+          readV3Value(
+            writableStore(honest.storage),
+            storedImage(honest),
+            "record",
+            "r1",
+          ),
+        ).toBe("x");
+
+        editHistory(data, replaceNote);
+        const target = guardFixture();
+        using _target = target.db;
+        await rejectedFinalPage(target, data);
+      }),
+    timeout,
+  );
