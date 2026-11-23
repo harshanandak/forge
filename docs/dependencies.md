@@ -4,7 +4,7 @@ A dependency is acceptable when it adds real value we would otherwise build and 
 
 Each entry is a `### <package>` heading with these fields: **Saves** (what we would otherwise build), **Maintenance**, **Transitive packages**, **Fit** (Node 24/26 and Bun), **Licence**, **Trust**, **Swap proof**, and for runtime dependencies **Adapter**. Every `overrides` entry gets a `### override: <package>` entry with **Issue** and **Expires** (`YYYY-MM-DD`); an expired override fails the test.
 
-Entries above `## Cloud dependencies` belong to root `package.json`; entries in that final section belong to `cloud/package.json`. Both packages use the same required fields, stale-entry refusals and override rules. Cloud runtime packages have exactly one adapter under `cloud/src/adapters/<name>/`; only that folder imports them. Core `src/` and `bin/` cannot import cloud-only packages or cloud code. Cloud code reaches root runtime packages through their root adapters under the existing ownership rules. Cloud manifests may not declare `imports`, and cloud files may not use `#` import aliases. Relative imports from `cloud/src/` into other `cloud/` directories are refused; imports into root `src/` retain their existing checks.
+Entries above `## Cloud dependencies` belong to root `package.json`. The Cloud dependencies and Hub dependencies sections belong to `cloud/package.json` and `hub/package.json` respectively. All three packages use the same required fields, stale-entry refusals and override rules. Cloud runtime packages have exactly one adapter under `cloud/src/adapters/<name>/`; only that folder imports them. Core `src/` and `bin/` cannot import cloud-only packages or cloud code. Cloud code reaches root runtime packages through their root adapters under the existing ownership rules. Cloud manifests may not declare `imports`, and cloud files may not use `#` import aliases. Relative imports from `cloud/src/` into other `cloud/` directories are refused; imports into root `src/` retain their existing checks. Hub files use their own package declarations and keep relative imports within `hub/`.
 
 Not npm dependencies, so not entries here: Bun itself is pinned by `packageManager` (`bun fmt` is stable in 1.4.4; CI's static job keeps canary for `bun lint`; the scripts fail fast on a Bun without the built-in), and `git` is the only external tool the shipped package may require.
 
@@ -124,3 +124,49 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Licence:** MIT OR Apache-2.0, as declared by the pinned registry package and upstream repository.
 - **Trust:** official Cloudflare tool, with exact version and integrity recorded in `cloud/bun.lock`. This change adds no package and executes no install scripts.
 - **Swap proof:** replacing the cloud bundling/deployment tool changes cloud tooling and configuration; the published CLI does not depend on Wrangler. Live deployment interoperability is not verified by these structure checks.
+
+## Hub dependencies
+
+### chat
+
+- **Saves:** message and action routing, conversation state and portable card building.
+- **Maintenance:** 4.45.0 was published on 2026-11-13, 11 days before selection. [Registry release history](https://registry.npmjs.org/chat)
+- **Transitive packages:** `@chat-adapter/catalog`, `@workflow/serde`, `mdast-util-to-string`, `remark-gfm`, `remark-parse`, `remark-stringify`, `remend` and `unified`. Optional peers are `ai`, `workflow` and `zod`. [Pinned manifest](https://registry.npmjs.org/chat/4.45.0)
+- **Fit:** declares Node >=20 and no install scripts. The hub installs it with scripts disabled under Bun and targets Node 24 or later. [Pinned manifest](https://registry.npmjs.org/chat/4.45.0)
+- **Licence:** MIT in the pinned manifest and installed licence.
+- **Trust:** exact npm pin in `hub/package.json` with integrity in `hub/bun.lock`.
+- **Swap proof:** the structure check enforces hub ownership. Chat behavior will be exercised through the hub's chat interface.
+- **Adapter:** the hub has no adapter folders. The planned importer is `hub/src/chat/`.
+
+### @chat-adapter/slack
+
+- **Saves:** Slack Web API and Socket Mode transport wiring, webhook verification and card rendering.
+- **Maintenance:** 4.45.0 was published on 2026-11-13, 11 days before selection. [Registry release history](https://registry.npmjs.org/@chat-adapter/slack)
+- **Transitive packages:** `@chat-adapter/shared`, `@slack/socket-mode`, `@slack/web-api` and `chat`. [Pinned manifest](https://registry.npmjs.org/@chat-adapter/slack/4.45.0)
+- **Fit:** declares Node >=20 and no install scripts. The hub installs it with scripts disabled under Bun and targets Node 24 or later. [Pinned manifest](https://registry.npmjs.org/@chat-adapter/slack/4.45.0)
+- **Licence:** MIT in the pinned manifest and installed licence.
+- **Trust:** exact npm pin in `hub/package.json` with integrity in `hub/bun.lock`.
+- **Swap proof:** the structure check enforces hub ownership. Slack transport will be exercised through the hub's chat interface.
+- **Adapter:** the hub has no adapter folders. The planned importer is `hub/src/chat/`.
+
+### @modelcontextprotocol/server
+
+- **Saves:** Forge MCP server dispatch, protocol error handling and HTTP request handling.
+- **Maintenance:** 2.3.1 was published on 2026-10-05. [Registry release history](https://registry.npmjs.org/@modelcontextprotocol/server)
+- **Transitive packages:** `@modelcontextprotocol/core` and `zod`. [Pinned manifest](https://registry.npmjs.org/@modelcontextprotocol/server/2.3.1)
+- **Fit:** declares Node >=20 and no install scripts. The hub installs it with scripts disabled under Bun and targets Node 24 or later. [Pinned manifest](https://registry.npmjs.org/@modelcontextprotocol/server/2.3.1)
+- **Licence:** Apache-2.0 in the pinned manifest and installed licence.
+- **Trust:** exact npm pin in `hub/package.json` with integrity in `hub/bun.lock`.
+- **Swap proof:** the structure check enforces hub ownership. Forge MCP protocol behavior will be exercised through its public interface.
+- **Adapter:** the hub has no adapter folders. The planned importer is `hub/src/remote/`.
+
+### @modelcontextprotocol/node
+
+- **Saves:** conversion of Node HTTP requests to web requests for Forge MCP.
+- **Maintenance:** 2.1.1 was published on 2026-10-02. [Registry release history](https://registry.npmjs.org/@modelcontextprotocol/node)
+- **Transitive packages:** `@hono/node-server` and `hono`. Its required peer `@modelcontextprotocol/server` uses the range `^2.3.0`. [Pinned manifest](https://registry.npmjs.org/@modelcontextprotocol/node/2.1.1)
+- **Fit:** declares Node >=20 and no install scripts. The hub installs it with scripts disabled under Bun and targets Node 24 or later. [Pinned manifest](https://registry.npmjs.org/@modelcontextprotocol/node/2.1.1)
+- **Licence:** Apache-2.0 in the pinned manifest and installed licence.
+- **Trust:** exact npm pin in `hub/package.json` with integrity in `hub/bun.lock`.
+- **Swap proof:** the structure check enforces hub ownership. Node HTTP conversion will be exercised through the hub's public Forge MCP interface.
+- **Adapter:** the hub has no adapter folders. The planned importer is `hub/src/remote/`.

@@ -24,6 +24,7 @@ const code = readRepoFiles(
     (p) =>
       CODE_FILE.test(p) ||
       p === "cloud/package.json" ||
+      p === "hub/package.json" ||
       /^cloud\/src\/adapters\/[^/]+\/adapter\.json$/.test(p),
   ),
 );
@@ -62,6 +63,55 @@ const cloudManifest = {
   path: "cloud/package.json",
   text: JSON.stringify(packageFixtures.cloud),
 };
+const timeout = 30_000;
+const hubManifest = {
+  path: "hub/package.json",
+  text: JSON.stringify({ dependencies: { "hub-lib": "1.0.0" } }),
+};
+
+function hubImport(path: string, specifier: string) {
+  return findDependencyViolations(
+    [cloudManifest, hubManifest, { path, text: `import '${specifier}';` }],
+    packageFixtures.root,
+    packageFixtures.adapters,
+  );
+}
+
+for (const name of [
+  "undeclared",
+  "root-lib",
+  "cloud-lib",
+  "forge-workflow",
+  "forge-workflow/identity",
+]) {
+  test(
+    `hub cannot borrow ${name}`,
+    () => {
+      const path = "hub/src/main.ts";
+      const found = hubImport(path, name);
+      expect(found.map((violation) => violation.file)).toEqual([path]);
+      expect(found[0]?.message).toContain("is not a hub dependency");
+    },
+    timeout,
+  );
+}
+
+for (const path of ["hub/src/main.ts", "hub/bin/forge-hub.mjs"]) {
+  test(
+    `${path} keeps its relative imports inside the package`,
+    () => {
+      for (const target of ["../../cloud/src/x.ts", "../src/../../src/x.ts"]) {
+        const found = hubImport(path, target);
+        expect(found.map((violation) => violation.file)).toEqual([path]);
+        expect(found[0]?.message).toContain("hub cannot import outside hub/");
+      }
+      expect(hubImport(path, "../src/main.ts")).toEqual([]);
+      expect(hubImport(path, "hub-lib")).toEqual([]);
+      expect(hubImport(path, "node:fs/promises")).toEqual([]);
+    },
+    timeout,
+  );
+}
 const guardCases = readJson(
   "test/structure/fixtures/package-guard-cases.json",
 ) as {

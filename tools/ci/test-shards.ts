@@ -42,7 +42,9 @@ if (import.meta.main) {
   const { files: timings } = JSON.parse(
     readFileSync("test/timings.json", "utf8"),
   ) as { files: Record<string, number> };
-  const files = [...new Bun.Glob("{test,src}/**/*.test.ts").scanSync(".")]
+  const files = [
+    ...new Bun.Glob("{test,src,hub/test}/**/*.test.ts").scanSync("."),
+  ]
     .map((file) => file.replaceAll("\\", "/"))
     .filter((file) => !file.endsWith("/packed.integration.test.ts"));
   const selectedFiles = selectSourceFiles(

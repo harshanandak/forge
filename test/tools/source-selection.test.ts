@@ -10,7 +10,9 @@ import { readFileSync } from "node:fs";
 setDefaultTimeout(30_000);
 
 test("source legs preserve every file and both majors cover every Node-sensitive file", () => {
-  const files = [...new Bun.Glob("{test,src}/**/*.test.ts").scanSync(".")]
+  const files = [
+    ...new Bun.Glob("{test,src,hub/test}/**/*.test.ts").scanSync("."),
+  ]
     .map((file) => file.replaceAll("\\", "/"))
     .filter((file) => !file.endsWith("/packed.integration.test.ts"));
   const { files: timings } = JSON.parse(

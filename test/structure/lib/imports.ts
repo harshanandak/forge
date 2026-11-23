@@ -209,6 +209,11 @@ export function findDependencyViolations(
   ) as PackageJson;
   const cloudPackages = declared(cloud);
   const cloudRuntime = new Set(Object.keys(cloud.dependencies ?? {}));
+  const hub = JSON.parse(
+    files.find((file) => boundaryPath(file.path) === "hub/package.json")
+      ?.text ?? "{}",
+  ) as PackageJson;
+  const hubPackages = declared(hub);
   if ("imports" in cloud)
     violations.push({
       rule: "dependency-boundary",
@@ -242,6 +247,7 @@ export function findDependencyViolations(
     const path = boundaryPath(file.path);
     const here = adapterOf(file.path);
     const inCloud = inFolder(path, "cloud");
+    const inHub = inFolder(path, "hub");
     const inShipped = /^(?:src|bin|cloud\/src)\//.test(path);
     const isTest = isTestFile(file.path);
     const unownedFilesystem =
@@ -360,6 +366,10 @@ export function findDependencyViolations(
         fail("cloud import aliases are not supported");
         continue;
       }
+      if (inHub && specifier.startsWith("#")) {
+        fail("hub import aliases are not supported");
+        continue;
+      }
 
       if (
         !inCloud &&
@@ -372,6 +382,10 @@ export function findDependencyViolations(
 
       if (specifier.startsWith(".")) {
         const target = targets[0]!;
+        if (inHub && !inFolder(target, "hub")) {
+          fail("hub cannot import outside hub/");
+          continue;
+        }
         if (
           inFolder(path, "cloud/src") &&
           inFolder(target, "cloud") &&
@@ -392,6 +406,10 @@ export function findDependencyViolations(
       if (specifier.startsWith("#")) continue;
 
       if (specifier.startsWith("bun:")) {
+        if (inHub && specifier === "bun:test" && !isTest) {
+          fail("bun:test is only available to hub tests");
+          continue;
+        }
         const allowed =
           here !== undefined ||
           (isTest && specifier === "bun:test") ||
@@ -417,6 +435,11 @@ export function findDependencyViolations(
       }
 
       const name = packageOf(specifier);
+      if (inHub) {
+        if (name === PACKAGE_NAME || !hubPackages.has(name))
+          fail(`"${name}" is not a hub dependency`);
+        continue;
+      }
       if (name === PACKAGE_NAME) continue;
       if (!knownPackages.has(name) && !(inCloud && cloudPackages.has(name))) {
         fail(`"${name}" is not declared in package.json`);
