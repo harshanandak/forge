@@ -1382,6 +1382,8 @@ async function replayed(f: Fixture, seen: Seen) {
       message: "Request ID belongs to a different input",
       retry: "reconcile_first",
     });
+    expect(changed.status).toBe(409);
+    exited(changed, "INPUT_CONFLICT");
   }
   expect(effects()).toEqual(noWrites);
 }
@@ -1408,10 +1410,12 @@ test.each(modes)(
       ],
     ] as const) {
       const body = { ...create, requestId: name, input };
+      const before = snap(f);
       const reply = await oneRow(f, () => send(f, body), 400);
       expect(wire(reply)).toEqual(never("INPUT_INVALID", message));
       expect(frames(f).at(-1)).toMatchObject({ events: [] });
       expect(frames(f).at(-1)?.changes).toBeUndefined();
+      expect(snap(f)).toEqual(before);
       seen.push([body, undefined, reply]);
     }
     expect(record(f)).toEqual({ revision: undefined, value: undefined });
@@ -1439,8 +1443,10 @@ test.each(modes)(
     ) => {
       const body = upd(name, input, context);
       const code = (error as ForgeError).code;
+      const before = snap(f);
       const reply = await updateRefusal(f, body, status, code, owner);
       expect(wire(reply)).toEqual(error);
+      expect(snap(f)).toEqual(before);
       seen.push([body, owner, reply]);
     };
     const bad = (message: string) => never("INPUT_INVALID", message);
@@ -1539,6 +1545,11 @@ test.each(modes)(
       ),
     );
     expect(lost()).toEqual(noWrites);
+    const again = f.observeEffects();
+    const stale = await send(f, update);
+    expect(stale.status).toBe(409);
+    exited(stale, "LEASE_STALE");
+    expect(again()).toEqual(noWrites);
     await replayed(f, seen);
   },
   timeout,
@@ -1560,8 +1571,10 @@ test.each(modes)(
     ) => {
       const body = clm(name, input);
       const code = (error as ForgeError).code;
+      const before = snap(f);
       const reply = await claimRefusal(f, body, status, code);
       expect(wire(reply)).toEqual(error);
+      expect(snap(f)).toEqual(before);
       seen.push([body, undefined, reply]);
     };
     const bad = (message: string) => never("INPUT_INVALID", message);
@@ -1650,6 +1663,7 @@ test.each(modes)(
     const effects = f.observeEffects();
     const reply = await send(f, typedClaim);
     expect(reply.status).toBe(409);
+    exited(reply, "LEASE_STALE");
     expect(wire(reply)).toEqual(
       leased(
         "LEASE_STALE",
@@ -1760,6 +1774,97 @@ test.each([
     expect(wire(reply)).toEqual(never("INPUT_CONFLICT", message));
     exited(reply, "INPUT_CONFLICT");
     expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+function snap(f: Fixture) {
+  const db = writableStore(f.storage);
+  const image = recoverV3(db, f.seal());
+  const keys = (collection: "record" | "lease") =>
+    [...image.entries[collection].keys()].sort();
+  return {
+    records: keys("record").map((key) => [
+      key,
+      readV3Value(db, image, "record", key),
+      image.entries.record.get(key)?.revision,
+    ]),
+    leases: keys("lease").map((key) => [
+      key,
+      readV3Value(db, image, "lease", key),
+    ]),
+  };
+}
+
+const longDevice = "d".repeat(257);
+async function enrollLong(f: Fixture, mode: Mode) {
+  await enroll(f, mode);
+  if (mode === "owner") return;
+  const reply = await f.send("devices", {
+    device: longDevice,
+    session: "fixture",
+    ttlMs: 2 * ttlMs,
+  });
+  expect(reply.status).toBe(200);
+  tokens
+    .get(f)!
+    .set(`${longDevice}/fixture`, (reply.body as { value: Issued }).value);
+}
+
+test.each(modes)(
+  "v3 typed claim records its refusals for a 257-character device label (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enrollLong(f, mode);
+    const ok = { id: "forge-1", ttlSeconds: 60 };
+    for (const [name, input, status, e] of [
+      [
+        "prefix",
+        { ...ok, id: "other-1" },
+        400,
+        never("INPUT_INVALID", "Unknown issue id prefix"),
+      ],
+      [
+        "missing",
+        { ...ok, id: "forge-9" },
+        404,
+        never("NOT_FOUND", "Issue forge-9 was not found"),
+      ],
+    ] as const) {
+      const before = snap(f);
+      const body = clm(`long-${name}`, input);
+      const reply = await claimRefusal(f, body, status, e.code, longDevice);
+      expect(wire(reply)).toEqual(e);
+      expect(snap(f)).toEqual(before);
+    }
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed update records its refusals for a 257-character device label (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enrollLong(f, mode);
+    for (const [name, id, status, e] of [
+      [
+        "prefix",
+        "other-1",
+        400,
+        never("INPUT_INVALID", "Unknown issue id prefix"),
+      ],
+      ["missing", "forge-9", 404, never("NOT_FOUND", "Issue was not found")],
+    ] as const) {
+      const before = snap(f);
+      const body = upd(`long-${name}`, { ...update.input, id });
+      const reply = await updateRefusal(f, body, status, e.code, longDevice);
+      expect(wire(reply)).toEqual(e);
+      expect(snap(f)).toEqual(before);
+    }
   },
   timeout,
 );
