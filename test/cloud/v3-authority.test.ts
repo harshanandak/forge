@@ -1,3 +1,4 @@
+import { readLaneControl } from "../../src/blocks/work/lane-control.ts";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import type { LeaseCommand } from "../../cloud/src/lease-command.ts";
 import { writableStore } from "../../cloud/src/store.ts";
@@ -554,6 +555,93 @@ test(
       expect(isNat(value)).toBe(true);
     for (const value of [-1, 1.5, Number.NaN, "1", null, 2 ** 53])
       expect(isNat(value)).toBe(false);
+  },
+  timeout,
+);
+
+const globalControl = {
+  version: 1,
+  incarnation: "root",
+  epoch: 1,
+  resumeAllEpoch: 0,
+  stopAll: null,
+};
+const { stopAll: _stopAll, ...incompleteControl } = globalControl;
+const issueControl = {
+  version: 1,
+  id: "work-1",
+  incarnation: "root",
+  epoch: 1,
+  stoppedAt: null,
+};
+
+const globalFaults = [
+  ["long incarnation", { incarnation: "x".repeat(257) }],
+  ["padded incarnation", { incarnation: " root " }],
+  ["control character", { incarnation: "r\0t" }],
+  ["extra global key", { extra: true }],
+  ["negative epoch", { epoch: -1 }],
+  ["fractional epoch", { epoch: 1.5 }],
+  ["unsafe epoch", { epoch: Number.MAX_SAFE_INTEGER + 1 }],
+  ["future resume", { resumeAllEpoch: 2 }],
+  [
+    "stop at resume epoch",
+    { resumeAllEpoch: 1, stopAll: new Date(T0).toISOString() },
+  ],
+  ["bad global time", { stopAll: "yesterday" }],
+] as const;
+
+test.each([
+  ["valid global", "global", globalControl, true],
+  ["missing global key", "global", incompleteControl, false],
+  ...globalFaults.map(
+    ([label, fields]) =>
+      [label, "global", { ...globalControl, ...fields }, false] as const,
+  ),
+  ["valid issue", "issue:work-1", issueControl, true],
+  ["zero issue epoch", "issue:work-1", { ...issueControl, epoch: 0 }, false],
+  ["invalid issue key", "issue:abc", issueControl, false],
+  ["mismatched issue", "issue:work-2", issueControl, false],
+  ["extra issue key", "issue:work-1", { ...issueControl, extra: true }, false],
+  [
+    "bad issue time",
+    "issue:work-1",
+    { ...issueControl, stoppedAt: "yesterday" },
+    false,
+  ],
+  ["unknown key", "x", globalControl, false],
+  ["wrong case", "Global", globalControl, false],
+  ["empty issue key", "issue:", issueControl, false],
+] as const)(
+  "sealed control slot validates %s",
+  (_label, key, value, valid) =>
+    expect(sealedAuthorityValid("control", key, value)).toBe(valid),
+  timeout,
+);
+
+test.each([
+  [1024, ""],
+  [1025, "a"],
+] as const)(
+  "sealed issue control counts %i UTF-8 bytes",
+  (bytes, suffix) => {
+    const value = {
+      ...issueControl,
+      id: "work-" + "1".repeat(251),
+      incarnation: "\u0800".repeat(222) + suffix,
+      epoch: Number.MAX_SAFE_INTEGER,
+      stoppedAt: new Date(T0).toISOString(),
+    };
+    const synthetic = {
+      ...globalControl,
+      incarnation: value.incarnation,
+      epoch: value.epoch,
+    };
+    expect(readLaneControl(synthetic, value, { id: value.id }).ok).toBe(true);
+    expect(Buffer.byteLength(canonicalJson(value))).toBe(bytes);
+    expect(sealedAuthorityValid("control", "issue:" + value.id, value)).toBe(
+      bytes === 1024,
+    );
   },
   timeout,
 );

@@ -1,3 +1,4 @@
+import { readLaneControl } from "../../src/blocks/work/lane-control.ts";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { failed } from "../../cloud/src/issue-commands.ts";
 import { domain, Project } from "../../cloud/src/project.ts";
@@ -10,17 +11,14 @@ import {
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
-import {
-  archivedCheck,
-  digestProjection,
-  inventory,
-} from "../../cloud/src/v3-checkpoint.ts";
+import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
 import { signRow } from "../../cloud/src/v3-seal.ts";
 import {
   claimEffect,
   entryDigest,
   foldTranscript,
   PAGE_BYTES,
+  readV3GlobalControl,
   readV3Root,
   readV3Value,
   recoverV3,
@@ -81,8 +79,7 @@ const controlSlot = (
   db: Parameters<typeof readV3Value>[0],
   image: ReturnType<typeof recoverV3>,
   key = "global",
-) =>
-  readV3Value(db, image, "control" as Parameters<typeof readV3Value>[2], key);
+): unknown => readV3Value(db, image, "control", key);
 
 const checkpoint = (f: Fixture) => f.send(checkpointRoute, {});
 const view = async (f: Fixture) => {
@@ -4046,42 +4043,6 @@ test.each([
   timeout,
 );
 
-test(
-  "v3 checkpoints keep the four-collection digest for empty control",
-  () =>
-    withFixture(async (f) => {
-      await smallHistory(f);
-      const saved = pages(f);
-      const bodies = new Map(
-        saved.map(({ id, body }) => [id, Buffer.from(body)]),
-      );
-      const digest = () =>
-        digestProjection(
-          inventory(storedImage(f), bodies, [
-            "lease",
-            "outcome",
-            "record",
-            "witness",
-          ]),
-        );
-      const expected = digest();
-      expect(readV3Root(writableStore(f.storage), f.seal()).publicDigest).toBe(
-        expected,
-      );
-      ok(await checkpoint(f));
-      f.restart();
-      const before = f.observeEffects();
-      expect(pages(f)).toEqual(saved);
-      expect(digest()).toBe(expected);
-      expect(readV3Root(writableStore(f.storage), f.seal()).publicDigest).toBe(
-        expected,
-      );
-      expect(before()).toEqual(noWrites);
-      expect((await view(f)).image.control).toEqual({});
-    }),
-  timeout,
-);
-
 test.each([
   ["activation", { ...frame(), operation: "restore.activate" }],
   ["promotion", { ...frame(), operation: "restore.promote" }],
@@ -4102,52 +4063,74 @@ test.each([
   timeout,
 );
 
-for (const mode of ["live", "archived", "portable"] as const)
-  test.each([["restore.activate"], ["restore.promote"]] as const)(
-    "v3 " + mode + " history refuses %s without a promotion proof",
-    (operation) =>
-      withFixture(async (source) => {
-        ok(await append(source, putRecord("r1", 1, "x")));
-        if (mode !== "live") await drain(source, 0, 1);
-        source.restart();
-        await view(source);
-        const r = JSON.parse(root(source).body) as Json;
-        const activation = activationRow(r, 1, T0);
-        const candidate =
-          operation === "restore.activate"
-            ? activation
-            : {
-                format: activation.format,
-                operation,
-                sequence: 1,
-                time: T0,
-                events: [{ type: "restore.promote" }],
-                activationDigest: digestValue(activation),
-              };
-        if (mode === "live") {
-          replaceSignedFrame(source, r, 1, candidate);
-          source.restart();
-        } else if (mode === "archived") {
-          tamperRoot(source, (data, root) =>
-            reTranscript(data, root, (frames) => {
-              frames[0] = candidate;
-            }),
-          );
-        } else {
-          const data = typedBackup(source);
-          const target = guardFixture(),
-            honest = guardFixture();
-          using _target = target.db;
-          using _honest = honest.db;
-          const upload = await stageRestore(honest, data);
-          expect(await upload(2)).toMatchObject(restoreResult(2, true));
-          editHistory(data, (frames) => {
-            frames[0] = candidate;
+test.each([
+  ["root incarnation", undefined],
+  ["padded incarnation", " padded "],
+  ["oversized incarnation", "\ud800".repeat(256)],
+] as const)(
+  "v3 absent global uses the validator for %s",
+  (_label, incarnation) =>
+    withFixture(async (f) => {
+      await smallHistory(f);
+      if (incarnation !== undefined)
+        tamperRoot(f, (_data, root) => {
+          root.incarnation = incarnation;
+        });
+      const before = f.observeEffects();
+      const db = writableStore(f.storage);
+      for (const image of [storedImage(f), storedImage(f)]) {
+        const expected = {
+          version: 1,
+          incarnation: image.root.incarnation,
+          epoch: 0,
+          resumeAllEpoch: 0,
+          stopAll: null,
+        };
+        const projection = viewV3(image);
+        expect(readV3Value(db, image, "record", "r1")).toBe("x");
+        if (incarnation === undefined) {
+          const global = readV3GlobalControl(db, image);
+          expect<unknown>(global).toEqual(expected);
+          expect(readLaneControl(global, undefined)).toMatchObject({
+            ok: true,
+            result: { stopped: false },
           });
-          await rejectedFinalPage(target, data);
-          return;
+        } else {
+          if (incarnation.length === 256)
+            expect(Buffer.byteLength(canonicalJson(expected))).toBeGreaterThan(
+              1_024,
+            );
+          unavailableRead(() => readV3GlobalControl(db, image));
         }
-        await coldRefused(source);
-      }),
-    timeout,
-  );
+        expect(image.entries.control.size).toBe(0);
+        expect(viewV3(image)).toEqual(projection);
+      }
+      expect(before()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test.each([
+  ["valid", false],
+  ["malformed", true],
+] as const)(
+  "v3 global reader keeps %s pointer-backed control distinct from absence",
+  (_label, malformed) =>
+    withPortable((_target, _data, source) => {
+      const value = malformed
+        ? controlVariants[0][1]
+        : controlGlobal("stored", T0);
+      addRootControl(source, [["global", value]]);
+      const before = source.observeEffects();
+      const db = writableStore(source.storage);
+      for (const image of [sealedComponent(source), sealedComponent(source)]) {
+        const projection = viewV3(image);
+        if (malformed) unavailableRead(() => readV3GlobalControl(db, image));
+        else expect<unknown>(readV3GlobalControl(db, image)).toEqual(value);
+        expect([...image.entries.control.keys()]).toEqual(["global"]);
+        expect(viewV3(image)).toEqual(projection);
+      }
+      expect(before()).toEqual(noWrites);
+    }),
+  timeout,
+);

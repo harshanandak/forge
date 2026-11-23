@@ -1,4 +1,8 @@
-import { transitionLaneControl } from "../../src/blocks/work/lane-control.ts";
+import {
+  type LaneControlGlobal,
+  type LaneControlIssue,
+  transitionLaneControl,
+} from "../../src/blocks/work/lane-control.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import {
@@ -73,7 +77,13 @@ const MAX_JSON_DEPTH = 64;
 const RESTORE_LEASES = 16;
 const ROOT_FORMAT = "forge-cloud-root/4";
 const KINDS = ["directory", "snapshot", "transcript"];
-export const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
+export const COLLECTIONS = [
+  "control",
+  "lease",
+  "outcome",
+  "record",
+  "witness",
+] as const;
 const SYNTHETIC_KEYS = ["changes", "events", "operation", "time"];
 const FRAME_KEYS =
   "basis,changes,events,format,lease,operation,outcome,sequence,time,witness".split(
@@ -158,6 +168,7 @@ type Slot = (
   { readonly value: unknown } | Pointer | { readonly deleted: true }
 ) & { readonly revision?: number };
 interface Values {
+  readonly control: LaneControlGlobal | LaneControlIssue;
   readonly lease: LeaseRecord;
   readonly outcome: {
     readonly time: number;
@@ -416,6 +427,7 @@ function recoveryImage(
   const image: V3Image = {
     root,
     entries: {
+      control: new Map(),
       lease: new Map(),
       outcome: new Map(),
       record: new Map(),
@@ -468,8 +480,13 @@ function applyActivation(db: SqlDatabase, seal: Seal, image: V3Image) {
   )
     throw unavailable();
   const frame = parse(row.body);
-  const time = nat(isObject(frame) ? frame.time : undefined);
-  if (activationFrame(root, time) !== row.body) throw unavailable();
+  if (!isObject(frame)) throw unavailable();
+  const time = nat(frame.time);
+  if (
+    activationFrame(root, time) !== row.body ||
+    !sealedAuthorityValid("control", "global", frame.control)
+  )
+    throw unavailable();
   for (const subject of image.entries.lease.keys()) {
     const lease = readV3Value(db, image, "lease", subject);
     if (!lease) throw unavailable();
@@ -478,6 +495,8 @@ function applyActivation(db: SqlDatabase, seal: Seal, image: V3Image) {
         value: { ...lease, releasedAt: new Date(time).toISOString() },
       });
   }
+  image.entries.control.clear();
+  image.entries.control.set("global", { value: frame.control });
   image.head++;
   image.eventWatermark++;
   image.tailBytes = Buffer.byteLength(row.body);
@@ -788,7 +807,14 @@ export function readV3Value<C extends Collection>(
 ): Values[C] | undefined {
   const slot = image.entries[collection].get(key);
   if (!slot || "deleted" in slot) return undefined;
-  if ("value" in slot) return slot.value as Values[C];
+  if ("value" in slot) {
+    if (
+      collection === "control" &&
+      !sealedAuthorityValid(collection, key, slot.value)
+    )
+      throw unavailable();
+    return slot.value as Values[C];
+  }
   const bytes = pages
     ? pages.get(slot.page)?.subarray(slot.offset, slot.offset + slot.length)
     : db.get(
@@ -811,6 +837,23 @@ export function readV3Value<C extends Collection>(
   )
     throw unavailable();
   return value as Values[C];
+}
+
+export function readV3GlobalControl(
+  db: SqlDatabase,
+  image: V3Image,
+): LaneControlGlobal {
+  const value = readV3Value(db, image, "control", "global");
+  if (value !== undefined) return value as LaneControlGlobal;
+  const initial = {
+    version: 1,
+    incarnation: image.root.incarnation,
+    epoch: 0,
+    resumeAllEpoch: 0,
+    stopAll: null,
+  } as const;
+  if (!sealedAuthorityValid("control", "global", initial)) throw unavailable();
+  return initial as LaneControlGlobal;
 }
 
 export function appendV3Frames(

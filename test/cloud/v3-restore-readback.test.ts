@@ -262,13 +262,7 @@ async function restoreInto(target: Fixture, data: Backup) {
 const controlSlot = (
   db: Parameters<typeof readV3Value>[0],
   image: ReturnType<typeof recoverV3>,
-) =>
-  readV3Value(
-    db,
-    image,
-    "control" as Parameters<typeof readV3Value>[2],
-    "global",
-  );
+): unknown => readV3Value(db, image, "control", "global");
 
 function readback(source: Fixture, target: Fixture, data: Backup) {
   expect(pages(target)).toEqual(data.pages);
