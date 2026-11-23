@@ -3254,9 +3254,11 @@ test(
     typedFixture(async (f) => {
       await kBuild(f);
       const before = await refusesCold(f, editedTitle);
+      const effects = f.observeEffects();
       const reply = await typed(f, kRequests.create);
       expect(reply).toMatchObject(refused);
       expect(exited(reply)).toBe(1);
+      expect(effects()).toEqual(noWrites);
       expect(f.snapshot()).toEqual(before);
     }),
   timeout,
@@ -3409,9 +3411,11 @@ test(
       const before = await refusesCold(f, (d) =>
         editProjection(d, "outcome", refusalEntry(d).item.key, brokenJson),
       );
+      const effects = f.observeEffects();
       const reply = await typed(f, missingUpdate);
       expect(reply).toMatchObject(refused);
       expect(exited(reply)).toBe(1);
+      expect(effects()).toEqual(noWrites);
       expect(f.snapshot()).toEqual(before);
     }),
   timeout,

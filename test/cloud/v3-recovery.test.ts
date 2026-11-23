@@ -486,7 +486,7 @@ async function honest(f: Fixture, shape: Capacity = {}) {
 test(
   "a cold routed read of an honest history at the transcript page limit and a full tail rebuilds the exact state within 1,750 rows and 22 MiB",
   async () => {
-    const f = fixture();
+    const f = guardFixture();
     try {
       const { items, pages, frames, last } = await honest(f);
       const transcript = pages.find(({ kind }) => kind === "transcript")!;
@@ -494,9 +494,11 @@ test(
       expect(transcript.bytes).toBeLessThanOrEqual(PAGE_BYTES);
       expect(transcript.bytes).toBeGreaterThan(PAGE_BYTES - 2048);
       const directoryBytes = pages[0]!.bytes;
+      const effects = f.observeEffects();
       const cold = await f.send(probe);
       const reads = { ...f.reads };
       expect(cold.status).toBe(200);
+      expect(effects()).toEqual(noWrites);
       const rebuilt = image(cold)!;
       expect(rebuilt).toMatchObject({
         head: frames.length + TAIL_ROWS,
@@ -571,7 +573,7 @@ for (const [label, shape] of overLimits) {
   test(
     `a cold read of ${label} is refused within the read limits and serves nothing`,
     async () => {
-      const f = fixture();
+      const f = guardFixture();
       try {
         if (shape.honest) {
           const sibling = fixture();
@@ -584,7 +586,9 @@ for (const [label, shape] of overLimits) {
           await honest(f, shape);
         } else await capacity(f, shape);
         const before = f.snapshot();
+        const effects = f.observeEffects();
         const read = await f.send(probe);
+        expect(effects()).toEqual(noWrites);
         expect(f.reads.rows).toBeLessThanOrEqual(COLD_ROWS);
         expect(f.reads.bytes).toBeLessThanOrEqual(COLD_BYTES);
         expect(read).toMatchObject(unavailable);
