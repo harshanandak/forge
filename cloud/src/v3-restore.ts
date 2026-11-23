@@ -197,8 +197,8 @@ export function restoreV3Page(
           db.run(`UPDATE ${STAGE} SET body=''`);
         }
       }
-      if (restored || verified)
-        recoverV3(
+      if (restored || verified) {
+        const { usage } = recoverV3(
           db,
           seal,
           archivedCheck(db, {
@@ -207,6 +207,15 @@ export function restoreV3Page(
             pages: checked,
           }),
         );
+        if (
+          !restored &&
+          Object.values(usage).some((bytes) => bytes > PAGE_BYTES)
+        )
+          throw fail(
+            "STORAGE_LIMIT_EXCEEDED",
+            "The restored history is too large to activate",
+          );
+      }
     };
     if (prior) {
       check(prior.id === id && prior.request === request && prior.pin === pin);
