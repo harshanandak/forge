@@ -1,0 +1,34 @@
+{
+  "name": "forge-hub",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "forge-hub": "bin/forge-hub.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "manifests",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "dependencies": {
+    "chat": "4.45.0",
+    "@chat-adapter/slack": "4.45.0",
+    "@modelcontextprotocol/server": "2.3.1",
+    "@modelcontextprotocol/node": "2.1.1"
+  },
+  "bundleDependencies": [
+    "chat",
+    "@chat-adapter/slack",
+    "@modelcontextprotocol/server",
+    "@modelcontextprotocol/node"
+  ]
+}

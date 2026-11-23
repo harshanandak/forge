@@ -13,11 +13,21 @@ import {
   repoRoot,
 } from "./lib/repo.ts";
 
+function ledgerSection(name: "root" | "Cloud" | "Hub"): string | undefined {
+  const sections = readTextFile(LEDGER_PATH)?.split(
+    /^## (Cloud|Hub) dependencies[ \t]*\r?$/m,
+  );
+  if (name === "root") return sections?.[0];
+  const heading = sections?.indexOf(name) ?? -1;
+  if (heading < 0) return undefined;
+  return sections?.[heading + 1]?.split(/^## /m, 1)[0];
+}
+
 test("every dependency and override has a complete entry in docs/dependencies.md", () => {
   const paths = listRepoFiles();
   const pkg = readJson("package.json") as LedgerPackageJson;
   const ledger = paths.includes(LEDGER_PATH)
-    ? readTextFile(LEDGER_PATH)?.split(/^## Cloud dependencies\s*$/m)[0]
+    ? ledgerSection("root")
     : undefined;
   const { manifests } = scanAdapters(paths);
   expect(
@@ -58,9 +68,7 @@ test("cloud declarations in every dependency group and overrides need ledger ent
 }, 30_000);
 
 test("the real cloud package has its own complete ledger section", () => {
-  const ledger = readTextFile(LEDGER_PATH)?.split(
-    /^## Cloud dependencies\s*$/m,
-  )[1];
+  const ledger = ledgerSection("Cloud");
   expect(
     format(
       findLedgerViolations(
@@ -81,7 +89,7 @@ test("cloud ledger adapters match their recorded owners", () => {
   expect(
     format(
       findLedgerViolations(
-        readTextFile(LEDGER_PATH)?.split(/^## Cloud dependencies\s*$/m)[1],
+        ledgerSection("Cloud"),
         readJson("cloud/package.json") as LedgerPackageJson,
         cloud.manifests,
         new Date(),
@@ -89,6 +97,33 @@ test("cloud ledger adapters match their recorded owners", () => {
     ),
   ).toEqual([]);
 }, 30_000);
+
+const timeout = 30_000;
+
+test(
+  "the real hub package has its own complete ledger section",
+  () => {
+    const ledger = ledgerSection("Hub");
+    const pkg = readJson("hub/package.json") as LedgerPackageJson;
+    expect(Object.keys(pkg.dependencies ?? {}).sort()).toEqual([
+      "@chat-adapter/slack",
+      "@modelcontextprotocol/node",
+      "@modelcontextprotocol/server",
+      "chat",
+    ]);
+    const check = (section: string | undefined) =>
+      format(findLedgerViolations(section, pkg, [], today));
+    expect(check(ledger)).toEqual([]);
+    if (ledger === undefined) throw new Error("hub ledger section is required");
+    expect(check(`${ledger}\n### stale-hub-package\n${full()}\n`)).toHaveLength(
+      1,
+    );
+    expect(check(ledger.replace(/^### chat\r?$/m, "#### chat"))).toHaveLength(
+      1,
+    );
+  },
+  timeout,
+);
 
 test("the guard rejects a dependency with no entry or an incomplete entry", () => {
   const pkg = {

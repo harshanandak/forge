@@ -83,6 +83,7 @@
     "prebuild": "bun run gen",
     "build": "tsc -p tsconfig.build.json",
     "build:team": "tsc -p tsconfig.team.json",
+    "build:hub": "tsc -p hub/tsconfig.json",
     "postbuild": "bun tools/bundle-work-primitives.ts && bun tools/build-assets.ts && bun tools/bundle-yaml.ts"
   },
   "dependencies": {
