@@ -182,6 +182,8 @@ const scopes = [
   "channels:history",
   "groups:history",
   "chat:write.customize",
+  "channels:read",
+  "groups:read",
   "reactions:write",
   "canvases:write",
 ];
@@ -233,6 +235,8 @@ test(
     for (const mutation of [
       manifest + "request_url: https://example.test\n",
       manifest.replace("      - canvases:write\n", ""),
+      manifest.replace("      - channels:read\n", ""),
+      manifest.replace("      - groups:read\n", ""),
       manifest.replace(
         "      - canvases:write\n",
         "      - canvases:write\n      - canvases:write\n",

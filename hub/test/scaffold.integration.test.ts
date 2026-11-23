@@ -207,7 +207,19 @@ const ownFiles = [
   "THIRD_PARTY_NOTICES.md",
   "bin/forge-hub.mjs",
   "manifests/slack-socket.yaml",
+  "dist/chat/index.js",
+  "dist/contract/chat-state.js",
+  "dist/contract/chat.js",
+  "dist/contract/core.js",
+  "dist/contract/domain.js",
+  "dist/contract/errors.js",
+  "dist/contract/hooks.js",
+  "dist/contract/ids.js",
+  "dist/contract/mcp.js",
+  "dist/contract/runtime.js",
+  "dist/core/index.js",
   "dist/main.js",
+  "dist/remote/index.js",
   "dist/setup/index.js",
 ];
 const credentialPath =
@@ -514,6 +526,13 @@ test(
       );
       expect(() => checkInventory(mutation, expected, closure)).toThrow();
     }
+    for (const mutation of [
+      paths.filter((path) => path !== "dist/contract/runtime.js"),
+      [...paths, "dist/contract/placeholder.js"],
+    ])
+      expect(() => checkInventory(mutation, expected, closure)).toThrow(
+        "Unexpected hub own-file inventory",
+      );
 
     const scanned = new Set(
       paths.filter((path) =>

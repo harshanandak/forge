@@ -61,7 +61,8 @@ const after = {
     '{"scripts":{"build":"original","build:team":"team","build:hub":"tsc -p hub/tsconfig.json"}}',
   nodeSensitive: before.nodeSensitive.replace(
     "};",
-    '  "hub/test/scaffold.integration.test.ts":\n    "Launches selected Node and npm on the built hub package.",\n};',
+    '  "hub/test/scaffold.integration.test.ts":\n    "Launches selected Node and npm on the built hub package.",\n' +
+      '  "hub/test/node-entry.integration.test.ts":\n    "Launches selected Node on the built hub entry.",\n};',
   ),
 };
 const paths = [

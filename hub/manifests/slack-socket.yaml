@@ -21,6 +21,8 @@ oauth_config:
       - channels:history
       - groups:history
       - chat:write.customize
+      - channels:read
+      - groups:read
       - reactions:write
       - canvases:write
 settings:

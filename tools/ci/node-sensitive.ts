@@ -201,4 +201,6 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for lazy assembly coverage.",
   "hub/test/scaffold.integration.test.ts":
     "Launches selected Node and npm on the built hub package.",
+  "hub/test/node-entry.integration.test.ts":
+    "Launches selected Node on the built hub entry.",
 };

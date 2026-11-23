@@ -13,8 +13,24 @@ const allowedPaths = new Set([
   "hub/bun.lock",
   "hub/manifests/slack-socket.yaml",
   "hub/package.json",
+  "hub/src/chat/index.ts",
+  "hub/src/contract/chat-state.ts",
+  "hub/src/contract/chat.ts",
+  "hub/src/contract/core.ts",
+  "hub/src/contract/domain.ts",
+  "hub/src/contract/errors.ts",
+  "hub/src/contract/hooks.ts",
+  "hub/src/contract/ids.ts",
+  "hub/src/contract/mcp.ts",
+  "hub/src/contract/runtime.ts",
+  "hub/src/core/index.ts",
   "hub/src/main.ts",
+  "hub/src/remote/index.ts",
   "hub/src/setup/index.ts",
+  "hub/test/contract.test.ts",
+  "hub/test/fakes/fake-chat.ts",
+  "hub/test/fakes/fake-host.ts",
+  "hub/test/node-entry.integration.test.ts",
   "hub/test/package.test.ts",
   "hub/test/scaffold.integration.test.ts",
   "hub/tsconfig.json",
@@ -48,6 +64,8 @@ const typecheck = { if: condition, run: "bun run check" };
 const hubBuild = { if: condition, name: "Build hub", run: "bun run build:hub" };
 const scaffoldEntry =
   '  "hub/test/scaffold.integration.test.ts":\n    "Launches selected Node and npm on the built hub package.",\n';
+const nodeEntry =
+  '  "hub/test/node-entry.integration.test.ts":\n    "Launches selected Node on the built hub entry.",\n';
 
 export interface Snapshot {
   workflow: string;
@@ -147,7 +165,7 @@ export function checkPreservation(
   );
   same(
     after.nodeSensitive,
-    before.nodeSensitive.replace(/\};\n$/, `${scaffoldEntry}};\n`),
+    before.nodeSensitive.replace(/\};\n$/, `${scaffoldEntry}${nodeEntry}};\n`),
     "Node-sensitive inventory",
   );
   same(
