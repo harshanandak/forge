@@ -13,6 +13,7 @@ import {
   leaseExpiry,
 } from "../../src/core/state/index.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
+import * as validators from "../../src/generated/validators.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { checkedValue, configured, holds, shownId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
@@ -595,6 +596,17 @@ function recoverPortableV3(
   const frames = parse(portableTranscript, MAX_JSON_DEPTH + 1);
   if (!Array.isArray(frames) || storedCanonical(frames) !== portableTranscript)
     throw unavailable();
+  return foldTranscript(db, frames, "portable", admit);
+}
+
+type FoldMode = "live" | "archived" | "portable";
+
+export function foldTranscript(
+  db: SqlDatabase,
+  frames: readonly unknown[],
+  mode: Exclude<FoldMode, "live">,
+  admit: AdmitLeaseRequest,
+): V3Image {
   const image = recoveryImage(db, genesis("portable", "portable"), 0);
   const verification = { admit, pages: new Map<string, Buffer>() };
   const verify = (frame: Frame) =>
@@ -607,13 +619,14 @@ function recoverPortableV3(
   };
   for (const [index, raw] of frames.entries()) {
     const frame: unknown = raw;
-    if (!isObject(frame) || frame.operation === marker.operation)
+    const portable = mode === "portable";
+    if (!isObject(frame) || (portable && frame.operation === marker.operation))
       throw unavailable();
     const body =
-      Object.keys(frame).join() === "sequence"
+      portable && Object.keys(frame).join() === "sequence"
         ? { ...marker, ...frame }
         : frame;
-    foldRow(image, index + 1, storedCanonical(body), verify, true);
+    foldRow(image, index + 1, storedCanonical(body), verify, mode);
   }
   return image;
 }
@@ -623,14 +636,14 @@ function foldRow(
   sequence: unknown,
   body: unknown,
   verify?: (frame: Frame) => Frame,
-  portable = false,
+  mode: FoldMode = "live",
 ) {
   const frame = typeof body === "string" ? parse(body) : undefined;
   if (
     sequence !== image.head + 1 ||
     storedCanonical(frame) !== body ||
     !validShape(frame) ||
-    authorityFault(frame, portable) !== undefined ||
+    authorityFault(frame, mode !== "live") !== undefined ||
     frame.format !== COMMIT_FORMAT ||
     frame.sequence !== sequence
   )
@@ -644,7 +657,17 @@ function foldRow(
     unavailable,
     image.load,
   );
-  apply(image, verify ? verify(frame) : frame, nat(sequence));
+  let done: Frame = verify ? verify(frame) : frame;
+  if (
+    records.result !== undefined &&
+    done.outcome?.resultDigest !== undefined
+  ) {
+    const { resultDigest: _digest, ...receipt } = done.outcome;
+    done = { ...done, outcome: { ...receipt, result: records.result } };
+  }
+  const canonical =
+    done === frame ? done : (parse(storedCanonical(done)) as Frame);
+  apply(image, canonical, nat(sequence));
   image.recordFloor = records.floor;
   for (const { key, value } of records.changes) record.set(key, value);
   image.tailBytes += Buffer.byteLength(String(body));
@@ -1053,7 +1076,8 @@ function verifyClaimFrame(image: V3Image, frame: Frame): Frame {
     if (
       canonicalJson(frame.lease) !== canonicalJson(lease) ||
       canonicalJson(frame.events) !== canonicalJson(events) ||
-      !resultMatches(outcome, result)
+      !resultMatches(outcome, result) ||
+      !validators.validateLeaseGrant(result).ok
     )
       throw unavailable();
     return { ...frame, outcome: { ...receipt, result } };

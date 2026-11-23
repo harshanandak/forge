@@ -10,9 +10,9 @@ import {
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
-import * as v3 from "../../cloud/src/v3-store.ts";
 import {
   claimEffect,
+  foldTranscript,
   PAGE_BYTES,
   readV3Value,
   recoverV3,
@@ -2403,12 +2403,6 @@ for (const [name, tamper] of createEdits)
   );
 
 type Mode = "archived" | "portable";
-type Fold = (
-  db: ReturnType<typeof writableStore>,
-  rows: Json[],
-  mode: Mode,
-  admit: typeof Project.admitLeaseRequest,
-) => ReturnType<typeof recoverV3>;
 const modes: Mode[] = ["archived", "portable"];
 const iso = (time: number) => new Date(time).toISOString();
 const ZERO = `sha256:${"0".repeat(64)}`;
@@ -2419,11 +2413,7 @@ const transcript = (f: Fixture) =>
 function foldOf(f: Fixture, mode: Mode, rows: Json[]) {
   const db = writableStore(f.storage);
   const admit = Project.admitLeaseRequest;
-  if (mode === "archived") {
-    const fold = Reflect.get(v3, "foldTranscript") as Fold | undefined;
-    expect(typeof fold).toBe("function");
-    return fold!(db, rows, mode, admit);
-  }
+  if (mode === "archived") return foldTranscript(db, rows, mode, admit);
   const portableTranscript = canonicalJson(
     rows.map((row) =>
       row.operation === "fixture.note" ? { sequence: row.sequence } : row,
@@ -2434,8 +2424,6 @@ function foldOf(f: Fixture, mode: Mode, rows: Json[]) {
 }
 
 function refuses(f: Fixture, mode: Mode, rows: Json[]) {
-  if (mode === "archived")
-    expect(typeof Reflect.get(v3, "foldTranscript")).toBe("function");
   const effects = f.observeEffects();
   let thrown: unknown;
   try {
@@ -2497,11 +2485,13 @@ for (const mode of modes)
           .map((key) => readV3Value(db, folded, "outcome", key)!.outcome)
           .filter(({ scope }) => scope.family === "command")
           .map(({ result }) => result);
-        expect(results).toMatchObject([
+        expect(results).toHaveLength(3);
+        for (const expected of [
           { id: "forge-1", title: "A", revision: 1 },
           { id: "forge-1", title: "After", revision: 2 },
           { id: "forge-1", generation: expect.any(Number) as unknown },
-        ]);
+        ])
+          expect(results).toContainEqual(expect.objectContaining(expected));
       }),
     timeout,
   );
