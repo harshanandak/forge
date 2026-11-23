@@ -13,6 +13,10 @@ const NAMESPACE = "forge/work";
 const FLOOR_MISSING =
   "This project has issue history but no saved issue number, so creating issues is not available for it yet";
 const KINDS = ["task", "bug", "feature", "epic"];
+export const CREATE_GRAPH =
+  "Parent and dependencies are not supported in cloud yet";
+export const CREATE_SCHEMA = "input must be a valid issue.create input";
+export const KIND_REFUSED = `kind must be one of ${KINDS.join(", ")}`;
 const create = manifest.operations["issue.create"];
 if (
   create.input !== "schemas/CreateItemInput.json" ||
@@ -33,15 +37,12 @@ export function checked(input: unknown): Fields {
     input !== null &&
     ("parent" in input || "dependsOn" in input)
   )
-    throw fail(
-      "INPUT_INVALID",
-      "Parent and dependencies are not supported in cloud yet",
-    );
+    throw fail("INPUT_INVALID", CREATE_GRAPH);
   if (schemas().validate(CreateItemInput.$ref, input).length > 0)
-    throw fail("INPUT_INVALID", "input must be a valid issue.create input");
+    throw fail("INPUT_INVALID", CREATE_SCHEMA);
   const fields = input as Fields;
   if (fields.kind !== undefined && !KINDS.includes(fields.kind))
-    throw fail("INPUT_INVALID", `kind must be one of ${KINDS.join(", ")}`);
+    throw fail("INPUT_INVALID", KIND_REFUSED);
   return fields;
 }
 

@@ -21,6 +21,9 @@ import {
 import { receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
+export const UPDATE_GRAPH =
+  "Kind, parent and dependencies are not supported in cloud yet";
+export const UPDATE_SCHEMA = "input must be a valid issue.update input";
 const update = manifest.operations["issue.update"];
 if (
   update.input !== "schemas/UpdateItemInput.json" ||
@@ -97,12 +100,9 @@ export function checkedUpdateInput(input: unknown) {
     input !== null &&
     ("kind" in input || "parent" in input || "dependsOn" in input)
   )
-    throw fail(
-      "INPUT_INVALID",
-      "Kind, parent and dependencies are not supported in cloud yet",
-    );
+    throw fail("INPUT_INVALID", UPDATE_GRAPH);
   if (schemas().validate(UpdateItemInput.$ref, input).length > 0)
-    throw fail("INPUT_INVALID", "input must be a valid issue.update input");
+    throw fail("INPUT_INVALID", UPDATE_SCHEMA);
   return input as Fields["patch"] & { id: string; expectRevision: number };
 }
 

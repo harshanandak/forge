@@ -25,7 +25,9 @@ export const MAX_LEASE_BYTES = 16 * 1024;
 export const MAX_SHOW_RESPONSE_BYTES = 1_048_576;
 export const MAX_DEPTH = 8;
 export const MAX_NODES = 1024;
-const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
+export const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
+export const INVALID_ID = "Invalid issue id";
+export const UNKNOWN_PREFIX = "Unknown issue id prefix";
 const BODY = (table: string, column: string) =>
   `SELECT CASE WHEN length(CAST(body AS BLOB)) <= ? THEN body END AS body FROM ${table} WHERE namespace=? AND ${column}=?`;
 const RECORD = BODY("state_records", "key");
@@ -124,10 +126,10 @@ export function storedId(
   minted: (given: string) => boolean,
 ): string {
   const match = QUALIFIED.exec(id);
-  if (match === null) throw fail("INPUT_INVALID", "Invalid issue id");
+  if (match === null) throw fail("INPUT_INVALID", INVALID_ID);
   const given = match[1]!.toLowerCase();
   if (given !== prefix && !minted(given))
-    throw fail("INPUT_INVALID", "Unknown issue id prefix");
+    throw fail("INPUT_INVALID", UNKNOWN_PREFIX);
   return `work-${match[2]}`;
 }
 
