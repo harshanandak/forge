@@ -1,5 +1,6 @@
 import { digestValue } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import { storageFailure } from "./storage-failure.ts";
 import { TABLE_PROBE } from "./store.ts";
 import { isDigest } from "./v3-authority.ts";
 import {
@@ -88,13 +89,17 @@ function coherentApproval(row: ApprovalFields): boolean {
       deciderSubject === null &&
       spentAt === null
     );
-  if (decidedAt === null || deciderIssuer === null || deciderSubject === null)
+  if (
+    decidedAt === null ||
+    decidedAt < requestedAt ||
+    deciderIssuer === null ||
+    deciderSubject === null
+  )
     return false;
   if (status === "spent")
     return spentAt !== null && decidedAt <= spentAt && spentAt < expiresAt;
   return (
     (status === "approved" || status === "denied") &&
-    requestedAt <= decidedAt &&
     decidedAt < expiresAt &&
     spentAt === null
   );
@@ -130,8 +135,8 @@ function approvalInventory(db: SqlDatabase, seal: Seal): StoredApproval[] {
       if (typeof id !== "string") throw approvalUnavailable();
       return readApproval(db, seal, id);
     });
-  } catch {
-    throw approvalUnavailable();
+  } catch (error) {
+    throw storageFailure(error, true) ?? approvalUnavailable();
   }
 }
 
