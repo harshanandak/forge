@@ -1,8 +1,15 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
-import { canonicalJson, isObject } from "../../src/core/config/pointer.ts";
+import {
+  canonicalJson,
+  digestValue,
+  isObject,
+} from "../../src/core/config/pointer.ts";
 import type { ForgeError, LeaseHolder } from "../../src/generated/types.ts";
-import { validateLeaseHolder } from "../../src/generated/validators.ts";
+import {
+  validateForgeError,
+  validateLeaseHolder,
+} from "../../src/generated/validators.ts";
 import { CREATE_GRAPH, CREATE_SCHEMA, KIND_REFUSED } from "./issue-create.ts";
 import {
   configured,
@@ -153,4 +160,59 @@ export function claimDecision(
     const claim = { subject: `issue:${id}`, prefix, holder, ttlMs };
     return { effect: effect(image, claim, time, retryUntil) };
   });
+}
+
+export class CommandRefusal extends ForgeFailure {
+  readonly basis: unknown;
+
+  constructor(error: ForgeError, basis: unknown) {
+    super(error);
+    this.basis = basis;
+  }
+}
+
+type Outcome = NonNullable<Frame["outcome"]>;
+const sameError = ({ result, resultDigest }: Outcome, error: ForgeError) =>
+  resultDigest === undefined
+    ? canonicalJson(result) === canonicalJson(error)
+    : resultDigest === digestValue(error);
+
+export function refusalOf(
+  image: V3Image,
+  frame: Frame,
+  effect: typeof claimEffect,
+): ForgeError | undefined {
+  const { operation, time, outcome, basis } = frame;
+  if (!outcome || basisFault(operation, basis) !== undefined) return undefined;
+  try {
+    const state = (basis as { stage: string }).stage === "state";
+    const listed = INPUT_REFUSALS[operation as keyof typeof INPUT_REFUSALS];
+    const found = !state
+      ? listed.find((error) => sameError(outcome, error))
+      : operation === "issue.update"
+        ? updateDecision(image, basis as UpdateBasis, time)
+        : claimDecision(
+            image,
+            basis as ClaimBasis,
+            time,
+            outcome.retryUntil,
+            image.entries.witness.has(outcome.id),
+            effect,
+          );
+    const rebuilt =
+      found && "refusal" in found
+        ? found.recorded
+          ? found.refusal
+          : undefined
+        : found;
+    return rebuilt &&
+      "code" in rebuilt &&
+      validateForgeError(rebuilt).ok &&
+      outcome.status === rebuilt.code &&
+      sameError(outcome, rebuilt)
+      ? rebuilt
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

@@ -11,6 +11,8 @@ import {
   fixture,
   guardFixture,
   noWrites,
+  portableOf,
+  portableUpload,
   probe,
   sqlMutation,
   trustedSeal,
@@ -138,51 +140,76 @@ function reformat(f: ReturnType<typeof fixture>, value: string) {
   ]);
 }
 
-test(
-  "v3 recovery refuses the previous root format with a valid seal",
-  async () => {
-    const f = fixture();
-    try {
-      expect((await f.send(probe, {})).status).toBe(200);
-      reformat(f, "forge-cloud-root/3");
-      const before = f.snapshot();
-      f.restart();
-      const read = await f.send(probe);
-      expect(read).toMatchObject({
-        status: 503,
-        body: { ok: false, error: { code: "UNAVAILABLE" } },
-      });
-      expect(f.snapshot()).toEqual(before);
-    } finally {
-      f.db.close();
-    }
-  },
-  timeout,
-);
-
-test(
-  "v3 reads a root of the current format back with its frames after restart",
-  async () => {
-    const f = fixture();
-    try {
-      expect((await f.send(probe, {})).status).toBe(200);
-      expect(await f.send(`${probe}/commits`, { frames })).toMatchObject({
-        status: 200,
-      });
-      expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject({
-        status: 200,
-      });
-      f.restart();
-      expect(await f.send(probe)).toMatchObject({
-        status: 200,
-        body: { ok: true, value: { format } },
-      });
-    } finally {
-      f.db.close();
-    }
-  },
-  timeout,
-);
+type Fixture = ReturnType<typeof fixture>;
+const issue = {
+  id: "work-1",
+  prefix: "forge",
+  title: "Before",
+  status: "open",
+  labels: [],
+  dependsOn: [],
+  createdAt: "2026-11-20T12:00:00.000Z",
+};
+const record = {
+  operation: "fixture.put",
+  time: 1000,
+  events: [{ key: "r1", revision: 1, value: issue }],
+  changes: [{ key: "r1", value: { revision: 1, value: issue } }],
+};
+async function sourceOf(opened: Set<Fixture>, history: boolean) {
+  const f = fixture();
+  opened.add(f);
+  expect((await f.send(probe, {})).status).toBe(200);
+  if (history) {
+    const put = await f.send(`${probe}/commits`, { frames: [record] });
+    expect(put.status).toBe(200);
+    expect((await f.send(`${probe}/checkpoint`, {})).status).toBe(200);
+    f.restart();
+  }
+  return f;
+}
+const roots: [string, (opened: Set<Fixture>) => Promise<Fixture>][] = [
+  ["genesis", (opened) => sourceOf(opened, false)],
+  ["checkpointed", (opened) => sourceOf(opened, true)],
+  [
+    "activated",
+    async (opened) => {
+      const from = await sourceOf(opened, true);
+      const target = fixture();
+      opened.add(target);
+      const upload = portableUpload(target, portableOf(from));
+      for (const page of [0, 1, 2])
+        expect((await upload(page)).status).toBe(200);
+      target.restart();
+      return target;
+    },
+  ],
+];
+for (const [label, make] of roots)
+  test(
+    `v3 reads a ${label} root as ${format} and refuses its previous format with a valid seal`,
+    async () => {
+      const opened = new Set<Fixture>();
+      try {
+        const f = await make(opened);
+        expect(await f.send(probe)).toMatchObject({
+          status: 200,
+          body: { ok: true, value: { format } },
+        });
+        reformat(f, "forge-cloud-root/3");
+        const before = f.snapshot();
+        f.restart();
+        expect(await f.send(probe)).toMatchObject({
+          status: 503,
+          body: { ok: false, error: { code: "UNAVAILABLE" } },
+        });
+        expect(f.snapshot()).toEqual(before);
+      } finally {
+        for (const f of opened) f.db.close();
+      }
+    },
+    timeout,
+  );
 
 test(
   "v3 recovery rejects a reordered roster with a valid recomputed seal",

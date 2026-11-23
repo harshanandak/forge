@@ -11,7 +11,6 @@ import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
-import { completeRefusals } from "../../cloud/src/v3-restore.ts";
 import {
   claimEffect,
   foldTranscript,
@@ -3298,7 +3297,6 @@ test(
         const check = archivedCheck(db, {
           admit: Project.admitLeaseRequest,
           failure,
-          complete: completeRefusals,
           pages: new Map(pages(f).map(({ id, body }) => [id, body])),
         });
         const { coveredHead } = readV3Root(db, f.seal());

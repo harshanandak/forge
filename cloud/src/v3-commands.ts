@@ -19,7 +19,12 @@ import { NAMESPACE, requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
 import { CLAIM_REFUSALS, UPDATE_REFUSALS } from "./v3-authority.ts";
 import { updateEffect } from "./v3-record-transitions.ts";
-import { CLAIM_INVALID, claimDecision, updateDecision } from "./v3-refusals.ts";
+import {
+  CLAIM_INVALID,
+  claimDecision,
+  CommandRefusal,
+  updateDecision,
+} from "./v3-refusals.ts";
 import type { Seal } from "./v3-seal.ts";
 import * as store from "./v3-store.ts";
 
@@ -110,7 +115,10 @@ const commands: Readonly<Record<string, Command>> = {
         image.entries.witness.has(identity.requestId),
         store.claimEffect,
       );
-      if ("refusal" in decided) throw new ForgeFailure(decided.refusal);
+      if ("refusal" in decided)
+        throw decided.recorded
+          ? new CommandRefusal(decided.refusal, basis)
+          : new ForgeFailure(decided.refusal);
       const { effect } = decided;
       const { subject } = effect.events[0]!;
       return {
@@ -166,7 +174,8 @@ const commands: Readonly<Record<string, Command>> = {
         generation,
       } as const;
       const decided = updateDecision(image, basis, now);
-      if ("refusal" in decided) throw new ForgeFailure(decided.refusal);
+      if ("refusal" in decided)
+        throw new CommandRefusal(decided.refusal, basis);
       const { key, current, lease } = decided;
       return updateEffect(
         { key, prefix, expectRevision, patch },
@@ -224,14 +233,17 @@ export function commandV3(
     return respond(result);
   }
   let effect: Effect;
-  let refusal: ForgeFailure | undefined;
+  let refusal: CommandRefusal | undefined;
   try {
     effect = command.write(state);
   } catch (error) {
     if (!(error instanceof ForgeFailure)) throw error;
     const codes = command.refusalCodes ?? ["INPUT_INVALID"];
     if (!codes.includes(error.error.code)) throw error;
-    refusal = error;
+    refusal =
+      error instanceof CommandRefusal
+        ? error
+        : new CommandRefusal(error.error, { stage: "input" });
     effect = { events: [], result: error.error };
   }
   const { result, ...changes } = effect;
@@ -245,7 +257,13 @@ export function commandV3(
     retryUntil: expiresAt,
   };
   store.append(db, seal, image, [
-    { operation: op, time: now, ...changes, outcome },
+    {
+      operation: op,
+      time: now,
+      ...changes,
+      outcome,
+      ...(refusal && { basis: refusal.basis }),
+    },
   ]);
   store.publishV3(image);
   if (refusal) throw refusal;

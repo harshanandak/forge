@@ -337,6 +337,7 @@ const widest = {
   session: { id: wide, agent: wide, harness: wide },
 };
 const device = "d".repeat(256);
+const wideHolder = { ...widest, session: { ...widest.session, device } };
 const sid = "s".repeat(200);
 const longId = `forge-${"1".repeat(194)}`;
 const named = (body: Json, id: string): Json => ({
@@ -429,14 +430,25 @@ const tokenKinds = [
   const [n, body, status, error, basis, setup] = K(name);
   return [n, body, status, error, basis, setup, "token"];
 });
+const owned = { ...crt({}), context: { actor: widest.actor } };
 const pins: Kind[] = [
   [
     "claim by a holder at every schema maximum",
     { ...grant("forge-9"), context: widest },
     404,
     E.gone(),
-    cb("forge-9"),
+    { ...cb("forge-9"), holder: wideHolder },
     undefined,
+    "owner",
+    device,
+  ],
+  [
+    "update by the same holder",
+    { ...update, context: { ...widest, leaseGeneration: 1 } },
+    409,
+    E.noLease,
+    { ...ub("forge-1"), holder: wideHolder },
+    fixtureIssue,
     "owner",
     device,
   ],
@@ -454,6 +466,24 @@ const pins: Kind[] = [
     404,
     E.gone(longId),
     cb(longId),
+  ],
+  [
+    "claim with a ttl of seven days",
+    grant("forge-1", 604_800),
+    400,
+    E.ttl24,
+    cb("forge-1", 604_800),
+    fixtureIssue,
+  ],
+  ["create schema refusal in owner mode", owned, 400, E.crtSchema, IN],
+  [
+    "create schema refusal in token mode",
+    owned,
+    400,
+    E.crtSchema,
+    IN,
+    undefined,
+    "token",
   ],
   [
     "update refusal in token mode at the device and session limits",
@@ -558,6 +588,19 @@ const histories: [string, Setup, Json[], number[]][] = [
       r(two, "b5"),
     ],
     [404, 409, 400, 200, 409],
+  ],
+  [
+    "claim blocked by a dependency that holds a lease",
+    async (f) => {
+      await leasedIssue(f);
+      await fixtureIssue(f, {
+        ...initial,
+        id: "work-2",
+        dependsOn: ["work-1"],
+      });
+    },
+    [r(two, "c1")],
+    [409],
   ],
 ];
 async function history(
@@ -938,6 +981,17 @@ for (const [name, op, input, result, mode] of olds)
 
 const malformed: [string, "claim" | "update", Json, boolean?][] = [
   ["an extra key", "claim", { ...cb("forge-9"), extra: 1 }],
+  ["a raw input field", "update", { ...ub("forge-9"), title: "After" }],
+  [
+    "a wrong type in a member",
+    "update",
+    { ...ub("forge-9"), expectRevision: "1" },
+  ],
+  [
+    "an over-bound string",
+    "claim",
+    { ...cb("forge-9"), id: `forge-${"1".repeat(195)}` },
+  ],
   [
     "a device of 257 characters",
     "claim",
@@ -1028,6 +1082,10 @@ const unfollowed: [string, () => Json, Setup?][] = [
       await fixtureIssue(f);
       await send(f, { ...typedClaim, requestId: "w" });
     },
+  ],
+  [
+    "a create refusal whose text is outside the list",
+    () => refusal("issue.create", "x1", bad("Another message"), IN),
   ],
   ["an input basis carrying a state error", () => claimGone("x2", IN)],
   [
