@@ -886,7 +886,11 @@ for (const size of [13, 1024]) {
     `v3 checkpoint drains ${size} uncovered commands within the read budget`,
     () =>
       withFixture(async (f) => {
-        await appendNotes(f, size);
+        const admitted = Math.min(size, 1020);
+        await appendNotes(f, admitted);
+        for (let sequence = admitted + 1; sequence <= size; sequence++)
+          insertLegacyRow(f, sequence, noteBody(frame(), sequence));
+        if (admitted !== size) f.restart();
         const { image } = await view(f);
         const cut = await prefix(f, 0, size);
         expect(cut).toBeLessThan(size);
@@ -903,13 +907,16 @@ test(
   "v3 checkpoint frees admission capacity after one prefix",
   () =>
     withFixture(async (f) => {
-      await appendNotes(f, 1024);
+      await appendNotes(f, 1020);
       const effects = f.observeEffects();
-      expect(await append(f, frame())).toMatchObject(refused);
+      expect(await append(f, frame())).toMatchObject({
+        status: 503,
+        body: { ok: false, error: historyFull },
+      });
       expect(effects()).toEqual(noWrites);
-      await prefix(f, 0, 1024);
+      await prefix(f, 0, 1020);
       expect((await append(f, frame())).status).toBe(200);
-      expect(commits(f).at(-1)?.sequence).toBe(1025);
+      expect(commits(f).at(-1)?.sequence).toBe(1021);
     }),
   timeout,
 );
@@ -956,7 +963,12 @@ test(
   "v3 checkpoint covers only the prefix that fits its raw byte budget",
   () =>
     typedFixture(async (f) => {
-      await createTurnRows(f, [60_000, 60_000, 65_536]);
+      await createTurnRows(f, [60_000, 60_000]);
+      await typedFixture(async (donor) => {
+        await createTurnRows(donor, [1, 1, 65_536]);
+        insertLegacyRow(f, 3, commits(donor).at(-1)!.body);
+      });
+      f.restart();
       const rows = commits(f);
       const lengths = rows.map(({ body }) => Buffer.byteLength(body));
       const [first, second, third] = [181_126, 181_126, 197_734] as const;
@@ -1073,6 +1085,21 @@ test(
   timeout,
 );
 
+function insertLegacyRow(f: Fixture, sequence: number, body: string) {
+  f.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?, ?)", [
+    sequence,
+    body,
+    f.sign(sequence, body),
+  ]);
+}
+
+const historyFull = {
+  code: "STORAGE_LIMIT_EXCEEDED",
+  message:
+    "This project's history is full. Ordinary writes are refused to keep room to release leases, stop lanes and restore.",
+  retry: "never",
+};
+
 const noteBody = (note: Json, sequence: number) =>
   canonicalJson({ ...note, format: "forge-cloud-commit/3", sequence });
 
@@ -1101,16 +1128,23 @@ const frameWriters: Record<string, typeof appendFrameBatch> = {
 
 for (const [name, write] of Object.entries(frameWriters)) {
   test(
-    `${name} admits a v3 frame at the raw byte cap`,
+    `${name} refuses a frame at the raw byte cap and admits one at the history limit`,
     () =>
       withFixture((f) => {
         const db = writableStore(f.storage);
         const seal = f.seal();
-        expect(
-          write(db, seal, recovered(db, seal), [paddedNote(PAGE_BYTES, 1)]),
-        ).toEqual({ head: 1 });
+        const image = recovered(db, seal);
+        const effects = f.observeEffects();
+        expect(() =>
+          write(db, seal, image, [paddedNote(PAGE_BYTES, 1)]),
+        ).toThrow(expect.objectContaining({ error: historyFull }));
+        expect(effects()).toEqual(noWrites);
+        const room = PAGE_BYTES - 13_313 - 2;
+        expect(write(db, seal, image, [paddedNote(room, 1)])).toEqual({
+          head: 1,
+        });
         expect(commits(f).map(({ body }) => Buffer.byteLength(body))).toEqual([
-          PAGE_BYTES,
+          room,
         ]);
       }),
     timeout,
@@ -3365,7 +3399,34 @@ for (const damage of ["missing", "altered", "extra", "mac"] as const) {
 test(
   "v3 restore refuses to activate more than sixteen imported leases",
   () =>
-    withPortable(async (target, data) => {
+    withPortable(async (target, { head }, source) => {
+      const extra = 16;
+      await withFixture(async (donor) => {
+        for (let i = 0; i < extra; i++) {
+          expect(
+            await sendLease(donor, "claim", "owner-a", {
+              subject: `work-${i + 2}`,
+              requestId: `extra-${i}`,
+              ttlMs: i === 0 ? 1 : HOUR,
+            }),
+          ).toMatchObject({ status: 200 });
+        }
+        for (const { sequence, body } of commits(donor)) {
+          const next = head + sequence;
+          const frame = JSON.parse(body) as Json;
+          insertLegacyRow(
+            source,
+            next,
+            canonicalJson({ ...frame, sequence: next }),
+          );
+        }
+      });
+      source.restart();
+      await drain(source, head, head + extra);
+      const data = typedBackup(source);
+      editHistory(data, (frames) => {
+        frames[5] = { sequence: 6 };
+      });
       const upload = await stageRestore(target, data);
       const before = target.snapshot();
       expect(await upload(2)).toMatchObject({
@@ -3374,7 +3435,7 @@ test(
       });
       await unprovisioned(target);
       expect(target.snapshot()).toEqual(before);
-    }, 16),
+    }),
   timeout,
 );
 

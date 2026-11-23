@@ -99,6 +99,18 @@ const claim = (f: Fixture, owner: string, expires = E1) =>
   lease(f, "claim", owner, { requestId: "acq-1", ttlMs: HOUR }, expires);
 const commit = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
+const historyFull = {
+  status: 503,
+  body: {
+    ok: false,
+    error: {
+      code: "STORAGE_LIMIT_EXCEEDED",
+      message:
+        "This project's history is full. Ordinary writes are refused to keep room to release leases, stop lanes and restore.",
+      retry: "never",
+    },
+  },
+};
 const note = { operation: "fixture.note", time: T0, events: [] };
 const putRecords = (
   ...events: { key: string; revision: number; value: unknown }[]
@@ -539,7 +551,9 @@ test(
       expect(reads.bytes).toBeGreaterThan(directoryBytes + TAIL_BYTES);
       expect(reads.bytes).toBeLessThanOrEqual(COLD_BYTES);
       const before = f.snapshot();
-      expect(await commit(f, note)).toMatchObject(unavailable);
+      const appendEffects = f.observeEffects();
+      expect(await commit(f, note)).toMatchObject(historyFull);
+      expect(appendEffects()).toEqual(noWrites);
       expect(f.snapshot()).toEqual(before);
     } finally {
       f.db.close();
@@ -627,9 +641,9 @@ test(
 );
 
 test(
-  "an append that would take the tail past 16 MiB is refused before any write, and one that fits is admitted",
+  "ordinary growth at a legacy 16 MiB tail is refused before any write",
   async () => {
-    const f = fixture();
+    const f = guardFixture();
     try {
       expect((await f.send(probe, {})).status).toBe(200);
       const full = TAIL_BYTES / TAIL_ROWS;
@@ -642,12 +656,21 @@ test(
         events: [{ pad: "x".repeat(pad) }],
       });
       const before = f.snapshot();
-      expect(await commit(f, frame(6000))).toMatchObject(unavailable);
+      expect(await commit(f, frame(6000))).toMatchObject(historyFull);
       expect(f.snapshot()).toEqual(before);
-      expect(await commit(f, frame(3000))).toMatchObject({
-        status: 200,
-        body: { value: { head: TAIL_ROWS } },
+      const effects = f.observeEffects();
+      expect(await commit(f, frame(3000))).toMatchObject(historyFull);
+      expect(effects()).toEqual(noWrites);
+      const body = canonicalJson({
+        ...frame(3000),
+        format: "forge-cloud-commit/3",
+        sequence: TAIL_ROWS,
       });
+      f.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?, ?)", [
+        TAIL_ROWS,
+        body,
+        f.sign(TAIL_ROWS, body),
+      ]);
       f.restart();
       expect(image(await f.send(probe))).toMatchObject({
         head: TAIL_ROWS,

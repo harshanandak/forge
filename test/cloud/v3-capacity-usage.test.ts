@@ -893,7 +893,7 @@ test(
 );
 
 test(
-  "U7 admits the oversized interior of a shrinking batch",
+  "U7 M1 refuses a batch whose interior exceeds the snapshot limit",
   async () => {
     const f = guardFixture();
     using _db = f.db;
@@ -939,28 +939,66 @@ test(
     }
     write(f, image, ...Array.from({ length: 11 }, note));
     expect(image.head).toBe(35);
-    write(
-      f,
-      image,
+    const frames = [
       put({ key: "r1", revision: 1, value: "x".repeat(40_000) }),
       put({ key: "r1", revision: 2, value: "x" }),
-    );
-    expect(image.head).toBe(37);
-    const db = dbOf(f);
+    ];
+    const sibling = guardFixture();
+    using _sibling = sibling.db;
+    await provision(sibling);
+    const bodies = [
+      ...tail(f).map(({ body }) => body),
+      ...frames.map((frame, i) =>
+        canonicalJson({
+          ...frame,
+          format: "forge-cloud-commit/3",
+          sequence: 36 + i,
+        }),
+      ),
+    ];
+    for (const [index, body] of bodies.entries()) {
+      const sequence = index + 1;
+      sibling.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?, ?)", [
+        sequence,
+        body,
+        sibling.sign(sequence, body),
+      ]);
+    }
+    const db = dbOf(sibling);
     const verification = archivedCheck(db, {
       admit: Project.admitLeaseRequest,
       failure: unavailable,
     });
-    const prefix = recoverV3(db, f.seal(), verification, { through: 36 });
-    const end = recoverV3(db, f.seal(), verification, { through: 37 });
-    expect([prefix.head, end.head, tail(f).length]).toEqual([36, 37, 37]);
-    expect(viewV3(image)).toEqual(viewV3(end));
-    const before = rootedRecount(f, prefix);
-    const after = rootedRecount(f, end);
+    const prefix = recoverV3(db, sibling.seal(), verification, { through: 36 });
+    const end = recoverV3(db, sibling.seal(), verification, { through: 37 });
+    expect([prefix.head, end.head, tail(sibling).length]).toEqual([36, 37, 37]);
+    expect(viewV3(coldImage(sibling))).toEqual(viewV3(end));
+    const before = rootedRecount(sibling, prefix);
+    const after = rootedRecount(sibling, end);
     expect(before.snapshot).toBeGreaterThan(PAGE_BYTES);
     expect(after.snapshot).toBeLessThanOrEqual(PAGE_BYTES);
     expect(usageOf(prefix)).toEqual(before);
     expect(usageOf(end)).toEqual(after);
+    const baseline = rootedRecount(f, image);
+    const effects = f.observeEffects();
+    for (const candidate of [image, image, coldImage(f)]) {
+      let failure: unknown;
+      try {
+        appendV3Frames(dbOf(f), f.seal(), frames, () => candidate);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ error: capacityError });
+      expect(effects()).toEqual(noWrites);
+      expect([
+        candidate.head,
+        candidate.stale,
+        candidate.staged,
+        tail(f).length,
+      ]).toEqual([35, false, [], 35]);
+      expect(usageOf(candidate)).toEqual(baseline);
+      expect(usageOf(candidate)).toEqual(rootedRecount(f, candidate));
+    }
   },
   timeout,
 );
@@ -970,12 +1008,12 @@ const headers = {
   "X-Forge-Owner-Expires": String(expiry),
 };
 test(
-  "U7 admits and counts a seventeenth lease subject",
+  "U7 M3 refuses a seventeenth lease subject",
   async () => {
     const f = guardFixture();
     using _db = f.db;
     await provision(f);
-    for (let i = 1; i <= 17; i++) {
+    for (let i = 1; i <= 16; i++) {
       const subject = `work-${i}`;
       const reply = await f.send(
         `${probe}/claim`,
@@ -997,40 +1035,79 @@ test(
     }
     const image = coldImage(f);
     expect([image.head, image.entries.lease.size, tail(f).length]).toEqual([
-      17, 17, 17,
+      16, 16, 16,
     ]);
     const expected = rootedRecount(f, image);
     expect(usageOf(image)).toEqual(expected);
+    const effects = f.observeEffects();
+    const send = () =>
+      f.send(
+        probe + "/claim",
+        leaseInput("claim", "work-17", "claim-17"),
+        headers,
+      );
+    for (const restart of [false, false, true]) {
+      if (restart) f.restart();
+      expect(await send()).toEqual(capacityReply);
+      expect(effects()).toEqual(noWrites);
+      const after = coldImage(f);
+      expect(after.entries.lease.size).toBe(16);
+      expect(usageOf(after)).toEqual(rootedRecount(f, after));
+      expect(usageOf(after)).toEqual(expected);
+    }
   },
   timeout,
 );
 
+const capacityError = {
+  code: "STORAGE_LIMIT_EXCEEDED",
+  message:
+    "This project's history is full. Ordinary writes are refused to keep room to release leases, stop lanes and restore.",
+  retry: "never",
+} as const;
+const capacityReply = {
+  status: 503,
+  body: { ok: false, error: capacityError },
+};
+
 test(
-  "U7 admits minimal recorded refusals past the transcript page size",
+  "U7 M2 and M4 refuse the next recorded command refusal and map it to exit 1",
   async () => {
     const f = guardFixture(typedEnv);
     using _db = f.db;
     await provision(f);
-    let transcript = 2;
-    let head = 0;
-    while (transcript <= PAGE_BYTES && head < TAIL_ROWS) {
-      head++;
-      const reply = await f.sendText(
-        `${probe}/command`,
-        { ...invalidCreate, requestId: `refusal-${head}` },
+    const send = (sequence: number) =>
+      f.sendText(
+        probe + "/command",
+        { ...invalidCreate, requestId: "refusal-" + sequence },
         headers,
       );
+    const first = await send(1);
+    expectTypedReply(first, invalidReply);
+    let head = 1;
+    const sample = archived(tail(f)[0]!.body);
+    let transcript = 2 + jsonBytes(sample);
+    const available = PAGE_BYTES - 13_313;
+    while (head < TAIL_ROWS) {
+      const next =
+        transcript + 1 + jsonBytes({ ...sample, sequence: head + 1 });
+      if (next > available) break;
+      head++;
+      const reply = await send(head);
       expectTypedReply(reply, invalidReply);
       const rows = tail(f, head - 1, head);
       expect(rows).toHaveLength(1);
       const frame = archived(rows[0]!.body);
       expect(frame).toMatchObject({
         sequence: head,
-        outcome: { id: receiptKey(`refusal-${head}`), status: "INPUT_INVALID" },
+        outcome: { id: receiptKey("refusal-" + head), status: "INPUT_INVALID" },
       });
-      transcript += jsonBytes(frame) + Number(head > 1);
+      transcript += jsonBytes(frame) + 1;
     }
-    expect(transcript).toBeGreaterThan(PAGE_BYTES);
+    expect(transcript).toBeLessThanOrEqual(available);
+    expect(
+      transcript + 1 + jsonBytes({ ...sample, sequence: head + 1 }),
+    ).toBeGreaterThan(available);
     const image = coldImage(f);
     expect([image.head, image.entries.outcome.size, tail(f).length]).toEqual([
       head,
@@ -1040,6 +1117,22 @@ test(
     const expected = rootedRecount(f, image);
     expect(expected.transcript).toBe(transcript);
     expect(usageOf(image)).toEqual(expected);
+    const effects = f.observeEffects();
+    for (const restart of [false, false, true]) {
+      if (restart) f.restart();
+      expectTypedReply(await send(head + 1), {
+        status: 503,
+        error: capacityError,
+        exit: 1,
+      });
+      expect(effects()).toEqual(noWrites);
+      const after = coldImage(f);
+      expect(after.entries.outcome.size).toBe(head);
+      expect(usageOf(after)).toEqual(rootedRecount(f, after));
+      expect(usageOf(after)).toEqual(expected);
+    }
+    expect(await send(1)).toEqual(first);
+    expect(effects()).toEqual(noWrites);
   },
   timeout,
 );

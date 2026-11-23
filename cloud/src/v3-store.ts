@@ -76,6 +76,7 @@ const DIRECTORY_PAGES = 32;
 const DIRECTORY_BYTES = 4 * MiB;
 export const TAIL_ROWS = 1024;
 const TAIL_BYTES = 16 * MiB;
+const RAW_TAIL_BYTES = MiB;
 const MAX_JSON_DEPTH = 64;
 const RESTORE_LEASES = 16;
 const ACTIVATION_BYTES = 2048;
@@ -125,10 +126,13 @@ const hasTable = (db: SqlDatabase, name: string): boolean =>
 export const hasV3Root = (db: SqlDatabase): boolean => hasTable(db, ROOT);
 
 export const V3_TOKENS = "cloud_v3_tokens";
+export const V3_APPROVALS = "cloud_v3_approvals";
+export const V3_APPROVAL_BROWSER = "cloud_v3_approval_browser";
+const priorV3Tables = [...tables, V3_TOKENS, V3_APPROVALS, V3_APPROVAL_BROWSER];
 
 export const hasPriorV3RestoreState = (db: SqlDatabase): boolean =>
   db.get(legacyTables) !== undefined ||
-  [...tables, V3_TOKENS].some((table) => hasTable(db, table));
+  priorV3Tables.some((table) => hasTable(db, table));
 
 function genesis(incarnation: string, restoreEpoch: string) {
   return {
@@ -183,6 +187,8 @@ type Slot = (
   { readonly value: unknown } | Pointer | { readonly deleted: true }
 ) & { readonly revision?: number };
 type Usage = { transcript: number; snapshot: number; directory: number };
+type Measure = Usage & { rows: number; raw: number; leases: number };
+type LeaseBudget = { lease: LeaseRecord; cost: Measure };
 type SlotWrite = [collection: Collection, key: string, slot: Slot | undefined];
 
 interface Values {
@@ -921,7 +927,7 @@ export function provisionV3(
   return db.transaction(() => {
     if (legacyMarker || db.get(legacyTables))
       throw fail("INPUT_CONFLICT", "Cloud v3 requires a fresh project");
-    if (![...tables, V3_TOKENS].some((table) => hasTable(db, table))) {
+    if (!priorV3Tables.some((table) => hasTable(db, table))) {
       for (const [table, definition] of Object.entries(schema))
         db.exec(`CREATE TABLE ${table} ${definition}`);
       for (const page of pages)
@@ -1113,16 +1119,10 @@ function append(
         sequence: head + i + 1,
       }),
     );
-    const bytes = bodies.reduce(
-      (sum, body) => sum + Buffer.byteLength(body),
-      image.tailBytes,
-    );
     if (head !== image.head) {
       image.stale = true;
       throw unavailable();
     }
-    if (head - coveredHead + batch.length > TAIL_ROWS || bytes > TAIL_BYTES)
-      throw unavailable();
     if (bodies.some((body) => Buffer.byteLength(body) > PAGE_BYTES))
       throw fail(
         "STORAGE_LIMIT_EXCEEDED",
@@ -1133,7 +1133,7 @@ function append(
     const read = (key: string) =>
       pending.get(key) ?? image.entries.record.get(key);
     const refuse = () => fail("INPUT_INVALID", "Invalid v3 record transition");
-    for (const [i, body] of bodies.entries()) {
+    const prepared = bodies.map((body, i) => {
       const frame = JSON.parse(body) as Frame & Record<string, unknown>;
       const fault = authorityFault(frame);
       if (fault !== undefined)
@@ -1147,7 +1147,9 @@ function append(
       const records = verifyRecordFrame(frame, floor, read, refuse, image.load);
       floor = records.floor;
       for (const { key, value } of records.changes) pending.set(key, value);
-    }
+      return { body, frame, writes: ordinaryWrites(frame, records.changes) };
+    });
+    admitFrames(db, image, prepared);
     image.stale = true;
     for (const [i, body] of bodies.entries()) {
       const sequence = head + i + 1;
@@ -1286,6 +1288,156 @@ function ordinaryWrites(
     writes.push(["witness", witness.id, { value: { lease, witness } }]);
   for (const { key, value } of changes) writes.push(["record", key, value]);
   return writes;
+}
+
+const budget = (
+  transcript: number,
+  snapshot: number,
+  directory: number,
+  rows: number,
+  raw: number,
+): Measure => ({ transcript, snapshot, directory, rows, raw, leases: 0 });
+const limits = {
+  ...budget(PAGE_BYTES, PAGE_BYTES, PAGE_BYTES, TAIL_ROWS, RAW_TAIL_BYTES),
+  leases: RESTORE_LEASES,
+};
+const hard = { ...limits, raw: TAIL_BYTES, leases: Infinity };
+const dimensions = Object.keys(limits) as (keyof Measure)[];
+const stopReserve = budget(4096, 4096, 512, 1, 4096);
+const activationControl = { transcript: 0, snapshot: 0, directory: 0 };
+countSlot(activationControl, "control", "global", { value: null }, 1);
+const activationReserve = budget(
+  ACTIVATION_BYTES + 1,
+  2736,
+  activationControl.directory,
+  1,
+  ACTIVATION_BYTES,
+);
+const remainingReserve = budget(7168, 4096, 1024, 2, 7168);
+
+export function releaseBudget(lease: LeaseRecord): Measure {
+  const { subject, holder, generation } = lease;
+  const time = 8.64e15;
+  const hex = "0".repeat(64);
+  const scope = { version: 2 as const, principal: "sha256:" + hex };
+  const frame = {
+    operation: "lease.release",
+    format: COMMIT_FORMAT,
+    sequence: Number.MAX_SAFE_INTEGER,
+    time,
+    events: [],
+    lease: { ...lease, releasedAt: new Date(time).toISOString() },
+    outcome: {
+      id: "l2:" + hex,
+      scope: { family: "lease" as const, ...scope },
+      fingerprint: canonicalJson({
+        scope,
+        route: "release",
+        subject,
+        holder,
+        generation,
+        ttlMs: null,
+      }),
+      retryUntil: time,
+      status: "ok",
+    },
+  };
+  const body = canonicalJson(frame);
+  const cost = budget(0, 0, 0, 1, Buffer.byteLength(body));
+  countFrame(cost, body, ordinaryWrites(frame, []), (collection) =>
+    collection === "lease" ? { value: lease } : undefined,
+  );
+  return cost;
+}
+
+function reserveOf(
+  budgets: Iterable<LeaseBudget>,
+  time: number,
+  phase: "ordinary" | "activated" = "ordinary",
+): Measure {
+  const reserve = { ...remainingReserve };
+  if (phase === "ordinary") {
+    for (const key of dimensions)
+      reserve[key] += stopReserve[key] + activationReserve[key];
+    for (const { lease, cost } of budgets)
+      if (Date.parse(lease.expiresAt) > time)
+        for (const key of dimensions) reserve[key] += cost[key];
+  }
+  return reserve;
+}
+
+export function admits(
+  before: Measure,
+  after: Measure,
+  reserveBefore: Measure,
+  reserveAfter: Measure,
+): boolean {
+  return dimensions.every((key) => {
+    const total = after[key] + reserveAfter[key];
+    return (
+      total <= limits[key] ||
+      (after[key] <= hard[key] && total <= before[key] + reserveBefore[key])
+    );
+  });
+}
+
+function admitFrames(
+  db: SqlDatabase,
+  image: V3Image,
+  prepared: readonly { body: string; frame: Frame; writes: SlotWrite[] }[],
+) {
+  const before: Measure = {
+    ...image.usage,
+    rows: image.head - image.root.coveredHead,
+    raw: image.tailBytes,
+    leases: image.entries.lease.size,
+  };
+  const after = { ...before };
+  const initial = new Map<string, LeaseBudget>();
+  for (const subject of image.entries.lease.keys()) {
+    const lease = readV3Value(db, image, "lease", subject);
+    if (lease && lease.releasedAt === undefined)
+      initial.set(subject, { lease, cost: releaseBudget(lease) });
+  }
+  const budgets = new Map(initial);
+  const slots = new Map<string, Slot | undefined>();
+  const readSlot = (collection: Collection, key: string) => {
+    const id = collection + ":" + key;
+    return slots.has(id) ? slots.get(id) : image.entries[collection].get(key);
+  };
+  for (const { body, frame, writes } of prepared) {
+    const { time, lease } = frame;
+    countFrame(after, canonicalJson(archive(body)), writes, readSlot);
+    after.rows++;
+    after.raw += Buffer.byteLength(body);
+    let retained: LeaseBudget | undefined;
+    if (lease) {
+      after.leases += Number(readSlot("lease", lease.subject) === undefined);
+      if (lease.releasedAt === undefined)
+        budgets.set(lease.subject, { lease, cost: releaseBudget(lease) });
+      else {
+        budgets.delete(lease.subject);
+        const original = initial.get(lease.subject);
+        if (
+          original &&
+          canonicalJson(original.lease.holder) !== canonicalJson(lease.holder)
+        )
+          retained = original;
+      }
+    }
+    for (const [collection, key, slot] of writes)
+      slots.set(collection + ":" + key, slot);
+    const reserveBefore = reserveOf(initial.values(), time);
+    const reserveAfter = reserveOf(
+      retained ? [...budgets.values(), retained] : budgets.values(),
+      time,
+    );
+    if (!admits(before, after, reserveBefore, reserveAfter))
+      throw fail(
+        "STORAGE_LIMIT_EXCEEDED",
+        "This project's history is full. Ordinary writes are refused to keep room to release leases, stop lanes and restore.",
+      );
+  }
 }
 
 function apply(

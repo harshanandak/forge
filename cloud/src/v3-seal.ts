@@ -223,6 +223,61 @@ export const signToken = (seal: Seal, token: TokenFields) =>
 export const verifyToken = (seal: Seal, token: TokenFields, mac: unknown) =>
   authentic(seal, tokenParts(seal, token), mac);
 
+export interface ApprovalFields {
+  readonly id: string;
+  readonly project: string;
+  readonly incarnation: string;
+  readonly restoreEpoch: string;
+  readonly activationDigest: string;
+  readonly operation: "restore.promote";
+  readonly operationDigest: string;
+  readonly tokenId: string;
+  readonly device: string;
+  readonly session: string;
+  readonly controlEpoch: 1;
+  readonly policyIdentity: string;
+  readonly status: "pending" | "approved" | "denied" | "spent";
+  readonly requestedAt: number;
+  readonly expiresAt: number;
+  readonly decidedAt: number | null;
+  readonly deciderIssuer: string | null;
+  readonly deciderSubject: string | null;
+  readonly spentAt: number | null;
+}
+
+const approvalParts = ({ scope }: Seal, approval: ApprovalFields) => [
+  "forge/v3/approval/1",
+  scope,
+  approval.id,
+  approval.project,
+  approval.incarnation,
+  approval.restoreEpoch,
+  approval.activationDigest,
+  approval.operation,
+  approval.operationDigest,
+  approval.tokenId,
+  approval.device,
+  approval.session,
+  approval.controlEpoch,
+  approval.policyIdentity,
+  approval.status,
+  approval.requestedAt,
+  approval.expiresAt,
+  approval.decidedAt,
+  approval.deciderIssuer,
+  approval.deciderSubject,
+  approval.spentAt,
+];
+
+export const signApproval = (seal: Seal, approval: ApprovalFields) =>
+  sealed(seal, approvalParts(seal, approval));
+
+export const verifyApproval = (
+  seal: Seal,
+  approval: ApprovalFields,
+  mac: unknown,
+) => authentic(seal, approvalParts(seal, approval), mac);
+
 export const signRoot = (seal: Seal, body: string) =>
   sealed(seal, rootParts(seal, body));
 

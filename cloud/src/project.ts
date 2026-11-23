@@ -8,7 +8,7 @@
 // claim race is decided in arrival order and exactly one caller wins.
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { storageFailure } from "./storage-failure.ts";
-import { canonicalJson } from "../../src/core/config/pointer.ts";
+import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 import {
   StateOwner,
   WATERMARK_INDEX_PROBE,
@@ -131,6 +131,7 @@ import {
 import { authorizeV3Token, issueV3Token, revokeV3Token } from "./v3-tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
+import { requestV3Approval } from "./v3-approvals.ts";
 import { archivedCheck, checkpointV3 } from "./v3-checkpoint.ts";
 import { commandV3 } from "./v3-commands.ts";
 import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
@@ -691,6 +692,16 @@ export class Project {
             : revokeV3Token(db, seal, text(input, "id"), Date.now());
         return Response.json({ ok: true, value });
       }
+      if (
+        this.#testV3 &&
+        request.method === "POST" &&
+        /^\/p\/[^/]+\/promote\/approval$/.test(url.pathname) &&
+        this.#hasV3Root()
+      )
+        return await this.#requestApproval(
+          request,
+          url.pathname.split("/")[2]!,
+        );
       if (route === "upgrade" || route === "devices" || route === "restore")
         this.#requireV2();
       if (isStatePath(request)) return await this.#state(request);
@@ -1082,6 +1093,47 @@ export class Project {
         status: STATUS[error.error.code] ?? 500,
       });
     }
+  }
+
+  async #requestApproval(request: Request, project: string): Promise<Response> {
+    if (
+      project !== this.#env.FORGE_CLOUD_PROJECT ||
+      request.headers.has("X-Forge-Owner") ||
+      request.headers.has("X-Forge-Owner-Expires")
+    )
+      throw fail(
+        "AUTH_FORBIDDEN",
+        "Approval requests are for the admitted project and a device token",
+      );
+    const presented = bearer(request);
+    if (presented === undefined)
+      throw fail("AUTH_REQUIRED", "A device token is required");
+    if (!wellFormed(presented))
+      throw fail("AUTH_FORBIDDEN", "Approval requests need a device token");
+    const parts = await tokenParts(presented);
+    const seal = this.#seal();
+    const db = writableStore(this.#storage);
+    authorizeV3Token(db, seal, parts, Date.now());
+    const body = await bounded(request);
+    const now = Date.now();
+    const token = authorizeV3Token(db, seal, parts, now);
+    if (Object.keys(object(body)).length)
+      throw fail("INPUT_INVALID", "Expected an empty approval request body");
+    const policyIdentity = digestValue([
+      this.#env.CLERK_ISSUER,
+      this.#env.FORGE_OWNER_SUBJECT,
+      this.#env.CLERK_CLIENT_ID,
+    ]);
+    const value = requestV3Approval(
+      db,
+      seal,
+      project,
+      token,
+      policyIdentity,
+      now,
+      () => this.#image(db, seal),
+    );
+    return Response.json({ ok: true, value });
   }
 
   // A typed command, for a device token only: never the owner-forward path, never an admin token.
