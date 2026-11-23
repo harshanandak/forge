@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import { join, resolve } from "node:path";
+import { LocalState } from "../../../src/assembly/state.ts";
 import {
   createAssembly,
   type Assembly,
@@ -206,6 +207,7 @@ export function loadEntry(
 export interface CallOptions {
   readonly caller?: "agent" | "human";
   readonly context?: AmbientContext;
+  readonly dryRun?: boolean;
 }
 export interface Harness {
   readonly assembly: Assembly;
@@ -218,9 +220,34 @@ export interface Harness {
     input: unknown,
     options?: CallOptions,
   ): Promise<ResultEnvelope>;
+  invoke: Harness["call"];
   /** Only an actor and the device: what a host with no project supplies. */
   deviceOnly(): AmbientContext;
   close(): Promise<void>;
+}
+
+export async function stateRows(path: string, namespace: string) {
+  const state = new LocalState(path);
+  try {
+    return (await state.open(false))?.list(namespace) ?? [];
+  } finally {
+    await state.close();
+  }
+}
+
+export const approvalRows = (h: Harness) =>
+  stateRows(join(h.deviceRoot, "trust.sqlite"), "forge/core-approvals");
+
+export async function pendingItem(
+  h: Harness,
+  text = "Keep the pending rule",
+  level = "device",
+) {
+  const input = { level, text, tags: ["rule"] };
+  const note = done(await h.call("memory.add", input)) as Shown & {
+    id: string;
+  };
+  return decisionItem(note.id, note);
 }
 
 const human: Actor = { kind: "human", id: "tester" };
@@ -244,6 +271,7 @@ export async function openHarness(
     readonly deviceRoot?: string;
     readonly project?: string;
     readonly terminal?: AssemblyOptions["terminal"];
+    readonly grants?: readonly string[];
   } = {},
 ): Promise<Harness> {
   const work = mkdtempSync(join(tmpdir(), "forge-l8-"));
@@ -275,6 +303,7 @@ export async function openHarness(
       input,
       caller,
       context: options.context ?? ambient(caller === "human" ? human : agent),
+      ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
     });
   }
   /** A call that claims the owner's words is relayed: ask, then retry with a request, quote and source. */
@@ -304,7 +333,8 @@ export async function openHarness(
     const added = await call("block.add", { path: `./blocks/${name}` });
     const { digest } = done(added) as { digest: string };
     done(await relay(call, "block.admit", { digest }));
-    done(await relay(call, "config.grant", { digest, effects: effects[name] }));
+    const grant = { digest, effects: place.grants ?? effects[name] };
+    done(await relay(call, "config.grant", grant));
   }
   for (const [path, value] of Object.entries(settings)) {
     const shown = done(await call("config.show", {})) as { revision: string };
@@ -322,6 +352,7 @@ export async function openHarness(
     deviceRoot,
     work,
     call,
+    invoke,
     deviceOnly: () => ({ actor: agent, device: { id: assembly.deviceRoot } }),
     async close() {
       await assembly.close();
