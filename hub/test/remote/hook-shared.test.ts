@@ -16,10 +16,12 @@ const declarations = /(?:from\s*|import\s*\(\s*|import\s*)["']([^"']+)["']/g;
 test(
   "P16 standalone hook constants equal the frozen API",
   () => {
-    expect(shared.HOOK_READ_TOOLS).toEqual(contract.HOOK_READ_TOOLS);
-    expect(shared.hookForgeToolNames(MCP_SERVER_NAME)).toEqual(
-      contract.hookForgeToolNames(MCP_SERVER_NAME),
+    expect<readonly string[]>(shared.HOOK_READ_TOOLS).toEqual(
+      contract.HOOK_READ_TOOLS,
     );
+    expect<readonly string[]>(
+      shared.hookForgeToolNames(MCP_SERVER_NAME),
+    ).toEqual(contract.hookForgeToolNames(MCP_SERVER_NAME));
     expect(shared.HOOK_PATHS).toEqual(contract.HOOK_PATHS);
     expect(shared.HOOK_TIMEOUT_MS).toBe(contract.HOOK_TIMEOUT_MS);
     expect(shared.HOOK_STOP_TIMEOUT_MS).toBe(contract.HOOK_STOP_TIMEOUT_MS);

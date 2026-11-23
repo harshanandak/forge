@@ -296,13 +296,14 @@ check(
 );
 
 check("Y3 importing built shared library has no launch effect", async (f) => {
-  const file = new URL("../../dist/hooks/shared.js", import.meta.url).href;
+  const sharedModule = new URL("../../dist/hooks/shared.js", import.meta.url)
+    .href;
   expect(
     await child(f.root, [
       "--input-type=module",
       "-e",
       "await import(process.argv[1])",
-      file,
+      sharedModule,
     ]),
   ).toEqual(silence);
   expect(f.seen).toEqual([]);

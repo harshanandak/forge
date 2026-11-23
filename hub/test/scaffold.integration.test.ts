@@ -167,7 +167,15 @@ const ownFiles = [
   "dist/hooks/shared.js",
   "dist/hooks/stop.js",
   "dist/main.js",
+  "docs/clients.md",
+  "dist/remote/admin.js",
+  "dist/remote/auth.js",
+  "dist/remote/doorbell.js",
+  "dist/remote/hook-routes.js",
   "dist/remote/index.js",
+  "dist/remote/mcp.js",
+  "dist/remote/message-cli.js",
+  "dist/remote/responses.js",
   "dist/setup/index.js",
 ];
 const credentialPath =
