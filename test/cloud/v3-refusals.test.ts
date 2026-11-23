@@ -558,11 +558,9 @@ test(
   () =>
     verdict((check, image) => {
       const id = [...image().entries.witness.keys()][0] as string;
-      const grantable = claimBasis("forge-4");
-      expect(check(frameOf("issue.claim", grantable, stale, { id }))).toBe(
-        undefined,
-      );
-      expect(check(frameOf("issue.claim", grantable, stale))).toBeUndefined();
+      const ok = claimBasis("forge-4");
+      expect(check(frameOf("issue.claim", ok, stale, { id }))).toBeUndefined();
+      expect(check(frameOf("issue.claim", ok, stale))).toBeUndefined();
       const other = claimBasis("other-1");
       expect(check(frameOf("issue.claim", other, prefixError, { id }))).toEqual(
         prefixError,
