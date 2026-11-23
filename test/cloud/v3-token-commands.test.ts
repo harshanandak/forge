@@ -12,18 +12,35 @@ import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
+import { leaseFingerprint } from "../../cloud/src/lease-command.ts";
+import { Project } from "../../cloud/src/project.ts";
 import { TABLE_PROBE, writableStore } from "../../cloud/src/store.ts";
-import { readV3Value } from "../../cloud/src/v3-store.ts";
+import { authorityFault } from "../../cloud/src/v3-authority.ts";
+import { verifyToken } from "../../cloud/src/v3-seal.ts";
+import {
+  append,
+  archive,
+  PAGE_BYTES,
+  publishV3,
+  readV3Value,
+  recoverV3,
+  releaseBudget,
+  TAIL_ROWS,
+} from "../../cloud/src/v3-store.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
-import type { ForgeError } from "../../src/generated/types.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
+import type { ForgeError, LeaseRecord } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import {
   guardFixture,
   newKey,
   noWrites,
+  portableOf,
+  portableUpload,
   probe,
   recovered,
   type SealSetup,
+  verifiedPortable,
 } from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -874,30 +891,19 @@ row(
 );
 
 row(
-  "revoking a token releases no lease and a sibling token keeps acting under it, a stated limit (forge-1847)",
+  "2 revoking the last v3 token releases the lease and a new token reclaims it",
   async (f, t) => {
-    answers(await post(f, create, t), 200);
-    const claimed = await post(f, claim, t);
-    answers(claimed, 200);
-    expect(claimed).toMatchObject({
-      status: 200,
-      body: { result: { generation: 1 } },
-    });
-    const held = lease(f);
-    expect(held).toMatchObject({ generation: 1 });
-    const revoked = await f.send("revoke", { id: t.id });
-    expect(revoked).toMatchObject({
-      status: 200,
-      body: { value: { leasesReleased: false } },
-    });
-    expect(lease(f)).toEqual(held);
+    await claimedIssue(f, t);
+    expect(heldLease(f).generation).toBe(1);
+    released(await revoke(f, t), ["issue:work-1"]);
     const sibling = await issue(f);
-    const updated = await post(f, update, sibling);
-    answers(updated, 200);
-    expect(updated).toMatchObject({
-      status: 200,
-      body: { result: { id: "forge-1", title: "After", revision: 2 } },
-    });
+    const before = frames(f).length;
+    answers(await post(f, update, sibling), 409, "LEASE_NOT_HELD", 4);
+    expect(frames(f).slice(before)).toMatchObject([
+      { operation: "issue.update", outcome: { status: "LEASE_NOT_HELD" } },
+    ]);
+    answers(await post(f, namedClaim(1, "reclaim"), sibling), 200);
+    expect(heldLease(f).generation).toBe(2);
   },
 );
 
@@ -981,6 +987,1110 @@ test(
     expect(await logged(() => post(f, create, late))).toEqual([
       refused("AUTH_EXPIRED"),
     ]);
+  },
+  timeout,
+);
+
+const firstSubject = "issue:work-1";
+const leaseSubject = (number: number) => "issue:work-" + number;
+const revoke = (f: Fixture, t: Token) => f.send("revoke", { id: t.id });
+const namedClaim = (number: number, requestId = "claim-" + number) => ({
+  ...claim,
+  requestId,
+  input: { ...claim.input, id: "forge-" + number },
+});
+const rooted = (f: Fixture) => {
+  const db = writableStore(f.storage);
+  return { db, image: recovered(db, f.seal()) };
+};
+const heldLease = (f: Fixture, subject = firstSubject) => {
+  const { db, image } = rooted(f);
+  const value = readV3Value(db, image, "lease", subject);
+  expect(value).toBeDefined();
+  return value!;
+};
+const tokenRow = (f: Fixture, t: Token) =>
+  f.db
+    .query<
+      {
+        id: string;
+        hash: string;
+        device: string;
+        session: string;
+        agent: string | null;
+        harness: string | null;
+        expires_at: number;
+        revoked_at: number | null;
+        mac: string;
+      },
+      [string]
+    >("SELECT * FROM cloud_v3_tokens WHERE id=?")
+    .get(t.id)!;
+const stmt = (f: Fixture, sequence: number) =>
+  f.db
+    .query<{ body: string }, [number]>(
+      "SELECT body FROM cloud_v3_commits WHERE sequence=?",
+    )
+    .get(sequence)!.body;
+const owner = (device = "laptop") => ({
+  "X-Forge-Owner": device,
+  "X-Forge-Owner-Expires": String(Date.now() + ttlMs),
+});
+
+function legacy(
+  a: Answer,
+  status: number,
+  code?: string,
+  exit = code === undefined ? 0 : 1,
+) {
+  const body = a.body as { ok: boolean; value?: Json };
+  expect([a.status, codeOf(a), body.ok]).toEqual([
+    status,
+    code,
+    code === undefined,
+  ]);
+  expect(body.ok ? 0 : exitCode(envelope(a))).toBe(exit);
+  return body.value;
+}
+
+function released(a: Answer, subjects: string[]) {
+  const value = legacy(a, 200);
+  expect(value).toMatchObject({ leasesReleased: true, released: subjects });
+  return value;
+}
+
+function kept(a: Answer) {
+  const value = legacy(a, 200);
+  expect(value).toMatchObject({ leasesReleased: false });
+  expect(value).not.toHaveProperty("released");
+}
+
+async function claimedIssue(
+  f: Fixture,
+  t: Token,
+  number = 1,
+  input = namedClaim(number),
+) {
+  const createReply = await post(
+    f,
+    { ...create, requestId: "create-" + number },
+    t,
+  );
+  answers(createReply, 200);
+  expect(createReply.body).toMatchObject({ result: { id: "forge-" + number } });
+  const claimReply = await post(f, input, t);
+  answers(claimReply, 200);
+  expect(claimReply.body).toMatchObject({ result: { generation: 1 } });
+  const value = heldLease(f, leaseSubject(number));
+  expect(value.releasedAt).toBeUndefined();
+  expect(Date.parse(value.expiresAt)).toBeGreaterThan(Date.now());
+  return value;
+}
+
+const releaseId = (t: Token, device: string, subject: string) =>
+  scopeRequestId(
+    "lease",
+    ["owner", device, device],
+    "revoke/" + t.id + "/" + subject,
+  );
+
+function releaseFrame(t: Token, held: LeaseRecord, sequence: number) {
+  const { subject, holder: stored, generation, expiresAt } = held;
+  const device = stored.session.device!;
+  const scope = receiptScope(["owner", device, device]);
+  const rawId = "revoke/" + t.id + "/" + subject;
+  const requestId = releaseId(t, device, subject);
+  return {
+    operation: "lease.release",
+    format: "forge-cloud-commit/3",
+    sequence,
+    time: Date.now(),
+    events: [],
+    lease: { ...held, releasedAt: new Date().toISOString() },
+    outcome: {
+      id: requestId,
+      scope: { family: "lease" as const, ...scope },
+      fingerprint: leaseFingerprint({
+        route: "release",
+        subject,
+        holder: stored,
+        generation,
+        ttlMs: null,
+        rawId,
+        requestId,
+        scope,
+      }),
+      retryUntil: Date.parse(expiresAt),
+      status: "ok",
+    },
+  };
+}
+
+const probeView = async (f: Fixture) => legacy(await f.send(probe), 200)!.image;
+async function drainRevokeHistory(f: Fixture) {
+  let more: boolean;
+  do {
+    const value = legacy(await f.send(probe + "/checkpoint", {}), 200)!;
+    more = value.more as boolean;
+  } while (more);
+  expect(frames(f)).toEqual([]);
+}
+
+const transcript = (f: Fixture) =>
+  f.db
+    .query<{ body: string }, []>(
+      "SELECT body FROM cloud_v3_pages WHERE id='transcript:0'",
+    )
+    .get()!.body;
+
+const throwUnavailable = "Cloud v3 root is unavailable";
+
+async function traceStatements(f: Fixture, run: () => Promise<Answer>) {
+  const original = Object.getOwnPropertyDescriptor(f.storage.sql, "exec")!;
+  const previous = f.storage.sql.exec.bind(f.storage.sql);
+  const seen: string[] = [];
+  f.storage.sql.exec = (sql, ...bindings) => {
+    seen.push(sql);
+    return previous(sql, ...bindings);
+  };
+  try {
+    return { reply: await run(), seen };
+  } finally {
+    Object.defineProperty(f.storage.sql, "exec", original);
+  }
+}
+
+function expectNoImageRead(seen: string[]) {
+  const schemaProbe =
+    "SELECT 1 FROM (SELECT count(*) AS n, sum(name='mac') AS m FROM pragma_table_info('cloud_v3_commits')) WHERE n>0 AND m=0";
+  expect(seen.filter((sql) => sql === schemaProbe)).toHaveLength(1);
+  expect(
+    seen.filter(
+      (sql) =>
+        sql !== schemaProbe &&
+        /\bcloud_v3_(?:commits|pages|checkpoint(?:_pages)?|retired_pages)\b/i.test(
+          sql,
+        ),
+    ),
+  ).toEqual([]);
+}
+
+row(
+  "1 last token revokes and commits exactly its signed lease release",
+  async (f, t) => {
+    const held = await claimedIssue(f, t);
+    const peer = await issue(f, "tablet");
+    const peerRow = tokenRow(f, peer);
+    const before = frames(f);
+    const snapshot = f.snapshot();
+    const record = ((await probeView(f)) as Json).record;
+    const effects = f.observeEffects();
+    expect(released(await revoke(f, t), [firstSubject])).toEqual({
+      device: "laptop",
+      session: "fixture",
+      expiresAt: new Date(time + ttlMs).toISOString(),
+      leasesReleased: true,
+      released: [firstSubject],
+    });
+    expect(frames(f)).toEqual([
+      ...before,
+      releaseFrame(t, held, before.length + 1),
+    ]);
+    const signed = tokenRow(f, t);
+    expect(signed.revoked_at).toBe(time);
+    expect(
+      verifyToken(
+        f.seal(),
+        {
+          id: signed.id,
+          hash: signed.hash,
+          device: signed.device,
+          session: signed.session,
+          agent: signed.agent,
+          harness: signed.harness,
+          expiresAt: signed.expires_at,
+          revokedAt: signed.revoked_at,
+        },
+        signed.mac,
+      ),
+    ).toBe(true);
+    expect(tokenRow(f, peer)).toEqual(peerRow);
+    expect(((await probeView(f)) as Json).record).toEqual(record);
+    expect(f.snapshot().kv).toEqual(snapshot.kv);
+    expect(effects().alarmWrites).toBe(0);
+  },
+);
+
+row(
+  "3 a live sibling keeps its lease without opening the image",
+  async (f, t) => {
+    const held = await claimedIssue(f, t);
+    const sibling = await issue(f);
+    const row = tokenRow(f, sibling);
+    const before = frames(f);
+    f.restart();
+    const { reply, seen } = await traceStatements(f, () => revoke(f, t));
+    kept(reply);
+    expectNoImageRead(seen);
+    expect(frames(f)).toEqual(before);
+    expect(heldLease(f)).toEqual(held);
+    expect(tokenRow(f, sibling)).toEqual(row);
+    answers(await post(f, update, sibling), 200);
+  },
+);
+
+row(
+  "4 revoked, expired and foreign siblings leave the last live holder releasable",
+  async (f, t) => {
+    await claimedIssue(f, t);
+    const ended = await issue(f);
+    kept(await revoke(f, ended));
+    const expiring = await issue(f, "laptop", "fixture", { ttlMs: 30_000 });
+    const others = [
+      ended,
+      expiring,
+      await issue(f, "laptop", "second"),
+      await issue(f, "tablet"),
+    ];
+    const rows = others.map((token) => tokenRow(f, token));
+    setSystemTime(time + 31_000);
+    released(await revoke(f, t), [firstSubject]);
+    expect(others.map((token) => tokenRow(f, token))).toEqual(rows);
+  },
+);
+
+test.each([
+  ["agent edit", "agent", "edited"],
+  ["oversized harness", "harness", "x".repeat(100_000)],
+  ["live revoke time added", "revoked_at", time],
+  ["prior revoke time cleared", "revoked_at", null],
+  ["expiry moved into the past", "expires_at", time - 1],
+  ["expiry moved into the future", "expires_at", time + ttlMs * 2],
+  ["device hidden", "device", "tablet"],
+  ["session hidden", "session", "second"],
+  ["foreign row made a sibling", "device", "laptop"],
+  ["malformed guarded id", "id", "wrong"],
+  ["expiry type", "expires_at", String(time + ttlMs)],
+  ["corruption follows live sibling", "agent", "edited"],
+] as const)(
+  "5 revoke authenticates the entire inventory before filtering: %s",
+  async (name, field, invalid) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const t = await issue(f);
+    const prior = await claimedIssue(f, t);
+    const expiring = name === "expiry moved into the future";
+    let edited = await issue(
+      f,
+      name === "foreign row made a sibling" ? "tablet" : "laptop",
+      "fixture",
+      expiring ? { ttlMs: 1000 } : {},
+    );
+    if (expiring) {
+      setSystemTime(time + 1001);
+      expect(tokenRow(f, edited).expires_at).toBeLessThan(Date.now());
+    }
+    if (name === "prior revoke time cleared") kept(await revoke(f, edited));
+    if (name === "expiry type") relax(f);
+    if (name === "corruption follows live sibling") {
+      const other = await issue(f);
+      const [earlier, later] = [edited, other].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      );
+      edited = later!;
+      expect(earlier!.id < edited.id).toBe(true);
+      expect(tokenRow(f, earlier!).revoked_at).toBeNull();
+    }
+    const row = tokenRow(f, edited);
+    const target = tokenRow(f, t);
+    const before = frames(f);
+    f.db.run("UPDATE cloud_v3_tokens SET " + field + "=? WHERE id=?", [
+      invalid,
+      edited.id,
+    ]);
+    expect<unknown>(
+      tokenRow(f, field === "id" ? { ...edited, id: String(invalid) } : edited)[
+        field
+      ],
+    ).toBe(invalid);
+    const observe = f.observeEffects();
+    const { rows, bytes } = { ...f.reads };
+    legacy(await revoke(f, t), 503, "UNAVAILABLE");
+    expect(observe()).toEqual(noWrites);
+    expect(f.reads.rows - rows).toBeLessThanOrEqual(24);
+    expect(f.reads.bytes - bytes).toBeLessThanOrEqual(8192);
+    expect(tokenRow(f, t)).toEqual(target);
+    expect(frames(f)).toEqual(before);
+    expect(heldLease(f)).toEqual(prior);
+    f.db.run("UPDATE cloud_v3_tokens SET " + field + "=? WHERE id=?", [
+      row[field],
+      field === "id" ? invalid : edited.id,
+    ]);
+    answers(await post(f, update, t), 200);
+  },
+  timeout,
+);
+
+row(
+  "6 repeats preserve the first release reply across restart, reclaim and checkpoint",
+  async (f, t) => {
+    await claimedIssue(f, t);
+    const first = await revoke(f, t);
+    released(first, [firstSubject]);
+    const repeat = async () => {
+      const effects = f.observeEffects();
+      expect(await revoke(f, t)).toEqual(first);
+      expect(effects()).toEqual(noWrites);
+    };
+    await repeat();
+    f.restart();
+    await repeat();
+    const sibling = await issue(f);
+    answers(await post(f, namedClaim(1, "repeat-reclaim"), sibling), 200);
+    const reclaimed = heldLease(f);
+    expect(reclaimed).toMatchObject({ generation: 2 });
+    const id = releaseId(t, "laptop", firstSubject);
+    const before = rooted(f);
+    const outcome = readV3Value(before.db, before.image, "outcome", id);
+    expect(outcome).toBeDefined();
+    await drainRevokeHistory(f);
+    f.restart();
+    await repeat();
+    const after = rooted(f);
+    expect(readV3Value(after.db, after.image, "outcome", id)).toEqual(outcome);
+    expect(heldLease(f)).toEqual(reclaimed);
+  },
+);
+
+test.each(["second insert", "after token update"] as const)(
+  "7 revoke rolls back the token and both leases after a fault at %s",
+  async (point) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const t = await issue(f);
+    const held = [await claimedIssue(f, t), await claimedIssue(f, t, 2)];
+    const row = tokenRow(f, t);
+    expect(row.revoked_at).toBeNull();
+    const before = frames(f);
+    const snapshot = f.snapshot();
+    const warmBefore = (await probeView(f)) as Json;
+    const original = Object.getOwnPropertyDescriptor(f.storage.sql, "exec")!;
+    const previous = f.storage.sql.exec.bind(f.storage.sql);
+    let inserts = 0;
+    let updates = 0;
+    let afterUpdate = false;
+    f.storage.sql.exec = (sql, ...bindings) => {
+      if (/^INSERT INTO cloud_v3_commits/i.test(sql)) {
+        inserts++;
+        if (point === "second insert" && inserts === 2) throw new Error(point);
+      }
+      if (afterUpdate && /^SELECT changes\(\)/i.test(sql))
+        throw new Error(point);
+      const reply = previous(sql, ...bindings);
+      if (/^UPDATE cloud_v3_tokens/i.test(sql)) {
+        updates++;
+        afterUpdate = point === "after token update";
+      }
+      return reply;
+    };
+    let reply: Answer;
+    try {
+      reply = await revoke(f, t);
+    } finally {
+      Object.defineProperty(f.storage.sql, "exec", original);
+    }
+    expect(inserts).toBe(2);
+    expect(updates).toBe(point === "second insert" ? 0 : 1);
+    legacy(reply, 500, "INTERNAL");
+    unchanged(f, snapshot);
+    expect(tokenRow(f, t)).toEqual(row);
+    expect(frames(f)).toEqual(before);
+    expect(held.map(({ subject }) => heldLease(f, subject))).toEqual(held);
+    answers(await post(f, update, t), 200);
+    const afterUpdateImage = await probeView(f);
+    expect((afterUpdateImage as Json).lease).toEqual(warmBefore.lease);
+    f.restart();
+    expect(await probeView(f)).toEqual(afterUpdateImage);
+    const count = frames(f).length;
+    released(
+      await revoke(f, t),
+      held.map(({ subject }) => subject),
+    );
+    expect(frames(f).slice(count)).toEqual(
+      held.map((value, index) => releaseFrame(t, value, count + index + 1)),
+    );
+  },
+  timeout,
+);
+
+row(
+  "8 revoke changes only the device and session's live unreleased leases",
+  async (f, t) => {
+    await claimedIssue(f, t);
+    const raw = async (
+      number: number,
+      route: "claim" | "release",
+      duration = 60_000,
+    ) =>
+      legacy(
+        await f.send(
+          probe + "/" + route,
+          {
+            requestId: route + "-probe-" + number,
+            subject: leaseSubject(number),
+            holder,
+            ...(route === "claim" ? { ttlMs: duration } : { generation: 1 }),
+          },
+          owner(),
+        ),
+        200,
+      );
+    for (const number of [2, 3]) {
+      const response = await post(
+        f,
+        { ...create, requestId: "create-" + number },
+        t,
+      );
+      answers(response, 200);
+      expect(response.body).toMatchObject({
+        result: { id: "forge-" + number },
+      });
+      await raw(number, "claim", number === 3 ? 1000 : 60_000);
+    }
+    await raw(2, "release");
+    const otherSession = await issue(f, "laptop", "second");
+    const otherDevice = await issue(f, "tablet");
+    await claimedIssue(f, otherSession, 4, {
+      ...namedClaim(4),
+      context: { actor, session: { id: "second" } },
+    });
+    await claimedIssue(f, otherDevice, 5);
+    setSystemTime(time + 2000);
+    const subjects = [2, 3, 4, 5].map(leaseSubject);
+    const other = subjects.map((subject) => heldLease(f, subject));
+    expect(other[0]!.releasedAt).toBeDefined();
+    expect(Date.parse(other[1]!.expiresAt)).toBeLessThan(Date.now());
+    released(await revoke(f, t), [firstSubject]);
+    expect(subjects.map((subject) => heldLease(f, subject))).toEqual(other);
+  },
+);
+
+row(
+  "9 revoke without a lease adds no commit and omits the released list",
+  async (f, t) => {
+    expect(frames(f)).toEqual([]);
+    kept(await revoke(f, t));
+    expect(frames(f)).toEqual([]);
+  },
+);
+
+const firstRecord = {
+  id: "work-1",
+  prefix: "forge",
+  title: "Before",
+  status: "open",
+  labels: [],
+  dependsOn: [],
+  createdAt: new Date(time).toISOString(),
+};
+
+async function fixtureIssue(f: Fixture) {
+  legacy(
+    await f.send(probe + "/commits", {
+      frames: [
+        {
+          time,
+          operation: "fixture.put",
+          events: [{ key: "r1", revision: 1, value: firstRecord }],
+          changes: [{ key: "r1", value: { revision: 1, value: firstRecord } }],
+        },
+      ],
+    }),
+    200,
+  );
+}
+
+function portableImage(f: Fixture, portableTranscript: string) {
+  return recoverV3(writableStore(f.storage), f.seal(), {
+    admit: Project.admitLeaseRequest,
+    manifest: verifiedPortable(f.seal(), portableTranscript),
+    portableTranscript,
+  });
+}
+
+async function portableClaim(f: Fixture, t: Token) {
+  await fixtureIssue(f);
+  answers(await post(f, namedClaim(1), t), 200);
+  const held = heldLease(f);
+  expect(held.generation).toBe(1);
+  const copy = portableImage(
+    f,
+    canonicalJson(frames(f).map((frame) => archive(canonicalJson(frame)))),
+  );
+  expect(
+    readV3Value(writableStore(f.storage), copy, "lease", firstSubject),
+  ).toEqual(held);
+  return held;
+}
+
+row(
+  "10 control: portable recovery accepts a fixture record and typed claim",
+  async (f, t) => {
+    await portableClaim(f, t);
+  },
+);
+
+row(
+  "10 portable and cold recovery derive a genuine release, reject edits and retain its receipt",
+  async (f, t) => {
+    const held = await portableClaim(f, t);
+    released(await revoke(f, t), [firstSubject]);
+    const expected = releaseFrame(t, held, 3);
+    const db = writableStore(f.storage);
+    const receipt = { lease: expected.lease, outcome: expected.outcome, time };
+    await drainRevokeHistory(f);
+    f.restart();
+    const cold = rooted(f).image;
+    const archived = transcript(f);
+    const portable = portableImage(f, archived);
+    for (const image of [cold, portable]) {
+      expect(readV3Value(db, image, "lease", firstSubject)).toEqual(
+        expected.lease,
+      );
+      expect(readV3Value(db, image, "outcome", expected.outcome.id)).toEqual(
+        receipt,
+      );
+    }
+    for (const key of ["releasedAt", "generation", "fingerprint"] as const) {
+      const edit = JSON.parse(archived) as Json[];
+      const frame = edit.at(-1)!;
+      const lease = frame.lease as Json;
+      const outcome = frame.outcome as Json;
+      const fingerprint = JSON.parse(String(outcome.fingerprint)) as Json;
+      if (key === "releasedAt")
+        lease.releasedAt = new Date(time + 1).toISOString();
+      if (key === "generation") {
+        lease.generation = 2;
+        fingerprint.generation = 2;
+      }
+      if (key === "fingerprint") fingerprint.ttlMs = 1;
+      outcome.fingerprint = canonicalJson(fingerprint);
+      expect(authorityFault(frame, true)).toBeUndefined();
+      expect(() => portableImage(f, canonicalJson(edit))).toThrow(
+        throwUnavailable,
+      );
+    }
+  },
+);
+
+row(
+  "10 a signed local release whose body changes fails cold recovery",
+  async (f, t) => {
+    const held = await portableClaim(f, t);
+    released(await revoke(f, t), [firstSubject]);
+    const tail = frames(f).length;
+    const expected = releaseFrame(t, held, tail);
+    expect(JSON.parse(stmt(f, tail))).toEqual(expected);
+    const mac = f.db
+      .query<{ mac: string }, [number]>(
+        "SELECT mac FROM cloud_v3_commits WHERE sequence=?",
+      )
+      .get(tail)!.mac;
+    f.db.run("UPDATE cloud_v3_commits SET body=? WHERE sequence=?", [
+      canonicalJson({
+        ...expected,
+        lease: { ...expected.lease, generation: 2 },
+      }),
+      tail,
+    ]);
+    expect(
+      f.db
+        .query<{ mac: string }, [number]>(
+          "SELECT mac FROM cloud_v3_commits WHERE sequence=?",
+        )
+        .get(tail)!.mac,
+    ).toBe(mac);
+    f.restart();
+    const effects = f.observeEffects();
+    legacy(await f.send(probe), 503, "UNAVAILABLE");
+    expect(effects()).toEqual(noWrites);
+  },
+);
+
+row(
+  "11 cold recovery keeps the release and the next claim increments generation",
+  async (f, t) => {
+    const first = await claimedIssue(f, t);
+    released(await revoke(f, t), [firstSubject]);
+    const sequence = frames(f).length;
+    const initialRelease = releaseFrame(t, first, sequence);
+    expect(frames(f).at(-1)).toEqual(initialRelease);
+    f.restart();
+    await probeView(f);
+    expect(heldLease(f)).toEqual(initialRelease.lease);
+    const next = await issue(f);
+    answers(await post(f, namedClaim(1, "cold-reclaim"), next), 200);
+    expect(heldLease(f).generation).toBe(2);
+    expect(frames(f).slice(sequence)).toMatchObject([
+      { operation: "issue.claim", lease: { generation: 2 } },
+    ]);
+    const { db, image } = rooted(f);
+    expect(
+      readV3Value(db, image, "outcome", initialRelease.outcome.id),
+    ).toEqual({
+      lease: initialRelease.lease,
+      outcome: initialRelease.outcome,
+      time,
+    });
+  },
+);
+
+row(
+  "12 clients cannot submit a revoke release request identifier",
+  async (f, t) => {
+    await claimedIssue(f, t);
+    const observe = f.observeEffects();
+    legacy(
+      await f.send(
+        probe + "/release",
+        {
+          subject: firstSubject,
+          holder,
+          generation: 1,
+          requestId: "revoke/" + t.id + "/" + firstSubject,
+        },
+        owner(),
+      ),
+      400,
+      "INPUT_INVALID",
+      6,
+    );
+    expect(observe()).toEqual(noWrites);
+  },
+);
+
+row(
+  "13 revoke between claim body chunks prevents a new lease",
+  async (f, t) => {
+    answers(await post(f, create, t), 200);
+    const before = frames(f);
+    expect(lease(f)).toBeUndefined();
+    let completed = false;
+    const reply = await during(
+      f,
+      t,
+      async () => {
+        kept(await revoke(f, t));
+        completed = true;
+      },
+      JSON.stringify(claim),
+    );
+    expect(completed).toBe(true);
+    answers(reply, 401, "AUTH_REVOKED");
+    expect(frames(f)).toEqual(before);
+    expect(lease(f)).toBeUndefined();
+  },
+);
+
+test(
+  "14 a stopped activated root revokes without reading commits or authenticating siblings",
+  async () => {
+    const source = guardFixture(env);
+    const target = guardFixture(env);
+    using _source = source.db;
+    using _target = target.db;
+    await provision(source);
+    await fixtureIssue(source);
+    await drainRevokeHistory(source);
+    const portable = portableOf(source);
+    const upload = portableUpload(target, portable);
+    for (const page of portable.pages.keys()) legacy(await upload(page), 200);
+    expect(rooted(target).image.root.activationDigest).toBeDefined();
+    const t = await issue(target);
+    const sibling = await issue(target);
+    target.db.run("UPDATE cloud_v3_tokens SET agent=? WHERE id=?", [
+      "bad",
+      sibling.id,
+    ]);
+    const { reply, seen } = await traceStatements(target, () =>
+      revoke(target, t),
+    );
+    kept(reply);
+    expectNoImageRead(seen);
+    expect(tokenRow(target, t).revoked_at).toBe(time);
+  },
+  timeout,
+);
+
+test.each([false, true])(
+  "15 revoke with damaged history and live sibling %s",
+  async (sibling) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const t = await issue(f);
+    await claimedIssue(f, t);
+    if (sibling) await issue(f);
+    const sequence = frames(f).length;
+    f.db.run("UPDATE cloud_v3_commits SET body=? WHERE sequence=?", [
+      "{}",
+      sequence,
+    ]);
+    f.restart();
+    const row = tokenRow(f, t);
+    const observe = f.observeEffects();
+    const { reply, seen } = await traceStatements(f, () => revoke(f, t));
+    if (sibling) {
+      kept(reply);
+      expectNoImageRead(seen);
+    } else {
+      legacy(reply, 503, "UNAVAILABLE");
+      expect(observe()).toEqual(noWrites);
+      expect(tokenRow(f, t)).toEqual(row);
+    }
+  },
+  timeout,
+);
+
+test.each([false, true])(
+  "16 revoke logs nothing with live sibling %s",
+  async (sibling) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const t = await issue(f);
+    await claimedIssue(f, t);
+    if (sibling) await issue(f);
+    expect(
+      await logged(async () => {
+        const reply = await revoke(f, t);
+        if (sibling) kept(reply);
+        else legacy(reply, 200);
+      }),
+    ).toEqual([]);
+    expect(
+      await logged(async () => {
+        answers(await post(f, update, t), 401, "AUTH_REVOKED");
+      }),
+    ).toEqual([
+      {
+        auth: "refused",
+        code: "AUTH_REVOKED",
+        device: "laptop",
+        session: "fixture",
+        expiresAt: new Date(time + ttlMs).toISOString(),
+      },
+    ]);
+  },
+  timeout,
+);
+
+test(
+  "20 an expired token revokes a still-live owner-probe lease",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await fixtureIssue(f);
+    const t = await issue(f, "laptop", "fixture", { ttlMs: 1000 });
+    setSystemTime(time + 2000);
+    expect(tokenRow(f, t).expires_at).toBeLessThan(Date.now());
+    legacy(
+      await f.send(
+        probe + "/claim",
+        {
+          subject: firstSubject,
+          holder,
+          ttlMs: 60_000,
+          requestId: "owner-after-expiry",
+        },
+        owner(),
+      ),
+      200,
+    );
+    const held = heldLease(f);
+    expect(Date.parse(held.expiresAt)).toBeGreaterThan(Date.now());
+    released(await revoke(f, t), [firstSubject]);
+    expect(tokenRow(f, t).revoked_at).toBe(Date.now());
+    const frame = releaseFrame(t, held, frames(f).length);
+    expect(frames(f).at(-1)).toEqual(frame);
+    expect(frame.outcome.retryUntil).toBe(Date.parse(held.expiresAt));
+    await drainRevokeHistory(f);
+    const copy = portableImage(f, transcript(f));
+    expect(
+      readV3Value(writableStore(f.storage), copy, "lease", firstSubject),
+    ).toEqual(frame.lease);
+  },
+  timeout,
+);
+
+const fullHistory = "STORAGE_LIMIT_EXCEEDED";
+const note = (pad: string) => ({
+  operation: "fixture.note",
+  time: Date.now(),
+  events: pad ? [{ pad }] : [],
+});
+const commitBody = (frame: object, sequence: number) =>
+  canonicalJson({ ...frame, sequence, format: "forge-cloud-commit/3" });
+
+test.each([0, 1])(
+  "21/24 a tail with %i free rows refuses a whole revoke batch",
+  async (free) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const t = await issue(f);
+    const leases = [await claimedIssue(f, t)];
+    if (free === 1) leases.push(await claimedIssue(f, t, 2));
+    const end = TAIL_ROWS - free;
+    const insert = f.db.prepare(
+      "INSERT INTO cloud_v3_commits VALUES (?, ?, ?)",
+    );
+    f.db.transaction(() => {
+      for (let sequence = frames(f).length + 1; sequence <= end; sequence++) {
+        const body = commitBody(note(""), sequence);
+        insert.run(sequence, body, f.sign(sequence, body));
+      }
+    })();
+    f.restart();
+    const image = rooted(f).image;
+    expect(image.head - image.root.coveredHead).toBe(end);
+    expect(leases.map(({ subject }) => heldLease(f, subject))).toEqual(leases);
+    const before = tokenRow(f, t);
+    expect(before.revoked_at).toBeNull();
+    const observe = f.observeEffects();
+    const reply = await revoke(f, t);
+    if (free === 1) expect(tokenRow(f, t).revoked_at).toBeNull();
+    legacy(reply, 503, fullHistory);
+    expect(observe()).toEqual(noWrites);
+    expect(tokenRow(f, t)).toEqual(before);
+    expect(frames(f)).toHaveLength(end);
+    expect(leases.map(({ subject }) => heldLease(f, subject))).toEqual(leases);
+    const ordinary = f.observeEffects();
+    legacy(
+      await f.send(probe + "/commits", { frames: [note("")] }),
+      503,
+      fullHistory,
+    );
+    expect(ordinary()).toEqual(noWrites);
+  },
+  timeout,
+);
+
+const escapedLabels = {
+  device: "\u0001".repeat(256),
+  id: "\u0001".repeat(200),
+  agent: "\u0001".repeat(200),
+  harness: "\u0001".repeat(200),
+};
+const escapedHolder = {
+  actor: { kind: "agent" as const, id: escapedLabels.id },
+  session: escapedLabels,
+};
+
+type CapacityBoundary = "rows" | "raw" | "transcript";
+
+async function fillRawTail(f: Fixture, leases: LeaseRecord[]) {
+  const send = () =>
+    f.send(
+      probe + "/claim",
+      {
+        subject: firstSubject,
+        holder,
+        ttlMs: 1,
+        requestId: "replace-expired-refusal",
+      },
+      {
+        ...owner("another-device"),
+        "X-Forge-Owner-Expires": String(Date.now() + 1),
+      },
+    );
+  let priorSize = 0;
+  for (let count = 1; count < TAIL_ROWS; count++) {
+    setSystemTime(time + count * 2);
+    const observe = f.observeEffects();
+    const reply = await send();
+    if (reply.status === 503) {
+      legacy(reply, 503, fullHistory);
+      expect(observe()).toEqual(noWrites);
+      expect(priorSize).toBeGreaterThan(0);
+      const { image } = rooted(f);
+      const room =
+        1024 * 1024 -
+        13_312 -
+        image.tailBytes -
+        leases.reduce((sum, lease) => sum + releaseBudget(lease).raw, 0);
+      expect(room).toBeGreaterThanOrEqual(0);
+      expect(room).toBeLessThan(priorSize + 1);
+      const repeat = f.observeEffects();
+      legacy(await send(), 503, fullHistory);
+      expect(repeat()).toEqual(noWrites);
+      return;
+    }
+    legacy(reply, 409, "LEASE_HELD", 4);
+    priorSize = f.db
+      .query<{ bytes: number }, []>(
+        "SELECT length(CAST(body AS BLOB)) AS bytes FROM cloud_v3_commits ORDER BY sequence DESC LIMIT 1",
+      )
+      .get()!.bytes;
+  }
+  throw new Error("The fixture did not reach the raw tail limit");
+}
+
+async function fillOrdinaryHistory(
+  f: Fixture,
+  boundary: CapacityBoundary,
+  leases: LeaseRecord[],
+) {
+  if (boundary === "raw") return fillRawTail(f, leases);
+  const { db, image } = rooted(f);
+  const sequence = image.head + 1;
+  const sizes = leases.map(releaseBudget);
+  const transcriptRoom =
+    PAGE_BYTES -
+    13_313 -
+    image.usage.transcript -
+    sizes.reduce((sum, budget) => sum + budget.transcript, 0);
+  const rowRoom = TAIL_ROWS - 4 - image.head - sizes.length;
+  const minimum = Buffer.byteLength(commitBody(note("x"), sequence));
+  expect(transcriptRoom).toBeGreaterThan(minimum);
+  expect(rowRoom).toBeGreaterThan(0);
+  const filler =
+    boundary === "rows"
+      ? Array.from({ length: rowRoom }, () => note(""))
+      : [note("x".repeat(transcriptRoom - minimum))];
+  expect(append(db, f.seal(), image, filler)).toEqual({
+    head: image.head + filler.length,
+  });
+  publishV3(image);
+  f.restart();
+  const full = rooted(f).image;
+  if (boundary === "rows") expect(full.head + 4 + sizes.length).toBe(TAIL_ROWS);
+  else
+    expect(
+      full.usage.transcript +
+        13_313 +
+        sizes.reduce((sum, budget) => sum + budget.transcript, 0),
+    ).toBe(PAGE_BYTES);
+}
+
+test.each(["rows", "raw", "transcript"] as const)(
+  "22 successive token revokes use their releases' reserved capacity at the %s boundary",
+  async (boundary) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const tokens = [];
+    const groups: LeaseRecord[][] = [];
+    for (let group = 0; group < 4; group++) {
+      const session = "session-" + group;
+      const token = await issue(f, "laptop", session);
+      tokens.push(token);
+      const leases = [];
+      for (let index = 1; index <= 4; index++) {
+        const number = 4 * group + index;
+        const labels =
+          boundary === "raw" && number === 1
+            ? { agent: escapedLabels.agent, harness: escapedLabels.harness }
+            : {};
+        leases.push(
+          await claimedIssue(f, token, number, {
+            ...namedClaim(number),
+            context: { actor, session: { id: session, ...labels } },
+          }),
+        );
+      }
+      groups.push(leases);
+    }
+    await fillOrdinaryHistory(f, boundary, groups.flat());
+    const ordinary = async () => {
+      const observe = f.observeEffects();
+      legacy(
+        await f.send(probe + "/commits", { frames: [note("x".repeat(4096))] }),
+        503,
+        fullHistory,
+      );
+      expect(observe()).toEqual(noWrites);
+    };
+    if (boundary !== "raw") {
+      await ordinary();
+      await ordinary();
+    }
+    for (const [index, token] of tokens.entries()) {
+      const subjects = groups[index]!.map(({ subject }) => subject).sort();
+      const before = frames(f).length;
+      released(await revoke(f, token), subjects);
+      const actual = frames(f).slice(before);
+      expect(
+        actual.map((frame) => (frame.lease as LeaseRecord).subject),
+      ).toEqual(subjects);
+      expect(tokenRow(f, token).revoked_at).toBe(Date.now());
+      if (boundary !== "raw") await ordinary();
+    }
+    const warm = await probeView(f);
+    await drainRevokeHistory(f);
+    f.restart();
+    expect(await probeView(f)).toEqual(warm);
+    for (const { subject } of groups.flat())
+      expect(heldLease(f, subject).releasedAt).toBe(new Date().toISOString());
+  },
+  timeout,
+);
+
+test.each([true, false])(
+  "23 revoke fixture with maximal escaped holder %s stays within the frame bound",
+  async (escaped) => {
+    let maximum = 0;
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const t = escaped
+      ? await issue(f, escapedLabels.device, escapedLabels.id, {
+          agent: escapedLabels.agent,
+          harness: escapedLabels.harness,
+        })
+      : await issue(f);
+    const leases = [];
+    const count = escaped ? 1 : 16;
+    for (let number = 1; number <= count; number++) {
+      leases.push(
+        await claimedIssue(
+          f,
+          t,
+          number,
+          escaped
+            ? { ...namedClaim(number), context: escapedHolder }
+            : namedClaim(number),
+        ),
+      );
+    }
+    if (escaped) expect(leases[0]!.holder).toEqual(escapedHolder);
+    const subjects = leases.map(({ subject }) => subject).sort();
+    const before = frames(f).length;
+    released(await revoke(f, t), subjects);
+    expect(frames(f)).toHaveLength(before + count);
+    for (const [index, subject] of subjects.entries()) {
+      const sequence = before + index + 1;
+      const body = stmt(f, sequence);
+      expect(JSON.parse(body)).toMatchObject({
+        sequence,
+        operation: "lease.release",
+        lease: { subject },
+      });
+      const bytes = Buffer.byteLength(body);
+      maximum = Math.max(maximum, bytes);
+      expect(bytes).toBeLessThanOrEqual(PAGE_BYTES);
+      expect(bytes).toBeLessThanOrEqual(22_276);
+    }
+    const warm = await probeView(f);
+    f.restart();
+    expect(await probeView(f)).toEqual(warm);
+    await drainRevokeHistory(f);
+    f.restart();
+    expect(await probeView(f)).toEqual(warm);
+    console.log("Largest revoke release body in row 23:", maximum);
   },
   timeout,
 );

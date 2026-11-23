@@ -686,10 +686,11 @@ export class Project {
         const seal = this.#seal();
         const input = object(await bounded(request));
         const db = writableStore(this.#storage);
+        const image = () => this.#image(db, seal);
         const value =
           route === "devices"
             ? await issueV3Token(db, seal, deviceFields(input), Date.now())
-            : revokeV3Token(db, seal, text(input, "id"), Date.now());
+            : revokeV3Token(db, seal, text(input, "id"), Date.now(), image);
         return Response.json({ ok: true, value });
       }
       if (
