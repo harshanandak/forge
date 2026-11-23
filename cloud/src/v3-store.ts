@@ -53,7 +53,7 @@ import {
   type VerifiedManifest,
 } from "./v3-seal.ts";
 
-export { withinDepth };
+export { unavailable, withinDepth };
 export const ROOT = "cloud_v3_root";
 export const PAGES = "cloud_v3_pages";
 export const PAGE_BYTES = 256 * 1024;
@@ -402,7 +402,7 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
 
 interface Verification {
   admit: AdmitLeaseRequest;
-  pages: ReadonlyMap<string, Buffer>;
+  pages?: ReadonlyMap<string, Buffer>;
   sealed: (image: V3Image) => void;
 }
 
@@ -491,16 +491,16 @@ export function recoverV3(
 export function recoverV3(
   db: SqlDatabase,
   seal: Seal,
-  verification?: Verification & { readonly portableTranscript?: never },
+  verification: Verification & { readonly portableTranscript?: never },
   options?: { through: number },
 ): V3Image;
 export function recoverV3(
   db: SqlDatabase,
   seal: Seal,
-  verification?: Verification | PortableVerification,
+  verification: Verification | PortableVerification,
   { through }: { through?: number } = {},
 ): V3Image {
-  if (verification && "portableTranscript" in verification)
+  if ("portableTranscript" in verification)
     return recoverPortableV3(db, verification);
   const root = readV3Root(db, seal);
   const byId = new Map(root.pages.map((page) => [page.id, page]));
@@ -516,7 +516,7 @@ export function recoverV3(
     db,
     root,
     root.eventWatermark,
-    verification?.pages,
+    verification.pages,
   );
   const bodies = new Map(
     db
@@ -555,11 +555,11 @@ export function recoverV3(
         image.recordFloor = Math.max(image.recordFloor, recordNumber(key));
     }
   }
+  verification.sealed(image);
   if (root.activationDigest !== undefined) {
-    if (through !== undefined || verification) throw unavailable();
+    if (through !== undefined) throw unavailable();
     return applyActivation(db, seal, image);
   }
-  verification?.sealed(image);
   const upper = through === undefined ? "" : " AND sequence<=?";
   const rows = db.all(
     `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body, mac FROM ${COMMITS} WHERE sequence>?${upper} ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
@@ -683,6 +683,7 @@ export function provisionV3(
   db: SqlDatabase,
   seal: Seal,
   legacyMarker: boolean,
+  verification: Verification & { readonly portableTranscript?: never },
 ) {
   return db.transaction(() => {
     if (legacyMarker || db.get(legacyTables))
@@ -700,7 +701,7 @@ export function provisionV3(
         signRoot(seal, body),
       ]);
     }
-    return recoverV3(db, seal);
+    return recoverV3(db, seal, verification);
   });
 }
 

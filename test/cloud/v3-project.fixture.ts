@@ -1,6 +1,10 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
+import type { SqlDatabase } from "../../src/ports/store.ts";
+import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
+import { completeRefusals } from "../../cloud/src/v3-restore.ts";
+import { recoverV3, unavailable } from "../../cloud/src/v3-store.ts";
 import {
   canonicalJson,
   digestBytes,
@@ -61,6 +65,17 @@ export function verifiedPortable(seal: Seal, transcript: string) {
   });
   return authenticateManifest(seal, manifest, digestValue(manifest))!;
 }
+
+export const recovered = (db: SqlDatabase, seal: Seal) =>
+  recoverV3(
+    db,
+    seal,
+    archivedCheck(db, {
+      admit: Project.admitLeaseRequest,
+      failure: unavailable,
+      complete: completeRefusals,
+    }),
+  );
 
 export interface SealSetup {
   key?: string | null;

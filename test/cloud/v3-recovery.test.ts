@@ -11,11 +11,7 @@ import { failed } from "../../cloud/src/issue-commands.ts";
 import { scopeRequestId } from "../../cloud/src/issue-request-id.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { digestProjection } from "../../cloud/src/v3-checkpoint.ts";
-import {
-  PAGE_BYTES,
-  readV3Value,
-  recoverV3,
-} from "../../cloud/src/v3-store.ts";
+import { PAGE_BYTES, readV3Value } from "../../cloud/src/v3-store.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
@@ -24,6 +20,7 @@ import {
   guardFixture,
   noWrites,
   probe,
+  recovered as recover,
   trustedSeal,
 } from "./v3-project.fixture.ts";
 
@@ -38,7 +35,7 @@ const COLD_ROWS = 1750;
 const COLD_BYTES = 22 * MiB;
 const COLD_QUERY_ROWS = 4;
 const STANDARD_PAGES = 3;
-const CHECK_PAGE_READS = 0;
+const CHECK_PAGE_READS = 3;
 const T0 = Date.parse("2026-11-20T12:00:00.000Z");
 const HOUR = 3_600_000;
 const E1 = T0 + 2 * HOUR;
@@ -511,15 +508,27 @@ test(
       const records = rebuilt.record as Record<string, unknown>;
       expect(Object.keys(records)).toHaveLength(items.length);
       expect(records[last]).toBe(digestOf([2, null]));
+      const expected: Record<string, string> = Object.fromEntries(
+        items.map(([, key, slot]) => [
+          key,
+          "deleted" in slot
+            ? digestOf([2, null])
+            : digestOf([1, digestOf(slot.value)]),
+        ]),
+      );
       const stored = f.db
         .query<{ body: string }, [number]>(
-          "SELECT body FROM cloud_v3_commits WHERE sequence=?",
+          "SELECT body FROM cloud_v3_commits WHERE sequence>? ORDER BY sequence",
         )
-        .get(frames.length + 1)!;
-      const [change] = (JSON.parse(stored.body) as Frame).changes!;
-      expect(records[change!.key]).toBe(
-        digestOf([2, digestOf((change!.value as { value: unknown }).value)]),
-      );
+        .all(frames.length);
+      expect(stored).toHaveLength(TAIL_ROWS);
+      for (const { body } of stored)
+        for (const change of (JSON.parse(body) as Frame).changes!)
+          expected[change.key] = digestOf([
+            2,
+            digestOf((change.value as { value: unknown }).value),
+          ]);
+      expect(records).toEqual(expected);
       console.log("v3 cold record recovery reads", reads);
       expect(reads.rows).toBe(
         COLD_QUERY_ROWS + STANDARD_PAGES + 1 + TAIL_ROWS + CHECK_PAGE_READS,
@@ -691,7 +700,7 @@ for (const at of ["tail", "directory"] as const) {
           },
         });
         const db = writableStore(f.storage);
-        const recovered = recoverV3(db, f.seal());
+        const recovered = recover(db, f.seal());
         const before = { ...f.reads };
         expect(readV3Value(db, recovered, "record", "r1")).toBeUndefined();
         expect(f.reads).toEqual(before);

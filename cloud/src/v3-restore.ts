@@ -14,6 +14,7 @@ import type { AdmitLeaseRequest } from "./project.ts";
 import { TABLE_PROBE } from "./store.ts";
 import { isDigest, isNat, sealedAuthorityValid } from "./v3-authority.ts";
 import {
+  archivedCheck,
   digestProjection,
   inventory,
   PAGE_BYTES,
@@ -47,6 +48,12 @@ function check(value: unknown, code = "RESTORE_INVALID_ROW"): asserts value {
   if (!value)
     throw fail(code, "Cloud v3 portable restore could not be verified");
 }
+
+const refused = () =>
+  fail(
+    "RESTORE_INVALID_ROW",
+    "Cloud v3 portable restore could not be verified",
+  );
 
 function decode(text: unknown): unknown {
   check(typeof text === "string" && withinRestoreBudget(text));
@@ -106,7 +113,10 @@ const matches = (
 export const hasV3Restore = (db: SqlDatabase) =>
   db.get(TABLE_PROBE, [STAGE]) !== undefined;
 
-function completeRefusals(image: V3Image, pages: ReadonlyMap<string, string>) {
+export function completeRefusals(
+  image: V3Image,
+  pages: ReadonlyMap<string, string>,
+) {
   const directory = parse(pages.get("directory:0")!);
   check(Array.isArray(directory));
   const entries = new Map(
@@ -208,6 +218,7 @@ export function restoreV3Page(
     check(matches(body, manifest.members[page]!));
     const verified = page === IDS.length - 1;
     const finish = () => {
+      let checked: ReadonlyMap<string, string> | undefined;
       if (verified) {
         const { pages, expected, image } = verify(
           db,
@@ -216,13 +227,24 @@ export function restoreV3Page(
           admit,
           table,
         );
+        checked = pages;
         if (!restored) {
           const projection = roster(pages, expected, image.head);
           activateV3(db, seal, image, projection, pages, manifest.publicDigest);
           db.run(`UPDATE ${STAGE} SET body=''`);
         }
       }
-      if (restored || verified) recoverV3(db, seal);
+      if (restored || verified)
+        recoverV3(
+          db,
+          seal,
+          archivedCheck(db, {
+            admit,
+            failure: refused,
+            complete: completeRefusals,
+            pages: checked,
+          }),
+        );
     };
     if (prior) {
       check(prior.id === id && prior.request === request && prior.pin === pin);

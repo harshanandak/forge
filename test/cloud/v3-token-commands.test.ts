@@ -13,7 +13,7 @@ import {
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
 import { TABLE_PROBE, writableStore } from "../../cloud/src/store.ts";
-import { readV3Value, recoverV3 } from "../../cloud/src/v3-store.ts";
+import { readV3Value } from "../../cloud/src/v3-store.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
@@ -22,6 +22,7 @@ import {
   newKey,
   noWrites,
   probe,
+  recovered,
   type SealSetup,
 } from "./v3-project.fixture.ts";
 
@@ -165,7 +166,7 @@ function unchanged(f: Fixture, expected: ReturnType<Fixture["snapshot"]>) {
 
 const lease = (f: Fixture) => {
   const db = writableStore(f.storage);
-  return readV3Value(db, recoverV3(db, f.seal()), "lease", "issue:work-1");
+  return readV3Value(db, recovered(db, f.seal()), "lease", "issue:work-1");
 };
 
 async function logged(run: () => Promise<unknown>) {

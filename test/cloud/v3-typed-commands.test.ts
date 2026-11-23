@@ -16,6 +16,7 @@ import {
   guardFixture,
   noWrites,
   probe,
+  recovered,
   verifiedPortable,
 } from "./v3-project.fixture.ts";
 
@@ -214,7 +215,7 @@ async function oneRow(
 
 function record(f: Fixture, key = "r1") {
   const db = writableStore(f.storage);
-  const image = recoverV3(db, f.seal());
+  const image = recovered(db, f.seal());
   return {
     value: readV3Value(db, image, "record", key),
     revision: image.entries.record.get(key)?.revision,
@@ -223,7 +224,7 @@ function record(f: Fixture, key = "r1") {
 
 async function checkpoint(f: Fixture) {
   const db = writableStore(f.storage);
-  const { image, coveredHead: start } = viewV3(recoverV3(db, f.seal()));
+  const { image, coveredHead: start } = viewV3(recovered(db, f.seal()));
   const { head } = image;
   let coveredHead = start;
   let reply: Awaited<ReturnType<Fixture["send"]>>;
@@ -981,7 +982,7 @@ test.each(modes)(
     ).toMatchObject({ result: { generation: 2 } });
     const db = writableStore(f.storage);
     expect(
-      readV3Value(db, recoverV3(db, f.seal()), "lease", subject),
+      readV3Value(db, recovered(db, f.seal()), "lease", subject),
     ).toMatchObject({
       generation: 2,
     });
@@ -1359,7 +1360,7 @@ const clm = (requestId: string, input: object) =>
 
 function lease(f: Fixture) {
   const db = writableStore(f.storage);
-  const stored = readV3Value(db, recoverV3(db, f.seal()), "lease", subject);
+  const stored = readV3Value(db, recovered(db, f.seal()), "lease", subject);
   const { holder, generation, expiresAt } = stored as unknown as {
     holder: object;
     generation: number;
@@ -1785,7 +1786,7 @@ test.each([
 
 function snap(f: Fixture) {
   const db = writableStore(f.storage);
-  const image = recoverV3(db, f.seal());
+  const image = recovered(db, f.seal());
   const keys = (collection: "record" | "lease") =>
     [...image.entries[collection].keys()].sort();
   return {

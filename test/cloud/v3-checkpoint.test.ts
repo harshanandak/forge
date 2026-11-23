@@ -10,8 +10,8 @@ import {
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
-import * as checkpointModule from "../../cloud/src/v3-checkpoint.ts";
-import * as restoreModule from "../../cloud/src/v3-restore.ts";
+import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
+import { completeRefusals } from "../../cloud/src/v3-restore.ts";
 import {
   claimEffect,
   foldTranscript,
@@ -25,6 +25,7 @@ import {
   guardFixture,
   noWrites,
   probe,
+  recovered,
   trustedManifest,
   trustedSeal,
   verifiedPortable,
@@ -877,13 +878,13 @@ test(
       await appendNotes(f, 10);
       await populate(f);
       const db = writableStore(f.storage);
-      const before = recoverV3(db, f.seal());
+      const before = recovered(db, f.seal());
       const cut = await prefix(f, 0, before.head);
       expect(cut).toBeGreaterThanOrEqual(11);
       expect(cut).toBeLessThan(before.head);
       await expectWarmAndCold(f, viewV3(before).image);
       await drain(f, cut, before.head);
-      const after = recoverV3(db, f.seal());
+      const after = recovered(db, f.seal());
       expect(after.root.eventWatermark).toBe(before.eventWatermark);
       expect(after.recordFloor).toBe(before.recordFloor);
       await expectWarmAndCold(f, viewV3(before).image);
@@ -1419,7 +1420,7 @@ test(
   () =>
     withFixture(async (source) => {
       const frames = await portableHistory(source);
-      const expected = recoverV3(writableStore(source.storage), source.seal());
+      const expected = recovered(writableStore(source.storage), source.seal());
       await withFixture((target) => {
         const effects = target.observeEffects();
         const replayed = replayPortable(target, frames);
@@ -1457,7 +1458,7 @@ test(
           ? { sequence: entry.sequence }
           : entry,
       );
-      const expected = recoverV3(writableStore(source.storage), source.seal());
+      const expected = recovered(writableStore(source.storage), source.seal());
       expect(expected.head).toBe(1025);
       await withFixture((target) => {
         const replayed = replayPortable(target, frames);
@@ -1484,7 +1485,7 @@ test(
         ({ id }) => id === "transcript:0",
       )!.body;
       const frames = JSON.parse(native) as Json[];
-      const expected = recoverV3(writableStore(source.storage), source.seal());
+      const expected = recovered(writableStore(source.storage), source.seal());
       await withFixture((target) => {
         const replayed = replayPortable(target, frames);
         expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
@@ -1789,7 +1790,7 @@ test(
       body: { ok: false, error: { code: "LEASE_HELD" } },
     });
     await drain(source, 0, 4);
-    const { head, eventWatermark, recordFloor, root } = recoverV3(
+    const { head, eventWatermark, recordFloor, root } = recovered(
       writableStore(source.storage),
       source.seal(),
     );
@@ -2014,7 +2015,7 @@ const typed = (f: Fixture, body: Json, expires = E1) =>
 
 function typedBackup(source: Fixture): Portable {
   const store = writableStore(source.storage);
-  const { head, eventWatermark, recordFloor, root } = recoverV3(
+  const { head, eventWatermark, recordFloor, root } = recovered(
     store,
     source.seal(),
   );
@@ -2226,8 +2227,8 @@ async function restored(source: Fixture, target: Fixture, data: Portable) {
   expect(pages(target)).toEqual(data.pages);
   const from = writableStore(source.storage);
   const to = writableStore(target.storage);
-  const origin = recoverV3(from, source.seal());
-  const image = recoverV3(to, target.seal());
+  const origin = recovered(from, source.seal());
+  const image = recovered(to, target.seal());
   const { lease: _lease, ...expected } = viewV3(origin).image as Json;
   const { lease: _restored, ...actual } = viewV3(image).image as Json;
   expect(actual).toEqual({
@@ -2269,7 +2270,7 @@ async function refusesTampered(
 
 function receiptOf(source: Fixture, revision: number) {
   const db = writableStore(source.storage);
-  const image = recoverV3(db, source.seal());
+  const image = recovered(db, source.seal());
   for (const key of image.entries.outcome.keys()) {
     const { result } = readV3Value(db, image, "outcome", key)!.outcome;
     if ((result as Json | undefined)?.revision === revision)
@@ -2477,7 +2478,7 @@ for (const mode of modes)
     () =>
       withHistory((source, rows) => {
         const db = writableStore(source.storage);
-        const live = recoverV3(db, source.seal());
+        const live = recovered(db, source.seal());
         const folded = foldOf(source, mode, rows);
         expect(viewV3(folded).image).toEqual(viewV3(live).image);
         expect(folded.recordFloor).toBe(live.recordFloor);
@@ -2635,7 +2636,7 @@ for (const mode of ["archived", "portable", "tail"] as const)
       });
       expect(exited(first)).toBe(1);
       const db = writableStore(source.storage);
-      const liveImage = recoverV3(db, source.seal());
+      const liveImage = recovered(db, source.seal());
       const live = readV3Value(db, liveImage, "lease", "issue:work-2");
       let folded: ReturnType<typeof recoverV3>;
       if (mode === "tail")
@@ -2707,8 +2708,8 @@ test(
 
       const from = writableStore(source.storage);
       const to = writableStore(target.storage);
-      const origin = recoverV3(from, source.seal());
-      const restored = recoverV3(to, target.seal());
+      const origin = recovered(from, source.seal());
+      const restored = recovered(to, target.seal());
       const { lease: _lease, ...expected } = viewV3(origin).image as Json;
       const { lease: _restoredLease, ...actual } = viewV3(restored)
         .image as Json;
@@ -3072,13 +3073,6 @@ for (const [fault, tamper] of [
 }
 
 type Edit = (data: Portable, r: Json) => void;
-const archivedCheck = Reflect.get(checkpointModule, "archivedCheck") as
-  | ((db: ReturnType<typeof writableStore>, options: Json) => unknown)
-  | undefined;
-const completeRefusals: unknown = Reflect.get(
-  restoreModule,
-  "completeRefusals",
-);
 const kRequests = {
   create: createBody,
   invalid: invalidCreate,
@@ -3205,9 +3199,11 @@ const refusalSource = async (f: Fixture) => {
 };
 const refusedCheckpoint = async (f: Fixture) => {
   const before = f.snapshot();
+  const effects = f.observeEffects();
   const reply = await checkpoint(f);
   expect(reply).toMatchObject(refused);
   expect(exited(reply)).toBe(1);
+  expect(effects()).toEqual(noWrites);
   expect(f.snapshot()).toEqual(before);
   expect(stagingTables(f)).toEqual([]);
 };
@@ -3295,8 +3291,6 @@ test(
     typedFixture(async (f) => {
       await kBuild(f);
       const db = writableStore(f.storage);
-      expect(typeof archivedCheck).toBe("function");
-      expect(typeof completeRefusals).toBe("function");
       const failure = () =>
         new ForgeFailure({
           code: "UNAVAILABLE",
@@ -3304,14 +3298,14 @@ test(
           retry: "never",
         });
       const run = () => {
-        const check = archivedCheck!(db, {
+        const check = archivedCheck(db, {
           admit: Project.admitLeaseRequest,
           failure,
           complete: completeRefusals,
           pages: new Map(pages(f).map(({ id, body }) => [id, body])),
         });
         const { coveredHead } = readV3Root(db, f.seal());
-        return recoverV3(db, f.seal(), check as never, {
+        return recoverV3(db, f.seal(), check, {
           through: coveredHead,
         });
       };
@@ -3424,7 +3418,7 @@ test(
 );
 
 test(
-  "v3 cold recovery re-derives a lease refusal in the uncheckpointed tail",
+  "v3 cold recovery refuses an edited lease refusal message in the uncheckpointed tail",
   () =>
     withFixture(async (f) => {
       await refusalSource(f);
@@ -3586,7 +3580,7 @@ test(
       });
       const db = writableStore(target.storage);
       expect(
-        readV3Value(db, recoverV3(db, target.seal()), "lease", "issue:work-1"),
+        readV3Value(db, recovered(db, target.seal()), "lease", "issue:work-1"),
       ).toHaveProperty("releasedAt", iso(T0 + 1));
     }),
   timeout,

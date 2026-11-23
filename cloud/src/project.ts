@@ -131,9 +131,9 @@ import {
 import { authorizeV3Token, issueV3Token, revokeV3Token } from "./v3-tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
-import { checkpointV3 } from "./v3-checkpoint.ts";
+import { archivedCheck, checkpointV3 } from "./v3-checkpoint.ts";
 import { commandV3 } from "./v3-commands.ts";
-import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
+import { completeRefusals, hasV3Restore, restoreV3Page } from "./v3-restore.ts";
 import { type Seal, sealOf } from "./v3-seal.ts";
 import {
   appendV3Frames,
@@ -144,6 +144,7 @@ import {
   readV3Root,
   recoverV3,
   type V3Image,
+  unavailable,
   viewV3,
   withinDepth,
 } from "./v3-store.ts";
@@ -354,6 +355,13 @@ export async function validateUpgrade(request: Request): Promise<void> {
     throw fail("INPUT_INVALID", "Upgrade body must be an empty JSON object");
 }
 
+const ordinaryCheck = (db: SqlDatabase) =>
+  archivedCheck(db, {
+    admit: Project.admitLeaseRequest,
+    failure: unavailable,
+    complete: completeRefusals,
+  });
+
 export class Project {
   readonly #storage: DurableStorage;
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
@@ -424,7 +432,7 @@ export class Project {
 
   #image(db: SqlDatabase, seal: Seal): V3Image {
     if (this.#v3Image === undefined || this.#v3Image.stale)
-      this.#v3Image = recoverV3(db, seal);
+      this.#v3Image = recoverV3(db, seal, ordinaryCheck(db));
     return this.#v3Image;
   }
 
@@ -575,6 +583,7 @@ export class Project {
                 this.#v3Image = image;
             },
             Project.admitLeaseRequest,
+            completeRefusals,
           );
           return Response.json({ ok: true, value });
         }
@@ -629,7 +638,12 @@ export class Project {
           const legacy =
             (await this.#storage.get(PROVISIONED)) !== undefined ||
             (await this.#storage.get(STAGED)) !== undefined;
-          this.#v3Image = provisionV3(db, seal, legacy || hasV3Restore(db));
+          this.#v3Image = provisionV3(
+            db,
+            seal,
+            legacy || hasV3Restore(db),
+            ordinaryCheck(db),
+          );
           this.#v3Root = true;
           return Response.json({ ok: true, value: viewV3(this.#v3Image) });
         }

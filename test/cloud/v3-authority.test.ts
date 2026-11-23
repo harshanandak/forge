@@ -7,11 +7,11 @@ import {
   isNat,
   sealedAuthorityValid,
 } from "../../cloud/src/v3-authority.ts";
-import { leaseV3, recoverV3 } from "../../cloud/src/v3-store.ts";
+import { leaseV3 } from "../../cloud/src/v3-store.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { validateForgeError } from "../../src/generated/validators.ts";
-import { fixture, probe } from "./v3-project.fixture.ts";
+import { fixture, probe, recovered } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
 const HOUR = 3_600_000;
@@ -95,7 +95,7 @@ test(
       expect((await f.send(probe, {})).status).toBe(200);
       expect((await send("owner-a", "work-1", "acq-1")).status).toBe(200);
       const db = writableStore(f.storage);
-      const image = recoverV3(db, f.seal());
+      const image = recovered(db, f.seal());
       expect(
         f.db.run(
           "UPDATE cloud_v3_commits SET body=json_set(body,'$.lease.generation',0) WHERE sequence=1",
