@@ -4,12 +4,17 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
-import { expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { failed } from "../../cloud/src/issue-commands.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { tokenParts } from "../../cloud/src/tokens.ts";
-import { authorizeV3Token, TOKEN_READ } from "../../cloud/src/v3-tokens.ts";
+import { type TokenFields, verifyToken } from "../../cloud/src/v3-seal.ts";
+import {
+  authorizeV3Token,
+  TOKEN_READ,
+  tokenInventory,
+} from "../../cloud/src/v3-tokens.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
@@ -22,6 +27,7 @@ import {
   noWrites,
   probe,
   type SealSetup,
+  sqlMutation,
   trustedManifest,
 } from "./v3-project.fixture.ts";
 
@@ -1025,4 +1031,751 @@ v3test("a v3 object with the selection off answers as on main", async (f) => {
   answers(unknown, 400, "INPUT_INVALID");
   expect(effects()).toEqual(noWrites);
   expect(tableNames(f)).not.toContain("cloud_v3_tokens");
+});
+
+const DAY = 24 * HOUR;
+const RETENTION = 7 * DAY;
+const base = Date.parse("2026-11-20T12:00:00.000Z");
+const at = (time: number) => setSystemTime(time);
+afterEach(() => setSystemTime());
+
+const REAL =
+  "CREATE TABLE IF NOT EXISTS cloud_v3_tokens (id TEXT PRIMARY KEY, hash TEXT NOT NULL, device TEXT NOT NULL, session TEXT NOT NULL, agent TEXT, harness TEXT, expires_at INTEGER NOT NULL, revoked_at INTEGER, mac TEXT NOT NULL) WITHOUT ROWID";
+type Over = Record<string, unknown>;
+const signed = (f: Base, i: number, over: Over = {}): Stored => {
+  const row = {
+    id: i.toString(16).padStart(16, "0"),
+    hash: sha(`secret-${i}`),
+    device: "laptop",
+    session: "run-1",
+    agent: null,
+    harness: null,
+    expires_at: base + 30 * DAY,
+    revoked_at: null,
+    ...over,
+  } as Stored;
+  return { ...row, mac: (over.mac as string | undefined) ?? macOf(f, row) };
+};
+const put = (f: Base, rows: Stored[]) => {
+  f.db.run(REAL);
+  for (const row of rows) insertRow(f, { ...row });
+};
+const fill = (f: Base, count: number, over: (i: number) => Over = () => ({})) =>
+  put(
+    f,
+    Array.from({ length: count }, (_, i) => signed(f, i + 1, over(i))),
+  );
+const edit = (f: Base, id: string, patch: Over) =>
+  f.db.run(
+    `UPDATE cloud_v3_tokens SET ${Object.keys(patch)
+      .map((column) => `${column}=?`)
+      .join()} WHERE id=?`,
+    [...Object.values(patch), id] as never,
+  );
+const drop = (f: Base, id: string) =>
+  f.db.run("DELETE FROM cloud_v3_tokens WHERE id=?", [id]);
+const rowsOf = (f: Base) =>
+  tableNames(f).includes("cloud_v3_tokens") ? tokenRows(f) : [];
+const state = (f: Base) =>
+  JSON.stringify([
+    tableNames(f),
+    rowsOf(f),
+    tableNames(f).includes("cloud_v3_root") ? core(f) : null,
+  ]);
+const fieldsOf = (r: Stored): TokenFields => ({
+  id: r.id,
+  hash: r.hash,
+  device: r.device,
+  session: r.session!,
+  agent: r.agent,
+  harness: r.harness,
+  expiresAt: r.expires_at,
+  revokedAt: r.revoked_at,
+});
+
+const err = (code: string, message: string, retry = "never") =>
+  ({ code, message, retry }) as ForgeError;
+const down = err("UNAVAILABLE", "Cloud v3 token storage is unavailable");
+const full = err(
+  "STORAGE_LIMIT_EXCEEDED",
+  "This project keeps at most 64 device tokens. A row can be removed during a later issue only when both its expiry and any revoke are at least 7 days old.",
+);
+const gone = err("INPUT_INVALID", "No such device token");
+const unverified = "Cloud v3 portable restore could not be verified";
+const issue = (f: Base, extra: Over = {}) =>
+  f.send("devices", { ...body, ...extra });
+
+async function refused(
+  f: Fixture,
+  route: string,
+  input: object,
+  status: number,
+  error: ForgeError,
+  exit: number,
+  headers?: Record<string, string>,
+) {
+  const before = state(f);
+  const bytes = f.reads.bytes;
+  const effects = f.observeEffects();
+  const reply = await f.send(route, input, headers);
+  const used = f.reads.bytes - bytes;
+  expect(reply).toEqual({ status, body: { ok: false, error } });
+  expect(exitCode(failed(error))).toBe(exit);
+  expect(effects()).toEqual(noWrites);
+  expect(state(f)).toBe(before);
+  return used;
+}
+
+function admitted(reply: Answer, now: number, ttl: number, labels: Over = {}) {
+  const { id, token } = (reply.body as { value: Issued }).value;
+  expect(reply).toEqual({
+    status: 200,
+    body: {
+      ok: true,
+      value: {
+        id,
+        token,
+        device: "laptop",
+        session: "run-1",
+        ...labels,
+        expiresAt: new Date(now + ttl).toISOString(),
+      },
+    },
+  });
+  expect(token).toMatch(/^fct_[0-9a-f]{16}\.[A-Za-z0-9_-]{43}$/);
+  expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+  return id;
+}
+
+async function admit(
+  f: Base,
+  kept: (rows: Stored[]) => Stored[],
+  now = base,
+  ttl = HOUR,
+) {
+  const rows = rowsOf(f);
+  const before = tableNames(f).includes("cloud_v3_root") ? core(f) : "";
+  const id = admitted(await issue(f, { ttlMs: ttl }), now, ttl);
+  const after = tokenRows(f);
+  const fresh = after.filter((row) => row.id === id);
+  expect(fresh).toHaveLength(1);
+  expect(fresh[0]!.mac).toBe(macOf(f, fresh[0]!));
+  expect(after.filter((row) => row.id !== id)).toEqual(kept(rows));
+  expect(tableNames(f).includes("cloud_v3_root") ? core(f) : "").toBe(before);
+}
+
+const clocked = (name: string, run: (f: Fixture) => Promise<void> | void) =>
+  v3test(name, async (f) => {
+    at(base);
+    await run(f);
+  });
+
+clocked("v3 issue admits the 64th token on 63 live rows", async (f) => {
+  fill(f, 63);
+  await admit(f, (rows) => rows);
+  expect(tokenRows(f)).toHaveLength(64);
+});
+
+clocked(
+  "v3 issue refuses the 65th token at 64 live rows and revoke still works",
+  async (f) => {
+    fill(f, 64);
+    const [first, ...rest] = tokenRows(f);
+    await refused(f, "devices", body, 503, full, 1);
+    const reply = await f.send("revoke", { id: first!.id });
+    expect(reply).toEqual({
+      status: 200,
+      body: {
+        ok: true,
+        value: {
+          device: "laptop",
+          session: "run-1",
+          expiresAt: new Date(first!.expires_at).toISOString(),
+          leasesReleased: false,
+        },
+      },
+    });
+    expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+    const revoked = { ...first!, revoked_at: base };
+    expect(tokenRows(f)).toEqual([
+      { ...revoked, mac: macOf(f, revoked) },
+      ...rest,
+    ]);
+  },
+);
+
+const lapsed = (gap: number): [string, Over][] => [
+  ["expired", { expires_at: base - gap }],
+  ["was revoked", { expires_at: base - 30 * DAY, revoked_at: base - gap }],
+];
+for (const [label, over] of lapsed(RETENTION))
+  clocked(
+    `v3 issue at the cap deletes a row that ${label} exactly 7 days ago and admits`,
+    async (f) => {
+      fill(f, 64, (i) => (i === 0 ? over : {}));
+      await admit(f, (rows) => rows.slice(1));
+      expect(tokenRows(f)).toHaveLength(64);
+    },
+  );
+for (const [label, over] of lapsed(RETENTION - 1))
+  clocked(
+    `v3 issue at the cap keeps a row that ${label} 7 days less 1 ms ago and refuses`,
+    async (f) => {
+      fill(f, 64, (i) => (i === 0 ? over : {}));
+      await refused(f, "devices", body, 503, full, 1);
+    },
+  );
+
+clocked(
+  "v3 issue keeps a revoked token until 7 days after its expiry",
+  async (f) => {
+    fill(f, 63);
+    const t = await issued(f);
+    answers(await f.send("revoke", { id: t.id }), 200);
+    const due = base + RETENTION + HOUR;
+    at(due - 1);
+    await refused(f, "devices", body, 503, full, 1);
+    at(due);
+    await admit(f, (rows) => rows.filter((row) => row.id !== t.id), due);
+  },
+);
+
+const old = { expires_at: base - 8 * DAY };
+const ended = { expires_at: base - 30 * DAY, revoked_at: base - DAY };
+const spoiled: [string, Over, (x: Stored) => Over, boolean][] = [
+  ["an old row with a changed agent", old, () => ({ agent: "other" }), true],
+  [
+    "an old row with a zeroed MAC",
+    old,
+    (x) => ({ mac: `${x.mac.slice(0, 17)}${"0".repeat(64)}` }),
+    true,
+  ],
+  ["a live row with its expiry moved back", {}, () => old, false],
+  [
+    "a revoked row with its revoke moved back",
+    ended,
+    () => ({ revoked_at: base - 8 * DAY }),
+    false,
+  ],
+  [
+    "a revoked row with its revoke cleared",
+    ended,
+    () => ({ revoked_at: null }),
+    false,
+  ],
+  ["a live row with a changed device", {}, () => ({ device: "phone" }), false],
+  [
+    "a live row with a changed session",
+    {},
+    () => ({ session: "run-2" }),
+    false,
+  ],
+];
+
+async function mended(
+  f: Fixture,
+  spoil: () => void,
+  fix: () => void,
+  removed: string[] = [],
+) {
+  const start = tokenRows(f);
+  spoil();
+  const used = await refused(f, "devices", body, 503, down, 1);
+  fix();
+  expect(tokenRows(f)).toEqual(start);
+  await admit(f, (rows) => rows.filter((row) => !removed.includes(row.id)));
+  return used;
+}
+
+for (const [label, over, damage, deleted] of spoiled)
+  clocked(
+    `v3 issue refuses ${label} and admits again once it is repaired`,
+    async (f) => {
+      await issued(f);
+      const x = signed(f, 1, over);
+      put(f, [x]);
+      const patch = damage(x);
+      const undo = Object.fromEntries(
+        Object.keys(patch).map((column) => [column, x[column as keyof Stored]]),
+      );
+      await mended(
+        f,
+        () => edit(f, x.id, patch),
+        () => edit(f, x.id, undo),
+        deleted ? [x.id] : [],
+      );
+    },
+  );
+
+const badMac = `${"0".repeat(16)}.${"0".repeat(64)}`;
+const junk: [string, Over][] = [
+  ["an id of 16 zeros", { mac: badMac }],
+  ["an id of 16 f", { id: "f".repeat(16), mac: badMac }],
+  ["a non-hex id", { id: "g".repeat(16) }],
+  ["an id of 17 bytes", { id: "1".repeat(17) }],
+  ["a text expiry", { expires_at: "soon" }],
+  ["a 100,000 byte harness", { harness: "x".repeat(100_000) }],
+];
+for (const [label, over] of junk)
+  clocked(
+    `v3 issue refuses a junk row with ${label} and admits again once it is gone`,
+    async (f) => {
+      await issued(f);
+      await issued(f, { device: "tablet" });
+      const j = signed(f, 0, over);
+      const used = await mended(
+        f,
+        () => put(f, [j]),
+        () => drop(f, j.id),
+      );
+      if ("harness" in over) expect(used).toBeLessThan(4096);
+    },
+  );
+
+async function crowded(f: Fixture, over: (i: number) => Over, extra: number) {
+  fill(f, 65, over);
+  const start = tokenRows(f);
+  await refused(f, "devices", body, 503, down, 1);
+  drop(f, start[extra]!.id);
+}
+clocked("v3 issue refuses 65 live rows, then 64 live rows", async (f) => {
+  await crowded(f, () => ({}), 64);
+  await refused(f, "devices", body, 503, full, 1);
+});
+clocked(
+  "v3 issue refuses 65 rows, then deletes 5 old rows of 64",
+  async (f) => {
+    await crowded(f, (i) => (i > 0 && i < 6 ? old : {}), 0);
+    await admit(f, (rows) => rows.slice(5));
+    expect(tokenRows(f)).toHaveLength(60);
+  },
+);
+
+for (const [label, ttl] of [
+  ["7 days", 7 * DAY],
+  ["7 days and 1 ms", 7 * DAY + 1],
+  ["90 days", 90 * DAY],
+] as const)
+  clocked(
+    `v3 issue ${ttl === 7 * DAY ? "admits" : "refuses"} a ttl of ${label}`,
+    async (f) => {
+      if (ttl === 7 * DAY) return admit(f, (rows) => rows, base, ttl);
+      const message = err("INPUT_INVALID", "ttlMs is over 7 days");
+      await refused(f, "devices", { ...body, ttlMs: ttl }, 400, message, 6);
+      expect(tableNames(f)).not.toContain("cloud_v3_tokens");
+    },
+  );
+
+test(
+  "v2 devices keeps its 90 day limit",
+  async () => {
+    const f = guardFixture(env, { key: null, id: null });
+    using _db = f.db;
+    at(base);
+    const reply = await f.send("devices", {
+      device: "laptop",
+      ttlMs: 90 * DAY,
+    });
+    answers(reply, 200);
+    expect(
+      (reply.body as { value: { expiresAt: string } }).value.expiresAt,
+    ).toBe(new Date(base + 90 * DAY).toISOString());
+    const { id, token } = (reply.body as { value: Issued }).value;
+    expect(reply).toEqual({
+      status: 200,
+      body: {
+        ok: true,
+        value: {
+          id,
+          token,
+          device: "laptop",
+          expiresAt: new Date(base + 90 * DAY).toISOString(),
+        },
+      },
+    });
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+    expect(token).toMatch(/^fct_[0-9a-f]{16}\.[A-Za-z0-9_-]{43}$/);
+    expect(token.startsWith(`fct_${id}.`)).toBe(true);
+    expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+    const input = { device: "laptop", ttlMs: 90 * DAY + 1 };
+    const message = err("INPUT_INVALID", "ttlMs is over 90 days");
+    await refused(f, "devices", input, 400, message, 6);
+    expect(tableNames(f).filter((n) => n.startsWith("cloud_v3_"))).toEqual([]);
+  },
+  timeout,
+);
+
+const revokeReply = (expiresAt: number) => ({
+  status: 200,
+  body: {
+    ok: true,
+    value: {
+      device: "laptop",
+      session: "run-1",
+      expiresAt: new Date(expiresAt).toISOString(),
+      leasesReleased: false,
+    },
+  },
+});
+
+clocked(
+  "a repeat revoke gets its first answer until the row is deleted, then the unknown-id answer",
+  async (f) => {
+    const t = await issued(f);
+    const first = await f.send("revoke", { id: t.id });
+    answers(first, 200);
+    expect(first).toEqual(revokeReply(base + HOUR));
+    expect(exitCode(first.body as Parameters<typeof exitCode>[0])).toBe(0);
+    const due = base + RETENTION + HOUR;
+    for (const time of [base, base + RETENTION - 1, due - 1]) {
+      at(time);
+      const before = state(f);
+      const effects = f.observeEffects();
+      expect(await f.send("revoke", { id: t.id })).toEqual(first);
+      expect(effects()).toEqual(noWrites);
+      expect(state(f)).toBe(before);
+      expect(only(f).revoked_at).toBe(base);
+    }
+    at(due);
+    await admit(f, (rows) => rows.filter((row) => row.id !== t.id), due);
+    await refused(f, "revoke", { id: t.id }, 400, gone, 6);
+  },
+);
+
+clocked(
+  "a revoke made after expiry keeps the row for 7 days from the revoke",
+  async (f) => {
+    const t = await issued(f);
+    at(base + 2 * DAY);
+    const reply = await f.send("revoke", { id: t.id });
+    answers(reply, 200);
+    expect(reply).toEqual(revokeReply(base + HOUR));
+    expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+    for (const time of [base + HOUR + RETENTION, base + 9 * DAY - 1]) {
+      at(time);
+      await admit(f, (rows) => rows, time);
+      expect(tokenRows(f).some((row) => row.id === t.id)).toBe(true);
+    }
+    at(base + 9 * DAY);
+    await admit(
+      f,
+      (rows) => rows.filter((row) => row.id !== t.id),
+      base + 9 * DAY,
+    );
+    await refused(f, "revoke", { id: t.id }, 400, gone, 6);
+  },
+);
+
+async function rejected(f: Fixture, t: Issued, error: ForgeError) {
+  expect(await commanded(f, t)).toEqual({ status: 401, body: failed(error) });
+  expect(exitCode(failed(error))).toBe(1);
+}
+for (const [label, revoke, before] of [
+  ["revoked", true, err("AUTH_REVOKED", "Token was revoked")],
+  ["expired", false, err("AUTH_EXPIRED", "Token expired")],
+] as const)
+  clocked(
+    `a ${label} v3 token answers AUTH_INVALID once an issue has deleted its row`,
+    async (f) => {
+      const t = await issued(f);
+      if (revoke) answers(await f.send("revoke", { id: t.id }), 200);
+      at(base + 2 * HOUR);
+      await rejected(f, t, before);
+      const due = base + RETENTION + HOUR;
+      at(due);
+      await admit(f, (rows) => rows.filter((row) => row.id !== t.id), due);
+      await rejected(f, t, err("AUTH_INVALID", "Token is not valid"));
+    },
+  );
+
+clocked(
+  "two devices that issue daily and revoke the last token stay near 28 rows",
+  async (f) => {
+    const last: Record<string, string> = {};
+    for (let day = 0; day < 60; day++) {
+      const now = base + day * DAY;
+      at(now);
+      for (const device of ["laptop", "tablet"]) {
+        const reply = await issue(f, { device, ttlMs: 7 * DAY });
+        const id = admitted(reply, now, 7 * DAY, { device });
+        expect(tokenRows(f).length).toBeLessThanOrEqual(30);
+        if (last[device])
+          answers(await f.send("revoke", { id: last[device] }), 200);
+        last[device] = id;
+      }
+      expect(tokenRows(f).length).toBeLessThanOrEqual(30);
+    }
+    expect(tokenRows(f)).toHaveLength(28);
+  },
+);
+
+clocked(
+  "64 tokens issued in a burst and all revoked still block issue for 14 days",
+  async (f) => {
+    const ids: string[] = [];
+    for (let i = 0; i < 64; i++)
+      ids.push(admitted(await issue(f, { ttlMs: 7 * DAY }), base, 7 * DAY));
+    for (const id of ids) answers(await f.send("revoke", { id }), 200);
+    await refused(f, "devices", body, 503, full, 1);
+    at(base + 14 * DAY - 1);
+    await refused(f, "devices", body, 503, full, 1);
+    at(base + 14 * DAY);
+    await admit(f, () => [], base + 14 * DAY);
+    expect(tokenRows(f)).toHaveLength(1);
+  },
+);
+
+clocked(
+  "64 legacy rows signed for 90 days stay authentic and block issue until day 97",
+  async (f) => {
+    fill(f, 64, () => ({ expires_at: base + 90 * DAY }));
+    const authentic = () =>
+      expect(
+        tokenRows(f).every((row) =>
+          verifyToken(f.seal(), fieldsOf(row), row.mac),
+        ),
+      ).toBe(true);
+    authentic();
+    at(base + 97 * DAY - 1);
+    authentic();
+    await refused(f, "devices", body, 503, full, 1);
+    at(base + 97 * DAY);
+    authentic();
+    await admit(f, () => [], base + 97 * DAY);
+    expect(tokenRows(f)).toHaveLength(1);
+  },
+);
+
+test(
+  "v3 issue on an activated stopped root refuses the 65th token",
+  () =>
+    withActivated(async (target) => {
+      at(base);
+      fill(target, 64);
+      await refused(target, "devices", body, 503, full, 1);
+    }),
+  timeout,
+);
+
+test(
+  "v3 issue on an activated stopped root deletes the eligible row and admits",
+  () =>
+    withActivated(async (target) => {
+      at(base);
+      fill(target, 64, (i) =>
+        i === 0 ? { expires_at: base - RETENTION } : {},
+      );
+      await admit(target, (rows) => rows.slice(1));
+    }),
+  timeout,
+);
+
+test(
+  "a fresh target with a 65 row token table refuses restore page 0 untouched",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    fill(f, 65);
+    const page = { page: 0, id: "directory:0", body: "[]", manifest: {} };
+    const error = err("RESTORE_TARGET_NOT_EMPTY", unverified);
+    await refused(f, "restore", page, 409, error, 1);
+    expect(tokenRows(f)).toHaveLength(65);
+    expect(tableNames(f)).not.toContain("cloud_v3_root");
+  },
+  timeout,
+);
+
+test(
+  "a fresh target refuses a restore manifest that names a token page untouched",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    const member = (id: string, text: string) => ({
+      id,
+      bytes: Buffer.byteLength(text),
+      hash: digestBytes(text),
+    });
+    const manifest = trustedManifest(f.seal(), {
+      format: "forge-cloud-portable/4",
+      head: 0,
+      eventWatermark: 0,
+      recordFloor: 0,
+      publicDigest: digestBytes("[]"),
+      pages: [
+        member("token:0", "[]"),
+        member("snapshot:0", ""),
+        member("transcript:0", "[]"),
+      ],
+      source: "fixture",
+    });
+    const pin = {
+      "X-Forge-Manifest-Digest": digestBytes(canonicalJson(manifest)),
+    };
+    const page = { page: 0, id: "directory:0", body: "[]", manifest };
+    const error = err("RESTORE_INVALID_ROW", unverified);
+    await refused(f, "restore", page, 400, error, 1, pin);
+    expect(tableNames(f).filter((n) => n.startsWith("cloud_v3_"))).toEqual([]);
+  },
+  timeout,
+);
+
+clocked(
+  "v3 issue on a restarted object deletes the same eligible row",
+  async (f) => {
+    fill(f, 64, (i) => (i === 0 ? { expires_at: base - RETENTION } : {}));
+    f.restart();
+    await admit(f, (rows) => rows.slice(1));
+    expect(tokenRows(f)).toHaveLength(64);
+  },
+);
+
+clocked(
+  "v3 issue deletes a retained row by its original MAC after a key rotation",
+  async (f) => {
+    const first = String(f.env.V3_SEAL_KEY);
+    await issued(f);
+    Reflect.set(f.env, "V3_SEAL_KEY", newKey());
+    Reflect.set(f.env, "V3_SEAL_KEY_PREVIOUS", first);
+    const due = base + HOUR + RETENTION;
+    at(due);
+    await admit(f, () => [], due);
+    expect(tokenRows(f)).toHaveLength(1);
+  },
+);
+
+const deleteThen = (sql: string, prev: string) =>
+  /^SELECT changes\(\)/.test(sql) && /^DELETE FROM cloud_v3_tokens/.test(prev);
+const insertThen = (sql: string, prev: string) =>
+  /^SELECT changes\(\)/.test(sql) && /^INSERT INTO cloud_v3_tokens/.test(prev);
+const faults: [string, (sql: string, prev: string) => boolean, number][] = [
+  ["after the cleanup DELETE", deleteThen, 1],
+  ["before the INSERT", (sql) => /^INSERT INTO cloud_v3_tokens/.test(sql), 2],
+  ["after the INSERT", insertThen, 2],
+];
+for (const [label, trip, attempts] of faults)
+  test(
+    `v3 issue rolls back whole on a fault ${label}, then admits`,
+    async () => {
+      let armed = false;
+      let mutations = 0;
+      let previous = "";
+      const f = fixture((sql) => {
+        const before = previous;
+        previous = sql;
+        if (!armed) return;
+        if (sqlMutation.test(sql)) mutations++;
+        if (trip(sql, before)) throw new Error("fault");
+      }, env);
+      using _db = f.db;
+      await provision(f);
+      at(base);
+      await issued(f);
+      const stale = signed(f, 1, old);
+      put(f, [stale]);
+      const rows = tokenRows(f);
+      const coreBefore = core(f);
+      const snapshot = f.snapshot();
+      armed = true;
+      const reply = await issue(f);
+      armed = false;
+      const error = err("INTERNAL", "Server error", "safe");
+      expect(reply).toEqual({ status: 500, body: { ok: false, error } });
+      expect(exitCode(failed(error))).toBe(1);
+      expect(mutations).toBe(attempts);
+      expect(tokenRows(f)).toEqual(rows);
+      expect(core(f)).toBe(coreBefore);
+      const after = f.snapshot();
+      expect(Buffer.from(after.sql).equals(Buffer.from(snapshot.sql))).toBe(
+        true,
+      );
+      expect(JSON.stringify(after.kv)).toBe(JSON.stringify(snapshot.kv));
+      await admit(f, (all) => all.filter((row) => row.id !== stale.id));
+    },
+    timeout,
+  );
+
+const list = (f: Fixture) => tokenInventory(store(f), f.seal());
+const quiet = (f: Fixture, run: () => void) => {
+  const effects = f.observeEffects();
+  run();
+  expect(effects()).toEqual(noWrites);
+};
+const refusedList = (f: Fixture) =>
+  quiet(f, () => expect(refusal(() => list(f))).toBe("UNAVAILABLE"));
+
+clocked("tokenInventory returns nothing for an absent table", (f) => {
+  quiet(f, () => expect(list(f)).toEqual([]));
+  expect(tableNames(f)).not.toContain("cloud_v3_tokens");
+});
+
+clocked("tokenInventory returns nothing for an empty table", (f) => {
+  f.db.run(REAL);
+  quiet(f, () => expect(list(f)).toEqual([]));
+});
+
+clocked(
+  "tokenInventory returns 64 healthy rows with their stored MACs",
+  (f) => {
+    fill(f, 64);
+    const rows = tokenRows(f);
+    quiet(f, () =>
+      expect(list(f)).toEqual(
+        rows.map((row) => ({ fields: fieldsOf(row), mac: row.mac })),
+      ),
+    );
+  },
+);
+
+clocked(
+  "tokenInventory returns a previous-key row with its original MAC",
+  async (f) => {
+    const first = String(f.env.V3_SEAL_KEY);
+    await issued(f);
+    const [row] = tokenRows(f);
+    Reflect.set(f.env, "V3_SEAL_KEY", newKey());
+    Reflect.set(f.env, "V3_SEAL_KEY_PREVIOUS", first);
+    quiet(f, () =>
+      expect(list(f)).toEqual([{ fields: fieldsOf(row!), mac: row!.mac }]),
+    );
+  },
+);
+
+for (const [label, over, damage] of spoiled)
+  clocked(`tokenInventory refuses ${label}`, async (f) => {
+    await issued(f);
+    const x = signed(f, 1, over);
+    put(f, [x]);
+    edit(f, x.id, damage(x));
+    refusedList(f);
+  });
+
+for (const [label, over] of junk)
+  clocked(`tokenInventory refuses a junk row with ${label}`, async (f) => {
+    await issued(f);
+    await issued(f, { device: "tablet" });
+    put(f, [signed(f, 0, over)]);
+    refusedList(f);
+  });
+
+clocked("tokenInventory refuses a duplicate id", (f) => {
+  f.db.run(
+    REAL.replace("id TEXT PRIMARY KEY", "id TEXT").replace(
+      " WITHOUT ROWID",
+      "",
+    ),
+  );
+  const row = signed(f, 1);
+  insertRow(f, { ...row });
+  insertRow(f, { ...row });
+  refusedList(f);
+});
+
+clocked("tokenInventory refuses 65 live rows", (f) => {
+  fill(f, 65);
+  refusedList(f);
+});
+
+clocked("tokenInventory refuses 65 rows even when 5 are old", (f) => {
+  fill(f, 65, (i) => (i > 0 && i < 6 ? old : {}));
+  refusedList(f);
 });
