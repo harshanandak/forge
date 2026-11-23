@@ -7,10 +7,7 @@ import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.t
 import { Catalog, captureBlock } from "../../../src/core/catalog/index.ts";
 import { Runtime, type ServiceScope } from "../../../src/core/runtime/index.ts";
 import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
-import type {
-  InvocationRequest,
-  ResultEnvelope,
-} from "../../../src/generated/types.ts";
+import type { InvocationRequest } from "../../../src/generated/types.ts";
 import { exitCode } from "../../../src/surface/result.ts";
 
 // The operation deadline measures the handler's own work. Opening the store (directories, fsyncs,
@@ -151,10 +148,7 @@ test.each(checks)(
           return Promise.resolve({ ownership: "borrowed", value: {} });
         },
       });
-      const invoke = runtime.invoke.bind(runtime) as unknown as (
-        value: unknown,
-        options: { check: boolean },
-      ) => Promise<ResultEnvelope>;
+      const invoke = runtime.invoke.bind(runtime);
       const plain = () => runtime.invoke(f.request);
       const result = await (mode === "plain"
         ? plain()
