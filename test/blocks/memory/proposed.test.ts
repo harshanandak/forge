@@ -549,8 +549,10 @@ function refusal(
   expect(result).toMatchObject({
     ok: false,
     status: exit === 2 ? "INCOMPLETE" : "FAIL",
-    error: { code, ...(message ? { message } : {}) },
+    error: { code },
   });
+  if (message && result?.ok === false)
+    expect(result.error.message).toMatch(message);
   expect(exitCode(result!)).toBe(exit);
 }
 
