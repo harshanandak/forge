@@ -2344,8 +2344,8 @@ approvalCase(
     const row = signedApproval(f, t);
     plantApprovals(f, [row]);
     await requestedApproval(f, t, [row]);
-    editApproval(f, row.id, { expires_at: base - 1 });
-    expect(approvalRows(f)).toContainEqual({ ...row, expires_at: base - 1 });
+    editApproval(f, row.id, expiredApproval);
+    expect(approvalRows(f)).toContainEqual({ ...row, ...expiredApproval });
     await approvalUnavailable(f, t);
   },
 );
@@ -2487,6 +2487,27 @@ approvalCase(
     await requestedApproval(f, t, [row]);
   },
 );
+
+approvalCase("RED I10 preserves an inventory quota failure", async (f, t) => {
+  plantApprovals(f, [signedApproval(f, t, expiredApproval)]);
+  const executeSql = f.storage.sql.exec.bind(f.storage.sql);
+  let armed = true;
+  f.storage.sql.exec = (statement, ...bindings) => {
+    if (armed && statement.includes(`FROM ${approvalTable} ORDER BY`)) {
+      armed = false;
+      throw Error("Exceeded allowed rows read in Durable Objects free tier.");
+    }
+    return executeSql(statement, ...bindings);
+  };
+  const before = approvalRows(f);
+  const effects = f.observeEffects();
+  const reply = await askApproval(f, t);
+  expect(armed).toBe(false);
+  approvalRefusal(reply, 503, "QUOTA_EXHAUSTED", 1);
+  expect(reply.body).toMatchObject({ error: { retry: "safe" } });
+  expect(approvalRows(f)).toEqual(before);
+  expect(effects()).toEqual(noWrites);
+});
 
 for (const [label, table] of [
   ["P1", approvalTable],
