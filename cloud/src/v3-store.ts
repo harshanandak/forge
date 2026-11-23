@@ -868,6 +868,11 @@ function append(
     }
     if (head - coveredHead + batch.length > TAIL_ROWS || bytes > TAIL_BYTES)
       throw unavailable();
+    if (bodies.some((body) => Buffer.byteLength(body) > PAGE_BYTES))
+      throw fail(
+        "STORAGE_LIMIT_EXCEEDED",
+        "This write is too large to keep in the project's history",
+      );
     const pending = new Map<string, Slot>();
     let floor = image.recordFloor;
     const read = (key: string) =>

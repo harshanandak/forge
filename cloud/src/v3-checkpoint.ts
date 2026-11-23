@@ -47,6 +47,17 @@ function requireCheckpoint(condition: unknown): asserts condition {
   if (!condition) throw unverified();
 }
 
+export function checkpointPrefixLength(lengths: readonly number[]): number {
+  let count = 0;
+  let remaining = TURN_TAIL_BYTES;
+  for (const bytes of lengths) {
+    if (count === TURN_TAIL_ROWS || bytes > remaining) break;
+    remaining -= bytes;
+    count++;
+  }
+  return count;
+}
+
 type Item = readonly [string, string, string | null, number | undefined];
 
 function parse(text: string): unknown {
@@ -318,17 +329,23 @@ async function checkpoint(
   const seal = digestBytes(source);
   const tail = commitHead(db, root.coveredHead) - root.coveredHead;
   requireCheckpoint(tail >= 0 && tail <= TAIL_ROWS);
-  const cut = root.coveredHead + Math.min(tail, TURN_TAIL_ROWS);
+  const candidateCount = Math.min(tail, TURN_TAIL_ROWS);
   const prior = storedPages(db, PAGES);
-  const frames = db.all(
-    `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TURN_TAIL_BYTES} THEN body END AS body FROM ${COMMITS} WHERE sequence>? AND sequence<=? ORDER BY sequence`,
-    [root.coveredHead, cut],
+  const candidates = db.all(
+    `SELECT sequence, ${BOUNDED_MAC}, length(CAST(body AS BLOB)) AS bytes, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TURN_TAIL_BYTES} THEN body END AS body FROM ${COMMITS} WHERE sequence>? AND sequence<=? ORDER BY sequence`,
+    [root.coveredHead, root.coveredHead + candidateCount],
   );
+  requireCheckpoint(candidates.length === candidateCount);
+  const count = checkpointPrefixLength(
+    candidates.map(({ bytes }) => Number(bytes)),
+  );
+  requireCheckpoint(tail === 0 || count > 0);
+  const cut = root.coveredHead + count;
+  const frames = candidates.slice(0, count);
   requireCheckpoint(
-    frames.length === cut - root.coveredHead &&
-      frames.every(({ sequence, body, mac }) =>
-        verifyRow(commitSeal, root.incarnation, sequence, body, mac),
-      ),
+    frames.every(({ sequence, body, mac }) =>
+      verifyRow(commitSeal, root.incarnation, sequence, body, mac),
+    ),
   );
   requireCheckpoint(
     prior.size === root.pages.length &&

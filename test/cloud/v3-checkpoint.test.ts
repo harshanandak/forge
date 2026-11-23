@@ -1034,11 +1034,13 @@ test(
 const noteBody = (note: Json, sequence: number) =>
   canonicalJson({ ...note, format: "forge-cloud-commit/3", sequence });
 
-function paddedNote(bytes: number, sequence: number) {
+function paddedNote(bytes: number, sequence: number, pad = "x") {
   const note = { ...frame(), events: [{ pad: "" }] };
-  note.events[0]!.pad = "x".repeat(
-    bytes - Buffer.byteLength(noteBody(note, sequence)),
-  );
+  const remaining = bytes - Buffer.byteLength(noteBody(note, sequence));
+  const unitBytes = Buffer.byteLength(pad);
+  note.events[0]!.pad =
+    pad.repeat(Math.floor(remaining / unitBytes)) +
+    "x".repeat(remaining % unitBytes);
   expect(Buffer.byteLength(noteBody(note, sequence))).toBe(bytes);
   return note;
 }
@@ -1072,9 +1074,10 @@ for (const [name, write] of Object.entries(frameWriters)) {
     timeout,
   );
 
-  for (const [batch, input] of [
-    [false, "a v3 frame"],
-    [true, "a batch with a v3 frame"],
+  for (const [batch, input, pad] of [
+    [false, "a v3 frame", "x"],
+    [true, "a batch with a v3 frame", "x"],
+    [false, "a multibyte v3 frame", "é"],
   ] as const) {
     test(
       `${name} refuses ${input} one byte over the cap`,
@@ -1092,7 +1095,12 @@ for (const [name, write] of Object.entries(frameWriters)) {
             tailBytes: image.tailBytes,
             recordFloor: image.recordFloor,
           });
-          const oversized = paddedNote(PAGE_BYTES + 1, batch ? 2 : 1);
+          const sequence = batch ? 2 : 1;
+          const oversized = paddedNote(PAGE_BYTES + 1, sequence, pad);
+          if (pad === "é")
+            expect(noteBody(oversized, sequence).length).toBeLessThan(
+              PAGE_BYTES,
+            );
           const before = state();
           const effects = f.observeEffects();
           let failure: unknown;
