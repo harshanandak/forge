@@ -1,14 +1,7 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { TABLE_PROBE } from "./store.ts";
-import {
-  type DeviceInput,
-  holderOf,
-  MAX_TTL_MS,
-  mint,
-  same,
-  sha256,
-} from "./tokens.ts";
+import { type DeviceInput, holderOf, mint, same, sha256 } from "./tokens.ts";
 import { fail, readV3Root, V3_TOKENS } from "./v3-store.ts";
 import {
   type Seal,
@@ -24,6 +17,10 @@ const LAST_TIME = 8_640_000_000_000_000;
 const NO_ROW_HASH = "0".repeat(64);
 const ID = /^[0-9a-f]{16}$/;
 const HASH = /^[0-9a-f]{64}$/;
+const DAY_MS = 86_400_000;
+const MAX_TOKENS = 64;
+const RETENTION_MS = 7 * DAY_MS;
+const V3_MAX_TTL_MS = 7 * DAY_MS;
 
 const exact = (column: string, bytes: number) =>
   `typeof(${column})='text' AND length(CAST(${column} AS BLOB))=${bytes}`;
@@ -48,6 +45,8 @@ const COLUMNS = Object.keys(SHAPES);
 export const TOKEN_READ = `WITH guarded AS (SELECT ${COLUMNS.map((c) => `(${SHAPES[c]}) AS ${c}_ok`).join(", ")}, ${COLUMNS.join(", ")} FROM ${V3_TOKENS} WHERE id=?) SELECT (${COLUMNS.map((c) => `${c}_ok`).join(" AND ")}) AS shape_ok, ${COLUMNS.map((c) => `CASE WHEN ${c}_ok THEN ${c} END AS ${c}`).join(", ")} FROM guarded`;
 
 const CREATE = `CREATE TABLE IF NOT EXISTS ${V3_TOKENS} (id TEXT PRIMARY KEY, hash TEXT NOT NULL, device TEXT NOT NULL, session TEXT NOT NULL, agent TEXT, harness TEXT, expires_at INTEGER NOT NULL, revoked_at INTEGER, mac TEXT NOT NULL) WITHOUT ROWID`;
+
+const IDS = `SELECT CASE WHEN ${SHAPES.id} THEN id END AS id FROM ${V3_TOKENS} ORDER BY ${V3_TOKENS}.id LIMIT ${MAX_TOKENS + 1}`;
 
 const unavailable = () =>
   fail("UNAVAILABLE", "Cloud v3 token storage is unavailable");
@@ -104,6 +103,23 @@ function authentic(db: SqlDatabase, seal: Seal, id: string) {
   return found?.fields;
 }
 
+export function tokenInventory(db: SqlDatabase, seal: Seal) {
+  if (db.get(TABLE_PROBE, [V3_TOKENS]) === undefined) return [];
+  const ids = db.all(IDS).map((row) => row.id);
+  if (
+    ids.length > MAX_TOKENS ||
+    ids.some((id) => typeof id !== "string") ||
+    new Set(ids).size !== ids.length
+  )
+    throw unavailable();
+  return (ids as string[]).map((id) => {
+    const found = stored(db, id);
+    if (!found || !verifyToken(seal, found.fields, found.mac))
+      throw unavailable();
+    return found;
+  });
+}
+
 const audit = (line: object) => console.log(JSON.stringify(line));
 
 export function authorizeV3Token(
@@ -147,8 +163,8 @@ export async function issueV3Token(
   input: DeviceInput,
   now: number,
 ): Promise<Record<string, unknown>> {
-  if (input.ttlMs > MAX_TTL_MS)
-    throw fail("INPUT_INVALID", "ttlMs is over 90 days");
+  if (input.ttlMs > V3_MAX_TTL_MS)
+    throw fail("INPUT_INVALID", "ttlMs is over 7 days");
   const { device, session, agent, harness } = input;
   if (session === null) throw fail("INPUT_INVALID", "session is required");
   for (const [value, max] of [
@@ -175,7 +191,24 @@ export async function issueV3Token(
   };
   db.transaction(() => {
     readV3Root(db, seal);
-    db.exec(CREATE);
+    const rows = tokenInventory(db, seal);
+    const due = rows.filter(
+      ({ fields: f }) =>
+        Math.max(f.expiresAt, f.revokedAt ?? 0) + RETENTION_MS <= now,
+    );
+    if (rows.length - due.length >= MAX_TOKENS)
+      throw fail(
+        "STORAGE_LIMIT_EXCEEDED",
+        "This project keeps at most 64 device tokens. A row can be removed during a later issue only when both its expiry and any revoke are at least 7 days old.",
+      );
+    if (db.get(TABLE_PROBE, [V3_TOKENS]) === undefined) db.exec(CREATE);
+    for (const { fields, mac } of due) {
+      const { changes } = db.run(
+        `DELETE FROM ${V3_TOKENS} WHERE id=? AND mac=?`,
+        [fields.id, mac],
+      );
+      if (changes !== 1) throw unavailable();
+    }
     db.run(
       `INSERT INTO ${V3_TOKENS} (id, hash, device, session, agent, harness, expires_at, revoked_at, mac) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       [
