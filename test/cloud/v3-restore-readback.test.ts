@@ -789,3 +789,46 @@ test(
   },
   timeout,
 );
+
+test(
+  "v3 restore keeps a recognized storage failure raised as a TypeError or RangeError at 503",
+  async () => {
+    const { source, data } = await backupOf([create]);
+    using _source = source.db;
+    for (const Native of [TypeError, RangeError]) {
+      for (const [failure, code] of [
+        [
+          Object.assign(new Native("storage"), { retryable: true }),
+          "UNAVAILABLE",
+        ],
+        [
+          new Native(
+            "Exceeded allowed rows read in Durable Objects free tier.",
+          ),
+          "QUOTA_EXHAUSTED",
+        ],
+      ] as const) {
+        const target = open();
+        using _target = target.db;
+        const finish = await stage(target, data);
+        const staged = target.snapshot();
+        const exec = target.storage.sql.exec.bind(target.storage.sql);
+        let armed = true;
+        target.storage.sql.exec = (statement, ...bindings) => {
+          if (armed && /^SELECT id, CASE WHEN length/.test(statement)) {
+            armed = false;
+            throw failure;
+          }
+          return exec(statement, ...bindings);
+        };
+        expect(await finish()).toMatchObject(error(503, code));
+        expect(armed).toBe(false);
+        expect(target.snapshot()).toEqual(staged);
+        expect(await target.send("status")).toMatchObject({
+          body: { value: { initialized: false } },
+        });
+      }
+    }
+  },
+  timeout,
+);
