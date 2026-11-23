@@ -204,7 +204,7 @@ export function commandV3(
     if (!validateLeaseHolder({ actor, session }).ok)
       throw store.fail(
         "AUTH_FORBIDDEN",
-        "This token's device label is too long to hold a lease; issue a new token",
+        "This caller cannot hold a lease: its device or owner label is empty or too long",
       );
   }
   const { op, requestId, input, context } = call;

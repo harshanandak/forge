@@ -1812,7 +1812,7 @@ const fullSession = "s".repeat(cap.id.maxLength);
 const astral = (count: number) => "\u{1F600}".repeat(count);
 const guard = never(
   "AUTH_FORBIDDEN",
-  "This token's device label is too long to hold a lease; issue a new token",
+  "This caller cannot hold a lease: its device or owner label is empty or too long",
 );
 const answer = (mode: Mode, e: { code: string }) =>
   mode === "owner"
