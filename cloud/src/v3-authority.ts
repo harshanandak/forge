@@ -31,6 +31,9 @@ export const UPDATE_REFUSALS = REFUSALS.filter(
   (code) => code !== "LEASE_HELD",
 ).concat("NOT_FOUND", "REVISION_CONFLICT");
 
+export const trackerValid = (result: unknown) =>
+  validators.validateTrackerItem(result).ok;
+
 function validLease(lease: unknown): boolean {
   try {
     checkLeaseRecord(lease as LeaseRecord);
