@@ -141,27 +141,12 @@ function reformat(f: ReturnType<typeof fixture>, value: string) {
 }
 
 type Fixture = ReturnType<typeof fixture>;
-const issue = {
-  id: "work-1",
-  prefix: "forge",
-  title: "Before",
-  status: "open",
-  labels: [],
-  dependsOn: [],
-  createdAt: "2026-11-20T12:00:00.000Z",
-};
-const record = {
-  operation: "fixture.put",
-  time: 1000,
-  events: [{ key: "r1", revision: 1, value: issue }],
-  changes: [{ key: "r1", value: { revision: 1, value: issue } }],
-};
 async function sourceOf(opened: Set<Fixture>, history: boolean) {
   const f = fixture();
   opened.add(f);
   expect((await f.send(probe, {})).status).toBe(200);
   if (history) {
-    const put = await f.send(`${probe}/commits`, { frames: [record] });
+    const put = await f.send(`${probe}/commits`, { frames: [frames[0]] });
     expect(put.status).toBe(200);
     expect((await f.send(`${probe}/checkpoint`, {})).status).toBe(200);
     f.restart();

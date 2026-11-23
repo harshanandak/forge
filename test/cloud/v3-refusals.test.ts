@@ -563,14 +563,10 @@ test(
         undefined,
       );
       expect(check(frameOf("issue.claim", grantable, stale))).toBeUndefined();
-      const unknown = frameOf(
-        "issue.claim",
-        claimBasis("other-1"),
+      const other = claimBasis("other-1");
+      expect(check(frameOf("issue.claim", other, prefixError, { id }))).toEqual(
         prefixError,
       );
-      expect(
-        check({ ...unknown, outcome: { ...unknown.outcome, id } }),
-      ).toEqual(prefixError);
     }),
   timeout,
 );

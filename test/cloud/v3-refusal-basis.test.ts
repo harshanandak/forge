@@ -770,6 +770,8 @@ async function honest([, body, status, , basis, setup]: Kind, extra?: Setup) {
   expect(last(f).basis).toEqual(basis);
   return { f, id: idOf(last(f)), sequence: frames(f).length };
 }
+const reach = (f: Fixture, place: Place) =>
+  place === "cold" ? f.send(probe) : f.send(checkpointRoute, {});
 async function tampered(name: string, edit: Edit, place: Place, extra?: Setup) {
   const { f, id, sequence } = await honest(K(name), extra);
   using _db = f.db;
@@ -785,10 +787,7 @@ async function tampered(name: string, edit: Edit, place: Place, extra?: Setup) {
   retamper(f, sequence, tail(edit));
   const before = f.snapshot();
   const effects = f.observeEffects();
-  const route = place === "cold" ? probe : checkpointRoute;
-  expect(await (place === "cold" ? f.send(route) : f.send(route, {}))).toEqual(
-    unavailable,
-  );
+  expect(await reach(f, place)).toEqual(unavailable);
   expect(effects()).toEqual(noWrites);
   expect(f.snapshot()).toEqual(before);
 }
@@ -974,10 +973,7 @@ for (const [name, op, input, result, mode] of olds)
       );
       if (place === "append") return refuses(f, noBasis, row);
       install(f, row);
-      const route = place === "cold" ? probe : checkpointRoute;
-      expect(
-        await (place === "cold" ? f.send(route) : f.send(route, {})),
-      ).toEqual(unavailable);
+      expect(await reach(f, place)).toEqual(unavailable);
     });
 
 const malformed: [string, "claim" | "update", Json, boolean?][] = [
