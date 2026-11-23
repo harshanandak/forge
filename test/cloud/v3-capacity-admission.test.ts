@@ -952,7 +952,7 @@ for (const dimension of ["transcript", "snapshot", "directory"] as const) {
             : dimension === "snapshot"
               ? record("x".repeat(available + boundary - bytes("")))
               : record(0, "r9999", 10 ** (boundary + 1));
-        assertBoundary(advance(state, candidate), dimension, -boundary);
+        assertBoundary(advance(state, candidate), dimension, 0 - boundary);
         if (boundary > 0) refuseFrames(f, image, [candidate]);
         else {
           write(f, image, [candidate]);
@@ -967,9 +967,12 @@ for (const dimension of ["transcript", "snapshot", "directory"] as const) {
 
 const viewImage = (f: Fixture) => store.viewV3(cold(f));
 
-test.each([false, true])(
+test.each([
+  ["false", false],
+  ["true", true],
+] as const)(
   "B4 row admission and checkpoint recovery with a guarded lease %s",
-  async (guardedLease) => {
+  async (_name, guardedLease) => {
     const f = guardFixture();
     using _db = f.db;
     const image = await provision(f);
@@ -1655,9 +1658,12 @@ test(
   timeout,
 );
 
-test.each([false, true])(
+test.each([
+  ["false", false],
+  ["true", true],
+] as const)(
   "R6 atomic revoke-shaped batch with a changed final holder %s",
-  async (different) => {
+  async (_name, different) => {
     const f = guardFixture();
     using _db = f.db;
     const image = await provision(f);
@@ -2154,7 +2160,7 @@ for (const pageBacked of [false, true]) {
       expect(room(prefix).snapshot).toBeGreaterThan(0);
       for (const dim of dimensions)
         expect(room(prefix)[dim], dim).toBeGreaterThanOrEqual(0);
-      assertBoundary(end, "snapshot", -delta);
+      assertBoundary(end, "snapshot", 0 - delta);
       if (delta) refuseFrames(f, image, [first, second]);
       else {
         write(f, image, [first, second]);
