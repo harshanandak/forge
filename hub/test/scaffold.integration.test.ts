@@ -26,6 +26,7 @@ import {
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { expect, test } from "bun:test";
+import { SECRET_PATTERNS } from "../src/contract/errors.js";
 
 const timeout = 30_000;
 const hub = realpathSync(resolve(import.meta.dir, ".."));
@@ -398,8 +399,21 @@ function checkInventory(
 
 const localPath =
   /(?:^|[\s"'(=;,])(?:[A-Za-z]:[\\/]|\/(?:Users|home)\/[^/\s]+|\/root\/|~\/)/m;
-const secretShape =
+const existingPackSecretShape =
   /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9-]{16,}|(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b|-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/;
+const bundledContractSecretPrefixes = ["fh_", "fhk_"];
+const bundledContractSecretPatterns = SECRET_PATTERNS.filter(({ source }) =>
+  bundledContractSecretPrefixes.some((prefix) => source.startsWith(prefix)),
+);
+
+function hasSecretShape(text: string, owned: boolean): boolean {
+  return (
+    existingPackSecretShape.test(text) ||
+    (owned ? SECRET_PATTERNS : bundledContractSecretPatterns).some((pattern) =>
+      pattern.test(text),
+    )
+  );
+}
 
 type PackTextHit = "local path" | "token shape";
 
@@ -435,11 +449,12 @@ function scanText(
         : "utf-8";
   if (encoding === "utf-8" && bytes.includes(0)) return "binary";
   const text = new TextDecoder(encoding).decode(bytes);
-  const localPathHit = ownFiles.includes(path) && localPath.test(text);
-  const tokenHit = secretShape.test(text);
+  const owned = ownFiles.includes(path);
+  const localPathHit = owned && localPath.test(text);
+  const tokenHit = hasSecretShape(text, owned);
   if (localPathHit || tokenHit) {
     const label =
-      localPath.test(path) || secretShape.test(path)
+      localPath.test(path) || hasSecretShape(path, true)
         ? "[redacted path]"
         : JSON.stringify(path);
     if (localPathHit) reject("local path", label);
@@ -574,6 +589,29 @@ test(
       scanText(owned, () => Buffer.from("Q:" + "\\Users\\fixture")),
     ).toThrow("local path");
     const fragments = ["gh", "p_", "a".repeat(36)];
+    const forgeExamples = [
+      ["f", "h_", "a".repeat(43)],
+      ["f", "hk_", "a".repeat(43)],
+    ];
+    for (const parts of [
+      ["xo", "xb-", "a".repeat(10)],
+      ["xa", "pp-", "a".repeat(10)],
+      ["gh", "p_", "a".repeat(30)],
+      ["github", "_pat_", "a".repeat(30)],
+      ["s", "k-", "a".repeat(20)],
+      ["AK", "IA", "A".repeat(16)],
+      ["-----BEGIN ", "PRIVATE KEY", "-----"],
+      ["AS", "IA", "A".repeat(16)],
+      ["ey", "J", "a".repeat(8), ".", "b".repeat(8), ".", "c".repeat(8)],
+      ...forgeExamples,
+    ])
+      expect(() => scanText(owned, () => Buffer.from(parts.join("")))).toThrow(
+        "token shape",
+      );
+    for (const parts of forgeExamples)
+      expect(() =>
+        scanText(bundled, () => Buffer.from(parts.join(""))),
+      ).toThrow("token shape");
     expect(() =>
       scanText(
         allowedZodFixture.path,
@@ -596,6 +634,19 @@ test(
           throw new Error("read");
         }),
       ).toThrow("Unsafe pack path");
+  },
+  timeout,
+);
+
+test(
+  "pack text scan accepts contract-only vendor examples in integrity-pinned dependencies",
+  () => {
+    const vendorExample = ["s", "k-", "a".repeat(20)].join("");
+    expect(
+      scanText("node_modules/chat/dist/index.js", () =>
+        Buffer.from(vendorExample),
+      ),
+    ).toBe("scanned");
   },
   timeout,
 );
