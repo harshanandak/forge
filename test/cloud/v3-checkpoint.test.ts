@@ -2410,24 +2410,26 @@ const outcomeOf = (row: Json | undefined) => row!.outcome as Json;
 const transcript = (f: Fixture) =>
   JSON.parse(pages(f).find(({ id }) => id === "transcript:0")!.body) as Json[];
 
-function foldOf(f: Fixture, mode: Mode, rows: Json[]) {
+function foldOf(f: Fixture, mode: Mode, rows: Json[], stubNotes = true) {
   const db = writableStore(f.storage);
   const admit = Project.admitLeaseRequest;
   if (mode === "archived") return foldTranscript(db, rows, mode, admit);
   const portableTranscript = canonicalJson(
     rows.map((row) =>
-      row.operation === "fixture.note" ? { sequence: row.sequence } : row,
+      stubNotes && row.operation === "fixture.note"
+        ? { sequence: row.sequence }
+        : row,
     ),
   );
   const manifest = verifiedPortable(f.seal(), portableTranscript);
   return recoverV3(db, f.seal(), { admit, manifest, portableTranscript });
 }
 
-function refuses(f: Fixture, mode: Mode, rows: Json[]) {
+function refuses(f: Fixture, mode: Mode, rows: Json[], stubNotes = true) {
   const effects = f.observeEffects();
   let thrown: unknown;
   try {
-    foldOf(f, mode, rows);
+    foldOf(f, mode, rows, stubNotes);
   } catch (error) {
     thrown = error;
   }
@@ -2546,6 +2548,29 @@ for (const mode of modes)
         }),
       timeout,
     );
+
+test(
+  "v3 portable fold refuses a literal fixture.note frame",
+  () =>
+    withHistory((source, rows) => {
+      foldOf(source, "portable", rows);
+      expect(rows.some((row) => row.operation === "fixture.note")).toBe(true);
+      refuses(source, "portable", rows, false);
+    }),
+  timeout,
+);
+
+test(
+  "v3 archived fold refuses a sequence stub frame",
+  () =>
+    withHistory((source, rows) => {
+      foldOf(source, "archived", rows);
+      const edited = structuredClone(rows);
+      edited[7] = { sequence: rows[7]!.sequence };
+      refuses(source, "archived", edited);
+    }),
+  timeout,
+);
 
 for (const mode of modes)
   test(
