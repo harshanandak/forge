@@ -1229,8 +1229,8 @@ test(
   timeout,
 );
 
-const sendLease = (f: Fixture, route: string, owner: string, input: Json) =>
-  f.send(
+const leaseRequest = (route: string, owner: string, input: Json) =>
+  [
     `${probe}/${route}`,
     {
       subject: "work-1",
@@ -1241,7 +1241,9 @@ const sendLease = (f: Fixture, route: string, owner: string, input: Json) =>
       "X-Forge-Owner": owner,
       "X-Forge-Owner-Expires": String(E1 + HOUR),
     },
-  );
+  ] as const;
+const sendLease = (f: Fixture, route: string, owner: string, input: Json) =>
+  f.send(...leaseRequest(route, owner, input));
 
 const leaseClaim = (f: Fixture, owner: string) =>
   sendLease(f, "claim", owner, { requestId: owner, ttlMs: HOUR });
@@ -3143,6 +3145,58 @@ test(
       expect(reads.bytes).toBeLessThanOrEqual(2 * MiB);
       console.log("v3 restore activation reads", reads);
     }, 2),
+  timeout,
+);
+
+test(
+  "v3 restored raw lease requests keep their refusal text and receipts",
+  () => {
+    const cases = [
+      [
+        "claim",
+        { requestId: "restore-claim", ttlMs: HOUR },
+        { code: "LEASE_NOT_HELD", lease: { generation: 1 } },
+      ],
+      [
+        "renew",
+        { requestId: "restore-renew", generation: 1, ttlMs: HOUR / 2 },
+        { code: "INPUT_CONFLICT" },
+      ],
+      [
+        "release",
+        { requestId: "restore-release", generation: 1 },
+        { code: "INPUT_CONFLICT" },
+      ],
+    ] as const;
+    return restoring(
+      async (source) => {
+        for (const [route, input] of cases) {
+          ok(await sendLease(source, route, "owner-a", input));
+        }
+        await drain(source, 0, cases.length);
+      },
+      async ({ source, target, data }) => {
+        const db = writableStore(source.storage);
+        const origin = recovered(db, source.seal());
+        const receipts = [...origin.entries.outcome.keys()].map(
+          (key) => readV3Value(db, origin, "outcome", key)!.outcome,
+        );
+        expect(receipts).toHaveLength(cases.length);
+        expect(await restored(source, target, data)).toEqual(receipts);
+        target.restart();
+        for (const [route, input, error] of cases) {
+          const reply = () =>
+            target.sendText(...leaseRequest(route, "owner-a", input));
+          const first = await readOnlyReply(target, reply);
+          const replay = await readOnlyReply(target, reply);
+          expect(first.status).toBe(409);
+          expect(JSON.parse(first.text)).toMatchObject({ ok: false, error });
+          expect(replay.status).toBe(409);
+          expect(replay.text).toBe(first.text);
+        }
+      },
+    );
+  },
   timeout,
 );
 
