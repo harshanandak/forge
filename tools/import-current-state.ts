@@ -1,10 +1,4 @@
-import tracker from "../schemas/tracker.json" with { type: "json" };
-import config from "../src/blocks/work/schemas/config.json" with { type: "json" };
-import call from "../src/blocks/work/schemas/call.output.json" with { type: "json" };
-import checkpoint from "../src/blocks/work/schemas/checkpoint.input.json" with { type: "json" };
-import link from "../src/blocks/work/schemas/link.json" with { type: "json" };
-import { SchemaRegistry, type SchemaObject } from "../src/contract/schema.ts";
-import { SCHEMA_DOCUMENTS } from "../src/generated/schemas.ts";
+import { validateWorkRecord } from "../src/blocks/work/validation.ts";
 import { allocationFloorNumber } from "../src/core/state/allocation-floor.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { createHash } from "node:crypto";
@@ -119,55 +113,17 @@ export function leftBehindKey(ns: string, key: string): boolean {
 export const classifiedFamily = (family: string): boolean =>
   Object.hasOwn(importedKeys, family) !== Object.hasOwn(localKeys, family);
 
-function persisted(
-  schema: SchemaObject,
-  remove: string,
-  extra: SchemaObject = {},
-) {
-  const omitted = new Set(remove.split(" "));
-  const properties = schema.properties as SchemaObject;
-  return {
-    ...schema,
-    required: (schema.required as readonly string[]).filter(
-      (name) => !omitted.has(name),
-    ),
-    properties: {
-      ...Object.fromEntries(
-        Object.entries(properties).filter(([name]) => !omitted.has(name)),
-      ),
-      ...extra,
-    },
-  };
-}
-const valueSchema = tracker.$id.replace("tracker.json", "import-current.json");
-const values = new SchemaRegistry([
-  ...SCHEMA_DOCUMENTS,
-  {
-    $id: valueSchema,
-    $defs: {
-      ...tracker.$defs,
-      issue: persisted(
-        tracker.$defs.TrackerItem,
-        "lease revision updatedAt mode slots attempts selection participants",
-        {
-          prefix: config.properties.idPrefix,
-          closeReason: tracker.$defs.CloseInput.properties.reason,
-        },
-      ),
-      comment: persisted(tracker.$defs.CommentInput, "", {
-        call: call.properties.call,
-        checkpoint: persisted(checkpoint, "id"),
-      }),
-      link,
-    },
-  },
-]);
-const primaryValues = Object.fromEntries(
-  ["issue", "comment", "link"].map((name) => [
-    name,
-    values.validator(valueSchema + "#/$defs/" + name),
-  ]),
-);
+const legacyCloseEvidence = (key: string, value: unknown) =>
+  key.startsWith("issue:") &&
+  isObject(value) &&
+  value.status === "closed" &&
+  value.receipt === undefined &&
+  value.withoutReceipt === undefined
+    ? {
+        ...value,
+        withoutReceipt: "Imported: closed before Forge required close evidence",
+      }
+    : value;
 
 type Check = (value: unknown) => boolean;
 const text: Check = (v) => typeof v === "string";
@@ -236,7 +192,7 @@ function workValue(key: string, v: unknown): boolean {
     case "issue":
     case "comment":
     case "link":
-      return isObject(v) && v.id === id && primaryValues[kind]!(v).ok;
+      return validateWorkRecord(key, v) === undefined;
     case "allocation":
       return allocationFloorNumber(v, key.slice(11)) !== undefined;
     case "landing":
@@ -286,6 +242,7 @@ function workValue(key: string, v: unknown): boolean {
 export function* workRecords(
   source: SqlDatabase,
   includeLocal = false,
+  repairs?: { records: number },
 ): Generator<StateRecord> {
   let after: readonly string[] | undefined;
   for (;;) {
@@ -302,8 +259,10 @@ export function* workRecords(
       }
       if (!ordinaryKey(String(row.namespace), String(row.key))) invalid();
       const record = parseRestoreJson(String(row.body)) as StateRecord;
-      if (!workValue(record.key, record.value)) invalid();
-      yield record;
+      const value = legacyCloseEvidence(record.key, record.value);
+      if (!workValue(record.key, value)) invalid();
+      if (value !== record.value && repairs) repairs.records++;
+      yield { ...record, value };
     }
     if (rows.length < 128) return;
     after = [String(rows.at(-1)!.namespace), String(rows.at(-1)!.key)];
@@ -342,6 +301,7 @@ export function verifySource(
       undefined,
       numbered,
     )!;
+    const repairs = { records: 0, historicalUpdates: 0 };
     let sequence = 0;
     for (;;) {
       const events = source.all(
@@ -368,11 +328,11 @@ export function verifySource(
           )
         )
           invalid();
-        if (
-          event.type === `${namespace}:record.updated@1` &&
-          !workValue(event.key, event.data)
-        )
-          invalid();
+        if (event.type === `${namespace}:record.updated@1`) {
+          const value = legacyCloseEvidence(event.key, event.data);
+          if (!workValue(event.key, value)) invalid();
+          if (value !== event.data) repairs.historicalUpdates++;
+        }
       }
       if (events.length < 128) break;
       sequence = Number(events.at(-1)!.sequence);
@@ -382,9 +342,9 @@ export function verifySource(
         namespace,
       ])!.n,
     );
-    for (const _record of workRecords(source, true)) records++;
+    for (const _record of workRecords(source, true, repairs)) records++;
     if (records !== manifest.records) invalid();
-    return found;
+    return { ...found, repairs: { legacyCloseEvidence: repairs } };
   } catch {
     // Source bodies and keys may contain credentials; only the refusal category crosses this boundary.
     return invalid();
@@ -541,6 +501,7 @@ export function currentState(
         events,
         usage,
         leftBehind: leftBehind(source, manifest),
+        repairs: found.repairs,
       };
     });
   } catch (error) {

@@ -218,6 +218,7 @@ export async function convert(options: Options) {
       F: projected.floors,
       rows: projected.usage.rows,
       events: projected.events,
+      repairs: projected.repairs,
       tables: expected,
       stored: projected.usage.bytes,
       limits,
