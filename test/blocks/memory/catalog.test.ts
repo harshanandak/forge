@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { resolveBlock } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
+import { renderHelp } from "../../../src/surface/help.ts";
 import { renderSkills } from "../../../src/surface/skills.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import { openHarness, type Harness } from "./lib.ts";
@@ -10,6 +11,19 @@ afterEach(async () => {
   await harness?.close();
   harness = undefined;
 });
+
+test("decision checks stay private in catalog, MCP and help", async () => {
+  harness = await openHarness(["memory"]);
+  const catalog = harness.assembly.catalog;
+  const entries = catalog.list();
+  const tools = createMcpHandlers(catalog, { budget: 100 }).listTools();
+  const privateName = /\b(?:accept|reject)[#_ -]check\b/i;
+  const privateMcpName = /_(?:accept|reject)[#_ -]check\b/i;
+  expect(entries.map(({ op }) => op).join("\n")).not.toMatch(privateName);
+  expect("memory_accept-check").toMatch(privateMcpName);
+  expect(tools.map(({ name }) => name).join("\n")).not.toMatch(privateMcpName);
+  expect(renderHelp(entries)).not.toMatch(privateName);
+}, 30_000);
 
 test("scope moves advertise non-idempotence through the catalog and MCP", async () => {
   harness = await openHarness(["memory"]);

@@ -1036,22 +1036,17 @@ interface DecideArgs {
   config?: MemoryConfig;
   services: Services;
 }
-/**
- * The owner's decision on proposed notes and revisions. Accept makes a proposal the served note;
- * reject closes it and keeps it readable. Both need the owner's approval, checked before any read.
- * The runtime relays that approval for exactly these items, so each names the note revision and the
- * proposed text the owner was shown: a note edited since refuses the whole call before any write,
- * and the write itself is fenced to that revision.
- */
 async function decide(
   { input, config = {}, services }: DecideArgs,
   decision: "accept" | "reject",
+  check = false,
 ) {
-  const approval = approved(
-    input.approval,
-    `memory.${decision}`,
-    "proposed notes",
-  );
+  const approval = check
+    ? undefined
+    : approved(input.approval, `memory.${decision}`, "proposed notes");
+  const outcome = check
+    ? "nothing was written and no owner approval was used"
+    : "nothing was written";
   const results: { id: string; status: string }[] = [];
   const planned: {
     id: string;
@@ -1102,7 +1097,7 @@ async function decide(
     )
       fail(
         "PROPOSAL_CHANGED",
-        `${id} is at revision ${existing.revision}, not the revision ${item.revision} the owner approved, or its proposed text differs; nothing was written. Show it again, ask the owner about what it says now, and retry with that revision and text.`,
+        `${id} is at revision ${existing.revision}, not the revision ${item.revision}${check ? "" : " the owner approved"}, or its proposed text differs; ${outcome}. Show it again, ask the owner about what it says now, and retry with that revision and text.`,
       );
     const dropped = removedOwnerTags(
       old.tags,
@@ -1116,12 +1111,18 @@ async function decide(
     )
       fail(
         "PROPOSAL_CHANGED",
-        `${id} removes the owner tags [${dropped.join(", ")}]; nothing was written. Retry with removedOwnerTags set to that list.`,
+        `${id} removes the owner tags [${dropped.join(", ")}]; ${outcome}. Retry with removedOwnerTags set to that list.`,
       );
     if (written.has(id)) continue;
     written.add(id);
     planned.push({ id, source, key, existing, old });
   }
+  if (check && results.length > 0)
+    fail(
+      "PROPOSAL_CHANGED",
+      `${results.map(({ id, status }) => `${id} is ${status.replace("_", " ")}`).join("; ")}; ${outcome}. Only pending proposals can be accepted or rejected. Read these items again, ask the owner about what is pending now, and retry without the others.`,
+    );
+  if (approval === undefined) return { results: [] };
   const at = approval.at;
   for (const { id, source, key, existing, old } of planned) {
     const { status: _status, proposal, ...kept } = old;
@@ -3267,6 +3268,8 @@ module.exports = {
 
   "memory.accept": (args: DecideArgs) => decide(args, "accept"),
   "memory.reject": (args: DecideArgs) => decide(args, "reject"),
+  "memory.accept#check": (args: DecideArgs) => decide(args, "accept", true),
+  "memory.reject#check": (args: DecideArgs) => decide(args, "reject", true),
   /**
    * An agent takes back a proposal that is a duplicate or no longer needed. It needs no owner
    * approval because it never serves text: the note or revision closes, stays in history with who
