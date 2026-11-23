@@ -41,6 +41,13 @@ import {
   typedReplyCases,
   type Portable,
 } from "./v3-project.fixture.ts";
+import {
+  buffers as pageBuffers,
+  jsonBytes as bytes,
+  pages as pagesOf,
+  rootedRecount,
+  tail as rowsOf,
+} from "./v3-usage.fixture.ts";
 
 const timeout = 30_000;
 const now = Date.parse("2026-11-20T12:00:00.000Z");
@@ -132,29 +139,11 @@ const add = (left: Measure, right: Measure): Measure =>
 const negate = (value: Measure): Measure =>
   Object.fromEntries(dimensions.map((key) => [key, -value[key]])) as Measure;
 const ordinary = add(add(stop, activation), remaining);
-const bytes = (value: unknown) => Buffer.byteLength(canonicalJson(value));
 const dbOf = (f: Fixture) => writableStore(f.storage);
 const cold = (f: Fixture) => recovered(dbOf(f), f.seal());
 const exported = (name: string): unknown => Reflect.get(store, name) as unknown;
-const rowsOf = (f: Fixture, after = 0, through = Number.MAX_SAFE_INTEGER) =>
-  f.db
-    .query<{ sequence: number; body: string }, [number, number]>(
-      "SELECT sequence, body FROM cloud_v3_commits WHERE sequence>? AND sequence<=? ORDER BY sequence",
-    )
-    .all(after, through);
-const pagesOf = (f: Fixture) =>
-  new Map(
-    f.db
-      .query<{ id: string; body: string }, []>(
-        "SELECT id, body FROM cloud_v3_pages ORDER BY id",
-      )
-      .all()
-      .map(({ id, body }) => [id, body]),
-  );
 const membersOf = (f: Fixture) =>
   JSON.parse(pagesOf(f).get("transcript:0")!) as unknown[];
-const pageBuffers = (pages: ReadonlyMap<string, string>) =>
-  new Map([...pages].map(([id, body]) => [id, Buffer.from(body)]));
 
 beforeEach(() => setSystemTime(now));
 afterEach(() => setSystemTime());
@@ -239,24 +228,6 @@ function recount(items: readonly Item[], members: readonly unknown[]): Usage {
     ),
     directory: 2 + items.reduce((sum, item) => sum + directory(item), 0),
   };
-}
-
-function rootedRecount(f: Fixture, image: Image) {
-  const stored = pagesOf(f);
-  const rows = rowsOf(f, image.root.coveredHead, image.head);
-  expect(rows.map(({ sequence }) => sequence)).toEqual(
-    Array.from(
-      { length: image.head - image.root.coveredHead },
-      (_, i) => image.root.coveredHead + i + 1,
-    ),
-  );
-  expect(image.tailBytes).toBe(
-    rows.reduce((sum, { body }) => sum + Buffer.byteLength(body), 0),
-  );
-  return recount(inventory(image, pageBuffers(stored)), [
-    ...membersOf(f),
-    ...rows.map(({ body }) => archived(JSON.parse(body) as Body)),
-  ]);
 }
 
 function assertUsage(f: Fixture, image: Image) {
