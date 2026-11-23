@@ -4,14 +4,22 @@ import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
+import { prepareReceipt } from "../../cloud/src/command-write.ts";
 import { failed } from "../../cloud/src/issue-commands.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
+import contextSchema from "../../schemas/context.json" with { type: "json" };
 import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { authorityFault } from "../../cloud/src/v3-authority.ts";
-import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
+import { signToken } from "../../cloud/src/v3-seal.ts";
+import {
+  append,
+  readV3Value,
+  recoverV3,
+  viewV3,
+} from "../../cloud/src/v3-store.ts";
 import {
   guardFixture,
   noWrites,
@@ -123,6 +131,7 @@ const error = (status: number, code: string) => ({
 const exits: Record<string, number> = {
   INPUT_INVALID: 6,
   NOT_FOUND: 3,
+  UNKNOWN_COMMAND: 3,
   INPUT_CONFLICT: 4,
   REVISION_CONFLICT: 4,
   LEASE_HELD: 4,
@@ -1801,75 +1810,525 @@ function snap(f: Fixture) {
   };
 }
 
-const longDevice = "d".repeat(257);
-async function enrollLong(f: Fixture, mode: Mode) {
-  await enroll(f, mode);
-  if (mode === "owner") return;
+const cap = contextSchema.$defs.Session.properties;
+const longDevice = "d".repeat(cap.device.maxLength + 1);
+const fullDevice = "d".repeat(cap.device.maxLength);
+const fullSession = "s".repeat(cap.id.maxLength);
+const astral = (count: number) => "\u{1F600}".repeat(count);
+const guard = never(
+  "AUTH_FORBIDDEN",
+  "This token's device label is too long to hold a lease; issue a new token",
+);
+const answer = (mode: Mode, e: { code: string }) =>
+  mode === "owner"
+    ? { ok: false, error: e }
+    : failed(e as unknown as ForgeError);
+const sessioned = <T extends { context: object }>(body: T, id: string): T => ({
+  ...body,
+  context: { ...body.context, session: { id } },
+});
+
+type Stored = { id: string; hash: string; session: string } & {
+  agent: string | null;
+  harness: string | null;
+  expires_at: number;
+  revoked_at: number | null;
+};
+async function enrollAs(f: Fixture, device: string, session = "fixture") {
+  if (!tokens.has(f)) return;
+  const fits = [...device].length <= cap.device.maxLength;
   const reply = await f.send("devices", {
-    device: longDevice,
-    session: "fixture",
+    device: fits ? device : "forged",
+    session,
     ttlMs: 2 * ttlMs,
   });
   expect(reply.status).toBe(200);
-  tokens
-    .get(f)!
-    .set(`${longDevice}/fixture`, (reply.body as { value: Issued }).value);
+  const issued = (reply.body as { value: Issued }).value;
+  if (!fits) {
+    f.db.run("UPDATE cloud_v3_tokens SET device=? WHERE id=?", [
+      device,
+      issued.id,
+    ]);
+    const row = f.db
+      .query<Stored, [string]>("SELECT * FROM cloud_v3_tokens WHERE id=?")
+      .get(issued.id)!;
+    const mac = signToken(f.seal(), {
+      id: row.id,
+      hash: row.hash,
+      device,
+      session: row.session,
+      agent: row.agent,
+      harness: row.harness,
+      expiresAt: row.expires_at,
+      revokedAt: row.revoked_at,
+    });
+    f.db.run("UPDATE cloud_v3_tokens SET mac=? WHERE id=?", [mac, issued.id]);
+  }
+  tokens.get(f)!.set(`${device}/${session}`, issued);
+}
+async function enrollLong(f: Fixture, mode: Mode, ...devices: string[]) {
+  await enroll(f, mode);
+  for (const device of devices) await enrollAs(f, device);
+}
+
+async function guarded(
+  f: Fixture,
+  mode: Mode,
+  body: { input: object },
+  owner: string,
+  session?: string,
+) {
+  const state = snap(f);
+  const rows = tokenRows(f);
+  const before = frames(f).length;
+  const effects = f.observeEffects();
+  const reply = await send(f, body, owner, session);
+  const seen = effects();
+  expect(reply).toEqual({ status: 403, body: answer(mode, guard) });
+  exited(reply, "AUTH_FORBIDDEN");
+  expect(seen).toEqual(noWrites);
+  expect(snap(f)).toEqual(state);
+  expect(tokenRows(f)).toBe(rows);
+  expect(frames(f)).toHaveLength(before);
+  const retry = f.observeEffects();
+  expect(await send(f, body, owner, session)).toEqual(reply);
+  const changed = { ...body, input: { ...body.input, changed: true } };
+  expect(await send(f, changed, owner, session)).toEqual(reply);
+  expect(retry()).toEqual(noWrites);
+}
+
+const grant = { id: "forge-1", ttlSeconds: 60 };
+const okBody = (op: string, result: unknown) => ({
+  ok: true,
+  op,
+  status: "OK",
+  result,
+  warnings: [],
+});
+const claimed = (id: string) => ({
+  id,
+  generation: 1,
+  expiresAt: new Date(time + 60_000).toISOString(),
+});
+const recorded = (f: Fixture) => (frames(f).at(-1)!.outcome as Json).result;
+const storedLease = (f: Fixture) => {
+  const db = writableStore(f.storage);
+  return readV3Value(db, recoverV3(db, f.seal()), "lease", subject);
+};
+async function replays(
+  f: Fixture,
+  body: object,
+  owner: string,
+  sid: string,
+  first: Reply,
+) {
+  const state = snap(f);
+  const rows = tokenRows(f);
+  const count = frames(f).length;
+  const effects = f.observeEffects();
+  const again = await send(f, body, owner, sid);
+  const seen = effects();
+  expect(again).toEqual(first);
+  expect(seen).toEqual(noWrites);
+  expect(snap(f)).toEqual(state);
+  expect(tokenRows(f)).toBe(rows);
+  expect(frames(f)).toHaveLength(count);
 }
 
 test.each(modes)(
-  "v3 typed claim records its refusals for a 257-character device label (%s)",
+  "v3 typed claim of an open issue is refused before recording for a device label over the limit (%s)",
   async (mode) => {
     const f = guardFixture(env);
     using _db = f.db;
     await provision(f);
-    await enrollLong(f, mode);
-    const ok = { id: "forge-1", ttlSeconds: 60 };
-    for (const [name, input, status, e] of [
-      [
-        "prefix",
-        { ...ok, id: "other-1" },
-        400,
-        never("INPUT_INVALID", "Unknown issue id prefix"),
-      ],
-      [
-        "missing",
-        { ...ok, id: "forge-9" },
-        404,
-        never("NOT_FOUND", "Issue forge-9 was not found"),
-      ],
-    ] as const) {
-      const before = snap(f);
-      const body = clm(`long-${name}`, input);
-      const reply = await claimRefusal(f, body, status, e.code, longDevice);
-      expect(wire(reply)).toEqual(e);
-      expect(snap(f)).toEqual(before);
-    }
+    const devices = [longDevice, "d".repeat(8192)];
+    await enrollLong(f, mode, ...devices);
+    await fixtureIssue(f);
+    for (const device of devices)
+      await guarded(f, mode, clm(`open-${device.length}`, grant), device);
   },
   timeout,
 );
 
 test.each(modes)(
-  "v3 typed update records its refusals for a 257-character device label (%s)",
+  "v3 typed claim is refused before recording for a 257-character device label (%s)",
   async (mode) => {
     const f = guardFixture(env);
     using _db = f.db;
     await provision(f);
-    await enrollLong(f, mode);
-    for (const [name, id, status, e] of [
-      [
-        "prefix",
-        "other-1",
-        400,
-        never("INPUT_INVALID", "Unknown issue id prefix"),
-      ],
-      ["missing", "forge-9", 404, never("NOT_FOUND", "Issue was not found")],
-    ] as const) {
-      const before = snap(f);
-      const body = upd(`long-${name}`, { ...update.input, id });
-      const reply = await updateRefusal(f, body, status, e.code, longDevice);
-      expect(wire(reply)).toEqual(e);
-      expect(snap(f)).toEqual(before);
+    await enrollLong(f, mode, longDevice);
+    for (const [name, input] of [
+      ["prefix", { ...grant, id: "other-1" }],
+      ["missing", { ...grant, id: "forge-9" }],
+      ["invalid", { ...grant, ttlSeconds: 0 }],
+    ] as const)
+      await guarded(f, mode, clm(`long-${name}`, input), longDevice);
+    await fixtureIssue(f, { ...initial, status: "closed" });
+    await guarded(f, mode, clm("long-closed", grant), longDevice);
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed claim admits a device and a session at the schema limits (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enroll(f, mode);
+    await enrollAs(f, fullDevice, fullSession);
+    await fixtureIssue(f);
+    const body = sessioned(clm("full-claim", grant), fullSession);
+    const reply = await oneRow(f, () => send(f, body, fullDevice, fullSession));
+    expect(reply).toEqual({
+      status: 200,
+      body: okBody("issue.claim", claimed("forge-1")),
+    });
+    expect(recorded(f)).toEqual(claimed("forge-1"));
+    expect(lease(f).holder).toEqual({
+      actor,
+      session: { id: fullSession, device: fullDevice },
+    });
+    await replays(f, body, fullDevice, fullSession, reply);
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed update is refused before recording for a 257-character device label (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enrollLong(f, mode, longDevice);
+    await fixtureIssue(f);
+    await rawClaim(f);
+    for (const [name, id] of [
+      ["held", "forge-1"],
+      ["prefix", "other-1"],
+      ["missing", "forge-9"],
+    ] as const)
+      await guarded(
+        f,
+        mode,
+        upd(`long-${name}`, { ...update.input, id }),
+        longDevice,
+      );
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed update admits the holder and a device at the schema limit (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enroll(f, mode);
+    await fixtureIssue(f);
+    await rawClaim(f);
+    const held = upd("held-update", update.input);
+    const first = await oneRow(f, () => send(f, held));
+    expect(first).toEqual({
+      status: 200,
+      body: okBody("issue.update", recorded(f)),
+    });
+    expect(recorded(f)).toMatchObject({ id: "forge-1", revision: 2 });
+    await replays(f, held, "laptop", "fixture", first);
+    await fixtureIssue(f, { ...initial, id: "work-2" });
+    await enrollAs(f, fullDevice, fullSession);
+    const claim = sessioned(
+      clm("full-claim", { ...grant, id: "forge-2" }),
+      fullSession,
+    );
+    const granted = await oneRow(f, () =>
+      send(f, claim, fullDevice, fullSession),
+    );
+    expect(granted).toEqual({
+      status: 200,
+      body: okBody("issue.claim", claimed("forge-2")),
+    });
+    expect(recorded(f)).toEqual(claimed("forge-2"));
+    await replays(f, claim, fullDevice, fullSession, granted);
+    const body = sessioned(
+      upd("full-update", { id: "forge-2", expectRevision: 1, title: "After" }),
+      fullSession,
+    );
+    const reply = await oneRow(f, () => send(f, body, fullDevice, fullSession));
+    expect(reply).toEqual({
+      status: 200,
+      body: okBody("issue.update", recorded(f)),
+    });
+    expect(recorded(f)).toMatchObject({
+      id: "forge-2",
+      revision: 2,
+      title: "After",
+    });
+    await replays(f, body, fullDevice, fullSession, reply);
+  },
+  timeout,
+);
+
+test(
+  "v3 typed claim counts device characters, not bytes, at the guard",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enroll(f, "token");
+    await fixtureIssue(f);
+    await fixtureIssue(f, { ...initial, id: "work-2" });
+    const [full, over] = [astral(cap.device.maxLength), astral(257)];
+    await enrollAs(f, full);
+    await enrollAs(f, over);
+    const body = clm("astral-full", grant);
+    const first = await oneRow(f, () => send(f, body, full));
+    expect(first).toEqual({
+      status: 200,
+      body: okBody("issue.claim", claimed("forge-1")),
+    });
+    expect(lease(f).holder).toEqual({
+      actor,
+      session: { ...session, device: full },
+    });
+    await replays(f, body, full, "fixture", first);
+    await guarded(
+      f,
+      "token",
+      clm("astral-over", { ...grant, id: "forge-2" }),
+      over,
+    );
+  },
+  timeout,
+);
+
+test(
+  "v3 raw owner probe refuses a bound device over the limit and admits one at the limit",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const steps = [
+      ["claim", { ttlMs }],
+      ["renew", { generation: 1, ttlMs }],
+      ["release", { generation: 1 }],
+    ] as const;
+    const call = (route: string, extra: object, owner: string) =>
+      f.send(
+        `${probe}/${route}`,
+        { requestId: `${owner.length}-${route}`, subject, holder, ...extra },
+        headers(owner),
+      );
+    const state = snap(f);
+    for (const [route, extra] of steps) {
+      const effects = f.observeEffects();
+      const reply = await call(route, extra, longDevice);
+      expect(reply).toEqual({
+        status: 400,
+        body: {
+          ok: false,
+          error: never("INPUT_INVALID", "Lease holder has an invalid device"),
+        },
+      });
+      exited(reply, "INPUT_INVALID");
+      expect(effects()).toEqual(noWrites);
+      expect(snap(f)).toEqual(state);
+    }
+    for (const [route, extra] of steps) {
+      const reply = await call(route, extra, fullDevice);
+      expect(reply).toEqual({
+        status: 200,
+        body: { ok: true, value: storedLease(f) },
+      });
+      expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+      expect(storedLease(f)).toMatchObject({
+        subject,
+        holder: { actor, session: { ...session, device: fullDevice } },
+        ...(route === "release" ? {} : { generation: 1 }),
+      });
     }
   },
   timeout,
 );
+
+const otherOps = [
+  create,
+  {
+    op: "issue.show",
+    requestId: "show",
+    input: { id: "forge-1" },
+    context: { actor },
+  },
+  {
+    ...update,
+    op: "issue.close",
+    requestId: "close",
+    input: { id: "forge-1" },
+  },
+];
+async function runOtherOps(mode: Mode, device: string) {
+  const f = guardFixture(env);
+  using _db = f.db;
+  await provision(f);
+  await enrollLong(f, mode, device);
+  const seen = [];
+  for (const body of otherOps) {
+    const before = frames(f).length;
+    const effects = f.observeEffects();
+    const reply = await send(f, body, device);
+    seen.push({ reply, ...effects(), added: frames(f).length - before });
+  }
+  return seen;
+}
+
+test.each(modes)(
+  "v3 leased close is refused for an over-long device label and other operations are unchanged (%s)",
+  async (mode) => {
+    const [long, short] = [
+      await runOtherOps(mode, longDevice),
+      await runOtherOps(mode, "laptop"),
+    ];
+    expect(long[0]).toEqual(short[0]);
+    expect(long[0]).toMatchObject({ reply: { status: 200 }, added: 1 });
+    const unknown = {
+      reply: {
+        status: 404,
+        body: answer(mode, never("UNKNOWN_COMMAND", "No such v3 command")),
+      },
+      ...noWrites,
+      added: 0,
+    };
+    exited(unknown.reply, "UNKNOWN_COMMAND");
+    expect(long[1]).toEqual(unknown);
+    expect(short[1]).toEqual(unknown);
+    expect(short[2]).toEqual(unknown);
+    expect(long[2]).toEqual({
+      reply: { status: 403, body: answer(mode, guard) },
+      ...noWrites,
+      added: 0,
+    });
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "v3 typed claim naming its own device is refused by the context check, or admitted at the limit (%s)",
+  async (mode) => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await enrollLong(f, mode, longDevice);
+    await enrollAs(f, fullDevice, fullSession);
+    await fixtureIssue(f);
+    const naming = (
+      id: string,
+      issue: string,
+      device: string,
+      sid: string,
+    ) => ({
+      ...clm(id, { ...grant, id: issue }),
+      context: { actor, session: { id: sid, device } },
+    });
+    const full = naming("full-named", "forge-1", fullDevice, fullSession);
+    const named = await oneRow(f, () => send(f, full, fullDevice, fullSession));
+    expect(named).toEqual({
+      status: 200,
+      body: okBody("issue.claim", claimed("forge-1")),
+    });
+    const state = snap(f);
+    const effects = f.observeEffects();
+    const long = naming("long-named", "forge-2", longDevice, "fixture");
+    const reply = await send(f, long, longDevice);
+    const message =
+      "body must be { requestId, op, input, context, dryRun? } with a valid context";
+    expect(reply).toEqual({
+      status: 400,
+      body: answer(mode, never("INPUT_INVALID", message)),
+    });
+    exited(reply, "INPUT_INVALID");
+    expect(effects()).toEqual(noWrites);
+    expect(snap(f)).toEqual(state);
+  },
+  timeout,
+);
+
+test(
+  "v3 typed claim is refused before recording for an empty owner label",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await fixtureIssue(f);
+    await guarded(f, "owner", clm("empty-owner", grant), "");
+    await oneRow(f, () => send(f, clm("named-owner", grant)));
+  },
+  timeout,
+);
+
+const oldRefusals = [
+  [
+    "claim",
+    "issue.claim",
+    grant,
+    never("INPUT_INVALID", "Invalid lease"),
+    { leaseMode: "acquire" },
+  ],
+  [
+    "update",
+    "issue.update",
+    { ...update.input, id: "forge-9" },
+    never("NOT_FOUND", "Issue was not found"),
+    { leaseMode: "held", leaseGeneration: 1 },
+  ],
+] as const;
+for (const [name, op, input, result, mode] of oldRefusals)
+  test(
+    `v3 still folds, checkpoints and reads an old recorded ${name} refusal from an over-long holder`,
+    async () => {
+      const f = guardFixture(env);
+      using _db = f.db;
+      await provision(f);
+      if (name === "claim") await fixtureIssue(f);
+      const principal = ["owner", longDevice, longDevice] as const;
+      const context = {
+        variant: "leased",
+        actor,
+        session: { id: "fixture", device: longDevice },
+        project: { id: "a" },
+        ...mode,
+      };
+      const { requestId, fingerprint } = prepareReceipt(
+        "command",
+        principal,
+        `old-${name}`,
+        { op, input, context, device: longDevice },
+      );
+      const outcome = {
+        id: requestId,
+        fingerprint,
+        scope: { family: "command" as const, ...receiptScope(principal) },
+        status: result.code,
+        result,
+        retryUntil: expiry,
+      };
+      const db = writableStore(f.storage);
+      const image = recoverV3(db, f.seal());
+      append(db, f.seal(), image, [
+        { operation: op, time, events: [], outcome },
+      ]);
+      f.restart();
+      const read = () => {
+        const store = writableStore(f.storage);
+        return readV3Value(
+          store,
+          recoverV3(store, f.seal()),
+          "outcome",
+          requestId,
+        );
+      };
+      expect(read()).toEqual({ outcome, time });
+      await checkpoint(f);
+      expect(read()).toEqual({ outcome, time });
+    },
+    timeout,
+  );

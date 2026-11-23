@@ -18,6 +18,8 @@ import {
 } from "./v3-seal.ts";
 
 const TEXT_BYTES = 8192;
+const DEVICE_CHARS = 256;
+const LABEL_CHARS = 200;
 const LAST_TIME = 8_640_000_000_000_000;
 const NO_ROW_HASH = "0".repeat(64);
 const ID = /^[0-9a-f]{16}$/;
@@ -149,12 +151,15 @@ export async function issueV3Token(
     throw fail("INPUT_INVALID", "ttlMs is over 90 days");
   const { device, session, agent, harness } = input;
   if (session === null) throw fail("INPUT_INVALID", "session is required");
-  for (const value of [device, session, agent, harness])
+  for (const [value, max] of [
+    [device, DEVICE_CHARS],
+    [session, LABEL_CHARS],
+    [agent, LABEL_CHARS],
+    [harness, LABEL_CHARS],
+  ] as const)
     if (
       value !== null &&
-      (value === "" ||
-        /\p{Surrogate}/u.test(value) ||
-        new TextEncoder().encode(value).length > TEXT_BYTES)
+      (value === "" || /\p{Surrogate}/u.test(value) || [...value].length > max)
     )
       throw fail("INPUT_INVALID", "device labels must be well-formed text");
   const { id, secret } = mint();

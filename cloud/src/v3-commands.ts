@@ -2,7 +2,10 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import { digestBytes } from "../../src/core/config/pointer.ts";
 import type { ForgeError, LeaseGrant } from "../../src/generated/types.ts";
-import { validateClaimInput } from "../../src/generated/validators.ts";
+import {
+  validateClaimInput,
+  validateLeaseHolder,
+} from "../../src/generated/validators.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { prepareReceipt } from "./command-write.ts";
 import * as api from "./issue-commands.ts";
@@ -187,6 +190,14 @@ export function commandV3(
   host: Host,
 ) {
   const call = api.parseCommand(text, host);
+  if (call.context.variant === "leased") {
+    const { actor, session } = call.context;
+    if (!validateLeaseHolder({ actor, session }).ok)
+      throw store.fail(
+        "AUTH_FORBIDDEN",
+        "This token's device label is too long to hold a lease; issue a new token",
+      );
+  }
   const { op, requestId, input, context } = call;
   const { device, now, expiresAt, prefix, principal } = host;
   const command = Object.hasOwn(commands, op) ? commands[op] : undefined;
