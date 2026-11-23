@@ -2,6 +2,7 @@
 
 import { ok } from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -402,22 +403,37 @@ const secretShape =
 
 type PackTextHit = "local path" | "token shape";
 
+const allowedZodFixture = {
+  path: "node_modules/zod/src/v4/mini/tests/string.test.ts",
+  version: "4.6.7",
+  sha256: "f4ebdab74387516508d0ce96a56979fe06af7e2425dccc13d34c0a229ba3a050",
+  reason: "upstream zod test fixture string, not a credential",
+};
+
 function scanText(
   path: string,
   read: () => Buffer<ArrayBufferLike>,
   reject = (kind: PackTextHit, label: string): void => {
     throw new Error(kind + " in " + label);
   },
-): boolean {
+  zodVersion?: unknown,
+): "scanned" | "allowlisted" | "binary" {
   safePath(path);
   const bytes = read();
+  if (
+    path === allowedZodFixture.path &&
+    zodVersion === allowedZodFixture.version &&
+    createHash("sha256").update(bytes).digest("hex") ===
+      allowedZodFixture.sha256
+  )
+    return "allowlisted";
   const encoding =
     bytes[0] === 0xff && bytes[1] === 0xfe
       ? "utf-16le"
       : bytes[0] === 0xfe && bytes[1] === 0xff
         ? "utf-16be"
         : "utf-8";
-  if (encoding === "utf-8" && bytes.includes(0)) return false;
+  if (encoding === "utf-8" && bytes.includes(0)) return "binary";
   const text = new TextDecoder(encoding).decode(bytes);
   const localPathHit = ownFiles.includes(path) && localPath.test(text);
   const tokenHit = secretShape.test(text);
@@ -429,7 +445,7 @@ function scanText(
     if (localPathHit) reject("local path", label);
     if (tokenHit) reject("token shape", label);
   }
-  return true;
+  return "scanned";
 }
 
 let packedPaths: Promise<string[]> | undefined;
@@ -503,26 +519,33 @@ test(
   "packed text has no token shapes and owned text has no local paths",
   async () => {
     const paths = await (packedPaths ??= packReport(npmManifestPath()));
+    const zodVersion = paths.includes(allowedZodFixture.path)
+      ? manifest(join(hub, "node_modules/zod")).version
+      : undefined;
     const hits: string[] = [];
     const hitCounts: Record<PackTextHit, number> = {
       "local path": 0,
       "token shape": 0,
     };
-    const scanned = new Set(
-      paths.filter((path) =>
-        scanText(
-          path,
-          () => readFileSync(join(hub, path)),
-          (kind, label) => {
-            hitCounts[kind]++;
-            if (hits.length < 5) hits.push("A8 found " + kind + " in " + label);
-          },
-        ),
-      ),
-    );
+    const scanned = new Set<string>();
+    let allowlisted = 0;
+    for (const path of paths) {
+      const result = scanText(
+        path,
+        () => readFileSync(join(hub, path)),
+        (kind, label) => {
+          hitCounts[kind]++;
+          if (hits.length < 5) hits.push("A8 found " + kind + " in " + label);
+        },
+        zodVersion,
+      );
+      if (result === "scanned") scanned.add(path);
+      if (result === "allowlisted") allowlisted++;
+    }
     console.log(
-      "A8 scanned %d packed text files. Hits: local path %d, token shape %d.",
+      "A8 scanned %d packed text files and allowlisted %d. Hits: local path %d, token shape %d.",
       scanned.size,
+      allowlisted,
       hitCounts["local path"],
       hitCounts["token shape"],
     );
@@ -546,18 +569,26 @@ test(
     const bundled = "node_modules/chat/dist/index.js";
     const homePath = Buffer.from("/home/" + "fixture/path");
     expect(() => scanText(owned, () => homePath)).toThrow("local path");
-    expect(scanText(bundled, () => homePath)).toBe(true);
+    expect(scanText(bundled, () => homePath)).toBe("scanned");
     expect(() =>
       scanText(owned, () => Buffer.from("Q:" + "\\Users\\fixture")),
     ).toThrow("local path");
     const fragments = ["gh", "p_", "a".repeat(36)];
+    expect(() =>
+      scanText(
+        allowedZodFixture.path,
+        () => Buffer.from(fragments.join("")),
+        undefined,
+        allowedZodFixture.version,
+      ),
+    ).toThrow("token shape");
     for (const path of [owned, bundled]) {
       expect(() =>
         scanText(path, () => Buffer.from(fragments.join(""))),
       ).toThrow("token shape");
       expect(
         scanText(path, () => Buffer.from("https://example.test/path")),
-      ).toBe(true);
+      ).toBe("scanned");
     }
     for (const path of [".env", "node_modules/chat/.env"])
       expect(() =>
