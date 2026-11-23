@@ -2033,70 +2033,6 @@ export async function createAssembly(
               "The request to replace is not expired or used. Only a spent request is replaced; a pending one is still waiting for the owner.",
             );
         }
-        const laneOwned =
-          target !== undefined &&
-          (laneResumeOp(target) || laneOwnerChannelOp(target, request.input));
-        if (owned) {
-          // The runtime refuses dry runs for these operations; refuse first so a dry run neither
-          // burns a valid approval nor leaves a pending request behind.
-          if (request.dryRun === true) refuseDryRun();
-          if (owned.relayed && (owned.quote?.length ?? 0) > 2000)
-            throw new ApprovalRequired(
-              "The owner's reply must be at most 2000 characters; ask again with a shorter reply.",
-            );
-          const ask = (display: boolean) => {
-            const format = display ? quoteDisplayText : String;
-            return laneOwnerChannelOp(target!, request.input)
-              ? laneOwnerChannelAsk(request.input, format)
-              : laneResumeOp(target!)
-                ? laneResumeAsk(request.input, target!.declaredOp, format)
-                : (display ? memoryOwnerDisplayAsk : memoryOwnerAsk)(
-                    target!.declaredOp!,
-                    request.input,
-                  );
-          };
-          await approve(
-            { ...request, input: owned.input },
-            ask(false),
-            ask(true),
-            // Resuming lanes restarts spending and naming the owner channel lets it approve: only a relayed reply counts, never a typed phrase or owner.json.
-            laneOwned,
-          );
-          // The block records the verified quote exactly as it did for a conversation claim.
-          if (owned.relayed && !laneOwned)
-            request = {
-              ...request,
-              input: {
-                ...(request.input as Record<string, unknown>),
-                approval: { by: "owner", quote: owned.quote },
-              },
-            };
-        } else if (
-          target &&
-          memoryOwnerOp(target) &&
-          request.caller === "human" &&
-          request.dryRun !== true &&
-          record(request.input)?.approval === undefined
-        ) {
-          // A person at a terminal types the phrase; the block then sees the owner's authorization.
-          if (
-            await attendedApproval(
-              request,
-              memoryOwnerAsk(target.declaredOp!, request.input),
-              memoryOwnerDisplayAsk(target.declaredOp!, request.input),
-            )
-          )
-            request = {
-              ...request,
-              input: {
-                ...(request.input as Record<string, unknown>),
-                approval: {
-                  by: "owner",
-                  quote: `confirm ${request.op} (typed at the terminal)`,
-                },
-              },
-            };
-        }
         const runtimeCatalog = withCheckRunBudget(
           current.catalog,
           current.blocks,
@@ -2395,6 +2331,79 @@ export async function createAssembly(
             }
           },
         });
+        const decision =
+          target !== undefined &&
+          memoryOwnerOp(target) &&
+          (target.declaredOp === "memory.accept" ||
+            target.declaredOp === "memory.reject");
+        const checkDecision = async () => {
+          if (!decision) return undefined;
+          const checked = await runtime.invoke(request, { check: true });
+          return checked.ok ? undefined : checked;
+        };
+        const laneOwned =
+          target !== undefined &&
+          (laneResumeOp(target) || laneOwnerChannelOp(target, request.input));
+        if (owned) {
+          if (request.dryRun === true) refuseDryRun();
+          if (owned.relayed && (owned.quote?.length ?? 0) > 2000)
+            throw new ApprovalRequired(
+              "The owner's reply must be at most 2000 characters; ask again with a shorter reply.",
+            );
+          const refused = await checkDecision();
+          if (refused) return refused;
+          const ask = (display: boolean) => {
+            const format = display ? quoteDisplayText : String;
+            return laneOwnerChannelOp(target!, request.input)
+              ? laneOwnerChannelAsk(request.input, format)
+              : laneResumeOp(target!)
+                ? laneResumeAsk(request.input, target!.declaredOp, format)
+                : (display ? memoryOwnerDisplayAsk : memoryOwnerAsk)(
+                    target!.declaredOp!,
+                    request.input,
+                  );
+          };
+          await approve(
+            { ...request, input: owned.input },
+            ask(false),
+            ask(true),
+            laneOwned,
+          );
+          if (owned.relayed && !laneOwned)
+            request = {
+              ...request,
+              input: {
+                ...(request.input as Record<string, unknown>),
+                approval: { by: "owner", quote: owned.quote },
+              },
+            };
+        } else if (
+          target &&
+          memoryOwnerOp(target) &&
+          request.caller === "human" &&
+          request.dryRun !== true &&
+          record(request.input)?.approval === undefined
+        ) {
+          const refused = await checkDecision();
+          if (refused) return refused;
+          if (
+            await attendedApproval(
+              request,
+              memoryOwnerAsk(target.declaredOp!, request.input),
+              memoryOwnerDisplayAsk(target.declaredOp!, request.input),
+            )
+          )
+            request = {
+              ...request,
+              input: {
+                ...(request.input as Record<string, unknown>),
+                approval: {
+                  by: "owner",
+                  quote: `confirm ${request.op} (typed at the terminal)`,
+                },
+              },
+            };
+        }
         if (!routed) {
           const cloud = await fromCloud(runtime);
           if (cloud) return cloud;

@@ -6,6 +6,7 @@ import { bindingFor, PROJECT_ID } from "../../assembly/cloud-fixture.ts";
 import { memoryOwnerAsk } from "../../../src/assembly/approval.ts";
 import { localCall } from "../../../src/assembly/index.ts";
 import { LocalState } from "../../../src/assembly/state.ts";
+import memoryDocs from "../../../src/blocks/memory/docs/records.json" with { type: "json" };
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import { record } from "../../../src/surface/dispatch.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
@@ -821,6 +822,13 @@ for (const [verb, mode] of replies)
     await unspent(h, answer, code, mode === "device" ? undefined : message);
     expect(await call("memory.show", { id: item.id })).toEqual(before);
   }, 30_000);
+
+test("decision help describes changes after approval checking", () => {
+  for (const op of ["memory.accept", "memory.reject"] as const)
+    expect(memoryDocs.operations[op].description).toContain(
+      "If a note changes afterwards, the call itself fails with PROPOSAL_CHANGED when the revision or text of a still-pending proposal differs. It reports and leaves alone items that are not proposed, not found or read-only. By then, the owner's approval has been used.",
+    );
+}, 30_000);
 
 test("dry run and read-only MCP refuse before asking", async () => {
   const h = (harness = await openHarness(["memory"]));
