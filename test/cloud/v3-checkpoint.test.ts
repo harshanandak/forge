@@ -5189,8 +5189,9 @@ function promotionPair(
   head: number,
   number: number,
   identity = activationIdentity(number),
+  activationTime = T0 + number * 10,
 ) {
-  const activation = activationRow(identity, head + 1, T0 + number * 10);
+  const activation = activationRow(identity, head + 1, activationTime);
   const sequence = head + 2;
   const time = activation.time + 2;
   const activationDigest = digestValue(activation);
@@ -6080,6 +6081,67 @@ async function refusesPromotion(
     }
   });
 }
+
+test.each(promotionRoutes)(
+  "R6 v3 %s promotion isolates a five-digit expiry year",
+  async (route) => {
+    const [first] = await promotionSource();
+    const boundary = Date.UTC(10_000, 0, 1);
+    const identity = activationIdentity(1);
+    const pair = promotionPair(1, 1, identity, boundary - 10);
+    const prefix = [first!];
+    const tail = pairRows(pair);
+    pair.promote.approval.expiresAt = boundary - 1;
+
+    if (route === "portable") {
+      setSystemTime(boundary - 7);
+      const f = guardFixture(typedEnv);
+      using _db = f.db;
+      const upload = await stageRestore(
+        f,
+        promotionArtifact([...prefix, ...tail]).data,
+      );
+      const reply = await upload(2);
+      expect(reply).toEqual(restoreResult(2, true));
+      expect(exited(reply)).toBe(0);
+      const effects = f.observeEffects();
+      expect(await upload(2)).toEqual(reply);
+      expect(effects()).toEqual(noWrites);
+    } else {
+      await withFixture(async (f) => {
+        if (route === "checkpoint") {
+          installPromotionRoot(f, promotionArtifact(prefix), identity, 2, tail);
+          const reply = await checkpoint(f);
+          expect(reply).toMatchObject({
+            status: 200,
+            body: { value: { coveredHead: 3, more: false } },
+          });
+          expect(exited(reply)).toBe(0);
+          f.restart();
+        } else {
+          installPromotionRoot(
+            f,
+            promotionArtifact([...prefix, ...tail]),
+            identity,
+            3,
+          );
+        }
+        const effects = f.observeEffects();
+        const reply = await f.send(probe);
+        expect(reply).toMatchObject({
+          status: 200,
+          body: { value: { image: { head: 3 } } },
+        });
+        expect(exited(reply)).toBe(0);
+        expect(effects()).toEqual(noWrites);
+      });
+    }
+
+    pair.promote.approval.expiresAt = boundary;
+    await refusesPromotion(route, prefix, tail, identity);
+  },
+  timeout,
+);
 
 for (const route of promotionRoutes) {
   test.each(promotionFaults)(
