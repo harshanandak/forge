@@ -425,7 +425,10 @@ const tokenKinds = [
   "update not found",
   "claim lease held",
   "create schema violation",
-].map((name) => [...K(name).slice(0, 6), "token"] as unknown as Kind);
+].map((name): Kind => {
+  const [n, body, status, error, basis, setup] = K(name);
+  return [n, body, status, error, basis, setup, "token"];
+});
 const pins: Kind[] = [
   [
     "claim by a holder at every schema maximum",
