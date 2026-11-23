@@ -4,7 +4,6 @@ import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
-import { prepareReceipt } from "../../cloud/src/command-write.ts";
 import { failed } from "../../cloud/src/issue-commands.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
@@ -14,12 +13,7 @@ import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { authorityFault } from "../../cloud/src/v3-authority.ts";
 import { signToken } from "../../cloud/src/v3-seal.ts";
-import {
-  append,
-  readV3Value,
-  recoverV3,
-  viewV3,
-} from "../../cloud/src/v3-store.ts";
+import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
 import {
   guardFixture,
   noWrites,
@@ -2034,7 +2028,17 @@ test.each(modes)(
       status: 200,
       body: okBody("issue.update", recorded(f)),
     });
-    expect(recorded(f)).toMatchObject({ id: "forge-1", revision: 2 });
+    expect(recorded(f)).toMatchObject({
+      id: "forge-1",
+      title: "After",
+      status: "open",
+      labels: [],
+      dependsOn: [],
+      createdAt: initial.createdAt,
+      updatedAt: new Date(time).toISOString(),
+      revision: 2,
+      lease: { generation: 1 },
+    });
     await replays(f, held, "laptop", "fixture", first);
     await fixtureIssue(f, { ...initial, id: "work-2" });
     await enrollAs(f, fullDevice, fullSession);
@@ -2145,7 +2149,7 @@ test(
       expect(storedLease(f)).toMatchObject({
         subject,
         holder: { actor, session: { ...session, device: fullDevice } },
-        ...(route === "release" ? {} : { generation: 1 }),
+        generation: 1,
       });
     }
   },
@@ -2265,71 +2269,3 @@ test(
   },
   timeout,
 );
-
-const oldRefusals = [
-  [
-    "claim",
-    "issue.claim",
-    grant,
-    never("INPUT_INVALID", "Invalid lease"),
-    { leaseMode: "acquire" },
-  ],
-  [
-    "update",
-    "issue.update",
-    { ...update.input, id: "forge-9" },
-    never("NOT_FOUND", "Issue was not found"),
-    { leaseMode: "held", leaseGeneration: 1 },
-  ],
-] as const;
-for (const [name, op, input, result, mode] of oldRefusals)
-  test(
-    `v3 still folds, checkpoints and reads an old recorded ${name} refusal from an over-long holder`,
-    async () => {
-      const f = guardFixture(env);
-      using _db = f.db;
-      await provision(f);
-      if (name === "claim") await fixtureIssue(f);
-      const principal = ["owner", longDevice, longDevice] as const;
-      const context = {
-        variant: "leased",
-        actor,
-        session: { id: "fixture", device: longDevice },
-        project: { id: "a" },
-        ...mode,
-      };
-      const { requestId, fingerprint } = prepareReceipt(
-        "command",
-        principal,
-        `old-${name}`,
-        { op, input, context, device: longDevice },
-      );
-      const outcome = {
-        id: requestId,
-        fingerprint,
-        scope: { family: "command" as const, ...receiptScope(principal) },
-        status: result.code,
-        result,
-        retryUntil: expiry,
-      };
-      const db = writableStore(f.storage);
-      const image = recovered(db, f.seal());
-      append(db, f.seal(), image, [
-        { operation: op, time, events: [], outcome },
-      ]);
-      f.restart();
-      const read = () => {
-        const store = writableStore(f.storage);
-        return readV3Value(
-          store,
-          recovered(store, f.seal()),
-          "outcome",
-          requestId,
-        );
-      };
-      expect(read()).toEqual({ outcome, time });
-      await checkpoint(f);
-      expect(read()).toEqual({ outcome, time });
-    },
-    timeout,
-  );

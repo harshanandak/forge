@@ -248,24 +248,38 @@ test(
 );
 
 test(
-  "v3 restore accepts the same rewritten backup when a trusted signer signs it, a class A control",
+  "v3 restore refuses the same rewritten backup when a trusted signer signs it and still restores the untouched signed backup",
   async () => {
     const { data } = await shared();
+    const sibling = guardFixture(typedEnv);
+    using _sibling = sibling.db;
+    const honest = signedUpload(sibling, data);
+    expect(await honest(0)).toMatchObject({ status: 200 });
+    expect(await honest(1)).toMatchObject({ status: 200 });
+    expect(await honest(2)).toMatchObject({
+      status: 200,
+      body: { value: { page: 2, verified: true } },
+    });
+    sibling.restart();
+    expect(await typed(sibling, missingUpdate)).toMatchObject({
+      status: 404,
+      body: { error: { code: "NOT_FOUND" } },
+    });
     const target = guardFixture(typedEnv);
     using _db = target.db;
     rewriteRefusal(data);
     const upload = signedUpload(target, data);
     expect(await upload(0)).toMatchObject({ status: 200 });
     expect(await upload(1)).toMatchObject({ status: 200 });
-    expect(await upload(2)).toMatchObject({
-      status: 200,
-      body: { value: { page: 2, verified: true } },
+    const staged = target.snapshot();
+    const effects = target.observeEffects();
+    expect(await upload(2)).toMatchObject(restoreRefusal);
+    expect(effects()).toEqual({
+      sqlWriteAttempts: 1,
+      alarmWrites: 0,
+      sqlAndKvIntact: true,
     });
-    target.restart();
-    expect(await typed(target, missingUpdate)).toMatchObject({
-      status: 404,
-      body: { error: { code: "NOT_FOUND", message: "Edited message" } },
-    });
+    expect(target.snapshot()).toEqual(staged);
   },
   timeout,
 );

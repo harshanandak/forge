@@ -17,7 +17,7 @@ import {
 } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
-const format = "forge-cloud-root/3";
+const format = "forge-cloud-root/4";
 const frames = [
   {
     operation: "fixture.put",
@@ -126,6 +126,63 @@ for (const [label, sql] of corruptions) {
     timeout,
   );
 }
+
+function reformat(f: ReturnType<typeof fixture>, value: string) {
+  const { body } = f.db
+    .query<{ body: string }, []>("SELECT body FROM cloud_v3_root")
+    .get()!;
+  const next = canonicalJson({ ...JSON.parse(body), format: value });
+  f.db.run("UPDATE cloud_v3_root SET body=?, seal=?", [
+    next,
+    trustedSeal(f.db, next),
+  ]);
+}
+
+test(
+  "v3 recovery refuses the previous root format with a valid seal",
+  async () => {
+    const f = fixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      reformat(f, "forge-cloud-root/3");
+      const before = f.snapshot();
+      f.restart();
+      const read = await f.send(probe);
+      expect(read).toMatchObject({
+        status: 503,
+        body: { ok: false, error: { code: "UNAVAILABLE" } },
+      });
+      expect(f.snapshot()).toEqual(before);
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "v3 reads a root of the current format back with its frames after restart",
+  async () => {
+    const f = fixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      expect(await f.send(`${probe}/commits`, { frames })).toMatchObject({
+        status: 200,
+      });
+      expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject({
+        status: 200,
+      });
+      f.restart();
+      expect(await f.send(probe)).toMatchObject({
+        status: 200,
+        body: { ok: true, value: { format } },
+      });
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
 
 test(
   "v3 recovery rejects a reordered roster with a valid recomputed seal",

@@ -10,7 +10,7 @@ import {
   digestBytes,
   digestValue,
 } from "../../src/core/config/pointer.ts";
-import type { DurableState } from "../../cloud/src/store.ts";
+import { type DurableState, writableStore } from "../../cloud/src/store.ts";
 import {
   authenticateManifest,
   type Manifest,
@@ -64,6 +64,46 @@ export function verifiedPortable(seal: Seal, transcript: string) {
     source: "direct-fold-source",
   });
   return authenticateManifest(seal, manifest, digestValue(manifest))!;
+}
+
+export type Portable = ReturnType<typeof portableOf>;
+export function portableOf(source: ReturnType<typeof fixture>) {
+  const { head, eventWatermark, recordFloor, root } = recovered(
+    writableStore(source.storage),
+    source.seal(),
+  );
+  const pages = source.db
+    .query<{ id: string; body: string }, []>(
+      "SELECT id, body FROM cloud_v3_pages ORDER BY id",
+    )
+    .all();
+  const publicDigest = root.publicDigest as string;
+  const id = String(source.context.id);
+  return { pages, head, eventWatermark, recordFloor, publicDigest, source: id };
+}
+
+export function portableUpload(
+  target: ReturnType<typeof fixture>,
+  { pages, ...projection }: Portable,
+) {
+  const manifest = trustedManifest(target.seal(), {
+    ...projection,
+    format: "forge-cloud-portable/4",
+    pages: pages.map(({ id, body }) => ({
+      id,
+      bytes: Buffer.byteLength(body),
+      hash: digestBytes(body),
+    })),
+  });
+  const digest = digestBytes(canonicalJson(manifest));
+  const headers = (page: number) =>
+    page === 0 ? { "X-Forge-Manifest-Digest": digest } : {};
+  return (page: number) =>
+    target.send(
+      "restore",
+      { page, ...pages[page]!, ...(page === 0 && { manifest }) },
+      headers(page),
+    );
 }
 
 export const recovered = (db: SqlDatabase, seal: Seal) =>

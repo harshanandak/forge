@@ -2639,12 +2639,7 @@ for (const mode of ["archived", "portable", "tail"] as const)
       const liveImage = recovered(db, source.seal());
       const live = readV3Value(db, liveImage, "lease", "issue:work-2");
       let folded: ReturnType<typeof recoverV3>;
-      if (mode === "tail")
-        folded = recoverV3(db, source.seal(), {
-          admit: Project.admitLeaseRequest,
-          pages: new Map(),
-          sealed: () => undefined,
-        });
+      if (mode === "tail") folded = recovered(db, source.seal());
       else {
         await drain(source, 0, 3);
         folded = foldOf(source, mode, transcript(source));
