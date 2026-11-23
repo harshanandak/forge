@@ -1,6 +1,7 @@
 import {
   type LaneControlGlobal,
   type LaneControlIssue,
+  readLaneControl,
   transitionLaneControl,
 } from "../../src/blocks/work/lane-control.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -75,6 +76,7 @@ export const TAIL_ROWS = 1024;
 const TAIL_BYTES = 16 * MiB;
 const MAX_JSON_DEPTH = 64;
 const RESTORE_LEASES = 16;
+const ACTIVATION_BYTES = 2048;
 const ROOT_FORMAT = "forge-cloud-root/4";
 const KINDS = ["directory", "snapshot", "transcript"];
 export const COLLECTIONS = [
@@ -188,6 +190,14 @@ export interface V3Image {
     readonly pages: readonly Page[];
   };
   readonly entries: Readonly<Record<Collection, Map<string, Slot>>>;
+  fold?: {
+    context: "portable" | "rooted";
+    segmentIncarnation?: string;
+    incarnations: Set<string>;
+    restoreEpochs: Set<string>;
+    approvalIds: Set<string>;
+    pending?: { sequence: number; time: number; digest: string };
+  };
   recordFloor: number;
   head: number;
   eventWatermark: number;
@@ -433,6 +443,12 @@ function recoveryImage(
       record: new Map(),
       witness: new Map(),
     },
+    fold: {
+      context: "portable",
+      incarnations: new Set(),
+      restoreEpochs: new Set(),
+      approvalIds: new Set(),
+    },
     recordFloor: 0,
     head: root.coveredHead,
     eventWatermark,
@@ -444,8 +460,12 @@ function recoveryImage(
   return image;
 }
 
-function activationFrame(root: V3Image["root"], time: number) {
-  const { incarnation, restoreEpoch, coveredHead } = root;
+function activationBytes(
+  incarnation: string,
+  restoreEpoch: string,
+  coveredHead: number,
+  time: number,
+) {
   const now = new Date(time).toJSON();
   const stop = transitionLaneControl(
     { version: 1, incarnation, epoch: 0, resumeAllEpoch: 0, stopAll: null },
@@ -475,32 +495,58 @@ function applyActivation(db: SqlDatabase, seal: Seal, image: V3Image) {
     row?.sequence !== image.head + 1 ||
     typeof row.body !== "string" ||
     digestBytes(row.body) !== root.activationDigest ||
-    !verifyRow(seal, root.incarnation, row.sequence, row.body, row.mac) ||
-    image.entries.lease.size > RESTORE_LEASES
+    !verifyRow(seal, root.incarnation, row.sequence, row.body, row.mac)
   )
     throw unavailable();
-  const frame = parse(row.body);
-  if (!isObject(frame)) throw unavailable();
+  const identity = foldActivation(db, image, row.body);
+  image.tailBytes = Buffer.byteLength(row.body);
+  return identity;
+}
+
+function foldActivation(db: SqlDatabase, image: V3Image, body: string) {
+  if (Buffer.byteLength(body) > ACTIVATION_BYTES) throw unavailable();
+  const frame = parse(body);
+  if (!isObject(frame) || !isObject(frame.control)) throw unavailable();
+  const { control, events, operation, restoreEpoch } = frame;
+  const { incarnation } = control;
+  const sequence = nat(frame.sequence);
   const time = nat(frame.time);
+  const fold = image.fold!;
   if (
-    activationFrame(root, time) !== row.body ||
-    !sealedAuthorityValid("control", "global", frame.control)
+    frame.format !== COMMIT_FORMAT ||
+    operation !== "restore.activate" ||
+    sequence === 0 ||
+    sequence !== image.head + 1 ||
+    typeof incarnation !== "string" ||
+    typeof restoreEpoch !== "string" ||
+    !readLaneControl({ ...control, incarnation: restoreEpoch }, undefined).ok ||
+    !Array.isArray(events) ||
+    activationBytes(incarnation, restoreEpoch, sequence - 1, time) !== body ||
+    !sealedAuthorityValid("control", "global", control) ||
+    image.entries.lease.size > RESTORE_LEASES ||
+    fold.incarnations.has(incarnation) ||
+    fold.restoreEpochs.has(restoreEpoch)
   )
     throw unavailable();
-  for (const subject of image.entries.lease.keys()) {
+  const leases = [...image.entries.lease.keys()].map((subject) => {
     const lease = readV3Value(db, image, "lease", subject);
     if (!lease) throw unavailable();
+    return [subject, lease] as const;
+  });
+  for (const [subject, lease] of leases) {
     if (lease.releasedAt === undefined)
       image.entries.lease.set(subject, {
         value: { ...lease, releasedAt: new Date(time).toISOString() },
       });
   }
   image.entries.control.clear();
-  image.entries.control.set("global", { value: frame.control });
-  image.head++;
-  image.eventWatermark++;
-  image.tailBytes = Buffer.byteLength(row.body);
-  return image;
+  image.entries.control.set("global", { value: control });
+  fold.incarnations.add(incarnation);
+  fold.restoreEpochs.add(restoreEpoch);
+  fold.segmentIncarnation = incarnation;
+  fold.pending = { sequence, time, digest: digestBytes(body) };
+  apply(image, { operation, time, events }, sequence);
+  return { incarnation, restoreEpoch };
 }
 
 export function recoverV3(
@@ -538,6 +584,12 @@ export function recoverV3(
     root.eventWatermark,
     verification.pages,
   );
+  const fold = image.fold!;
+  fold.context = "rooted";
+  if (root.activationDigest === undefined) {
+    fold.segmentIncarnation = root.incarnation as string;
+    fold.incarnations.add(fold.segmentIncarnation);
+  }
   const bodies = new Map(
     db
       .all(
@@ -578,7 +630,10 @@ export function recoverV3(
   verification.sealed(image);
   if (root.activationDigest !== undefined) {
     if (through !== undefined) throw unavailable();
-    return applyActivation(db, seal, image);
+    const { incarnation, restoreEpoch } = applyActivation(db, seal, image);
+    if (incarnation !== root.incarnation || restoreEpoch !== root.restoreEpoch)
+      throw unavailable();
+    return image;
   }
   const upper = through === undefined ? "" : " AND sequence<=?";
   const rows = db.all(
@@ -661,6 +716,7 @@ function foldRow(
   const frame = typeof body === "string" ? parse(body) : undefined;
   if (
     sequence !== image.head + 1 ||
+    restoreFrame(frame) ||
     storedCanonical(frame) !== body ||
     !validShape(frame) ||
     authorityFault(frame, mode !== "live") !== undefined ||
@@ -752,7 +808,12 @@ export function activateV3(
     eventWatermark: imported.eventWatermark,
     transcriptDigest: digestBytes(published.get("transcript:0")!),
   };
-  const activation = activationFrame(root, Date.now());
+  const activation = activationBytes(
+    root.incarnation,
+    root.restoreEpoch,
+    root.coveredHead,
+    Date.now(),
+  );
   const body = canonicalJson({
     ...root,
     activationDigest: digestBytes(activation),
@@ -996,8 +1057,13 @@ function validShape(frame: unknown): frame is Frame & Record<string, unknown> {
   );
 }
 
+const restoreFrame = (frame: unknown) =>
+  isObject(frame) &&
+  typeof frame.operation === "string" &&
+  frame.operation.startsWith("restore.");
+
 const validAppendFrame = (frame: unknown) =>
-  validShape(frame) && withinDepth(frame);
+  !restoreFrame(frame) && validShape(frame) && withinDepth(frame);
 
 function apply(image: V3Image, frame: Frame, sequence: number) {
   const { time, lease, outcome, witness } = frame;

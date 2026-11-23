@@ -4691,3 +4691,463 @@ for (const mode of ["live", "archived", "portable"] as const)
       }),
     timeout,
   );
+
+const restoreOperations = [
+  "restore.activate",
+  "restore.promote",
+  "restore.future",
+] as const;
+const invalidAppend = { code: "INPUT_INVALID", message: "Invalid v3 frame" };
+
+function observeAppendGuard(f: Fixture) {
+  const effects = f.observeEffects();
+  const rows = commits(f);
+  const transaction = f.storage.transactionSync.bind(f.storage);
+  let transactions = 0;
+  f.storage.transactionSync = (body) => {
+    transactions++;
+    return transaction(body);
+  };
+  return () => {
+    expect(transactions).toBe(0);
+    expect(effects()).toEqual(noWrites);
+    expect(commits(f)).toEqual(rows);
+  };
+}
+
+function invalidRestoreAppend(write: () => unknown) {
+  try {
+    write();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ForgeFailure);
+    expect((error as ForgeFailure).error).toMatchObject(invalidAppend);
+    return;
+  }
+  throw new Error("Expected the restore append to fail");
+}
+
+test.each(restoreOperations)(
+  "v3 probe rejects %s before opening an append transaction",
+  (operation) =>
+    withFixture(async (f) => {
+      ok(await append(f, frame()));
+      const before = await view(f);
+      const unchanged = observeAppendGuard(f);
+      const reply = await append(f, { ...frame(), operation });
+      expect(reply).toMatchObject({
+        status: 400,
+        body: { ok: false, error: invalidAppend },
+      });
+      expect(exited(reply)).toBe(6);
+      unchanged();
+      expect(await view(f)).toEqual(before);
+      const next = await append(f, frame());
+      ok(next);
+      expect(exited(next)).toBe(0);
+      expect(commits(f).map(({ sequence }) => sequence)).toEqual([1, 2]);
+    }),
+  timeout,
+);
+
+test.each(restoreOperations)(
+  "v3 direct append rejects %s before inspecting a malformed outcome",
+  (operation) =>
+    withFixture(async (f) => {
+      ok(await append(f, frame()));
+      const image = storedImage(f);
+      const unchanged = observeAppendGuard(f);
+      invalidRestoreAppend(() =>
+        appendFrameBatch(writableStore(f.storage), f.seal(), image, [
+          { ...frame(), operation, outcome: {} },
+        ]),
+      );
+      unchanged();
+      expect([image.head, image.stale, image.staged]).toEqual([1, false, []]);
+      ok(await append(f, frame()));
+      expect(commits(f).map(({ sequence }) => sequence)).toEqual([1, 2]);
+    }),
+  timeout,
+);
+
+test.each(restoreOperations)(
+  "v3 probe batch containing %s rejects the whole batch before opening a transaction",
+  (operation) =>
+    withFixture(async (f) => {
+      ok(await append(f, frame()));
+      const image = storedImage(f);
+      const unchanged = observeAppendGuard(f);
+      invalidRestoreAppend(() =>
+        appendProbeBatch(
+          writableStore(f.storage),
+          f.seal(),
+          [frame(), { ...frame(), operation }],
+          () => image,
+        ),
+      );
+      unchanged();
+      expect([image.head, image.stale, image.staged]).toEqual([1, false, []]);
+      ok(await append(f, frame()));
+      expect(commits(f).map(({ sequence }) => sequence)).toEqual([1, 2]);
+    }),
+  timeout,
+);
+
+async function coldActivationRefused(target: Fixture) {
+  target.restart();
+  const before = target.snapshot();
+  const effects = target.observeEffects();
+  const reply = await target.send(probe);
+  expect(reply).toMatchObject({
+    status: 503,
+    body: {
+      ok: false,
+      error: { code: "UNAVAILABLE", message: "Cloud v3 root is unavailable" },
+    },
+  });
+  expect(exited(reply)).toBe(1);
+  expect(effects()).toEqual(noWrites);
+  expect(target.snapshot()).toEqual(before);
+}
+
+function rebindActivation(
+  target: Fixture,
+  genesis: Json,
+  sequence: number,
+  incarnation: unknown,
+  restoreEpoch: string,
+) {
+  tamperRoot(target, (_data, r) => {
+    Object.assign(r, {
+      incarnation,
+      restoreEpoch,
+      parentDigest: digestValue({ ...genesis, incarnation, restoreEpoch }),
+    });
+    r.activationDigest = replaceSignedFrame(
+      target,
+      r,
+      sequence,
+      activationRow(r, sequence, T0 + 1),
+    );
+  });
+  expect(
+    readV3Root(writableStore(target.storage), target.seal()),
+  ).toMatchObject({
+    incarnation,
+    restoreEpoch,
+  });
+}
+
+test.each([
+  ["leading space", " E1"],
+  ["257 characters", "E".repeat(257)],
+  ["control character", "E\u0001"],
+] as const)(
+  "v3 cold activation rejects an epoch with %s",
+  (_label, restoreEpoch) =>
+    withActivation(({ target, image }) =>
+      withFixture(async (fresh) => {
+        const genesis = JSON.parse(root(fresh).body) as Json;
+        const { incarnation } = image.root;
+        rebindActivation(
+          target,
+          genesis,
+          image.head,
+          incarnation,
+          "E".repeat(256),
+        );
+        const honest = target.observeEffects();
+        const reply = await target.send(probe);
+        ok(reply);
+        expect(exited(reply)).toBe(0);
+        expect(honest()).toEqual(noWrites);
+        rebindActivation(
+          target,
+          genesis,
+          image.head,
+          incarnation,
+          restoreEpoch,
+        );
+        await coldActivationRefused(target);
+      }),
+    ),
+  timeout,
+);
+
+test(
+  "v3 cold activation accepts 2048 canonical bytes and rejects 2049",
+  () =>
+    withActivation(({ target, image }) =>
+      withFixture(async (fresh) => {
+        const genesis = JSON.parse(root(fresh).body) as Json;
+        const restoreEpoch = "\ud800".repeat(256);
+        expect(
+          readLaneControl(controlGlobal(restoreEpoch, T0), undefined).ok,
+        ).toBe(true);
+        const baseline = activationRow(
+          { incarnation: "", restoreEpoch },
+          image.head,
+          T0 + 1,
+        );
+        for (const bytes of [2048, 2049]) {
+          const incarnation = "I".repeat(
+            bytes - Buffer.byteLength(canonicalJson(baseline)),
+          );
+          rebindActivation(
+            target,
+            genesis,
+            image.head,
+            incarnation,
+            restoreEpoch,
+          );
+          const { body } = commits(target)[0]!;
+          expect(Buffer.byteLength(body)).toBe(bytes);
+          const { control } = JSON.parse(body) as Json;
+          expect(Buffer.byteLength(canonicalJson(control))).toBeLessThanOrEqual(
+            1024,
+          );
+          expect(readLaneControl(control, undefined).ok).toBe(true);
+          if (bytes === 2048) {
+            const honest = target.observeEffects();
+            const reply = await target.send(probe);
+            ok(reply);
+            expect(exited(reply)).toBe(0);
+            expect(honest()).toEqual(noWrites);
+          } else await coldActivationRefused(target);
+        }
+      }),
+    ),
+  timeout,
+);
+
+test(
+  "v3 cold activation rejects a safe integer outside the Date range",
+  () =>
+    withActivation(async ({ target, image }) => {
+      tamperRoot(target, (_data, r) => {
+        const row = activationRow(r, image.head, T0 + 1);
+        r.activationDigest = replaceSignedFrame(target, r, image.head, {
+          ...row,
+          time: 8_640_000_000_000_001,
+        });
+      });
+      await coldActivationRefused(target);
+    }),
+  timeout,
+);
+
+type FoldObservation = {
+  context: string;
+  segmentIncarnation?: string;
+  incarnations: Set<string>;
+  restoreEpochs: Set<string>;
+  approvalIds: Set<string>;
+  pending?: unknown;
+};
+
+function observedFold(image: ReturnType<typeof recoverV3>): unknown {
+  const fold = (image as { fold?: FoldObservation }).fold;
+  return (
+    fold && {
+      context: fold.context,
+      segmentIncarnation: fold.segmentIncarnation,
+      incarnations: [...fold.incarnations].sort(),
+      restoreEpochs: [...fold.restoreEpochs].sort(),
+      approvalIds: [...fold.approvalIds].sort(),
+      pending: fold.pending,
+    }
+  );
+}
+
+test(
+  "v3 activated root retains fold lineage and one pending activation on warm and cold reads",
+  () =>
+    activatedScene(async (copy, { data }) => {
+      const target = await copy();
+      using _target = target.db;
+      const warm = storedImage(target);
+      const warmReply = await view(target);
+      target.restart();
+      const effects = target.observeEffects();
+      const coldReply = await view(target);
+      const cold = storedImage(target);
+      const { incarnation, restoreEpoch, activationDigest } = warm.root;
+      const sequence = data.head + 1;
+      const time = T0 + 1;
+      expect(commits(target)).toEqual([
+        {
+          sequence,
+          body: canonicalJson(activationRow(warm.root, sequence, time)),
+        },
+      ]);
+      expect(activationDigest).toBe(digestBytes(commits(target)[0]!.body));
+      expect(coldReply).toEqual(warmReply);
+      expect(coldReply).toMatchObject({
+        publicDigest: data.publicDigest,
+        image: {
+          head: sequence,
+          eventWatermark: data.eventWatermark + 1,
+          control: controlDigest(controlGlobal(incarnation, time)),
+        },
+      });
+      expect(effects()).toEqual(noWrites);
+      for (const image of [warm, cold]) {
+        expect<unknown>(viewV3(image)).toEqual(warmReply);
+        expect(observedFold(image)).toEqual({
+          context: "rooted",
+          segmentIncarnation: incarnation,
+          incarnations: [incarnation],
+          restoreEpochs: [restoreEpoch],
+          approvalIds: [],
+          pending: { sequence, time, digest: activationDigest },
+        });
+      }
+    }),
+  timeout,
+);
+
+test(
+  "v3 ordinary root retains its own fold lineage on warm and cold reads",
+  () =>
+    withFixture(async (f) => {
+      ok(await append(f, putRecord("r1", 1, "x"), frame(), frame()));
+      await drain(f, 0, 3);
+      const warm = storedImage(f);
+      const warmReply = await view(f);
+      f.restart();
+      const effects = f.observeEffects();
+      const coldReply = await view(f);
+      const cold = storedImage(f);
+      const record = entryDigest(digestValue("x"), 1);
+      expect(coldReply).toEqual(warmReply);
+      expect(coldReply).toMatchObject({
+        publicDigest: digestValue([["record", "r1", record]]),
+        image: { head: 3, eventWatermark: 1, record: { r1: record } },
+      });
+      expect(effects()).toEqual(noWrites);
+      for (const image of [warm, cold]) {
+        expect<unknown>(viewV3(image)).toEqual(warmReply);
+        expect(observedFold(image)).toEqual({
+          context: "rooted",
+          segmentIncarnation: warm.root.incarnation,
+          incarnations: [warm.root.incarnation],
+          restoreEpochs: [],
+          approvalIds: [],
+          pending: undefined,
+        });
+      }
+    }),
+  timeout,
+);
+
+test(
+  "v3 portable fold starts without a source segment incarnation",
+  () =>
+    withFixture((f) => {
+      const effects = f.observeEffects();
+      const image = foldTranscript(
+        writableStore(f.storage),
+        [{ sequence: 1 }, { sequence: 2 }],
+        "portable",
+        Project.admitLeaseRequest,
+      );
+      expect([image.head, image.eventWatermark]).toEqual([2, 0]);
+      expect(effects()).toEqual(noWrites);
+      expect(observedFold(image)).toEqual({
+        context: "portable",
+        segmentIncarnation: undefined,
+        incarnations: [],
+        restoreEpochs: [],
+        approvalIds: [],
+        pending: undefined,
+      });
+    }),
+  timeout,
+);
+
+test(
+  "v3 cold activation rejects a frame epoch different from the sealed root",
+  () =>
+    withActivation(async ({ target, image }) => {
+      tamperRoot(target, (_data, r) => {
+        const row = activationRow(r, image.head, T0 + 1);
+        const restoreEpoch =
+          image.root.restoreEpoch === "other" ? "new" : "other";
+        r.activationDigest = replaceSignedFrame(target, r, image.head, {
+          ...row,
+          restoreEpoch,
+        });
+      });
+      await coldActivationRefused(target);
+    }),
+  timeout,
+);
+
+test(
+  "v3 cold activation rejects an extra commit at the covered head",
+  () =>
+    withActivation(async ({ target, image }) => {
+      const sequence = image.root.coveredHead;
+      expect(sequence).toBeGreaterThan(0);
+      const body = canonicalJson({
+        ...frame(),
+        format: "forge-cloud-commit/3",
+        sequence,
+      });
+      target.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?, ?)", [
+        sequence,
+        body,
+        target.sign(sequence, body),
+      ]);
+      await coldActivationRefused(target);
+    }),
+  timeout,
+);
+
+test.each(["live", "archived", "portable"] as const)(
+  "v3 %s history refuses an ordinary-shaped restore.future frame",
+  (mode) =>
+    withFixture(async (source) => {
+      ok(await append(source, putRecord("r1", 1, "x"), frame()));
+      const r = JSON.parse(root(source).body) as Json;
+      const candidate = {
+        ...frame(),
+        format: "forge-cloud-commit/3",
+        operation: "restore.future",
+        sequence: 2,
+      };
+      if (mode === "live") {
+        expect((await view(source)).image.head).toBe(2);
+        replaceSignedFrame(source, r, 2, candidate);
+        await coldActivationRefused(source);
+        return;
+      }
+      await drain(source, 0, 2);
+      const fold = (frames: Json[]) =>
+        foldTranscript(
+          writableStore(source.storage),
+          frames,
+          mode,
+          Project.admitLeaseRequest,
+        );
+      const replaceNote = (frames: Json[]) => {
+        if (mode === "portable") frames[1] = { sequence: 2 };
+        expect(fold(frames).head).toBe(2);
+        frames[1] = candidate;
+        unavailableRead(() => fold(frames));
+      };
+      if (mode === "archived") {
+        expect((await view(source)).image.head).toBe(2);
+        tamperRoot(source, (data, sealed) =>
+          reTranscript(data, sealed, replaceNote),
+        );
+        await coldActivationRefused(source);
+      } else {
+        const data = typedBackup(source);
+        editHistory(data, replaceNote);
+        const target = guardFixture();
+        using _target = target.db;
+        await rejectedFinalPage(target, data);
+      }
+    }),
+  timeout,
+);
