@@ -6,7 +6,6 @@ type WebClientOptions = NonNullable<SlackAdapterConfig["webClientOptions"]>;
 type WebClientLogger = NonNullable<WebClientOptions["logger"]>;
 type WebClientLevel = ReturnType<WebClientLogger["getLevel"]>;
 type Level = "info" | "warn" | "error";
-const scopes = new Set(["chat", "slack", "channel", "thread"]);
 
 function safeCount(value: unknown): number | undefined {
   if (
@@ -25,18 +24,17 @@ function safeCount(value: unknown): number | undefined {
 }
 
 export function createChatLogger(log: HubLog): Logger & WebClientLogger {
-  function logger(scope?: string): Logger & WebClientLogger {
+  function logger(): Logger & WebClientLogger {
     let level = "info" as WebClientLevel;
     function write(severity: Level, fields: unknown) {
       const count = safeCount(fields);
-      const selected = count === undefined ? undefined : { count };
       log[severity](
         `chat.${severity}`,
-        scope === undefined ? selected : { ...selected, scope },
+        count === undefined ? undefined : { count },
       );
     }
     return {
-      child: (prefix) => logger(scopes.has(prefix) ? prefix : "other"),
+      child: logger,
       debug: () => undefined,
       info: (_message: unknown, fields?: unknown) => write("info", fields),
       warn: (_message: unknown, fields?: unknown) => write("warn", fields),

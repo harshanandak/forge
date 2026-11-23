@@ -87,6 +87,7 @@ for (const separateHandles of [false, true]) {
       const secondDb = separateHandles ? openDb(path, false) : firstDb;
       const first = createSqliteChatState(firstDb);
       const second = createSqliteChatState(secondDb);
+      setSystemTime(1_800_000_000_000);
       const [wroteFirst, wroteSecond] = await Promise.all([
         first.setIfNotExists("key", "first", 1_000),
         second.setIfNotExists("key", "second", 1_000),

@@ -45,7 +45,7 @@ test(
 );
 
 test(
-  "L2 logger drops errors and extra arguments and maps unlisted child scope to other",
+  "L2 child loggers emit only fixed event codes and validated counts",
   () => {
     const entries: Array<{ event: string; fields?: LogFields }> = [];
     const record: HubLog["info"] = (event, fields) =>
@@ -59,13 +59,15 @@ test(
     logger.error("SDK error", error, { count: 3 });
     logger.debug("Any debug entry", error);
     logger.child("unknown-name").warn("child error", error);
+    logger.child("slack").info("child count", { count: 3, scope: "input" });
     logger.setName(synthetic);
     logger.setLevel(logger.getLevel());
     logger.error(error);
 
     expect(entries).toEqual([
       { event: "chat.error" },
-      { event: "chat.warn", fields: { scope: "other" } },
+      { event: "chat.warn" },
+      { event: "chat.info", fields: { count: 3 } },
       { event: "chat.error" },
     ]);
   },
