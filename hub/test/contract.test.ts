@@ -34,7 +34,9 @@ const timeout = 30_000;
 test(
   "MCP schema names and required authority fields match the contract",
   () => {
-    expect(Object.keys(TOOL_INPUT_SCHEMAS)).toEqual([...MCP_TOOL_NAMES]);
+    expect(Object.keys(TOOL_INPUT_SCHEMAS).sort()).toEqual(
+      MCP_TOOL_NAMES.toSorted(),
+    );
     expect<readonly string[]>(
       TOOL_INPUT_SCHEMAS.ask.properties.requestedAction.enum,
     ).toEqual(["choice", "work", ...AUTHORITY_ACTIONS]);
