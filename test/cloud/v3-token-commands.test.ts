@@ -1146,16 +1146,17 @@ const transcript = (f: Fixture) =>
 const throwUnavailable = "Cloud v3 root is unavailable";
 
 async function traceStatements(f: Fixture, run: () => Promise<Answer>) {
-  const previous = f.storage.sql.exec;
+  const original = Object.getOwnPropertyDescriptor(f.storage.sql, "exec")!;
+  const previous = f.storage.sql.exec.bind(f.storage.sql);
   const seen: string[] = [];
   f.storage.sql.exec = (sql, ...bindings) => {
     seen.push(sql);
-    return previous.call(f.storage.sql, sql, ...bindings);
+    return previous(sql, ...bindings);
   };
   try {
     return { reply: await run(), seen };
   } finally {
-    f.storage.sql.exec = previous;
+    Object.defineProperty(f.storage.sql, "exec", original);
   }
 }
 
@@ -1362,7 +1363,8 @@ test.each(["second insert", "after token update"] as const)(
     const before = frames(f);
     const snapshot = f.snapshot();
     const warmBefore = (await probeView(f)) as Json;
-    const previous = f.storage.sql.exec;
+    const original = Object.getOwnPropertyDescriptor(f.storage.sql, "exec")!;
+    const previous = f.storage.sql.exec.bind(f.storage.sql);
     let inserts = 0;
     let updates = 0;
     let afterUpdate = false;
@@ -1373,7 +1375,7 @@ test.each(["second insert", "after token update"] as const)(
       }
       if (afterUpdate && /^SELECT changes\(\)/i.test(sql))
         throw new Error(point);
-      const reply = previous.call(f.storage.sql, sql, ...bindings);
+      const reply = previous(sql, ...bindings);
       if (/^UPDATE cloud_v3_tokens/i.test(sql)) {
         updates++;
         afterUpdate = point === "after token update";
@@ -1384,7 +1386,7 @@ test.each(["second insert", "after token update"] as const)(
     try {
       reply = await revoke(f, t);
     } finally {
-      f.storage.sql.exec = previous;
+      Object.defineProperty(f.storage.sql, "exec", original);
     }
     expect(inserts).toBe(2);
     expect(updates).toBe(point === "second insert" ? 0 : 1);
