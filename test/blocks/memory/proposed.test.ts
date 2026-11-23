@@ -96,10 +96,11 @@ const peerItem = { ...absent, id: `project/${peerIdentity.id}/note-1` };
 type DecisionReply = Pick<Reply, "results">;
 const dryDecision = { results: [] };
 const unusedApproval = "nothing was written and no owner approval was used";
-const proposalChange = (result: Promise<unknown>, message: unknown) =>
-  expect(result).rejects.toMatchObject({
+async function proposalChange(result: Promise<unknown>, message: unknown) {
+  await expect(result).rejects.toMatchObject({
     error: { code: "PROPOSAL_CHANGED", message },
   });
+}
 const writes = (state: ReturnType<typeof memoryState>) => {
   const { put, putMany } = state.counts;
   return { put, putMany };
