@@ -383,7 +383,7 @@ const frameOf = (
     scope: { family: "command" },
     status: error.code,
     result: error,
-    until,
+    retryUntil: until,
     ...extra,
   },
   basis,

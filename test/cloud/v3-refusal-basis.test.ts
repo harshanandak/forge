@@ -779,7 +779,8 @@ async function tampered(name: string, edit: Edit, place: Place, extra?: Setup) {
     forge(data, id, edit);
     const target = guardFixture(env);
     using _target = target.db;
-    return refusedRestore(target, data);
+    await refusedRestore(target, data);
+    return;
   }
   retamper(f, sequence, tail(edit));
   const before = f.snapshot();
