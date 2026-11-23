@@ -1,14 +1,16 @@
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MCP_TOOL_NAMES } from "../../src/contract/mcp.ts";
-import { key } from "./fixtures.ts";
+import { digest, key, safeOutput } from "./fixtures.ts";
 import {
+  answer,
   child,
+  deny,
   failure,
   guard,
-  hookFixture,
+  hookTest,
   hubRoot,
   hung,
   mode,
@@ -19,147 +21,96 @@ import {
 } from "./hook-fixtures.ts";
 
 const timeout = 30_000;
-const check = (stderr: string) => ({ status: 2, stdout: "", stderr });
-const name = (tool: string) => "mcp__forge-hub__" + tool;
+const check = hookTest(timeout);
+const forge = (tool: string) => "mcp__forge-hub__" + tool;
+const owns = { sessionId: "ses_a" };
+const foreignId = { sessionId: "ses_b" };
+const foreignTools = ["inbox", "wait", "send"];
+const modes = ["normal", "reply_only"];
 
-test(
-  "P1-P3 hooked tools require their own registered id in both modes",
-  async () => {
-    const f = await hookFixture();
-    try {
-      expect(await f.run("pre-tool", guard(f.root, name("hello")))).toEqual(
-        check(r2),
-      );
-      for (const current of ["normal", "reply_only"]) {
-        f.respond = () => mode(current);
-        for (const tool of ["inbox", "wait", "send"]) {
-          expect(
-            await f.run(
-              "pre-tool",
-              guard(f.root, name(tool), { sessionId: "ses_b" }),
-            ),
-          ).toEqual(check(r2));
-        }
-        for (const tool of MCP_TOOL_NAMES) {
-          expect(
-            await f.run(
-              "pre-tool",
-              guard(f.root, name(tool), { sessionId: "ses_a" }),
-            ),
-          ).toEqual(silence);
-        }
-      }
-      expect(f.seen).toHaveLength(1 + 2 * (3 + MCP_TOOL_NAMES.length));
-      expect(f.seen.every(({ path }) => path === "/hook/mode")).toBe(true);
-    } finally {
-      await f.close();
+check(
+  "P1-P3 every Forge call uses its own registered id and a fresh lookup",
+  async (f) => {
+    const original = await f.files();
+    expect(await f.tool(forge("hello"))).toEqual(deny(r2));
+    for (const current of modes) {
+      f.respond = () => mode(current);
+      for (const tool of foreignTools)
+        expect(await f.tool(forge(tool), foreignId)).toEqual(deny(r2));
+      for (const tool of MCP_TOOL_NAMES)
+        expect(await f.tool(forge(tool), owns)).toEqual(silence);
     }
+    expect(await f.files()).toEqual(original);
+    expect(f.seen).toHaveLength(
+      1 + modes.length * (foreignTools.length + MCP_TOOL_NAMES.length),
+    );
+    expect(f.seen.every(({ path }) => path === "/hook/mode")).toBe(true);
   },
-  timeout,
 );
 
 const failures = [
-  ["timeout", "HUB_TIMEOUT", hung],
-  ["unauthenticated", "UNAUTHENTICATED", () => failure(401, "UNAUTHENTICATED")],
-  ["disabled", "BLOCK_DISABLED", () => failure(503, "BLOCK_DISABLED")],
-  ["malformed", "INVALID_RESPONSE", () => Response.json([])],
-  ["unregistered", "UNREGISTERED", () => mode("unregistered")],
+  ["HUB_TIMEOUT", hung],
+  ["UNAUTHENTICATED", () => failure(401, "UNAUTHENTICATED")],
+  ["BLOCK_DISABLED", () => failure(503, "BLOCK_DISABLED")],
+  ["INVALID_RESPONSE", () => Response.json([])],
+  ["UNREGISTERED", () => mode("unregistered")],
 ] as const;
-for (const [label, code, respond] of failures) {
-  test(
-    `P4 ${label} denies both Forge calls and writes`,
-    async () => {
-      const f = await hookFixture();
-      f.respond = (_path, signal) => respond(signal);
-      try {
-        for (const tool of [name("inbox"), "Write"]) {
-          const started = performance.now();
-          expect(
-            await f.run(
-              "pre-tool",
-              guard(f.root, tool, { sessionId: "ses_a" }),
-            ),
-          ).toEqual(check(r3(code)));
-          expect(performance.now() - started).toBeLessThan(3500);
-        }
-        expect(f.seen).toHaveLength(2);
-      } finally {
-        await f.close();
-      }
-    },
-    timeout,
-  );
+const probed = [forge("inbox"), "Write"];
+for (const [code, respond] of failures) {
+  check("P4 lookup failure denies both tools: " + code, async (f) => {
+    f.respond = (_path, signal) => respond(signal);
+    for (const tool of probed) {
+      const time = performance.now();
+      expect(await f.tool(tool, owns)).toEqual(deny(r3(code)));
+      expect(performance.now() - time).toBeLessThan(3500);
+    }
+    expect(f.seen).toHaveLength(2);
+  });
 }
 
-test(
-  "P4 key missing/malformed and closed port deny without using a stale result",
-  async () => {
-    const f = await hookFixture();
-    try {
-      for (const tool of [name("inbox"), "Write"]) {
-        expect(
-          await f.run("pre-tool", guard(f.root, tool), {
-            FORGE_HUB_HOST_KEY_FILE: join(f.root, "missing"),
-          }),
-        ).toEqual(check(r3("HOST_KEY_UNAVAILABLE")));
-      }
-      await writeFile(f.keyPath, "bad");
-      for (const tool of [name("inbox"), "Write"])
-        expect(await f.run("pre-tool", guard(f.root, tool))).toEqual(
-          check(r3("HOST_KEY_UNAVAILABLE")),
-        );
-      expect(f.seen).toEqual([]);
-      await writeFile(f.keyPath, key);
-      await f.stopServer();
-      for (const tool of [name("inbox"), "Write"])
-        expect(await f.run("pre-tool", guard(f.root, tool))).toEqual(
-          check(r3("HUB_UNREACHABLE")),
-        );
-    } finally {
-      await f.close();
-    }
-  },
-  timeout,
-);
-
-test(
-  "P5 foreign read then outage denies a write while a local Read still works",
-  async () => {
-    const f = await hookFixture();
-    await writeFile(join(f.root, "file"), "fixture");
-    try {
-      expect(await f.run("pre-tool", guard(f.root))).toEqual(silence);
-      f.respond = () => mode("reply_only");
-      expect(
-        await f.run(
-          "pre-tool",
-          guard(f.root, name("inbox"), { sessionId: "ses_a" }),
-        ),
-      ).toEqual(silence);
-      await f.stopServer();
-      expect(await f.run("pre-tool", guard(f.root))).toEqual(
-        check(r3("HUB_UNREACHABLE")),
+check(
+  "P4 missing or malformed key and closed port all fail closed",
+  async (f) => {
+    const missing = { FORGE_HUB_HOST_KEY_FILE: f.path("missing") };
+    for (const tool of probed)
+      expect(await f.tool(tool, {}, missing)).toEqual(
+        deny(r3("HOST_KEY_UNAVAILABLE")),
       );
-      expect(
-        await f.run("pre-tool", guard(f.root, "Read", { file_path: "file" })),
-      ).toEqual(silence);
-      expect(f.seen).toHaveLength(2);
-    } finally {
-      await f.close();
-    }
+    await writeFile(f.keyPath, "bad");
+    for (const tool of probed)
+      expect(await f.tool(tool)).toEqual(deny(r3("HOST_KEY_UNAVAILABLE")));
+    expect(f.seen).toEqual([]);
+    await writeFile(f.keyPath, key);
+    await f.stopServer();
+    for (const tool of probed)
+      expect(await f.tool(tool)).toEqual(deny(r3("HUB_UNREACHABLE")));
   },
-  timeout,
 );
 
-test(
-  "P6-P8 lookalikes, writes, tasks, web and every Bash command need clean fresh mode",
-  async () => {
-    const f = await hookFixture();
+check(
+  "P5 foreign read then outage denies writes while a local Read works",
+  async (f) => {
+    await writeFile(f.path("file"), "fixture");
+    const original = await f.files();
+    expect(await f.tool()).toEqual(silence);
+    expect(await f.files()).toEqual(original);
+    f.respond = () => mode("reply_only");
+    expect(await f.tool(forge("inbox"), owns)).toEqual(silence);
+    await f.stopServer();
+    expect(await f.tool()).toEqual(deny(r3("HUB_UNREACHABLE")));
+    expect(await f.tool("Read", { file_path: "file" })).toEqual(silence);
+    expect(f.seen).toHaveLength(2);
+  },
+);
+
+check(
+  "P6-P8 lookalikes, writes, tasks, web and Bash use fresh mode",
+  async (f) => {
     const lookalikes = [
       "mcp__forge-hub-evil__inbox",
       "mcp__forge-hub__x__reply",
       "mcp__other__hello",
-      name("merge"),
+      forge("merge"),
     ];
     const other = [
       "Write",
@@ -178,251 +129,182 @@ test(
       "printf a\nprintf b",
       "rm -rf build",
     ];
-    try {
-      f.respond = () => mode("reply_only");
-      for (const tool of [...lookalikes, ...other])
-        expect(await f.run("pre-tool", guard(f.root, tool))).toEqual(check(r1));
-      for (const command of commands)
-        expect(
-          await f.run("pre-tool", guard(f.root, "Bash", { command })),
-        ).toEqual(check(r1));
-      f.respond = () => mode();
-      for (const tool of [...lookalikes, "Write", "Task", "Bash"])
-        expect(
-          await f.run(
-            "pre-tool",
-            guard(f.root, tool, { command: "git status" }),
-          ),
-        ).toEqual(silence);
-      expect(f.seen).toHaveLength(
-        2 * lookalikes.length + other.length + commands.length + 3,
-      );
-    } finally {
-      await f.close();
+    const original = await f.files();
+    f.respond = () => mode("reply_only");
+    for (const tool of [...lookalikes, ...other])
+      expect(await f.tool(tool)).toEqual(deny(r1));
+    for (const command of commands)
+      expect(await f.tool("Bash", { command })).toEqual(deny(r1));
+    f.respond = () => mode();
+    for (const tool of [...lookalikes, "Write", "Task", "Bash"]) {
+      expect(await f.tool(tool, { command: "git status" })).toEqual(silence);
     }
+    expect(await f.files()).toEqual(original);
+    expect(f.seen).toHaveLength(
+      2 * lookalikes.length + other.length + commands.length + 3,
+    );
   },
-  timeout,
 );
 
-test(
-  "P9 local Read Glob and Grep work without a mode request",
-  async () => {
-    const f = await hookFixture();
-    try {
-      await mkdir(join(f.root, "src"));
-      await writeFile(join(f.root, "src", "file.ts"), "fixture");
-      f.respond = () => mode("reply_only");
-      for (const offline of [false, true]) {
-        if (offline) await f.stopServer();
-        for (const input of [
-          guard(f.root, "Read", { file_path: join(f.root, "src", "file.ts") }),
-          guard(f.root, "Glob", { pattern: "**/*.ts" }),
-          guard(f.root, "Grep", { path: "src", pattern: "fixture" }),
-        ])
-          expect(await f.run("pre-tool", input)).toEqual(silence);
-      }
-      expect(f.seen).toEqual([]);
-    } finally {
-      await f.close();
-    }
-  },
-  timeout,
-);
+check("P9 inside cwd, Read Glob and Grep do not need network", async (f) => {
+  await mkdir(f.path("src"));
+  const file = join(f.root, "src", "file.ts");
+  await writeFile(file, "fixture");
+  f.respond = () => mode("reply_only");
+  for (const offline of [false, true]) {
+    if (offline) await f.stopServer();
+    expect(await f.tool("Read", { file_path: file })).toEqual(silence);
+    expect(await f.tool("Glob", { pattern: "**/*.ts" })).toEqual(silence);
+    expect(await f.tool("Grep", { path: "src", pattern: "fixture" })).toEqual(
+      silence,
+    );
+  }
+  expect(f.seen).toEqual([]);
+});
 
-test(
-  "P10 outside, junction, traversal and missing paths require clean mode",
-  async () => {
-    const f = await hookFixture();
+check(
+  "P10 outside, junction, traversal and missing paths need clean mode",
+  async (f) => {
     const outside = await mkdtemp(join(tmpdir(), "forge-outside-"));
     try {
       const file = join(outside, "file");
       await writeFile(file, "fixture");
-      await symlink(outside, join(f.root, "link"), "junction");
+      await symlink(outside, f.path("link"), "junction");
       const cases = [
-        guard(f.root, "Read", { file_path: file }),
-        guard(f.root, "Glob", { pattern: "../x/*" }),
-        guard(f.root, "Glob", { pattern: file }),
-        guard(f.root, "Grep", { path: "..", pattern: "fixture" }),
-        guard(f.root, "Read", { file_path: join(f.root, "link", "file") }),
-        guard(f.root, "Read", { file_path: "missing" }),
-      ];
-      for (const current of ["reply_only", "normal"]) {
+        ["Read", { file_path: file }],
+        ["Glob", { pattern: "../x/*" }],
+        ["Glob", { pattern: file }],
+        ["Grep", { path: "..", pattern: "fixture" }],
+        ["Read", { file_path: join(f.root, "link", "file") }],
+        ["Read", { file_path: "missing" }],
+      ] as const;
+      for (const current of modes) {
         f.respond = () => mode(current);
-        for (const input of cases)
-          expect(await f.run("pre-tool", input)).toEqual(
-            current === "normal" ? silence : check(r1),
+        for (const [name, input] of cases)
+          expect(await f.tool(name, input)).toEqual(
+            current === "normal" ? silence : deny(r1),
           );
       }
-      expect(f.seen).toHaveLength(2 * cases.length);
+      expect(f.seen).toHaveLength(modes.length * cases.length);
     } finally {
-      await f.close();
       await rm(outside, { recursive: true, force: true });
     }
   },
-  timeout,
 );
 
-test(
-  "P11 and Y1 malformed stdin denies before network",
-  async () => {
-    const f = await hookFixture();
-    try {
-      for (const input of [
-        "not json",
-        "null",
-        "[]",
-        '"x"',
-        {},
-        { ...guard(f.root), tool_name: undefined },
-        { ...guard(f.root), session_id: 1 },
-        guard(f.root, "Read", "bad"),
-        { ...guard(f.root), cwd: 1 },
-      ]) {
-        expect(await f.run("pre-tool", input)).toEqual(
-          check(r3("INVALID_INPUT")),
-        );
-      }
-      expect(f.seen).toEqual([]);
-    } finally {
-      await f.close();
-    }
+check("P11 and Y1 invalid guard input refuses without a request", async (f) => {
+  const base = guard(f.root);
+  for (const input of [
+    "not json",
+    "null",
+    "[]",
+    '"x"',
+    {},
+    { ...base, tool_name: undefined },
+    { ...base, session_id: 1 },
+    guard(f.root, "Read", "bad"),
+    { ...base, cwd: 1 },
+  ])
+    expect(await f.run("pre-tool", input)).toEqual(deny(r3("INVALID_INPUT")));
+  expect(f.seen).toEqual([]);
+});
+
+check("P12 unset and non-loopback HTTP hub URL fail closed", async (f) => {
+  for (const url of ["http://example.invalid", ""])
+    expect(await f.tool("Write", {}, { FORGE_HUB_URL: url })).toEqual(
+      deny(r3("HUB_URL_INVALID")),
+    );
+  expect(f.seen).toEqual([]);
+});
+
+check("P13 redirect does not send the host key to another port", async (f) => {
+  const other = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(),
+  });
+  let forwarded = 0;
+  other.reload({
+    fetch: () => {
+      forwarded++;
+      return new Response();
+    },
+  });
+  try {
+    f.respond = () =>
+      new Response(null, {
+        status: 307,
+        headers: { location: other.url.href },
+      });
+    const result = await f.tool();
+    expect(result.status).toBe(2);
+    expect(result.stderr).toStartWith(
+      "Forge hub could not confirm this session",
+    );
+    expect(f.seen).toHaveLength(1);
+    expect(forwarded).toBe(0);
+  } finally {
+    await other.stop(true);
+  }
+});
+
+check(
+  "P14-P15 correct base path, named tool, host session and fresh key",
+  async (f) => {
+    const env = {
+      FORGE_HUB_URL: f.url + "/forge-hub",
+      FORGE_HUB_MCP_SERVER: "other-hub",
+    };
+    const tool = "mcp__other-hub__inbox";
+    f.respond = () => mode("reply_only");
+    expect(await f.tool(tool, foreignId, env)).toEqual(deny(r2));
+    const fresh = key.slice(0, -1) + "z";
+    await writeFile(f.keyPath, fresh);
+    const accepted = await f.tool(tool, owns, env);
+    const rejected = await f.tool(forge("inbox"), owns, env);
+    expect(accepted).toEqual(silence);
+    expect(rejected).toEqual(deny(r1));
+    safeOutput(JSON.stringify([accepted, rejected]), [fresh, digest(fresh)]);
+    const expected = (bearer: string) => ({
+      path: "/forge-hub/hook/mode",
+      method: "POST",
+      bearer: "Bearer " + bearer,
+      type: "application/json",
+      body: { host: "claude", hostSessionId: "s1" },
+    });
+    expect(f.seen).toEqual([key, fresh, fresh].map(expected));
   },
-  timeout,
 );
 
-test(
-  "P12 remote HTTP and missing hub URL fail closed",
-  async () => {
-    const f = await hookFixture();
-    try {
-      for (const url of ["http://example.invalid", ""])
-        expect(
-          await f.run("pre-tool", guard(f.root), { FORGE_HUB_URL: url }),
-        ).toEqual(check(r3("HUB_URL_INVALID")));
-      expect(f.seen).toEqual([]);
-    } finally {
-      await f.close();
+check(
+  "X1 launcher checks mode once and Y1 bad hub replies fail closed",
+  async (f) => {
+    f.respond = () => mode("reply_only");
+    expect(await f.tool()).toEqual(deny(r1));
+    expect(f.seen).toHaveLength(1);
+    expect(f.seen[0]?.bearer).toBe("Bearer " + key);
+    for (const value of [
+      null,
+      { mode: 1 },
+      { mode: "rogue" },
+      { mode: "normal", sessionId: 123 },
+    ]) {
+      f.respond = () => answer(value);
+      expect(await f.tool()).toEqual(deny(r3("INVALID_RESPONSE")));
     }
   },
-  timeout,
 );
 
-test(
-  "P13 redirects cannot forward the key",
-  async () => {
-    const f = await hookFixture();
-    const other = await hookFixture();
-    try {
-      f.respond = () =>
-        new Response(null, { status: 307, headers: { location: other.url } });
-      const result = await f.run("pre-tool", guard(f.root));
-      expect(result.status).toBe(2);
-      expect(result.stderr).toStartWith(
-        "Forge hub could not confirm this session",
-      );
-      expect(f.seen).toHaveLength(1);
-      expect(other.seen).toEqual([]);
-    } finally {
-      await f.close();
-      await other.close();
-    }
-  },
-  timeout,
-);
-
-test(
-  "P14-P15 uses direct modes, current key file, base path and configured exact tool name",
-  async () => {
-    const f = await hookFixture();
-    try {
-      const options = {
-        FORGE_HUB_URL: f.url + "/forge-hub",
-        FORGE_HUB_MCP_SERVER: "other-hub",
-      };
-      f.respond = () => mode("reply_only");
-      expect(
-        await f.run(
-          "pre-tool",
-          guard(f.root, "mcp__other-hub__inbox", { sessionId: "ses_b" }),
-          options,
-        ),
-      ).toEqual(check(r2));
-      const fresh = key.slice(0, -1) + "z";
-      await writeFile(f.keyPath, fresh);
-      expect(
-        await f.run(
-          "pre-tool",
-          guard(f.root, "mcp__other-hub__inbox", { sessionId: "ses_a" }),
-          options,
-        ),
-      ).toEqual(silence);
-      expect(
-        await f.run(
-          "pre-tool",
-          guard(f.root, name("inbox"), { sessionId: "ses_a" }),
-          options,
-        ),
-      ).toEqual(check(r1));
-      expect(f.seen).toEqual(
-        [key, fresh, fresh].map((bearer) => ({
-          path: "/forge-hub/hook/mode",
-          method: "POST",
-          bearer: "Bearer " + bearer,
-          type: "application/json",
-          body: { host: "claude", hostSessionId: "s1" },
-        })),
-      );
-    } finally {
-      await f.close();
-    }
-  },
-  timeout,
-);
-
-test(
-  "P17, X1 and Y1 launched guard runs once and invalid modes fail closed",
-  async () => {
-    const f = await hookFixture();
-    try {
-      f.respond = () => mode("reply_only");
-      expect(await f.run("pre-tool", guard(f.root))).toEqual(check(r1));
-      expect(f.seen).toHaveLength(1);
-      expect(f.seen[0]?.bearer).toBe("Bearer " + key);
-      for (const result of [
-        null,
-        { mode: 1 },
-        { mode: "rogue" },
-        { mode: "normal", sessionId: 123 },
-      ]) {
-        f.respond = () => Response.json({ ok: true, status: "OK", result });
-        expect(await f.run("pre-tool", guard(f.root))).toEqual(
-          check(r3("INVALID_RESPONSE")),
-        );
-      }
-    } finally {
-      await f.close();
-    }
-  },
-  timeout,
-);
-
-test(
-  "Y3 emitted shared library has no launch effect",
-  async () => {
-    const f = await hookFixture();
-    try {
-      const result = await child(f.root, [
-        "--input-type=module",
-        "-e",
-        "await import(process.argv[1])",
-        new URL("../../dist/hooks/shared.js", import.meta.url).href,
-      ]);
-      expect(result).toEqual(silence);
-      expect(f.seen).toEqual([]);
-      expect(hubRoot.length).toBeGreaterThan(0);
-    } finally {
-      await f.close();
-    }
-  },
-  timeout,
-);
+check("Y3 importing built shared library has no launch effect", async (f) => {
+  const file = new URL("../../dist/hooks/shared.js", import.meta.url).href;
+  expect(
+    await child(f.root, [
+      "--input-type=module",
+      "-e",
+      "await import(process.argv[1])",
+      file,
+    ]),
+  ).toEqual(silence);
+  expect(f.seen).toEqual([]);
+  expect(hubRoot.length).toBeGreaterThan(0);
+});

@@ -6,7 +6,7 @@ import * as contract from "../../src/contract/hooks.ts";
 import { MCP_SERVER_NAME } from "../../src/contract/mcp.ts";
 import * as shared from "../../src/hooks/shared.ts";
 import { FakeHostBridge } from "../fakes/fake-host.ts";
-import { FakeHubCore, fail, person } from "./fixtures.ts";
+import { fakeCore, fail, person } from "./fixtures.ts";
 
 const timeout = 30_000;
 const hub = fileURLToPath(new URL("../../", import.meta.url));
@@ -72,7 +72,7 @@ test(
 test(
   "F1 FakeHostBridge returns mode session id and preserves host-only calls",
   () => {
-    const fake = new FakeHubCore();
+    const fake = fakeCore();
     const caller = { person, hostInstanceId: "hst_a" };
     const bridge = new FakeHostBridge(fake, caller);
     expect(bridge.mode("s1")).toEqual({ mode: "normal", sessionId: "ses_a" });

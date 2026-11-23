@@ -1,9 +1,5 @@
-import { expect, test } from "bun:test";
-import {
-  HTTP_STATUS,
-  SECRET_PATTERNS,
-  type HubErrorCode,
-} from "../../src/contract/errors.ts";
+import { expect } from "bun:test";
+import { HTTP_STATUS, type HubErrorCode } from "../../src/contract/errors.ts";
 import {
   ASK_DELIVERY_PENDING,
   HUB_RULES,
@@ -13,27 +9,32 @@ import {
   SEND_POST_FAILED,
   type InboxItemView,
 } from "../../src/contract/mcp.ts";
-import { createRemoteHandler } from "../../src/remote/index.ts";
 import {
-  callTool,
-  deps,
+  askResult,
+  done,
   eras,
   fail,
   helloResult,
   inboxResult,
+  json,
   ok,
   person,
+  remoteTest,
   request,
+  rpc,
   rpcRequest,
+  safeOutput,
   token,
-  toolResult,
   waitResult,
+  type RemoteCase,
 } from "./fixtures.ts";
 
 const timeout = 30_000;
+const check = remoteTest(timeout);
 const sessionId = "ses_a";
 const projectId = "prj_demo";
 const conversationId = "cnv_a";
+const text = "Hi";
 const inputs = {
   hello: { host: "claude" },
   inbox: { sessionId },
@@ -45,56 +46,42 @@ const inputs = {
     requestedAction: "choice",
     question: "Ready?",
   },
-  reply: { sessionId, conversationId, text: "Hi" },
+  reply: { sessionId, conversationId, text },
   report: {
     sessionId,
     projectId,
     requestAskId: "ask_a",
     state: "working",
-    text: "Hi",
+    text,
   },
-  send: { sessionId, projectId, toPersonId: person.personId, text: "Hi" },
-} as const;
+  send: { sessionId, projectId, toPersonId: person.personId, text },
+};
+const authCalls = ["findToken", "person"];
+const call = (handle: RemoteCase["handle"], name: keyof typeof inputs) =>
+  rpc(handle, name, inputs[name]);
 
 for (const era of eras) {
-  test(
-    `M1-M2 envelopes and all seven tools reach the core in ${era}`,
-    async () => {
-      const fixture = deps();
-      const handler = createRemoteHandler(fixture);
-      try {
-        for (const name of MCP_TOOL_NAMES) {
-          const { status, message } = await callTool(
-            handler,
-            name,
-            inputs[name],
-            era,
-          );
-          expect(status).toBe(200);
-          const result = toolResult(message);
-          expect(result.structuredContent).toMatchObject({
-            ok: true,
-            op: "hub." + name,
-            status: "OK",
-            warnings: [],
-          });
-          expect(result.isError).toBe(false);
-          expect(result.content[0]?.type).toBe("text");
-          expect(JSON.parse(result.content[0]?.text ?? "")).toEqual(
-            result.structuredContent,
-          );
-          expect(fixture.core.calls.at(-1)?.slice(0, 3)).toEqual([
-            name,
-            { person, tokenId: "tok_a" },
-            inputs[name],
-          ]);
-        }
-      } finally {
-        await handler.close();
-      }
-    },
-    timeout,
-  );
+  check("M1-M2 envelopes and seven tools " + era, async ({ core, handle }) => {
+    for (const name of MCP_TOOL_NAMES) {
+      const { status, tool } = await rpc(handle, name, inputs[name], era);
+      const { structuredContent, content, isError } = tool;
+      expect(status).toBe(200);
+      expect(structuredContent).toMatchObject({
+        ok: true,
+        op: "hub." + name,
+        status: "OK",
+        warnings: [],
+      });
+      expect(isError).toBe(false);
+      expect(content[0]?.type).toBe("text");
+      expect(json(content[0]?.text ?? "")).toEqual(structuredContent);
+      expect(core.calls.at(-1)?.slice(0, 3)).toEqual([
+        name,
+        { person, tokenId: "tok_a" },
+        inputs[name],
+      ]);
+    }
+  });
 }
 
 const invalid = [
@@ -106,479 +93,345 @@ const invalid = [
   ),
   ["hello", { host: 1 }, "/host"],
   ["inbox", { sessionId, limit: 51 }, "/limit"],
-  ["wait", { sessionId, timeoutMs: 30000 }, "/timeoutMs"],
-  ["wait", { sessionId, timeoutMs: 999 }, "/timeoutMs"],
+  ...[30000, 999].map(
+    (timeoutMs) => ["wait", { sessionId, timeoutMs }, "/timeoutMs"] as const,
+  ),
   ["reply", { ...inputs.reply, projectId }, ""],
-  ["reply", { sessionId, text: "Hi" }, ""],
+  ["reply", { sessionId, text }, ""],
   ["send", { ...inputs.send, text: "x".repeat(3001) }, "/text"],
   ["ask", { ...inputs.ask, requestedAction: "ship" }, "/requestedAction"],
 ] as const;
-
 for (const [index, [name, input, pointer]] of invalid.entries()) {
-  test(
-    `M3-M4 schema refusal ${index + 1} for ${name} names ${pointer || "the root"}`,
-    async () => {
-      const fixture = deps();
-      const handler = createRemoteHandler(fixture);
-      try {
-        const { message } = await callTool(handler, name, input);
-        expect(toolResult(message)).toMatchObject({
-          isError: true,
-          structuredContent: {
-            status: "FAIL",
-            error: { code: "INPUT_INVALID", pointer },
-            warnings: [],
-          },
-        });
-        expect(fixture.core.calls.map(([call]) => call)).toEqual([
-          "findToken",
-          "person",
-        ]);
-      } finally {
-        await handler.close();
-      }
-    },
-    timeout,
-  );
-}
-
-test(
-  "M5-M6 authority, permit and reply-only outcomes pass through unchanged",
-  async () => {
-    const fixture = deps();
-    const handler = createRemoteHandler(fixture);
-    try {
-      fixture.core.ask = () => Promise.resolve(fail("AUTHORITY_ASK_REFUSED"));
-      const ask = await callTool(handler, "ask", {
-        ...inputs.ask,
-        question: "Approve the merge of PR 12?",
-      });
-      expect(ask.status).toBe(200);
-      expect(toolResult(ask.message)).toMatchObject({
+  check(
+    `M3-M4 invalid input ${index + 1}: ${name} ${pointer}`,
+    async ({ handle, names }) => {
+      const { tool } = await rpc(handle, name, input);
+      expect(tool).toMatchObject({
         isError: true,
         structuredContent: {
-          error: fail("AUTHORITY_ASK_REFUSED").ok
-            ? {}
-            : { code: "AUTHORITY_ASK_REFUSED", retry: "never" },
+          status: "FAIL",
+          error: { code: "INPUT_INVALID", pointer },
+          warnings: [],
         },
       });
-      fixture.core.ask = () => Promise.resolve(fail("REPLY_ONLY"));
-      fixture.core.report = () => Promise.resolve(fail("PERMIT_REQUIRED"));
-      for (const [tool, code] of [
-        ["ask", "REPLY_ONLY"],
-        ["report", "PERMIT_REQUIRED"],
-      ] as const) {
-        const { message } = await callTool(handler, tool, inputs[tool]);
-        expect(toolResult(message).structuredContent.error?.code).toBe(code);
-      }
-      expect(
-        toolResult((await callTool(handler, "reply", inputs.reply)).message)
-          .isError,
-      ).toBe(false);
-      expect(fixture.core.calls.at(-1)?.[2]).toEqual(inputs.reply);
-    } finally {
-      await handler.close();
-    }
-  },
-  timeout,
-);
-
-test(
-  "M7 every core error survives MCP envelope mapping",
-  async () => {
-    const fixture = deps();
-    const handler = createRemoteHandler(fixture);
-    try {
-      for (const code of Object.keys(HTTP_STATUS) as HubErrorCode[]) {
-        const refusal = fail(code, { pointer: "/text", repair: "Check first" });
-        fixture.core.send = () => Promise.resolve(refusal);
-        const { status, message } = await callTool(
-          handler,
-          "send",
-          inputs.send,
-        );
-        expect(status).toBe(200);
-        expect(toolResult(message)).toMatchObject({
-          isError: true,
-          structuredContent: {
-            ok: false,
-            status: "FAIL",
-            error: refusal.ok ? {} : refusal.error,
-          },
-        });
-      }
-    } finally {
-      await handler.close();
-    }
-  },
-  timeout,
-);
-
-test(
-  "M8 unknown tool is a JSON-RPC invalid-parameters error",
-  async () => {
-    const fixture = deps();
-    const handler = createRemoteHandler(fixture);
-    try {
-      for (const name of ["merge", "Hello"]) {
-        expect((await callTool(handler, name, {})).message).toMatchObject({
-          error: { code: -32602, message: "Unknown tool" },
-        });
-      }
-      expect(fixture.core.calls.map(([name]) => name)).toEqual([
-        "findToken",
-        "person",
-        "findToken",
-        "person",
-      ]);
-    } finally {
-      await handler.close();
-    }
-  },
-  timeout,
-);
-
-for (const needsAbort of [false, true]) {
-  test(
-    `M${needsAbort ? 10 : 9} wait returns the core result with ${needsAbort ? "guard abort" : "core timeout"}`,
-    async () => {
-      const fixture = deps();
-      let guardAborted = false;
-      fixture.core.wait = async (_caller, _input, signal) => {
-        if (needsAbort) {
-          await new Promise<void>((resolve) =>
-            signal.addEventListener("abort", () => resolve(), { once: true }),
-          );
-          guardAborted = signal.aborted;
-        } else {
-          await Bun.sleep(1000);
-        }
-        return ok(waitResult);
-      };
-      const handler = createRemoteHandler(fixture);
-      try {
-        const started = performance.now();
-        const { message } = await callTool(handler, "wait", inputs.wait);
-        const ms = performance.now() - started;
-        expect(toolResult(message).structuredContent.result).toEqual(
-          waitResult,
-        );
-        expect(guardAborted).toBe(needsAbort);
-        expect(ms).toBeLessThan(needsAbort ? 3500 : 2500);
-        if (needsAbort) expect(ms).toBeGreaterThanOrEqual(1000);
-      } finally {
-        await handler.close();
-      }
+      expect(names()).toEqual(authCalls);
     },
-    timeout,
   );
 }
 
-test(
-  "M11 client cancellation aborts the core wait",
-  async () => {
-    const fixture = deps();
+check(
+  "M5-M6 authority, permit, reply-only and permitted reply",
+  async ({ core, handle }) => {
+    for (const [name, code] of [
+      ["ask", "AUTHORITY_ASK_REFUSED"],
+      ["ask", "REPLY_ONLY"],
+      ["report", "PERMIT_REQUIRED"],
+    ] as const) {
+      core[name] = () => Promise.resolve(fail(code));
+      const input =
+        code === "AUTHORITY_ASK_REFUSED"
+          ? { ...inputs.ask, question: "Approve the merge of PR 12?" }
+          : inputs[name];
+      const { status, tool } = await rpc(handle, name, input);
+      expect(status).toBe(200);
+      expect(tool).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code, retry: "never" } },
+      });
+    }
+    expect((await call(handle, "reply")).tool.isError).toBe(false);
+    expect(core.calls.at(-1)?.[2]).toEqual(inputs.reply);
+  },
+);
+
+check("M7 each core error maps unchanged", async ({ core, handle }) => {
+  for (const code of Object.keys(HTTP_STATUS) as HubErrorCode[]) {
+    const refusal = fail(code, { pointer: "/text", repair: "Check first" });
+    core.send = () => Promise.resolve(refusal);
+    const { status, tool } = await call(handle, "send");
+    expect(status).toBe(200);
+    expect(tool).toMatchObject({
+      isError: true,
+      structuredContent: {
+        ok: false,
+        status: "FAIL",
+        error: refusal.ok ? {} : refusal.error,
+      },
+    });
+  }
+});
+
+check("M8 exact unknown tool error", async ({ handle, names }) => {
+  for (const name of ["merge", "Hello"]) {
+    const { message } = await rpc(handle, name, {});
+    expect(message).toMatchObject({
+      error: { code: -32602, message: "Unknown tool" },
+    });
+  }
+  expect(names()).toEqual([...authCalls, ...authCalls]);
+});
+
+const untilAbort = (signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+for (const needsAbort of [false, true]) {
+  check(
+    `M${needsAbort ? 10 : 9} guard and core wait deadlines`,
+    async ({ core, handle }) => {
+      let guardAborted = false;
+      core.wait = async (_caller, _input, signal) => {
+        if (needsAbort) {
+          await untilAbort(signal);
+          guardAborted = signal.aborted;
+        } else await Bun.sleep(1000);
+        return ok(waitResult);
+      };
+      const started = performance.now();
+      const { structuredContent } = (await call(handle, "wait")).tool;
+      const ms = performance.now() - started;
+      expect(structuredContent.result).toEqual(waitResult);
+      expect(guardAborted).toBe(needsAbort);
+      expect(ms).toBeLessThan(needsAbort ? 3500 : 2500);
+      if (needsAbort) expect(ms).toBeGreaterThanOrEqual(1000);
+    },
+  );
+}
+
+check(
+  "M11 aborting a loopback fetch cancels the core wait",
+  async ({ handler, core }) => {
     const entered = Promise.withResolvers<void>();
     const aborted = Promise.withResolvers<number>();
-    fixture.core.wait = async (_caller, _input, signal) => {
+    core.wait = async (_caller, _input, signal) => {
       entered.resolve();
-      await new Promise<void>((resolve) =>
-        signal.addEventListener("abort", () => resolve(), { once: true }),
-      );
+      await untilAbort(signal);
       aborted.resolve(performance.now());
       return ok(waitResult);
     };
-    const handler = createRemoteHandler(fixture);
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => handler.handle(request),
+    });
     const cancel = new AbortController();
     try {
-      const pending = handler
-        .handle(
-          rpcRequest(
-            "tools/call",
-            { name: "wait", arguments: inputs.wait },
-            undefined,
-            cancel.signal,
-          ),
-        )
-        .catch(() => undefined);
-      await entered.promise;
+      const request = rpcRequest("tools/call", {
+        name: "wait",
+        arguments: inputs.wait,
+      });
+      const pending = fetch(new URL("/mcp", server.url), {
+        method: request.method,
+        body: await request.text(),
+        headers: request.headers,
+        signal: cancel.signal,
+      }).catch(() => undefined);
+      expect(
+        await Promise.race([
+          entered.promise.then(() => true),
+          pending.then(() => false),
+          Bun.sleep(2000).then(() => false),
+        ]),
+      ).toBe(true);
       await Bun.sleep(300);
-      const time = performance.now();
+      const start = performance.now();
       cancel.abort();
-      const result = await Promise.race([
-        aborted.promise,
-        Bun.sleep(500).then(() => Infinity),
-      ]);
-      expect(result - time).toBeLessThan(500);
+      expect(
+        (await Promise.race([
+          aborted.promise,
+          Bun.sleep(500).then(() => Infinity),
+        ])) - start,
+      ).toBeLessThan(500);
       await pending;
     } finally {
       cancel.abort();
-      await handler.close();
+      await server.stop(true);
     }
   },
-  timeout,
 );
 
-test(
-  "M12 post-wake revocation is an HTTP 200 tool failure",
-  async () => {
-    const fixture = deps();
-    fixture.core.wait = () => Promise.resolve(fail("UNAUTHENTICATED"));
-    const handler = createRemoteHandler(fixture);
-    try {
-      const { status, message } = await callTool(handler, "wait", inputs.wait);
-      expect(status).toBe(200);
-      expect(toolResult(message)).toMatchObject({
-        isError: true,
-        structuredContent: { error: { code: "UNAUTHENTICATED" } },
-      });
-    } finally {
-      await handler.close();
-    }
+check(
+  "M12 revoked while waiting is a tool result at HTTP 200",
+  async ({ core, handle }) => {
+    core.wait = () => Promise.resolve(fail("UNAUTHENTICATED"));
+    const { status, tool } = await call(handle, "wait");
+    expect(status).toBe(200);
+    expect(tool).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "UNAUTHENTICATED" } },
+    });
   },
-  timeout,
 );
 
-test(
-  "M13 thrown and rejected core calls produce one safe error log each",
-  async () => {
-    const fixture = deps();
-    fixture.core.inbox = () => {
+check(
+  "M13 core throws and rejects with a fixed envelope and one safe log each",
+  async ({ core, handle, log }) => {
+    core.inbox = () => {
       throw new Error(token);
     };
-    fixture.core.reply = () => Promise.reject(new Error(token));
-    const handler = createRemoteHandler(fixture);
-    try {
-      for (const name of ["inbox", "reply"] as const) {
-        const result = toolResult(
-          (await callTool(handler, name, inputs[name])).message,
-        );
-        expect(result).toMatchObject({
-          isError: true,
-          structuredContent: {
-            status: "FAIL",
-            error: { code: "INTERNAL", retry: "reconcile_first" },
-          },
-        });
-        for (const pattern of SECRET_PATTERNS)
-          expect(JSON.stringify(result)).not.toMatch(pattern);
-      }
-      expect(fixture.log.fields).toHaveLength(2);
-      for (const [level, , fields] of fixture.log.fields) {
-        expect(level).toBe("error");
-        expect(typeof fields?.errorId).toBe("string");
-        expect(fields?.code).toBe("INTERNAL");
-        expect(Object.keys(fields ?? {}).sort()).toEqual(["code", "errorId"]);
-        expect(JSON.stringify(fields)).not.toContain(token);
-      }
-    } finally {
-      await handler.close();
+    core.reply = () => Promise.reject(new Error(token));
+    for (const name of ["inbox", "reply"] as const) {
+      const { tool } = await call(handle, name);
+      expect(tool).toMatchObject({
+        isError: true,
+        structuredContent: {
+          status: "FAIL",
+          error: { code: "INTERNAL", retry: "reconcile_first" },
+        },
+      });
+      safeOutput(JSON.stringify(tool));
+    }
+    expect(log.fields).toHaveLength(2);
+    for (const [level, , fields] of log.fields) {
+      expect(level).toBe("error");
+      expect(typeof fields?.errorId).toBe("string");
+      expect(fields?.code).toBe("INTERNAL");
+      expect(Object.keys(fields ?? {}).sort()).toEqual(["code", "errorId"]);
     }
   },
-  timeout,
 );
 
-test(
-  "M14 and M16 oversized MCP request and unsupported methods use transport refusals",
-  async () => {
-    const fixture = deps();
-    const handler = createRemoteHandler(fixture);
-    try {
-      const oversized = await handler.handle(
-        request("/mcp", null, token, {
-          body: "x".repeat(LIMITS.bodyBytes + 1),
-        }),
-      );
-      expect(oversized.status).toBe(413);
-      expect(await oversized.json()).toMatchObject({
+check(
+  "M14 and M16 request cap and unsupported methods",
+  async ({ handle, names }) => {
+    const oversized = { body: "x".repeat(LIMITS.bodyBytes + 1) };
+    for (const [init, status] of [
+      [oversized, 413],
+      [{ method: "GET", body: null }, 405],
+      [{ method: "DELETE", body: null }, 405],
+    ] as const) {
+      const result = await handle(request("/mcp", null, token, init));
+      expect(result.status).toBe(status);
+      expect(await result.json()).toMatchObject({
         error: { code: "INPUT_INVALID" },
       });
-      for (const method of ["GET", "DELETE"]) {
-        const refusal = await handler.handle(
-          request("/mcp", null, token, { method, body: null }),
-        );
-        expect(refusal.status).toBe(405);
-        expect(await refusal.json()).toMatchObject({
-          error: { code: "INPUT_INVALID" },
-        });
-      }
-      expect(fixture.core.calls.map(([name]) => name)).toEqual(
-        Array.from({ length: 3 }, () => ["findToken", "person"]).flat(),
+    }
+    expect(names()).toEqual([...authCalls, ...authCalls, ...authCalls]);
+  },
+);
+
+check(
+  "M15 pending deliveries alone get the frozen warning",
+  async ({ core, handle }) => {
+    for (const pendingTo of [
+      [{ personId: person.personId, name: person.displayName }],
+      [],
+    ]) {
+      const value = { ...askResult, pendingTo };
+      core.ask = () => done(value);
+      const { structuredContent } = (await call(handle, "ask")).tool;
+      expect(structuredContent.result).toEqual(value);
+      expect(structuredContent.warnings).toEqual(
+        pendingTo.length ? [ASK_DELIVERY_PENDING] : [],
       );
-    } finally {
-      await handler.close();
     }
   },
-  timeout,
 );
 
-test(
-  "M15 ask delivery warning tracks pending recipients",
-  async () => {
-    const fixture = deps();
-    const handler = createRemoteHandler(fixture);
-    try {
-      for (const pendingTo of [
-        [{ personId: person.personId, name: person.displayName }],
-        [],
-      ]) {
-        const value = {
-          askId: "ask_a",
-          status: "open",
-          pendingTo,
-          deliveredTo: [],
-          expiresAt: "2026-01-02T00:00:00Z",
-        } as const;
-        fixture.core.ask = () => Promise.resolve(ok(value));
-        const result = toolResult(
-          (await callTool(handler, "ask", inputs.ask)).message,
-        ).structuredContent;
-        expect(result.result).toEqual(value);
-        expect(result.warnings).toEqual(
-          pendingTo.length ? [ASK_DELIVERY_PENDING] : [],
-        );
-      }
-    } finally {
-      await handler.close();
+const projects = [{ projectId, name: "Demo", purpose: "Explain demo" }];
+for (const rules of [HUB_RULES, HUB_RULES_NO_SLACK]) {
+  check(
+    "M17-M18 hello rules and project purpose " + rules.length,
+    async ({ core, handle }) => {
+      const value = { ...helloResult, rules, projects };
+      core.hello = () => ok(value);
+      const { structuredContent } = (await call(handle, "hello")).tool;
+      expect(structuredContent).toMatchObject({ ok: true, op: "hub.hello" });
+      expect(structuredContent.result).toEqual(value);
+    },
+  );
+}
+
+check(
+  "M18 channel context and DM pass through inbox and wait",
+  async ({ core, handle }) => {
+    const at = "2026-01-01T00:00:00Z";
+    const from = { name: "Owner", kind: "person" } as const;
+    const base = {
+      itemId: "itm_a",
+      projectId,
+      projectName: "Demo",
+      projectPurpose: "Explain demo",
+      kind: "chat_message",
+      from,
+      trust: "owner",
+      text,
+      receivedAt: at,
+      redelivered: false,
+    } as const;
+    const entries = [1, 2, 3].map((n) => ({
+      from: from.name,
+      senderKind: from.kind,
+      notYourOwner: false,
+      at,
+      mentionedBot: false,
+      text: String(n),
+    }));
+    const items: InboxItemView[] = [
+      {
+        ...base,
+        audience: "channel",
+        threadContext: { entries, omitted: 2, notice: "Earlier context" },
+      },
+      { ...base, itemId: "itm_b", audience: "dm" },
+    ];
+    const inbox = { ...inboxResult, items };
+    const wait = { ...waitResult, items, status: "ready" } as const;
+    core.inbox = () => ok(inbox);
+    core.wait = () => done(wait);
+    for (const [name, expected] of [
+      ["inbox", inbox],
+      ["wait", wait],
+    ] as const) {
+      const { structuredContent } = (await call(handle, name)).tool;
+      expect(structuredContent).toMatchObject({ ok: true, op: "hub." + name });
+      expect(structuredContent.result).toEqual(expected);
     }
   },
-  timeout,
 );
 
-test(
-  "M17-M18 preserve rules, project purpose, audience and channel context",
-  async () => {
-    const fixture = deps();
-    const handler = createRemoteHandler(fixture);
-    try {
-      for (const rules of [HUB_RULES, HUB_RULES_NO_SLACK]) {
-        const value = {
-          ...helloResult,
-          rules,
-          projects: [{ projectId, name: "Demo", purpose: "Explain demo" }],
-        };
-        fixture.core.hello = () => ok(value);
-        const envelope = toolResult(
-          (await callTool(handler, "hello", inputs.hello)).message,
-        ).structuredContent;
-        expect(envelope).toMatchObject({ ok: true, op: "hub.hello" });
-        expect(envelope.result).toEqual(value);
-      }
-      const item = {
-        itemId: "itm_a",
-        projectId,
-        projectName: "Demo",
-        projectPurpose: "Explain demo",
-        kind: "chat_message",
-        from: { name: "Owner", kind: "person" },
-        trust: "owner",
-        text: "Hi",
-        receivedAt: "2026-01-01T00:00:00Z",
-        redelivered: false,
-      } as const;
-      const items: InboxItemView[] = [
-        {
-          ...item,
-          audience: "channel",
-          threadContext: {
-            entries: [1, 2, 3].map((n) => ({
-              from: "Owner",
-              senderKind: "person",
-              notYourOwner: false,
-              at: item.receivedAt,
-              mentionedBot: false,
-              text: String(n),
-            })),
-            omitted: 2,
-            notice: "Earlier context",
-          },
-        },
-        { ...item, itemId: "itm_b", audience: "dm" },
-      ];
-      const inbox = { ...inboxResult, items };
-      const wait = { ...waitResult, items, status: "ready" } as const;
-      fixture.core.inbox = () => ok(inbox);
-      fixture.core.wait = () => Promise.resolve(ok(wait));
-      for (const [name, expected] of [
-        ["inbox", inbox],
-        ["wait", wait],
-      ] as const) {
-        const envelope = toolResult(
-          (await callTool(handler, name, inputs[name])).message,
-        ).structuredContent;
-        expect(envelope).toMatchObject({ ok: true, op: "hub." + name });
-        expect(envelope.result).toEqual(expected);
-      }
-    } finally {
-      await handler.close();
-    }
-  },
-  timeout,
-);
-
-test(
-  "M19 send passes conversation id, visible post outcome and refusals",
-  async () => {
-    const fixture = deps();
-    const handler = createRemoteHandler(fixture);
+check(
+  "M19 visible send result, warning, conversation errors and pointer",
+  async ({ core, handle }) => {
     const seen: unknown[] = [];
-    try {
-      for (const threadPost of ["posted", "failed", undefined] as const) {
-        const value = {
-          itemId: "itm_a",
-          ...(threadPost ? { threadPost } : {}),
-        };
-        fixture.core.send = (_caller, input) => {
-          seen.push(input);
-          return Promise.resolve(ok(value));
-        };
-        const input = {
-          ...inputs.send,
-          ...(threadPost ? { conversationId } : {}),
-        };
-        const envelope = toolResult(
-          (await callTool(handler, "send", input)).message,
-        ).structuredContent;
-        expect(envelope.result).toEqual(value);
-        expect(envelope.warnings).toEqual(
-          threadPost === "failed" ? [SEND_POST_FAILED] : [],
-        );
-        expect(seen.at(-1)).toEqual(input);
-      }
-      for (const code of [
-        "CONVERSATION_PAUSED",
-        "CONVERSATION_NOT_YOURS",
-        "CONVERSATION_UNKNOWN",
-      ] as const) {
-        fixture.core.send = () => Promise.resolve(fail(code));
-        expect(
-          toolResult(
-            (
-              await callTool(handler, "send", {
-                ...inputs.send,
-                conversationId,
-              })
-            ).message,
-          ).structuredContent.error?.code,
-        ).toBe(code);
-      }
-      fixture.core.send = () =>
-        Promise.reject(new Error("Invalid id reached core"));
-      const envelope = toolResult(
-        (
-          await callTool(handler, "send", {
-            ...inputs.send,
-            conversationId: "bad",
-          })
-        ).message,
-      ).structuredContent;
-      expect(envelope.error).toMatchObject({
-        code: "INPUT_INVALID",
-        pointer: "/conversationId",
-      });
-    } finally {
-      await handler.close();
+    for (const threadPost of ["posted", "failed", undefined] as const) {
+      const value = { itemId: "itm_a", ...(threadPost ? { threadPost } : {}) };
+      core.send = (_caller, input) => {
+        seen.push(input);
+        return done(value);
+      };
+      const input = {
+        ...inputs.send,
+        ...(threadPost ? { conversationId } : {}),
+      };
+      const { structuredContent } = (await rpc(handle, "send", input)).tool;
+      expect(structuredContent.result).toEqual(value);
+      expect(structuredContent.warnings).toEqual(
+        threadPost === "failed" ? [SEND_POST_FAILED] : [],
+      );
+      expect(seen.at(-1)).toEqual(input);
     }
+    for (const code of [
+      "CONVERSATION_PAUSED",
+      "CONVERSATION_NOT_YOURS",
+      "CONVERSATION_UNKNOWN",
+    ] as const) {
+      core.send = () => Promise.resolve(fail(code));
+      const { tool } = await rpc(handle, "send", {
+        ...inputs.send,
+        conversationId,
+      });
+      expect(tool.structuredContent.error?.code).toBe(code);
+    }
+    core.send = () => Promise.reject(new Error("Invalid id reached core"));
+    const { tool } = await rpc(handle, "send", {
+      ...inputs.send,
+      conversationId: "bad",
+    });
+    expect(tool.structuredContent.error).toMatchObject({
+      code: "INPUT_INVALID",
+      pointer: "/conversationId",
+    });
   },
-  timeout,
 );
