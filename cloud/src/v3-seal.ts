@@ -3,6 +3,7 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import {
   canonicalJson,
   digestBytes,
+  digestValue,
   isObject,
 } from "../../src/core/config/pointer.ts";
 import { isDigest, isNat } from "./v3-authority.ts";
@@ -283,3 +284,72 @@ export const signRoot = (seal: Seal, body: string) =>
 
 export const verifyRoot = (seal: Seal, body: string, envelope: unknown) =>
   authentic(seal, rootParts(seal, body), envelope);
+
+export interface TicketFields {
+  readonly action: "approve" | "deny";
+  readonly approvalId: string;
+  readonly cookieHash: string;
+  readonly expiresAt: number;
+  readonly issuedAt: number;
+  readonly nonce: string;
+  readonly payloadDigest: string;
+  readonly project: string;
+}
+
+export const approvalIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const browserTokenPattern = /^[A-Za-z0-9_-]{43}$/;
+
+const ticketParts = ({ scope }: Seal, t: TicketFields) => [
+  "forge/v3/approval-ticket/1",
+  scope,
+  t.project,
+  t.approvalId,
+  t.payloadDigest,
+  t.action,
+  t.cookieHash,
+  t.nonce,
+  t.issuedAt,
+  t.expiresAt,
+];
+
+export const signTicket = (seal: Seal, ticket: TicketFields) =>
+  `${Buffer.from(canonicalJson(ticket)).toString("base64url")}.${sealed(seal, ticketParts(seal, ticket))}`;
+
+export function readTicket(ticket: string): TicketFields {
+  const body = Buffer.from(ticket.split(".")[0]!, "base64url").toString();
+  return JSON.parse(body) as TicketFields;
+}
+
+export interface BrowserFields extends Pick<
+  TicketFields,
+  "project" | "approvalId" | "payloadDigest" | "action" | "nonce" | "expiresAt"
+> {
+  readonly stateHash: string;
+  readonly bindHash: string;
+  readonly verifier: string;
+  readonly createdAt: number;
+  readonly usedAt: number | null;
+}
+
+const browserParts = ({ scope }: Seal, b: BrowserFields) => [
+  "forge/v3/approval-browser/1",
+  scope,
+  b.stateHash,
+  b.bindHash,
+  b.project,
+  b.approvalId,
+  b.payloadDigest,
+  b.action,
+  b.nonce,
+  b.verifier,
+  b.createdAt,
+  b.expiresAt,
+  b.usedAt,
+];
+
+export const signBrowserRow = (seal: Seal, row: BrowserFields) =>
+  sealed(seal, browserParts(seal, row));
+
+export const approvalPayloadDigest = (seal: Seal, row: ApprovalFields) =>
+  digestValue(approvalParts(seal, row));

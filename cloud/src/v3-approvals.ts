@@ -5,8 +5,10 @@ import { TABLE_PROBE } from "./store.ts";
 import { isDigest } from "./v3-authority.ts";
 import {
   type ApprovalFields,
+  type BrowserFields,
   type Seal,
   signApproval,
+  signBrowserRow,
   type TokenFields,
   verifyApproval,
 } from "./v3-seal.ts";
@@ -16,6 +18,7 @@ import {
   readV3Root,
   unavailable,
   V3_APPROVALS,
+  V3_APPROVAL_BROWSER,
   type V3Image,
 } from "./v3-store.ts";
 
@@ -204,5 +207,61 @@ export function requestV3Approval(
       expiresAt: row.expiresAt,
       url: `/promote-approval?id=${row.id}`,
     };
+  });
+}
+
+const CREATE_BROWSER = `CREATE TABLE IF NOT EXISTS ${V3_APPROVAL_BROWSER} (state_hash TEXT PRIMARY KEY, bind_hash TEXT NOT NULL, project TEXT NOT NULL, approval_id TEXT NOT NULL, payload_digest TEXT NOT NULL, action TEXT NOT NULL, nonce TEXT NOT NULL UNIQUE, verifier TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER, mac TEXT NOT NULL) WITHOUT ROWID`;
+
+type StoredBrowser = BrowserFields & { mac: string };
+const BROWSER_SHAPES = {
+  stateHash: approvalText("state_hash", 64, 64),
+  bindHash: approvalText("bind_hash", 64, 64),
+  project: approvalText("project"),
+  approvalId: approvalText("approval_id", 36, 36),
+  payloadDigest: approvalText("payload_digest", 71, 71),
+  action: approvalText("action", 4, 7),
+  nonce: approvalText("nonce", 43, 43),
+  verifier: approvalText("verifier", 43, 43),
+  createdAt: approvalTime("created_at"),
+  expiresAt: approvalTime("expires_at"),
+  usedAt: approvalTime("used_at", true),
+  mac: approvalText("mac", 81, 81),
+} satisfies Record<keyof StoredBrowser, readonly [string, string]>;
+const BROWSER_COLUMNS = Object.entries(BROWSER_SHAPES) as [
+  keyof StoredBrowser,
+  readonly [string, string],
+][];
+const INSERT_BROWSER = `INSERT INTO ${V3_APPROVAL_BROWSER} (${BROWSER_COLUMNS.map(([, [column]]) => column).join(", ")}) VALUES (${BROWSER_COLUMNS.map(() => "?").join(", ")})`;
+
+export interface ApprovalContext {
+  readonly db: SqlDatabase;
+  readonly seal: Seal;
+  readonly project: string;
+}
+
+export function previewV3Approval(db: SqlDatabase, id: string) {
+  if (!db.get(TABLE_PROBE, [V3_APPROVALS])) return undefined;
+  const fields = COLUMNS.map(
+    ([field, [column]]) => column + " AS " + field,
+  ).join(", ");
+  return db.get(`SELECT ${fields} FROM ${V3_APPROVALS} WHERE id=?`, [
+    id,
+  ]) as unknown as ApprovalFields | undefined;
+}
+
+export function chooseV3Approval(
+  { db, seal }: ApprovalContext,
+  row: BrowserFields,
+) {
+  db.transaction(() => {
+    db.exec(CREATE_BROWSER);
+    db.run(`DELETE FROM ${V3_APPROVAL_BROWSER} WHERE expires_at <= ?`, [
+      row.createdAt,
+    ]);
+    const signed = { ...row, mac: signBrowserRow(seal, row) };
+    db.run(
+      INSERT_BROWSER,
+      BROWSER_COLUMNS.map(([field]) => signed[field]),
+    );
   });
 }
