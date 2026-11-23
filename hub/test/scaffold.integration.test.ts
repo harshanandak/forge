@@ -162,6 +162,7 @@ const ownFiles = [
   "dist/contract/mcp.js",
   "dist/contract/runtime.js",
   "dist/core/index.js",
+  "dist/core/store.js",
   "dist/main.js",
   "dist/remote/index.js",
   "dist/setup/index.js",
