@@ -4,17 +4,36 @@ import {
   selectSourceFiles,
 } from "../../tools/ci/source-selection.ts";
 import { nodeSensitive } from "../../tools/ci/node-sensitive.ts";
-import { assignShards } from "../../tools/ci/test-shards.ts";
+import {
+  assignShards,
+  discoverSourceFiles,
+  requireShardFiles,
+} from "../../tools/ci/test-shards.ts";
 import { readFileSync } from "node:fs";
 
 setDefaultTimeout(30_000);
 
-test("source legs preserve every file and both majors cover every Node-sensitive file", () => {
-  const files = [
-    ...new Bun.Glob("{test,src,hub/test}/**/*.test.ts").scanSync("."),
+test("source discovery retains root and hub test files", () => {
+  const expected = [
+    ...new Bun.Glob("{test,src}/**/*.test.ts").scanSync("."),
+    ...new Bun.Glob("hub/test/**/*.test.ts").scanSync("."),
   ]
     .map((file) => file.replaceAll("\\", "/"))
     .filter((file) => !file.endsWith("/packed.integration.test.ts"));
+  const files = discoverSourceFiles();
+  expect(files.toSorted()).toEqual(expected.toSorted());
+  expect(files).toContain("test/tools/source-selection.test.ts");
+  expect(files).toContain("hub/test/scaffold.integration.test.ts");
+});
+
+test("an empty source shard fails before running a test phase", () => {
+  expect(() => requireShardFiles([], "1/1")).toThrow(
+    "No source tests selected for shard 1/1",
+  );
+});
+
+test("source legs preserve every file and both majors cover every Node-sensitive file", () => {
+  const files = discoverSourceFiles();
   const { files: timings } = JSON.parse(
     readFileSync("test/timings.json", "utf8"),
   ) as { files: Record<string, number> };
