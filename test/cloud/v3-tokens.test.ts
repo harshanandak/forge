@@ -13,6 +13,7 @@ import { authorizeV3Token, TOKEN_READ } from "../../cloud/src/v3-tokens.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
+import contextSchema from "../../schemas/context.json" with { type: "json" };
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import {
   fixture,
@@ -356,6 +357,81 @@ for (const [label, input] of refusedBodies)
     expect(effects()).toEqual(noWrites);
     expect(tableNames(f)).not.toContain("cloud_v3_tokens");
   });
+
+const limits = contextSchema.$defs.Session.properties;
+const labelCaps = [
+  ["device", limits.device.maxLength],
+  ["session", limits.id.maxLength],
+  ["agent", limits.agent.maxLength],
+  ["harness", limits.harness.maxLength],
+] as const;
+const scripts = [
+  ["ASCII", "d"],
+  ["astral", "\u{1F600}"],
+] as const;
+for (const [field, max] of labelCaps)
+  for (const [script, unit] of scripts)
+    for (const over of [false, true]) {
+      const value = unit.repeat(max + (over ? 1 : 0));
+      const input = { ...body, [field]: value };
+      v3test(
+        `v3 issue ${over ? "refuses" : "admits"} ${max + (over ? 1 : 0)} ${script} characters in ${field}`,
+        async (f) => {
+          const effects = f.observeEffects();
+          const reply = await f.send("devices", input);
+          if (over) {
+            answers(reply, 400, "INPUT_INVALID", 6);
+            expect(reply.body).toEqual({
+              ok: false,
+              error: {
+                code: "INPUT_INVALID",
+                message: "device labels must be well-formed text",
+                retry: "never",
+              },
+            });
+            expect(effects()).toEqual(noWrites);
+            expect(tableNames(f)).not.toContain("cloud_v3_tokens");
+            return;
+          }
+          expect(reply).toMatchObject({ status: 200, body: { ok: true } });
+          const { token, id } = (reply.body as { value: Issued }).value;
+          const [row, ...others] = tokenRows(f);
+          expect(others).toEqual([]);
+          expect(row![field]).toBe(value);
+          expect(row!.mac).toBe(macOf(f, row!));
+          const parts = await tokenParts(token);
+          expect(check(f, { id, token, parts })[field]).toBe(value);
+        },
+      );
+    }
+
+v3test(
+  "v3 authorization still grants a stored device over the issue limit",
+  async (f) => {
+    const t = await issued(f);
+    const device = "d".repeat(limits.device.maxLength + 44);
+    const row = { ...only(f), device };
+    f.db.run("UPDATE cloud_v3_tokens SET device=?, mac=? WHERE id=?", [
+      device,
+      macOf(f, row),
+      t.id,
+    ]);
+    const rows = tokenRows(f);
+    const before = core(f);
+    const effects = f.observeEffects();
+    expect(check(f, t)).toEqual({
+      id: t.id,
+      device,
+      session: "run-1",
+      agent: null,
+      harness: null,
+      expiresAt: row.expires_at,
+    });
+    expect(effects()).toEqual(noWrites);
+    expect(tokenRows(f)).toEqual(rows);
+    expect(core(f)).toBe(before);
+  },
+);
 
 type Damage = [string, (f: Base) => void, boolean];
 const noKey = (f: Base) => Reflect.deleteProperty(f.env, "V3_SEAL_KEY");
