@@ -2398,6 +2398,15 @@ const damagedApprovals: [
       spent_at: base,
     },
   ],
+  [
+    "signed spent before the request",
+    {
+      ...approvedFixture,
+      status: "spent",
+      decided_at: base - 2,
+      spent_at: base - 1,
+    },
+  ],
   ["a signed inconsistent expiry", { expires_at: base + approvalLifetime + 1 }],
   [
     "a signed wrong operation digest",
