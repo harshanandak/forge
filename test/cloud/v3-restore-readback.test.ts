@@ -24,6 +24,7 @@ import {
   noWrites,
   probe,
   recovered as recoverOrdinary,
+  trustedManifest,
   verifiedPortable,
 } from "./v3-project.fixture.ts";
 
@@ -138,6 +139,7 @@ async function checkpoint(f: Fixture, head: number) {
     eventWatermark: image.eventWatermark,
     recordFloor: image.recordFloor,
     publicDigest,
+    source: String(f.context.id),
   };
 }
 
@@ -148,15 +150,15 @@ const restoreResult = (page: number, verified = false) => ({
 });
 
 async function stage(target: Fixture, { pages, ...projection }: Backup) {
-  const manifest = {
+  const manifest = trustedManifest(target.seal(), {
     ...projection,
-    format: "forge-cloud-portable/3",
+    format: "forge-cloud-portable/4",
     pages: pages.map(({ id, body }) => ({
       id,
       bytes: Buffer.byteLength(body),
       hash: digestBytes(body),
     })),
-  };
+  });
   const upload = (page: number) =>
     target.send(
       "restore",
