@@ -125,14 +125,17 @@ test("store preparation and evaluator opening finish before the declared handler
 }, 30_000);
 
 const effects = ["memory:write"];
-const missingGrant = {
+const incomplete = (code: string, message?: string) => ({
   status: "INCOMPLETE",
-  error: { code: "GRANT_REQUIRED" },
-};
+  error: { code, ...(message ? { message } : {}) },
+});
+const missingGrant = incomplete("GRANT_REQUIRED");
 const checks = [
   ["check", { ok: true, result: "checked" }, 0, [[]]],
   ["plain", { ok: true, result: "hello" }, 0, [effects]],
   ["ungranted", missingGrant, 2, []],
+  ["denied", incomplete("GRANT_REQUIRED", "caller is not permitted"), 2, []],
+  ["revoked", incomplete("ADMISSION_REQUIRED"), 2, []],
 ] as const;
 test.each(checks)(
   "runtime check: %s",
@@ -140,6 +143,9 @@ test.each(checks)(
     const f = fixture(15_000, effects);
     try {
       if (mode !== "ungranted") grant(f.trust, f.digest, effects);
+      if (mode === "revoked") f.trust.revoke("human", f.digest);
+      const request =
+        mode === "denied" ? { ...f.request, caller: "human" } : f.request;
       const scopes: ServiceScope[] = [];
       const runtime = new Runtime(f.catalog, f.trust, {
         isolation: nodeRunIsolation,
@@ -152,7 +158,7 @@ test.each(checks)(
       const plain = () => runtime.invoke(f.request);
       const result = await (mode === "plain"
         ? plain()
-        : invoke(f.request, { check: true }));
+        : invoke(request, { check: true }));
       expect(result).toMatchObject(expected);
       expect(exitCode(result)).toBe(exit);
       expect(scopes.map((scope) => scope.effects)).toEqual([...openedEffects]);

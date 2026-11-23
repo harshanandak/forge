@@ -1,13 +1,18 @@
-import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, expect, mock, setDefaultTimeout, test } from "bun:test";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeBinding } from "../../../src/assembly/cloud-profile.ts";
+import { bindingFor, PROJECT_ID } from "../../assembly/cloud-fixture.ts";
 import { memoryOwnerAsk } from "../../../src/assembly/approval.ts";
 import { localCall } from "../../../src/assembly/index.ts";
 import { LocalState } from "../../../src/assembly/state.ts";
+import memoryDocs from "../../../src/blocks/memory/docs/records.json" with { type: "json" };
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import { record } from "../../../src/surface/dispatch.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import { exitCode } from "../../../src/surface/result.ts";
 import {
+  approvalRows,
   blockSchema,
   decisionItem,
   decisionItems,
@@ -16,6 +21,8 @@ import {
   memoryState,
   openHarness,
   ownerApproval,
+  pendingItem,
+  stateRows,
   type Harness,
 } from "./lib.ts";
 
@@ -484,6 +491,8 @@ test("accept and reject take at most 10 items and report ids that are not found"
     }),
   ).toMatchObject({ results: [{ id: "device/note-99", status: "not_found" }] });
   harness = await openHarness(["memory"]);
+  const raw = decision(harness);
+  const before = await approvalRows(harness);
   const items = (count: number) =>
     Array.from({ length: count }, (_, i) => ({
       id: `device/note-${i + 1}`,
@@ -491,20 +500,18 @@ test("accept and reject take at most 10 items and report ids that are not found"
       text: "x",
     }));
   for (const op of ["memory.accept", "memory.reject"]) {
-    const overflow = await harness.call(op, {
-      items: items(11),
-      approval: ownerApproval,
-    });
+    const overflow = await raw(op, items(11));
     expect(overflow.ok).toBe(false);
+    refusal(overflow, "INPUT_INVALID");
     expect(JSON.stringify(overflow)).toContain("at most 10 items");
   }
-  // Ten items pass the schema; the approval is still required, so the call asks the owner.
-  const ten = await harness.call("memory.accept", {
-    items: items(10),
-    approval: ownerApproval,
-  });
+  const ten = await raw("memory.accept", items(10));
   expect(JSON.stringify(ten)).not.toContain("at most 10 items");
-});
+  refusal(ten, "PROPOSAL_CHANGED");
+  for (const item of items(10))
+    expect(JSON.stringify(ten)).toContain(item.id + " is not found");
+  expect(await approvalRows(harness)).toEqual(before);
+}, 30_000);
 
 function pending(result: ResultEnvelope | undefined): string {
   expect(result).toMatchObject({
@@ -515,6 +522,322 @@ function pending(result: ResultEnvelope | undefined): string {
   expect(request?.id).toMatch(/^[a-f0-9-]{36}$/);
   return String(request?.id);
 }
+
+const registry = "forge/core-projects";
+const devicePath = (h: Harness) => join(h.deviceRoot, "records.sqlite");
+const projectPath = (h: Harness) => join(h.root, ".forge", "state.sqlite");
+const manifestPath = (h: Harness) => join(h.root, ".forge", "project.json");
+const mcpFor = (h: Harness, readOnly = false) =>
+  createMcpHandlers(h.assembly.catalog, { readOnly }, localCall(h.assembly));
+const harnessCall =
+  (h: Harness): Call =>
+  async <T>(op: string, input: unknown) =>
+    done(await h.call(op, input)) as T;
+const claim = ownerApproval;
+
+const failureExits: Record<string, number> = {
+  GRANT_REQUIRED: 2,
+  UNKNOWN_COMMAND: 3,
+  INPUT_CONFLICT: 4,
+  INPUT_INVALID: 6,
+};
+function refusal(
+  result: ResultEnvelope | undefined,
+  code: string,
+  message?: RegExp,
+) {
+  const exit = failureExits[code] ?? 1;
+  expect(result).toMatchObject({
+    ok: false,
+    status: exit === 2 ? "INCOMPLETE" : "FAIL",
+    error: { code },
+  });
+  if (message && result?.ok === false)
+    expect(result.error.message).toMatch(message);
+  expect(exitCode(result!)).toBe(exit);
+}
+
+async function unspent(
+  h: Harness,
+  answer: () => Promise<ResultEnvelope | undefined>,
+  code: string,
+  message?: RegExp,
+) {
+  const before = await approvalRows(h);
+  const result = await answer();
+  refusal(result, code, message);
+  expect(await approvalRows(h)).toEqual(before);
+  return JSON.stringify(result);
+}
+
+const decision =
+  (h: Harness) =>
+  (op: string, items: unknown[], approval: unknown = claim) =>
+    h.invoke(op, { items, approval }, { caller: "agent" });
+const relay = (request: string) => ({ request, quote: claim.quote, source });
+
+async function storedReply(h: Harness, result: ResultEnvelope) {
+  const request = pending(result);
+  const row = (await approvalRows(h)).find((row) => row.key === request);
+  expect(row?.value).toMatchObject({ status: "pending" });
+  return relay(request);
+}
+
+async function ruleRemoval(call: Call) {
+  const { id } = await activeRule(call, "Keep the accepted rule");
+  const { note } = await call("memory.show", { id });
+  const edit = await call("memory.add", {
+    id,
+    expectRevision: note.revision,
+    text: "Change the accepted rule",
+    tags: [],
+  });
+  return { ...decisionItem(id, edit), removedOwnerTags: [] };
+}
+
+const unseen = "Keep all existing owner decisions.";
+const invalidBatches = [
+  ["accept", "absent", /device\/note-999 is not found/],
+  ["reject", "absent", /device\/note-999 is not found/],
+  ["accept", "served", /is not proposed/],
+  ["accept", "revision", /is at revision/],
+  ["reject", "revision", /is at revision/],
+  ["accept", "text", /proposed text differs/],
+  ["reject", "text", /proposed text differs/],
+  ["accept", "tags", /removes the owner tags \[rule\]/],
+  ["accept", "noText", /memory\.accept/],
+  ["reject", "extraTags", /memory\.reject/],
+] as const;
+for (const [verb, kind, message] of invalidBatches)
+  test(`${verb} checks ${kind} before asking`, async () => {
+    const h = (harness = await openHarness(["memory"]));
+    const call = harnessCall(h);
+    const real = await pendingItem(h);
+    const id =
+      kind === "served"
+        ? (await activeRule(call, "Keep this served rule")).id
+        : real.id;
+    const shows = () =>
+      Promise.all([id, real.id].map((id) => call("memory.show", { id })));
+    const before = await shows();
+    const { text: _text, ...noText } = real;
+    const overrides = {
+      absent: { ...absent, text: unseen },
+      served: { id, revision: before[0]!.note.revision + 1, text: unseen },
+      revision: { ...real, revision: real.revision + 1 },
+      text: { ...real, text: unseen },
+      tags: kind === "tags" ? await ruleRemoval(call) : real,
+      noText,
+      extraTags: { ...real, removedOwnerTags: ["rule"] },
+    };
+    const input = { items: [real, overrides[kind]], approval: claim };
+    const answer = () => mcpFor(h).callTool("memory_" + verb, input);
+    const code =
+      kind === "noText" || kind === "extraTags"
+        ? "INPUT_INVALID"
+        : "PROPOSAL_CHANGED";
+    const text = await unspent(h, answer, code, message);
+    if (kind === "absent") expect(text).not.toContain(unseen);
+    expect(await shows()).toEqual(before);
+  }, 30_000);
+
+test("check uses the resolved memory instance", async () => {
+  const h = (harness = await openHarness(["memory"], {
+    "/blocks/memory-b": {
+      source: { path: "./blocks/memory" },
+      rename: { memory: "memb", decision: "decb" },
+      config: { approval: { ownerTags: ["custom"] } },
+    },
+  }));
+  const input = { items: [await ruleRemoval(harnessCall(h))], approval: claim };
+  const before = await approvalRows(h);
+  pending(await mcpFor(h).callTool("memb_accept", input));
+  expect(await approvalRows(h)).toHaveLength(before.length + 1);
+  const answer = () => mcpFor(h).callTool("memory_accept", input);
+  await unspent(h, answer, "PROPOSAL_CHANGED");
+}, 30_000);
+
+for (const phase of ["ask", "reply"] as const)
+  test(`checks grant on ${phase}`, async () => {
+    const effects = ["decision:write"];
+    const h = (harness = await openHarness(
+      ["memory"],
+      {},
+      phase === "ask" ? { grants: effects } : {},
+    ));
+    const decide = decision(h);
+    const op = "memory.accept";
+    let items = [absent];
+    let approval: unknown = claim;
+    if (phase === "reply") {
+      items = [await pendingItem(h)];
+      approval = await storedReply(h, await decide(op, items));
+      const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
+      try {
+        const owner = (await trust.open(true))!;
+        const namespace = "forge/core-trust";
+        const [row] = owner.list(namespace);
+        owner.put(
+          namespace,
+          row!.key,
+          { admitted: true, effects },
+          row!.updatedBy,
+          {
+            expectRevision: row!.revision,
+          },
+        );
+      } finally {
+        await trust.close();
+      }
+    }
+    await unspent(h, () => decide(op, items, approval), "GRANT_REQUIRED");
+  }, 30_000);
+
+for (const level of ["project", "device"] as const)
+  test(`checks missing ${level} store`, async () => {
+    const h = (harness = await openHarness(["memory"]));
+    const project = level === "project";
+    const path = project ? projectPath(h) : devicePath(h);
+    const files = () => [existsSync(path), existsSync(manifestPath(h))];
+    const items = project ? [await pendingItem(h), peerItem] : [absent];
+    const entries = await stateRows(devicePath(h), registry);
+    expect(files()).toEqual([false, false]);
+    const answer = () => decision(h)("memory.accept", items);
+    await unspent(h, answer, "PROPOSAL_CHANGED", /is not found/);
+    expect(files()).toEqual([false, false]);
+    expect(await stateRows(devicePath(h), registry)).toEqual(entries);
+  }, 30_000);
+
+const projectChecks = [
+  "mismatch",
+  "accept ask",
+  "reject ask",
+  "accept reply",
+  "reject reply",
+  "peer",
+  "attended",
+  "device",
+] as const;
+for (const mode of projectChecks)
+  test(`checks project ${mode}`, async () => {
+    const confirm = mock(() => Promise.resolve(true));
+    let stdin = false;
+    const terminal = { tty: () => ({ stdin, stderr: true }), confirm };
+    const h = (harness = await openHarness(["memory"], {}, { terminal }));
+    const manifest = (id: string) =>
+      writeFileSync(manifestPath(h), JSON.stringify({ schema: 1, id }));
+    manifest(PROJECT_ID);
+    const project = await pendingItem(h, "Keep this project rule", "project");
+    const items = [mode === "peer" ? peerItem : project];
+    const op = mode.startsWith("reject") ? "memory.reject" : "memory.accept";
+    const decide = decision(h);
+    const approval = mode.endsWith("reply")
+      ? await storedReply(h, await decide(op, items))
+      : claim;
+    if (mode === "mismatch") manifest("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d");
+    else writeBinding(h.root, bindingFor());
+    if (mode === "device") {
+      const device = [await pendingItem(h)];
+      const before = await approvalRows(h);
+      const request = pending(await decide(op, device));
+      expect(await approvalRows(h)).toHaveLength(before.length + 1);
+      expect(exitCode(await decide(op, device, relay(request)))).toBe(0);
+      return;
+    }
+    const snapshot = () =>
+      Promise.all([
+        stateRows(projectPath(h), "forge/core-project"),
+        stateRows(projectPath(h), "forge/memory"),
+        stateRows(devicePath(h), registry),
+        stateRows(devicePath(h), "forge/memory"),
+      ]);
+    const before = await snapshot();
+    stdin = mode === "attended";
+    const answer = () =>
+      stdin ? h.invoke(op, { items }) : decide(op, items, approval);
+    const code = mode === "mismatch" ? "PROJECT_ID_CONFLICT" : "UNAVAILABLE";
+    await unspent(h, answer, code);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+  }, 30_000);
+
+const replies = [
+  ["accept", "withdraw"],
+  ["reject", "withdraw"],
+  ["accept", "edit"],
+  ["reject", "edit"],
+  ["accept", "rebind"],
+  ["accept", "device"],
+  ["accept", "project"],
+] as const;
+for (const [verb, mode] of replies)
+  test(`${verb} checks reply after ${mode}`, async () => {
+    const h = (harness = await openHarness(["memory"]));
+    const call = harnessCall(h);
+    const item = await pendingItem(h);
+    const second =
+      mode === "withdraw"
+        ? await pendingItem(h, "Keep a second rule")
+        : undefined;
+    const items = second ? [item, second] : [item];
+    const op = "memory." + verb;
+    const approval = await storedReply(h, await decision(h)(op, items));
+    let message = /is at revision/;
+    if (second) {
+      const { id, revision } = second;
+      await call("memory.withdraw", {
+        items: [{ id, revision }],
+        reason: "Superseded",
+      });
+      message = new RegExp(id + " is not proposed");
+    } else if (mode === "edit" || mode === "rebind") {
+      const edit = await call("memory.add", {
+        id: item.id,
+        expectRevision: item.revision,
+        text: "Replacement rule",
+      });
+      if (mode === "rebind") items[0] = decisionItem(item.id, edit);
+    }
+    const id = join(h.work, "other");
+    const foreign =
+      mode === "project"
+        ? { project: { id, root: id } }
+        : { device: { id: mode === "device" ? id : h.deviceRoot } };
+    const options = {
+      caller: "agent",
+      context: { ...h.deviceOnly(), ...foreign },
+    } as const;
+    const answer = () => h.invoke(op, { items, approval }, options);
+    if (mode === "project") {
+      expect(exitCode(await answer())).toBe(0);
+      return;
+    }
+    const before = await call("memory.show", { id: item.id });
+    const codes: Record<string, string> = {
+      device: "INPUT_CONFLICT",
+      rebind: "APPROVAL_REQUIRED",
+    };
+    const code = codes[mode] ?? "PROPOSAL_CHANGED";
+    if (mode === "rebind") message = /bound to different arguments/;
+    await unspent(h, answer, code, mode === "device" ? undefined : message);
+    expect(await call("memory.show", { id: item.id })).toEqual(before);
+  }, 30_000);
+
+test("decision help describes changes after approval checking", () => {
+  for (const op of ["memory.accept", "memory.reject"] as const)
+    expect(memoryDocs.operations[op].description).toContain(
+      "If a note changes afterwards, the call itself fails with PROPOSAL_CHANGED when the revision or text of a still-pending proposal differs. It reports and leaves alone items that are not proposed, not found or read-only. By then, the owner's approval has been used.",
+    );
+}, 30_000);
+
+test("dry run and read-only MCP refuse before asking", async () => {
+  const h = (harness = await openHarness(["memory"]));
+  const input = { items: [absent], approval: claim };
+  const dry = () => h.invoke("memory.accept", input, { dryRun: true });
+  const readOnly = () => mcpFor(h, true).callTool("memory_accept", input);
+  await unspent(h, dry, "UNAVAILABLE");
+  await unspent(h, readOnly, "UNKNOWN_COMMAND");
+}, 30_000);
 
 test("the owner's approval of accept and reject binds the operation, the ids and their revisions", async () => {
   harness = await openHarness(["memory"]);
@@ -549,19 +872,23 @@ test("the owner's approval of accept and reject binds the operation, the ids and
     note: { status: "proposed" },
   });
   const reply = { request, quote: claim.quote, source };
-  // The reply is bound to these items and to accept: other notes, another revision or text, and
-  // reject do not use it.
   for (const [tool, items] of [
     ["memory_accept", [secondItem]],
     ["memory_accept", [firstItem, secondItem]],
-    ["memory_accept", [{ ...firstItem, revision: firstItem.revision + 1 }]],
-    ["memory_accept", [{ ...firstItem, text: "something else" }]],
     ["memory_reject", [firstItem]],
   ] as const)
     expect(await mcp.callTool(tool, { items, approval: reply })).toMatchObject({
       ok: false,
       error: { code: "APPROVAL_REQUIRED" },
     });
+  for (const items of [
+    [{ ...firstItem, revision: firstItem.revision + 1 }],
+    [{ ...firstItem, text: "something else" }],
+  ])
+    refusal(
+      await mcp.callTool("memory_accept", { items, approval: reply }),
+      "PROPOSAL_CHANGED",
+    );
   for (const id of [first, second])
     expect(done(await h.call("memory.show", { id }))).toMatchObject({
       note: { status: "proposed" },
@@ -580,7 +907,7 @@ test("the owner's approval of accept and reject binds the operation, the ids and
       items: [firstItem],
       approval: reply,
     }),
-  ).toMatchObject({ ok: false, error: { code: "APPROVAL_REQUIRED" } });
+  ).toMatchObject({ ok: false, error: { code: "PROPOSAL_CHANGED" } });
 
   const rejectRequest = pending(
     await mcp.callTool("memory_reject", {
@@ -626,11 +953,8 @@ test("the owner's question shows the whole proposed text of every item", async (
   const secondItem = decisionItem(long.id, long);
   expect(revised).toMatchObject({ text: first, removedOwnerTags: ["rule"] });
   expect(secondItem.text).toBe(second);
-  const absent = {
-    id: "device/note-999",
-    revision: 1,
-    text: `${second}\u{e0020}`,
-  };
+  const other = await propose(call, `${second}\u{e0020}`);
+  const otherItem = decisionItem(other.id, other);
   const { removedOwnerTags: _tags, ...withoutTags } = revised;
   const mcp = createMcpHandlers(h.assembly.catalog, {}, localCall(h.assembly));
   const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
@@ -638,7 +962,7 @@ test("the owner's question shows the whole proposed text of every item", async (
   try {
     for (const [op, items] of [
       ["memory.accept", [revised, secondItem]],
-      ["memory.reject", [withoutTags, absent]],
+      ["memory.reject", [withoutTags, otherItem]],
     ] as const) {
       const tool = op.replace(".", "_");
       const earliestExpiry = Date.now() + 86_400_000;
@@ -667,19 +991,19 @@ test("the owner's question shows the whole proposed text of every item", async (
         const approval = { request: requestId, quote: "Reject those.", source };
         const text = first.replace("\r\n", "\n");
         const changed = await mcp.callTool(tool, {
-          items: [{ ...withoutTags, text }, absent],
+          items: [{ ...withoutTags, text }, otherItem],
           approval,
         });
         expect(changed).toMatchObject({
           ok: false,
-          error: { code: "APPROVAL_REQUIRED" },
+          error: { code: "PROPOSAL_CHANGED" },
         });
         const reply = await mcp.callTool(tool, { items, approval });
         expect(exitCode(reply!)).toBe(0);
         expect(reply?.result).toMatchObject({
           results: [
-            { id: absent.id, status: "not_found" },
             { id: revised.id, status: "rejected" },
+            { id: otherItem.id, status: "rejected" },
           ],
         });
       }
@@ -690,7 +1014,7 @@ test("the owner's question shows the whole proposed text of every item", async (
   const displayedFirst = `- "${revised.id}" (revision "${revised.revision}"):\n    "Use safe defaults.\\u000aremoves owner tags: none\\u000d\\u000aThird line stays too. \\"\\\\u0009\\u0009\\u2028\\u2029\\u202e\\u200d"`;
   expect(asks).toEqual([
     `Accept these proposed notes so they are served to every session:\n${displayedFirst}\nremoves owner tags: "rule"\n- "${secondItem.id}" (revision "${secondItem.revision}"):\n    "${second}"`,
-    `Reject these proposed notes; they stay in history and are never served:\n${displayedFirst}\n- "${absent.id}" (revision "1"):\n    "${second}\\udb40\\udc20"`,
+    `Reject these proposed notes; they stay in history and are never served:\n${displayedFirst}\n- "${otherItem.id}" (revision "${otherItem.revision}"):\n    "${second}\\udb40\\udc20"`,
   ]);
 }, 30_000);
 
