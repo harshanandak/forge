@@ -2,7 +2,7 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { TABLE_PROBE } from "./store.ts";
 import { type DeviceInput, holderOf, mint, same, sha256 } from "./tokens.ts";
-import { fail, readV3Root, V3_TOKENS } from "./v3-store.ts";
+import * as store from "./v3-store.ts";
 import {
   type Seal,
   signToken,
@@ -10,6 +10,7 @@ import {
   verifyToken,
 } from "./v3-seal.ts";
 
+const { fail, readV3Root, V3_TOKENS } = store;
 const TEXT_BYTES = 8192;
 const DEVICE_CHARS = 256;
 const LABEL_CHARS = 200;
@@ -231,12 +232,28 @@ export function revokeV3Token(
   seal: Seal,
   id: string,
   now: number,
+  loadImage: () => store.V3Image,
 ) {
-  return db.transaction(() => {
-    readV3Root(db, seal);
+  let image: store.V3Image | undefined;
+  const reply = db.transaction(() => {
+    const { activationDigest } = readV3Root(db, seal);
     let token = authentic(db, seal, id);
     if (token === undefined)
       throw fail("INPUT_INVALID", "No such device token");
+    const { device, session } = token;
+    const peers =
+      !activationDigest && token.revokedAt === null
+        ? tokenInventory(db, seal)
+        : [];
+    const sibling = peers.some(({ fields: f }) => {
+      if (f.id === id || f.device !== device || f.session !== session)
+        return false;
+      return f.revokedAt === null && f.expiresAt > now;
+    });
+    const released =
+      !activationDigest && !sibling
+        ? store.revokeV3Leases(db, seal, (image = loadImage()), token, now)
+        : [];
     if (token.revokedAt === null) {
       token = { ...token, revokedAt: now };
       const { changes } = db.run(
@@ -245,6 +262,9 @@ export function revokeV3Token(
       );
       if (changes !== 1) throw unavailable();
     }
-    return { ...holder(token), leasesReleased: false };
+    const value = { ...holder(token), leasesReleased: released.length > 0 };
+    return released.length ? { ...value, released } : value;
   });
+  if (image?.staged.length) store.publishV3(image);
+  return reply;
 }

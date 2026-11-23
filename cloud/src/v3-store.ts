@@ -22,7 +22,11 @@ import * as validators from "../../src/generated/validators.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { checkedValue, configured, holds, shownId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
-import type { ReceiptScope } from "./issue-request-id.ts";
+import {
+  type ReceiptScope,
+  receiptScope,
+  scopeRequestId,
+} from "./issue-request-id.ts";
 import {
   type LeaseCommand,
   leaseFingerprint,
@@ -54,6 +58,7 @@ import {
   type Seal,
   signRoot,
   signRow,
+  type TokenFields,
   verifyRoot,
   verifyRow,
   type VerifiedManifest,
@@ -1355,6 +1360,47 @@ function transition(
   return route === "renew"
     ? { ...current!, holder, expiresAt: expiresAt() }
     : { ...current!, holder, releasedAt: new Date(now).toISOString() };
+}
+
+export function revokeV3Leases(
+  db: SqlDatabase,
+  seal: Seal,
+  image: V3Image,
+  token: TokenFields,
+  now: number,
+) {
+  const { id, device, session, revokedAt } = token;
+  const principal = ["owner", device, device] as const;
+  const scope = receiptScope(principal);
+  const frame = { operation: "lease.release", time: now, events: [] };
+  const family = "lease" as const;
+  const outcome = { scope: { family, ...scope }, status: "ok" };
+  const batch: Frame[] = [];
+  const released: string[] = [];
+  for (const subject of [...image.entries.lease.keys()].sort()) {
+    const rawId = `revoke/${id}/${subject}`;
+    const requestId = scopeRequestId(family, principal, rawId);
+    if (revokedAt !== null) {
+      if (image.entries.outcome.has(requestId)) released.push(subject);
+      continue;
+    }
+    const prior = readV3Value(db, image, "lease", subject);
+    if (!prior || prior.releasedAt !== undefined) continue;
+    const held = prior.holder.session;
+    const retryUntil = Date.parse(prior.expiresAt);
+    if (held.device !== device || held.id !== session || !(retryUntil > now))
+      continue;
+    const input = { ...prior, rawId, requestId, scope };
+    const command = { ...input, route: "release" as const, ttlMs: null };
+    const lease = transition(command, prior, now);
+    checkLeaseRecord(lease);
+    const fingerprint = leaseFingerprint(command);
+    const receipt = { ...outcome, id: requestId, fingerprint, retryUntil };
+    batch.push({ ...frame, lease, outcome: receipt });
+    released.push(subject);
+  }
+  if (batch.length) append(db, seal, image, batch);
+  return released;
 }
 
 type IssueClaim = Pick<LeaseCommand, "subject" | "holder"> & {
