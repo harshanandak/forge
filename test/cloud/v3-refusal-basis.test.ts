@@ -344,7 +344,6 @@ const named = (body: Json, id: string): Json => ({
   context: { ...(body.context as Json), session: { id } },
 });
 const tokenHolder = { actor, session: { id: sid, device } };
-const owned = { ...crt({}), context: { actor: widest.actor } };
 const stale = upd(update.input, { ...update.context, leaseGeneration: 2 });
 
 type Kind = [
@@ -538,7 +537,7 @@ const two = grant("forge-2");
 const histories: [string, Setup, Json[], number[]][] = [
   [
     "create, refused update, refused create",
-    async () => undefined,
+    () => Promise.resolve(),
     [r(create, "a1"), r(update, "a2"), r(crt({}), "a3")],
     [200, 409, 400],
   ],
