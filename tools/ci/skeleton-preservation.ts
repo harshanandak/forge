@@ -1,6 +1,7 @@
 import { deepStrictEqual, ok } from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
+import { gitExecutable } from "../git-executable.ts";
 
 const base = "57025e487efc47d657bd7765649efe66e3f92c0b";
 const allowedPaths = new Set([
@@ -156,8 +157,18 @@ export function checkPreservation(
   );
 }
 
-function git(...args: string[]): string {
-  return execFileSync("git", args, { encoding: "utf8" });
+export function git(...args: string[]): string {
+  return execFileSync(gitExecutable(), args, { encoding: "utf8" });
+}
+
+export function changedPaths(
+  base: string,
+  head: string,
+  cwd = process.cwd(),
+): string[] {
+  return git("-C", cwd, "diff", "--name-only", "--no-renames", "-z", base, head)
+    .split("\0")
+    .filter(Boolean);
 }
 
 function snapshot(ref: string): Snapshot {
@@ -170,10 +181,7 @@ function snapshot(ref: string): Snapshot {
 
 if (import.meta.main) {
   const head = git("rev-parse", "HEAD").trim();
-  const paths = git("diff", "--name-only", "-z", base, head)
-    .split("\0")
-    .filter(Boolean);
-  checkPreservation(snapshot(base), snapshot(head), paths);
+  checkPreservation(snapshot(base), snapshot(head), changedPaths(base, head));
   console.log(`Preserved existing CI from ${base} to ${head}`);
-  process.stdout.write(git("diff", "--numstat", base, head));
+  process.stdout.write(git("diff", "--no-renames", "--numstat", base, head));
 }

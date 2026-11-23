@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
-import { checkPreservation } from "../../tools/ci/skeleton-preservation.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as preservation from "../../tools/ci/skeleton-preservation.ts";
 
+const { changedPaths, checkPreservation, git } = preservation;
 const timeout = 30_000;
 const before = {
   workflow: `on: [pull_request, push]
@@ -66,6 +70,37 @@ const paths = [
   "tools/ci/node-sensitive.ts",
 ];
 
+function rejectPaths(paths: string[]): void {
+  expect(() => checkPreservation(before, after, paths)).toThrow(
+    "outside the skeleton",
+  );
+}
+
+test(
+  "preservation refuses a rename across its allowed paths",
+  () => {
+    const cwd = mkdtempSync(join(tmpdir(), "forge-preservation-"));
+    const run = (...args: string[]) => git("-C", cwd, ...args).trim();
+    try {
+      run("init", "-q");
+      run("config", "diff.renames", "true");
+      writeFileSync(join(cwd, "bun.lock"), "original\n");
+      run("add", "bun.lock");
+      const original = run("write-tree");
+      run("mv", "bun.lock", "package.json");
+      const renamed = run("write-tree");
+      for (const [old, head] of [
+        [original, renamed],
+        [renamed, original],
+      ] as const)
+        rejectPaths(changedPaths(old, head, cwd));
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  },
+  timeout,
+);
+
 test(
   "preservation accepts only the intended steps and expands shared steps",
   () => {
@@ -104,12 +139,7 @@ for (const [description, original, replacement] of [
 test(
   "preservation refuses root release changes, script rewrites and new reasons for old keys",
   () => {
-    expect(() =>
-      checkPreservation(before, after, [
-        ...paths,
-        ".github/workflows/release.yml",
-      ]),
-    ).toThrow("outside the skeleton");
+    rejectPaths([...paths, ".github/workflows/release.yml"]);
     const packageJson = after.packageJson.replace('"original"', '"different"');
     expect(() =>
       checkPreservation(before, { ...after, packageJson }, paths),
