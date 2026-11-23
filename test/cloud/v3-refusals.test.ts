@@ -1,8 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { writableStore } from "../../cloud/src/store.ts";
-import { claimEffect, recoverV3 } from "../../cloud/src/v3-store.ts";
-import { guardFixture, probe } from "./v3-project.fixture.ts";
+import { claimEffect } from "../../cloud/src/v3-store.ts";
+import { guardFixture, probe, recovered } from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -102,7 +102,7 @@ async function state() {
     ),
   ).toMatchObject({ status: 200 });
   const db = writableStore(f.storage);
-  return { f, image: () => recoverV3(db, f.seal()) };
+  return { f, image: () => recovered(db, f.seal()) };
 }
 
 const upd = {

@@ -20,6 +20,7 @@ import {
   newKey,
   noWrites,
   probe,
+  recovered,
   trustedManifest,
   verifiedPortable,
 } from "./v3-project.fixture.ts";
@@ -117,7 +118,7 @@ async function typedSource(env = typedEnv) {
 }
 
 function backup(source: Fixture): Portable {
-  const { head, eventWatermark, recordFloor, root } = recoverV3(
+  const { head, eventWatermark, recordFloor, root } = recovered(
     store(source),
     source.seal(),
   );
@@ -835,7 +836,7 @@ test(
         body: { value: { verified: true } },
       });
       expect(await target.send("status")).toMatchObject(stopped);
-      expect(recoverV3(store(target), target.seal()).head).toBe(older.head + 1);
+      expect(recovered(store(target), target.seal()).head).toBe(older.head + 1);
     }
   },
   timeout,
@@ -881,7 +882,7 @@ test(
       body: { value: { verified: true } },
     });
     expect(await target.send("status")).toMatchObject(stopped);
-    const restored = recoverV3(store(target), target.seal());
+    const restored = recovered(store(target), target.seal());
     const [key] = [...restored.entries.outcome.keys()];
     expect(
       JSON.stringify(readV3Value(store(target), restored, "outcome", key!)),

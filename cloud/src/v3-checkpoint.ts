@@ -7,11 +7,13 @@ import {
 } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { AdmitLeaseRequest } from "./project.ts";
+import type { completeRefusals } from "./v3-restore.ts";
 import { type DurableStorage, TABLE_PROBE } from "./store.ts";
 import {
   COLLECTIONS,
   COMMITS,
   entryDigest,
+  foldTranscript,
   PAGE_BYTES,
   PAGES,
   PAGE_SCHEMA,
@@ -35,13 +37,15 @@ const TURN_TAIL_BYTES = 512 * 1024;
 const SNAPSHOT = "snapshot:0";
 const activeStages = new WeakSet<DurableStorage>();
 
+const unverified = () =>
+  new ForgeFailure({
+    code: "UNAVAILABLE",
+    message: "Cloud v3 checkpoint cannot be verified within one turn",
+    retry: "never",
+  });
+
 function requireCheckpoint(condition: unknown): asserts condition {
-  if (!condition)
-    throw new ForgeFailure({
-      code: "UNAVAILABLE",
-      message: "Cloud v3 checkpoint cannot be verified within one turn",
-      retry: "never",
-    });
+  if (!condition) throw unverified();
 }
 
 type Item = readonly [string, string, string | null, number | undefined];
@@ -98,32 +102,6 @@ function archive(body: string): unknown {
     frame.outcome = { ...receipt, resultDigest: digestValue(result) };
   }
   return frame;
-}
-
-function reconcileReceipts(
-  retained: readonly Item[],
-  history: readonly unknown[],
-) {
-  const expected = new Map<string, string>();
-  for (const [i, frame] of history.entries()) {
-    requireCheckpoint(isObject(frame) && frame.sequence === i + 1);
-    const { time, outcome, lease } = frame;
-    if (outcome === undefined) continue;
-    requireCheckpoint(
-      isObject(outcome) &&
-        typeof outcome.id === "string" &&
-        !("result" in outcome),
-    );
-    expected.set(
-      outcome.id,
-      canonicalJson({ time, outcome, ...(lease !== undefined && { lease }) }),
-    );
-  }
-  requireCheckpoint(expected.size === retained.length);
-  for (const [, id, body] of retained)
-    requireCheckpoint(
-      body !== null && expected.get(id) === canonicalJson(archive(body)),
-    );
 }
 
 function pack(items: readonly Item[], transcript: string) {
@@ -234,6 +212,61 @@ export function digestProjection(items: readonly Item[]) {
   );
 }
 
+export function archivedCheck(
+  db: SqlDatabase,
+  options: {
+    admit: AdmitLeaseRequest;
+    failure: () => Error;
+    complete: typeof completeRefusals;
+    pages?: ReadonlyMap<string, string> | undefined;
+  },
+) {
+  const { admit, failure, complete } = options;
+  const sealed = ({ root, recordFloor }: V3Image) => {
+    try {
+      const pages = options.pages ?? storedPages(db, PAGES);
+      const ids = root.generation === 0 ? "" : `,${SNAPSHOT}`;
+      requireCheckpoint(
+        root.pages.map(({ id }) => id).join() ===
+          `directory:0${ids},transcript:0` &&
+          pages.size === root.pages.length &&
+          root.pages.every(({ id, bytes, hash }) => {
+            const body = pages.get(id);
+            return (
+              body !== undefined &&
+              Buffer.byteLength(body) === bytes &&
+              digestBytes(body) === hash
+            );
+          }),
+      );
+      const transcript = pages.get("transcript:0")!;
+      const frames = parse(transcript);
+      requireCheckpoint(
+        Array.isArray(frames) &&
+          frames.length === root.coveredHead &&
+          digestBytes(transcript) === root.transcriptDigest &&
+          canonicalJson(frames) === transcript,
+      );
+      const mode =
+        root.activationDigest === undefined ? "archived" : "portable";
+      const folded = foldTranscript(db, frames, mode, admit);
+      const snapshot = pages.has(SNAPSHOT);
+      if (snapshot) complete(folded, pages);
+      const expected = inventory(folded, new Map());
+      if (snapshot) reconcile(pages, expected, transcript);
+      requireCheckpoint(
+        digestProjection(expected) === root.publicDigest &&
+          folded.head === root.coveredHead &&
+          folded.eventWatermark === root.eventWatermark &&
+          folded.recordFloor === recordFloor,
+      );
+    } catch {
+      throw failure();
+    }
+  };
+  return { admit, sealed };
+}
+
 function discardStage(db: SqlDatabase) {
   db.exec(`DROP TABLE IF EXISTS ${STAGED}`);
   db.exec(`DROP TABLE IF EXISTS ${STAGE}`);
@@ -263,11 +296,20 @@ export async function checkpointV3(
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
   admit: AdmitLeaseRequest,
+  complete: typeof completeRefusals,
 ) {
   requireCheckpoint(!activeStages.has(storage));
   activeStages.add(storage);
   try {
-    return await checkpoint(db, commitSeal, storage, warm, replaceWarm, admit);
+    return await checkpoint(
+      db,
+      commitSeal,
+      storage,
+      warm,
+      replaceWarm,
+      admit,
+      complete,
+    );
   } finally {
     activeStages.delete(storage);
   }
@@ -280,6 +322,7 @@ async function checkpoint(
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
   admit: AdmitLeaseRequest,
+  complete: typeof completeRefusals,
 ) {
   const { root, envelope } = readSealedRoot(db, commitSeal);
   requireCheckpoint(root.activationDigest === undefined);
@@ -290,13 +333,6 @@ async function checkpoint(
   requireCheckpoint(tail >= 0 && tail <= TAIL_ROWS);
   const cut = root.coveredHead + Math.min(tail, TURN_TAIL_ROWS);
   const prior = storedPages(db, PAGES);
-  requireCheckpoint(
-    prior.size === root.pages.length &&
-      root.pages.every(({ id, hash }) => {
-        const body = prior.get(id);
-        return body !== undefined && digestBytes(body) === hash;
-      }),
-  );
   const frames = db.all(
     `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TURN_TAIL_BYTES} THEN body END AS body FROM ${COMMITS} WHERE sequence>? AND sequence<=? ORDER BY sequence`,
     [root.coveredHead, cut],
@@ -306,6 +342,13 @@ async function checkpoint(
       frames.every(({ sequence, body, mac }) =>
         verifyRow(commitSeal, root.incarnation, sequence, body, mac),
       ),
+  );
+  requireCheckpoint(
+    prior.size === root.pages.length &&
+      root.pages.every(({ id, hash }) => {
+        const body = prior.get(id);
+        return body !== undefined && digestBytes(body) === hash;
+      }),
   );
   const archived = parse(prior.get("transcript:0") ?? "null");
   requireCheckpoint(
@@ -318,15 +361,12 @@ async function checkpoint(
   const previous = new Map(
     [...prior].map(([id, body]) => [id, Buffer.from(body)]),
   );
+  const check = (pages: ReadonlyMap<string, string>) =>
+    archivedCheck(db, { admit, failure: unverified, complete, pages });
   const image = recoverV3(
     db,
     commitSeal,
-    {
-      admit,
-      pages: previous,
-      sealed: (sealed) =>
-        reconcileReceipts(inventory(sealed, previous, ["outcome"]), history),
-    },
+    { ...check(prior), pages: previous },
     { through: cut },
   );
   requireCheckpoint(image.head === cut);
@@ -401,7 +441,7 @@ async function checkpoint(
         manifest,
         signRoot(commitSeal, manifest),
       ]);
-      const verifiedRoot = recoverV3(db, commitSeal, undefined, {
+      const verifiedRoot = recoverV3(db, commitSeal, check(readback), {
         through: cut,
       });
       return head === cut ? verifiedRoot : undefined;
