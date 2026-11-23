@@ -1,6 +1,6 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
-import { digestBytes } from "../../src/core/config/pointer.ts";
+import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import type { ForgeError, LeaseGrant } from "../../src/generated/types.ts";
 import {
   validateClaimInput,
@@ -215,8 +215,11 @@ export function commandV3(
     throw store.fail("INPUT_INVALID", "requestId must not carry a credential");
   configured(prefix);
   const state = { ...host, db, image, call };
-  const respond = (result: unknown) =>
-    Response.json({ ok: true, op, status: "OK", result, warnings: [] });
+  const settled = <T>(value: T): T => JSON.parse(canonicalJson(value)) as T;
+  const respond = (value: unknown) => {
+    const result = settled(value);
+    return Response.json({ ok: true, op, status: "OK", result, warnings: [] });
+  };
   const { requestId: id, fingerprint } = prepareReceipt(
     "command",
     principal,
@@ -228,7 +231,7 @@ export function commandV3(
     const { result, status } = prior.outcome;
     if (now >= prior.time + RETENTION_MS) expiredReplay(status !== "ok");
     if (prior.outcome.fingerprint !== fingerprint) throw requestConflict();
-    if (status !== "ok") throw new ForgeFailure(result as ForgeError);
+    if (status !== "ok") throw new ForgeFailure(settled(result as ForgeError));
     command.replay?.(state, result);
     return respond(result);
   }
@@ -266,6 +269,6 @@ export function commandV3(
     },
   ]);
   store.publishV3(image);
-  if (refusal) throw refusal;
+  if (refusal) throw new ForgeFailure(settled(refusal.error));
   return respond(result);
 }
