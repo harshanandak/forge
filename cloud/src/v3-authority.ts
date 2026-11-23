@@ -1,3 +1,4 @@
+import { readLaneControl } from "../../src/blocks/work/lane-control.ts";
 import {
   canonicalJson,
   digestBytes,
@@ -150,12 +151,32 @@ function witnessMatches(
   );
 }
 
+function controlSlotValid(key: string, value: Record<string, unknown>) {
+  const valid =
+    key === "global"
+      ? readLaneControl(value, undefined).ok
+      : key.startsWith("issue:") &&
+        readLaneControl(
+          {
+            version: 1,
+            incarnation: value.incarnation,
+            epoch: value.epoch,
+            resumeAllEpoch: 0,
+            stopAll: null,
+          },
+          value,
+          { id: key.slice("issue:".length) },
+        ).ok;
+  return valid && Buffer.byteLength(canonicalJson(value)) <= 1_024;
+}
+
 export function sealedAuthorityValid(
-  collection: "lease" | "outcome" | "witness",
+  collection: "control" | "lease" | "outcome" | "witness",
   key: string,
   value: unknown,
 ): boolean {
   if (!isObject(value)) return false;
+  if (collection === "control") return controlSlotValid(key, value);
   if (collection === "lease") return value.subject === key && validLease(value);
   const { lease, outcome, time, witness } = value;
   if (collection === "witness")

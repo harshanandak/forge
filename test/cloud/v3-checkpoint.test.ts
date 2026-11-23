@@ -1,3 +1,4 @@
+import { readLaneControl } from "../../src/blocks/work/lane-control.ts";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { failed } from "../../cloud/src/issue-commands.ts";
 import { domain, Project } from "../../cloud/src/project.ts";
@@ -11,10 +12,13 @@ import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
+import { signRow } from "../../cloud/src/v3-seal.ts";
 import {
   claimEffect,
+  entryDigest,
   foldTranscript,
   PAGE_BYTES,
+  readV3GlobalControl,
   readV3Root,
   readV3Value,
   recoverV3,
@@ -60,6 +64,22 @@ interface DirectoryItem {
   digest?: string;
   deleted?: true;
 }
+
+const controlGlobal = (incarnation: unknown, time: number) => ({
+  version: 1,
+  incarnation,
+  epoch: 1,
+  resumeAllEpoch: 0,
+  stopAll: new Date(time).toISOString(),
+});
+const controlDigest = (value: unknown) => ({
+  global: entryDigest(digestValue(value)),
+});
+const controlSlot = (
+  db: Parameters<typeof readV3Value>[0],
+  image: ReturnType<typeof recoverV3>,
+  key = "global",
+): unknown => readV3Value(db, image, "control", key);
 
 const checkpoint = (f: Fixture) => f.send(checkpointRoute, {});
 const view = async (f: Fixture) => {
@@ -1584,7 +1604,11 @@ type Portable = {
 };
 
 async function withPortable(
-  run: (target: Fixture, data: Portable, source: Fixture) => Promise<void>,
+  run: (
+    target: Fixture,
+    data: Portable,
+    source: Fixture,
+  ) => void | Promise<void>,
   extra = 0,
 ) {
   const target = guardFixture();
@@ -2090,6 +2114,7 @@ for (const scenario of [
       await drain(source, prior, prior + calls.length);
       const data = typedBackup(source);
       const upload = await stageRestore(target, data);
+      const activationTime = Date.now();
       expect(await upload(2)).toMatchObject(restoreResult(2, true));
       expect(pages(target)).toEqual(data.pages);
       const expected = await view(source);
@@ -2098,11 +2123,16 @@ for (const scenario of [
         pages: (expected as Json).pages,
         publicDigest: data.publicDigest,
       });
+      const db = writableStore(target.storage);
+      const image = recovered(db, target.seal());
+      const global = controlGlobal(image.root.incarnation, activationTime);
       expect(restored.image).toEqual({
         ...expected.image,
+        control: controlDigest(global),
         head: data.head + 1,
         eventWatermark: data.eventWatermark + 1,
       });
+      expect(controlSlot(db, image)).toEqual(global);
       target.restart();
       const effects = target.observeEffects();
       for (const [index, call] of calls.entries())
@@ -2230,11 +2260,14 @@ async function restored(source: Fixture, target: Fixture, data: Portable) {
   const image = recovered(to, target.seal());
   const { lease: _lease, ...expected } = viewV3(origin).image as Json;
   const { lease: _restored, ...actual } = viewV3(image).image as Json;
+  const global = controlGlobal(image.root.incarnation, T0 + 1);
   expect(actual).toEqual({
     ...expected,
+    control: controlDigest(global),
     head: data.head + 1,
     eventWatermark: data.eventWatermark + 1,
   });
+  expect(controlSlot(to, image)).toEqual(global);
   for (const subject of origin.entries.lease.keys()) {
     const lease = readV3Value(from, origin, "lease", subject)!;
     expect(readV3Value(to, image, "lease", subject)).toEqual({
@@ -2707,11 +2740,14 @@ test(
       const { lease: _lease, ...expected } = viewV3(origin).image as Json;
       const { lease: _restoredLease, ...actual } = viewV3(restored)
         .image as Json;
+      const global = controlGlobal(restored.root.incarnation, T0 + 1);
       expect(actual).toEqual({
         ...expected,
+        control: controlDigest(global),
         head: data.head + 1,
         eventWatermark: data.eventWatermark + 1,
       });
+      expect(controlSlot(to, restored)).toEqual(global);
       expect(restored.recordFloor).toBe(data.recordFloor);
       expect(restored.root.incarnation).not.toBe(origin.root.incarnation);
       expect(restored.root.restoreEpoch).not.toBe(origin.root.restoreEpoch);
@@ -3652,6 +3688,449 @@ test(
       await refusesCold(target, (d) =>
         editProjection(d, "outcome", refusalEntry(d).item.key, brokenJson),
       );
+    }),
+  timeout,
+);
+
+const storedImage = (f: Fixture) =>
+  recovered(writableStore(f.storage), f.seal());
+const sealedComponent = (f: Fixture) =>
+  recoverV3(writableStore(f.storage), f.seal(), {
+    admit: Project.admitLeaseRequest,
+    sealed: () => undefined,
+  });
+
+function activationRow(root: Json, sequence: number, time: number) {
+  const control = controlGlobal(root.incarnation, time);
+  return {
+    format: "forge-cloud-commit/3",
+    operation: "restore.activate",
+    restoreEpoch: root.restoreEpoch,
+    sequence,
+    time,
+    control,
+    events: [
+      {
+        type: "lane.stop",
+        actor: "restore",
+        scope: "all",
+        at: control.stopAll,
+      },
+    ],
+  };
+}
+
+function replaceSignedFrame(
+  f: Fixture,
+  r: Json,
+  sequence: number,
+  frame: Json,
+) {
+  const body = canonicalJson(frame);
+  f.db.run("UPDATE cloud_v3_commits SET body=?, mac=? WHERE sequence=?", [
+    body,
+    signRow(f.seal(), r.incarnation, sequence, body),
+    sequence,
+  ]);
+  return digestBytes(body);
+}
+
+const withActivation = (
+  use: (scene: {
+    target: Fixture;
+    image: ReturnType<typeof recoverV3>;
+    upload: Awaited<ReturnType<typeof stageRestore>>;
+    sourceIncarnation: unknown;
+  }) => void | Promise<void>,
+) =>
+  withPortable(async (target, data, source) => {
+    const upload = await stageRestore(target, data);
+    setSystemTime(T0 + 1);
+    const final = await upload(2);
+    expect(final).toMatchObject(restoreResult(2, true));
+    expect(exited(final)).toBe(0);
+    const image = storedImage(target);
+    expect([image.head, image.eventWatermark, image.recordFloor]).toEqual([
+      data.head + 1,
+      data.eventWatermark + 1,
+      data.recordFloor,
+    ]);
+    expect(commits(target)).toEqual([
+      {
+        sequence: image.head,
+        body: canonicalJson(activationRow(image.root, image.head, T0 + 1)),
+      },
+    ]);
+    const from = writableStore(source.storage);
+    const to = writableStore(target.storage);
+    const origin = storedImage(source);
+    for (const key of origin.entries.lease.keys()) {
+      const lease = readV3Value(from, origin, "lease", key)!;
+      expect(readV3Value(to, image, "lease", key)).toEqual({
+        ...lease,
+        releasedAt: lease.releasedAt ?? iso(T0 + 1),
+      });
+    }
+    await use({
+      target,
+      image,
+      upload,
+      sourceIncarnation: origin.root.incarnation,
+    });
+  });
+
+const servedControl = (image: ReturnType<typeof recoverV3>) =>
+  (viewV3(image).image as Json).control;
+
+test(
+  "v3 activation serves control on warm and cold reads and final retry",
+  () =>
+    withActivation(async ({ target, image, upload }) => {
+      const before = target.observeEffects();
+      await view(target);
+      const warm = await view(target);
+      target.restart();
+      expect(await view(target)).toEqual(warm);
+      const retry = await upload(2);
+      expect(retry).toMatchObject(restoreResult(2, true));
+      expect(exited(retry)).toBe(0);
+      expect(before()).toEqual(noWrites);
+      const global = controlGlobal(image.root.incarnation, T0 + 1);
+      expect(warm.image.control).toEqual(controlDigest(global));
+      expect(
+        controlSlot(writableStore(target.storage), storedImage(target)),
+      ).toEqual(global);
+    }),
+  timeout,
+);
+
+type ControlEntry = readonly [key: string, value: Json];
+function addSnapshotControl(
+  data: Portable,
+  controls: readonly ControlEntry[],
+  swapped = false,
+) {
+  const [directory, snapshot] = data.pages;
+  const old = JSON.parse(directory!.body) as DirectoryItem[];
+  let offset = 0;
+  const bodies = controls.map(([, value]) => canonicalJson(value));
+  const added = controls.map<DirectoryItem>(([key], i) => {
+    const body = bodies[i]!;
+    const length = Buffer.byteLength(body);
+    const entry = {
+      collection: "control",
+      key,
+      offset,
+      length,
+      page: snapshot!.id,
+      digest: digestBytes(body),
+    };
+    offset += length;
+    return entry;
+  });
+  for (const entry of old)
+    if (entry.offset !== undefined) entry.offset += offset;
+  const entries = swapped ? [...old, ...added] : [...added, ...old];
+  directory!.body = canonicalJson(entries);
+  snapshot!.body = bodies.join("") + snapshot!.body;
+  data.publicDigest = digestValue(
+    entries.map(({ collection, key, digest, revision }) => [
+      collection,
+      key,
+      entryDigest(digest ?? null, revision),
+    ]),
+  );
+  return entries;
+}
+
+function addRootControl(
+  f: Fixture,
+  controls: readonly ControlEntry[],
+  swapped = false,
+) {
+  tamperRoot(f, (data, r) => {
+    const entries = addSnapshotControl(data, controls, swapped);
+    const listed = r.pages as Json[];
+    const ends = [entries[0]!, entries.at(-1)!].map(({ collection, key }) => [
+      collection,
+      key,
+    ]);
+    [listed[0]!.first, listed[0]!.last] = ends;
+    listed[0]!.count = entries.length;
+    listed[1]!.count = entries.filter(({ page }) => page !== undefined).length;
+    r.counts = Object.fromEntries(
+      listed.map(({ kind, count }) => [String(kind), count]),
+    );
+    r.publicDigest = data.publicDigest;
+  });
+}
+
+const issueControl = (incarnation: unknown, id = "work-1") => ({
+  version: 1,
+  id,
+  incarnation,
+  epoch: 1,
+  stoppedAt: iso(T0),
+});
+
+test.each([
+  ["imported slots", true],
+  ["empty control", false],
+] as const)(
+  "v3 activation serves only its global with %s",
+  (_label, imported) =>
+    withActivation(({ target, image, sourceIncarnation }) => {
+      if (imported)
+        addRootControl(target, [
+          ["global", controlGlobal(sourceIncarnation, T0)],
+          ["issue:work-1", issueControl(sourceIncarnation)],
+        ]);
+      const before = target.observeEffects();
+      const actual = imported ? sealedComponent(target) : storedImage(target);
+      const { control: _expected, ...ordinary } = viewV3(image).image as Json;
+      const { control: _actual, ...kept } = viewV3(actual).image as Json;
+      expect(kept).toEqual(ordinary);
+      expect(before()).toEqual(noWrites);
+      const global = controlGlobal(image.root.incarnation, T0 + 1);
+      expect(servedControl(actual)).toEqual(controlDigest(global));
+      expect(controlSlot(writableStore(target.storage), actual)).toEqual(
+        global,
+      );
+    }),
+  timeout,
+);
+
+const controlVariants = [
+  ["global", controlGlobal("x".repeat(257), T0)],
+  ["issue:work-1", issueControl("source", "work-2")],
+  ["global", controlGlobal("source", T0)],
+] as const satisfies readonly ControlEntry[];
+
+function unavailableRead(read: () => unknown) {
+  try {
+    read();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ForgeFailure);
+    expect((error as ForgeFailure).error).toMatchObject({
+      code: "UNAVAILABLE",
+      message: "Cloud v3 root is unavailable",
+    });
+    return;
+  }
+  throw new Error("Expected an unavailable v3 root");
+}
+
+test.each([
+  ["ordered", false, undefined],
+  ["swapped", true, undefined],
+  ["malformed global", false, controlVariants[0]],
+  ["mismatched issue", false, controlVariants[1]],
+] as const)(
+  "v3 component recovery checks %s control slots",
+  (_label, swapped, malformed) =>
+    withPortable((_target, _data, source) => {
+      const origin = storedImage(source);
+      const global = controlGlobal(origin.root.incarnation, T0);
+      const issue = issueControl(origin.root.incarnation);
+      const valid = [
+        ["global", global],
+        ["issue:work-1", issue],
+      ] as const;
+      addRootControl(
+        source,
+        valid.map((slot) => (malformed?.[0] === slot[0] ? malformed : slot)),
+        swapped,
+      );
+      const before = source.observeEffects();
+      if (swapped) unavailableRead(() => sealedComponent(source));
+      else {
+        const image = sealedComponent(source);
+        const db = writableStore(source.storage);
+        for (const [key, value] of valid)
+          if (key !== malformed?.[0])
+            expect(controlSlot(db, image, key)).toEqual(value);
+        if (malformed)
+          unavailableRead(() => controlSlot(db, image, malformed[0]));
+        else
+          expect((viewV3(image).image as Json).lease).toEqual(
+            (viewV3(origin).image as Json).lease,
+          );
+      }
+      expect(before()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+async function rejectedFinalPage(target: Fixture, data: Portable) {
+  const upload = await stageRestore(target, data);
+  const before = target.observeEffects();
+  const reply = await upload(2);
+  expect(reply).toMatchObject(restoreRefusal);
+  expect(exited(reply)).toBe(1);
+  expect(before()).toEqual({ ...noWrites, sqlWriteAttempts: 1 });
+  await unprovisioned(target);
+}
+
+for (const mode of ["cold", "portable"] as const)
+  test.each(controlVariants)(
+    "v3 " + mode + " recovery refuses unearned snapshot %s",
+    (key, value) =>
+      withPortable(async (target, data, source) => {
+        if (mode === "portable") {
+          addSnapshotControl(data, [[key, value]]);
+          await rejectedFinalPage(target, data);
+        } else {
+          await view(source);
+          addRootControl(source, [[key, value]]);
+          await coldRefused(source);
+        }
+      }),
+    timeout,
+  );
+
+test.each([
+  ["epoch", 2],
+  ["stopAll", iso(T0 + 2)],
+  ["incarnation", "different"],
+] as const)(
+  "v3 recovery rejects authenticated activation with changed control %s",
+  (key, value) =>
+    withActivation(async ({ target, image }) => {
+      tamperRoot(target, (_data, r) => {
+        const row = activationRow(r, image.head, T0 + 1);
+        r.activationDigest = replaceSignedFrame(target, r, image.head, {
+          ...row,
+          control: { ...row.control, [key]: value },
+        });
+      });
+      await coldRefused(target);
+    }),
+  timeout,
+);
+
+test.each([
+  [1632, "\ud800".repeat(256)],
+  [1024, "\ud800".repeat(154) + "abcd"],
+] as const)(
+  "v3 recovery enforces the bound for %i activation control bytes",
+  (bytes, incarnation) =>
+    withActivation(async ({ target, image }) => {
+      await withFixture((fresh) => {
+        tamperRoot(target, (_data, r) => {
+          const genesis = JSON.parse(root(fresh).body) as Json;
+          Object.assign(r, {
+            incarnation,
+            parentDigest: digestValue({
+              ...genesis,
+              incarnation,
+              restoreEpoch: r.restoreEpoch,
+            }),
+          });
+          const row = activationRow(r, image.head, T0 + 1);
+          expect(Buffer.byteLength(canonicalJson(row.control))).toBe(bytes);
+          r.activationDigest = replaceSignedFrame(target, r, image.head, row);
+        });
+      });
+      if (bytes > 1024) await coldRefused(target);
+      else {
+        const before = target.observeEffects();
+        expect((await view(target)).image.control).toEqual(
+          controlDigest(controlGlobal(incarnation, T0 + 1)),
+        );
+        expect(before()).toEqual(noWrites);
+      }
+    }),
+  timeout,
+);
+
+test.each([
+  ["activation", { ...frame(), operation: "restore.activate" }],
+  ["promotion", { ...frame(), operation: "restore.promote" }],
+  ["control field", { ...frame(), control: controlGlobal("source", T0) }],
+] as const)(
+  "v3 append refuses %s without writing",
+  (_label, candidate) =>
+    withFixture(async (f) => {
+      const before = f.observeEffects();
+      const reply = await append(f, candidate);
+      expect(reply).toMatchObject({
+        status: 400,
+        body: { error: { code: "INPUT_INVALID" } },
+      });
+      expect(exited(reply)).toBe(6);
+      expect(before()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test.each([
+  ["root incarnation", undefined],
+  ["padded incarnation", " padded "],
+  ["oversized incarnation", "\ud800".repeat(256)],
+] as const)(
+  "v3 absent global uses the validator for %s",
+  (_label, incarnation) =>
+    withFixture(async (f) => {
+      await smallHistory(f);
+      if (incarnation !== undefined)
+        tamperRoot(f, (_data, root) => {
+          root.incarnation = incarnation;
+        });
+      const before = f.observeEffects();
+      const db = writableStore(f.storage);
+      for (const image of [storedImage(f), storedImage(f)]) {
+        const expected = {
+          version: 1,
+          incarnation: image.root.incarnation,
+          epoch: 0,
+          resumeAllEpoch: 0,
+          stopAll: null,
+        };
+        const projection = viewV3(image);
+        expect(readV3Value(db, image, "record", "r1")).toBe("x");
+        if (incarnation === undefined) {
+          const global = readV3GlobalControl(db, image);
+          expect<unknown>(global).toEqual(expected);
+          expect(readLaneControl(global, undefined)).toMatchObject({
+            ok: true,
+            result: { stopped: false },
+          });
+        } else {
+          if (incarnation.length === 256)
+            expect(Buffer.byteLength(canonicalJson(expected))).toBeGreaterThan(
+              1_024,
+            );
+          unavailableRead(() => readV3GlobalControl(db, image));
+        }
+        expect(image.entries.control.size).toBe(0);
+        expect(viewV3(image)).toEqual(projection);
+      }
+      expect(before()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test.each([
+  ["valid", false],
+  ["malformed", true],
+] as const)(
+  "v3 global reader keeps %s pointer-backed control distinct from absence",
+  (_label, malformed) =>
+    withPortable((_target, _data, source) => {
+      const value = malformed
+        ? controlVariants[0][1]
+        : controlGlobal("stored", T0);
+      addRootControl(source, [["global", value]]);
+      const before = source.observeEffects();
+      const db = writableStore(source.storage);
+      for (const image of [sealedComponent(source), sealedComponent(source)]) {
+        const projection = viewV3(image);
+        if (malformed) unavailableRead(() => readV3GlobalControl(db, image));
+        else expect<unknown>(readV3GlobalControl(db, image)).toEqual(value);
+        expect([...image.entries.control.keys()]).toEqual(["global"]);
+        expect(viewV3(image)).toEqual(projection);
+      }
+      expect(before()).toEqual(noWrites);
     }),
   timeout,
 );
