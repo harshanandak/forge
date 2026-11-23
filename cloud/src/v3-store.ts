@@ -1319,6 +1319,8 @@ function verifyLeaseFrame(
   return { ...frame, lease };
 }
 
+const settled = <T>(value: T): T => JSON.parse(canonicalJson(value)) as T;
+
 export function leaseV3(
   db: SqlDatabase,
   seal: Seal,
@@ -1415,6 +1417,7 @@ export function leaseV3(
     },
   );
   publishV3(image);
-  if ("refusal" in result) throw result.refusal;
-  return result.lease;
+  if ("refusal" in result)
+    throw new ForgeFailure(settled(result.refusal.error));
+  return settled(result.lease);
 }
