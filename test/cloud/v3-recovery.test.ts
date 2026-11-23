@@ -523,7 +523,7 @@ test(
         .all(frames.length);
       expect(stored).toHaveLength(TAIL_ROWS);
       for (const { body } of stored)
-        for (const change of (JSON.parse(body) as Frame).changes!)
+        for (const change of (JSON.parse(body) as Frame).changes ?? [])
           expected[change.key] = digestOf([
             2,
             digestOf((change.value as { value: unknown }).value),
