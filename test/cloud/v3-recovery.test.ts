@@ -1239,8 +1239,8 @@ const roster =
 
 const rootFields: readonly [string, (root: Json) => Json, string?][] = [
   [
-    "a format other than forge-cloud-root/3",
-    set({ format: "forge-cloud-root/4" }),
+    "a format other than forge-cloud-root/4",
+    set({ format: "forge-cloud-root/3" }),
   ],
   ["an unknown root key", set({ extra: 1 })],
   [

@@ -179,7 +179,13 @@ export function sealedAuthorityValid(
 }
 
 export function authorityFault(
-  { operation, lease, outcome, witness }: Readonly<Record<string, unknown>>,
+  {
+    operation,
+    lease,
+    outcome,
+    witness,
+    basis,
+  }: Readonly<Record<string, unknown>>,
   replay = false,
 ): string | undefined {
   if (lease !== undefined && !validLease(lease)) return "lease";
@@ -196,6 +202,8 @@ export function authorityFault(
       ? undefined
       : outcomeFault(outcome, command, replay, claim);
   if (outcomeError !== undefined) return outcomeError;
+  const refusal = command && isObject(outcome) && outcome.status !== "ok";
+  if ((basis !== undefined) !== refusal) return "basis";
   if (command && !claim)
     return lease === undefined &&
       witness === undefined &&

@@ -133,7 +133,7 @@ import { authorizeV3Token, issueV3Token, revokeV3Token } from "./v3-tokens.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { archivedCheck, checkpointV3 } from "./v3-checkpoint.ts";
 import { commandV3 } from "./v3-commands.ts";
-import { completeRefusals, hasV3Restore, restoreV3Page } from "./v3-restore.ts";
+import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
 import { type Seal, sealOf } from "./v3-seal.ts";
 import {
   appendV3Frames,
@@ -359,7 +359,6 @@ const ordinaryCheck = (db: SqlDatabase) =>
   archivedCheck(db, {
     admit: Project.admitLeaseRequest,
     failure: unavailable,
-    complete: completeRefusals,
   });
 
 export class Project {
@@ -583,7 +582,6 @@ export class Project {
                 this.#v3Image = image;
             },
             Project.admitLeaseRequest,
-            completeRefusals,
           );
           return Response.json({ ok: true, value });
         }

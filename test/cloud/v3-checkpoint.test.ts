@@ -11,7 +11,6 @@ import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
-import { completeRefusals } from "../../cloud/src/v3-restore.ts";
 import {
   claimEffect,
   foldTranscript,
@@ -2639,12 +2638,7 @@ for (const mode of ["archived", "portable", "tail"] as const)
       const liveImage = recovered(db, source.seal());
       const live = readV3Value(db, liveImage, "lease", "issue:work-2");
       let folded: ReturnType<typeof recoverV3>;
-      if (mode === "tail")
-        folded = recoverV3(db, source.seal(), {
-          admit: Project.admitLeaseRequest,
-          pages: new Map(),
-          sealed: () => undefined,
-        });
+      if (mode === "tail") folded = recovered(db, source.seal());
       else {
         await drain(source, 0, 3);
         folded = foldOf(source, mode, transcript(source));
@@ -2981,12 +2975,61 @@ test(
     withTyped(async (target, data) => {
       forgeRefusal(data, accent);
       const upload = await stageRestore(target, data);
-      expect(await upload(2)).toMatchObject(restoreResult(2, true));
-      target.restart();
-      expect(await typed(target, missingUpdate)).toMatchObject({
-        status: 404,
-        body: { error: { code: "NOT_FOUND", message: "caf\u00e9" } },
+      const effects = target.observeEffects();
+      expect(await upload(2)).toEqual({
+        status: 400,
+        body: {
+          ok: false,
+          error: {
+            code: "RESTORE_INVALID_ROW",
+            message: "Cloud v3 portable restore could not be verified",
+            retry: "never",
+          },
+        },
       });
+      expect(effects()).toEqual({
+        sqlWriteAttempts: 1,
+        alarmWrites: 0,
+        sqlAndKvIntact: true,
+      });
+      const glyphs = "caf\u00e9 \u{1F600}";
+      const source = guardFixture(typedEnv);
+      const honest = guardFixture(typedEnv);
+      using _source = source.db;
+      using _honest = honest.db;
+      expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+      ok(
+        await append(
+          source,
+          putRecords(
+            { key: "r1", revision: 1, value: dependent("work-1", ["work-2"]) },
+            { key: "r2", revision: 1, value: dependent("work-2", []) },
+          ),
+        ),
+      );
+      const named = {
+        actor: { kind: "agent", id: glyphs },
+        session: { id: glyphs, device: "owner-a" },
+      };
+      ok(
+        await rawLease(source, "claim", "owner-a", {
+          subject: "issue:work-2",
+          requestId: "dependency",
+          ttlMs: HOUR,
+          holder: named,
+        }),
+      );
+      const blocked = await typed(source, issueClaim);
+      expect(blocked).toMatchObject({
+        status: 409,
+        body: { error: { code: "CLAIM_BLOCKED" } },
+      });
+      expect(JSON.stringify(blocked.body)).toContain(glyphs);
+      await drain(source, 0, 3);
+      const restored = await stageRestore(honest, typedBackup(source));
+      expect(await restored(2)).toMatchObject(restoreResult(2, true));
+      honest.restart();
+      expect(await typed(honest, issueClaim)).toEqual(blocked);
     }),
   timeout,
 );
@@ -3303,7 +3346,6 @@ test(
         const check = archivedCheck(db, {
           admit: Project.admitLeaseRequest,
           failure,
-          complete: completeRefusals,
           pages: new Map(pages(f).map(({ id, body }) => [id, body])),
         });
         const { coveredHead } = readV3Root(db, f.seal());

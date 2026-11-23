@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { failed } from "../../cloud/src/issue-commands.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import {
@@ -15,6 +16,8 @@ import {
 import { readV3Value, recoverV3 } from "../../cloud/src/v3-store.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import type { ForgeError } from "../../src/generated/types.ts";
+import { exitCode } from "../../src/surface/result.ts";
 import {
   guardFixture,
   newKey,
@@ -248,24 +251,67 @@ test(
 );
 
 test(
-  "v3 restore accepts the same rewritten backup when a trusted signer signs it, a class A control",
+  "v3 restore refuses the same rewritten backup when a trusted signer signs it and still restores the untouched signed backup",
   async () => {
-    const { data } = await shared();
+    const { source, data } = await shared();
+    const wire = (r: { body: unknown }) =>
+      (r.body as { error: ForgeError }).error;
+    const exit = (r: { body: unknown }) => exitCode(failed(wire(r)));
+    const originals = [];
+    for (const body of [missingUpdate, invalidUpdate])
+      originals.push([body, await typed(source, body)] as const);
+    expect(originals.map(([, r]) => [r.status, wire(r).code, exit(r)])).toEqual(
+      [
+        [404, "NOT_FOUND", 3],
+        [400, "INPUT_INVALID", 6],
+      ],
+    );
+    const sibling = guardFixture(typedEnv);
+    using _sibling = sibling.db;
+    const honest = signedUpload(sibling, data);
+    expect(await honest(0)).toMatchObject({ status: 200 });
+    expect(await honest(1)).toMatchObject({ status: 200 });
+    expect(await honest(2)).toMatchObject({
+      status: 200,
+      body: { value: { page: 2, verified: true } },
+    });
+    sibling.restart();
+    for (const [body, reply] of originals) {
+      const replay = sibling.observeEffects();
+      const again = await typed(sibling, body);
+      expect(again).toEqual(reply);
+      expect(exit(again)).toBe(exit(reply));
+      expect(replay()).toEqual(noWrites);
+    }
     const target = guardFixture(typedEnv);
     using _db = target.db;
     rewriteRefusal(data);
     const upload = signedUpload(target, data);
     expect(await upload(0)).toMatchObject({ status: 200 });
     expect(await upload(1)).toMatchObject({ status: 200 });
-    expect(await upload(2)).toMatchObject({
-      status: 200,
-      body: { value: { page: 2, verified: true } },
-    });
-    target.restart();
-    expect(await typed(target, missingUpdate)).toMatchObject({
-      status: 404,
-      body: { error: { code: "NOT_FOUND", message: "Edited message" } },
-    });
+    const staged = target.snapshot();
+    for (const _try of [1, 2]) {
+      const effects = target.observeEffects();
+      const reply = await upload(2);
+      expect(reply).toEqual({
+        status: 400,
+        body: {
+          ok: false,
+          error: {
+            code: "RESTORE_INVALID_ROW",
+            message: "Cloud v3 portable restore could not be verified",
+            retry: "never",
+          },
+        },
+      });
+      expect(exit(reply)).toBe(1);
+      expect(effects()).toEqual({
+        sqlWriteAttempts: 1,
+        alarmWrites: 0,
+        sqlAndKvIntact: true,
+      });
+      expect(target.snapshot()).toEqual(staged);
+    }
   },
   timeout,
 );

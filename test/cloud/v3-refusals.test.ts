@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { writableStore } from "../../cloud/src/store.ts";
-import { claimEffect } from "../../cloud/src/v3-store.ts";
+import { claimEffect, type V3Image } from "../../cloud/src/v3-store.ts";
+import { digestValue } from "../../src/core/config/pointer.ts";
 import { guardFixture, probe, recovered } from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -33,6 +34,7 @@ interface Refusals {
     effect: typeof claimEffect,
   ): unknown;
   basisFault(operation: string, basis: unknown): string | undefined;
+  refusalOf(image: unknown, frame: object, effect: typeof claimEffect): unknown;
   INPUT_REFUSALS: Record<string, unknown>;
 }
 const path = "../../cloud/src/v3-refusals.ts";
@@ -359,5 +361,304 @@ test(
     for (const [op, basis] of refused)
       expect(typeof m.basisFault(op, basis)).toBe("string");
   },
+  timeout,
+);
+
+type Err = { code: string };
+type Check = (frame: object, given?: unknown) => unknown;
+const until = time + 2 * ttlMs;
+const frameOf = (
+  operation: string,
+  basis: unknown,
+  error: Err,
+  extra: object = {},
+  at = time,
+) => ({
+  operation,
+  time: at,
+  events: [],
+  outcome: {
+    id: `c2:${"a".repeat(64)}`,
+    fingerprint: "fp",
+    scope: { family: "command" },
+    status: error.code,
+    result: error,
+    retryUntil: until,
+    ...extra,
+  },
+  basis,
+});
+const IN = { stage: "input" };
+const lease = (code: string, message: string, at: object = member) =>
+  leased(code, message, at).refusal as Err;
+const prefixError = never("INPUT_INVALID", "Unknown issue id prefix");
+const revision = {
+  code: "REVISION_CONFLICT",
+  message: "Expected revision 2; current revision is 1",
+  retry: "reconcile_first",
+  currentRevision: 1,
+};
+const conflicting = { ...upd, expectRevision: 2 };
+const notHeldError = lease(
+  "LEASE_NOT_HELD",
+  `${held}; this caller does not hold that lease`,
+);
+const updateKinds: [object, number, Err][] = [
+  [{ ...upd, id: "other-1" }, time, prefixError],
+  [{ ...upd, id: "forge-9" }, time, never("NOT_FOUND", "Issue was not found")],
+  [
+    { ...upd, id: "forge-4" },
+    time,
+    lease("LEASE_NOT_HELD", "issue:work-4 has no lease", {
+      subject: "issue:work-4",
+    }),
+  ],
+  [{ ...upd, holder: tablet }, time, notHeldError],
+  [
+    { ...upd, generation: 2 },
+    time,
+    lease(
+      "LEASE_STALE",
+      `generation 2 is not the current generation 1 of ${subject}`,
+    ),
+  ],
+  [
+    upd,
+    time + ttlMs,
+    lease(
+      "LEASE_EXPIRED",
+      `the lease on ${subject} expired at ${expiresAt}; a lapsed lease is reacquired, never renewed`,
+    ),
+  ],
+  [conflicting, time, revision],
+];
+const claimBasis = (id: string, ttl = 60_000) => ({
+  ...clm,
+  id,
+  holder: tablet,
+  ttlMs: ttl,
+});
+const blocked = {
+  code: "CLAIM_BLOCKED",
+  message:
+    'forge-1 (open) {"actor":{"id":"fixture","kind":"agent"},"session":{"device":"laptop","id":"fixture"}}, forge-9 (missing) ',
+  retry: "never",
+  observed: {
+    blockers: [
+      { id: "forge-1", holder, holderUnverified: true },
+      { id: "forge-9" },
+    ],
+  },
+};
+const gone = never("NOT_FOUND", "Issue forge-9 was not found");
+const claimHeld = lease(
+  "LEASE_HELD",
+  `${held}; read its state to reconcile instead of retrying`,
+);
+const claimKinds: [object, Err][] = [
+  [claimBasis("other-1"), prefixError],
+  [claimBasis("forge-9"), gone],
+  [
+    claimBasis("forge-2"),
+    never("INPUT_CONFLICT", "Closed issues cannot be claimed"),
+  ],
+  [claimBasis("forge-3"), blocked],
+  [
+    claimBasis("forge-4", 86_401_000),
+    never("INPUT_INVALID", "ttlMs is over 24 hours"),
+  ],
+  [
+    claimBasis("forge-4", 7_201_000),
+    never("INPUT_INVALID", "ttlMs would exceed the token expiry"),
+  ],
+  [claimBasis("forge-1"), claimHeld],
+];
+const stale = never("LEASE_STALE", "The claim receipt expired");
+
+async function verdict(
+  run: (check: Check, image: () => V3Image, m: Refusals) => unknown,
+) {
+  const m = await load();
+  const { f, image } = await state();
+  using _db = f.db;
+  const check: Check = (frame, given) =>
+    m.refusalOf(given ?? image(), frame, claimEffect);
+  await run(check, image, m);
+}
+
+test(
+  "v3 refusalOf returns each fixed input error of every operation",
+  () =>
+    verdict((check, _image, m) => {
+      for (const [op, list] of Object.entries(m.INPUT_REFUSALS))
+        for (const error of list as Err[])
+          expect(check(frameOf(op, IN, error))).toEqual(error);
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf refuses an input basis whose error is outside the fixed list",
+  () =>
+    verdict((check) => {
+      for (const [op, error] of [
+        ["issue.create", never("INPUT_INVALID", "Another message")],
+        ["issue.claim", gone],
+        ["issue.update", prefixError],
+      ] as const)
+        expect(check(frameOf(op, IN, error))).toBeUndefined();
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf re-derives every update refusal kind",
+  () =>
+    verdict((check) => {
+      for (const [basis, at, error] of updateKinds)
+        expect(check(frameOf("issue.update", basis, error, {}, at))).toEqual(
+          error,
+        );
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf re-derives every claim refusal kind",
+  () =>
+    verdict((check) => {
+      for (const [basis, error] of claimKinds)
+        expect(check(frameOf("issue.claim", basis, error))).toEqual(error);
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf refuses an update refusal the image would grant",
+  () =>
+    verdict((check) => {
+      for (const error of [notHeldError, revision])
+        expect(check(frameOf("issue.update", upd, error))).toBeUndefined();
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf refuses a claim refusal that claimEffect grants",
+  () =>
+    verdict((check) => {
+      const frame = frameOf("issue.claim", claimBasis("forge-4"), claimHeld);
+      expect(check(frame)).toBeUndefined();
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf treats a witnessed claim as a fault unless an input check refuses first",
+  () =>
+    verdict((check, image) => {
+      const id = [...image().entries.witness.keys()][0] as string;
+      const ok = claimBasis("forge-4");
+      expect(check(frameOf("issue.claim", ok, stale, { id }))).toBeUndefined();
+      expect(check(frameOf("issue.claim", ok, stale))).toBeUndefined();
+      const other = claimBasis("other-1");
+      expect(check(frameOf("issue.claim", other, prefixError, { id }))).toEqual(
+        prefixError,
+      );
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf binds the outcome status to the rebuilt code",
+  () =>
+    verdict((check) => {
+      const status = { status: "INPUT_INVALID" };
+      expect(
+        check(frameOf("issue.update", conflicting, revision, status)),
+      ).toBeUndefined();
+      expect(
+        check(frameOf("issue.update", updateKinds[1]![0], gone, status)),
+      ).toBeUndefined();
+      expect(check(frameOf("issue.update", conflicting, revision))).toEqual(
+        revision,
+      );
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf compares a live result with the rebuilt error exactly",
+  () =>
+    verdict((check) => {
+      for (const change of [
+        { message: "Edited" },
+        { retry: "never" },
+        { extra: 1 },
+        { currentRevision: 2 },
+      ])
+        expect(
+          check(
+            frameOf("issue.update", conflicting, { ...revision, ...change }),
+          ),
+        ).toBeUndefined();
+      const shuffled = Object.fromEntries(Object.entries(revision).reverse());
+      expect(
+        check(frameOf("issue.update", conflicting, shuffled as Err)),
+      ).toEqual(revision);
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf compares an archived result digest with the rebuilt error",
+  () =>
+    verdict((check) => {
+      const archived = (error: object) => {
+        const row = frameOf("issue.update", conflicting, revision);
+        const { result: _result, ...rest } = row.outcome;
+        return {
+          ...row,
+          outcome: { ...rest, resultDigest: digestValue(error) },
+        };
+      };
+      expect(check(archived(revision))).toEqual(revision);
+      expect(
+        check(archived({ ...revision, message: "Edited" })),
+      ).toBeUndefined();
+      expect(check(archived(gone))).toBeUndefined();
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf refuses a frame outside the basis grammar",
+  () =>
+    verdict((check) => {
+      const base = frameOf("issue.update", conflicting, revision);
+      expect(check(base)).toEqual(revision);
+      for (const frame of [
+        { ...base, basis: { ...conflicting, extra: 1 } },
+        { ...base, basis: { ...conflicting, stage: "other" } },
+        { ...base, basis: undefined },
+        { ...base, operation: "lease.claim", basis: IN },
+        { ...base, operation: "issue.create", basis: conflicting },
+        { ...base, outcome: undefined },
+      ])
+        expect(check(frame)).toBeUndefined();
+    }),
+  timeout,
+);
+
+test(
+  "v3 refusalOf answers undefined when the re-derivation throws",
+  () =>
+    verdict((check) => {
+      const broken = {};
+      const update = frameOf("issue.update", upd, revision);
+      const claim = frameOf("issue.claim", claimBasis("forge-1"), gone);
+      expect(check(update, broken)).toBeUndefined();
+      expect(check(claim, broken)).toBeUndefined();
+    }),
   timeout,
 );

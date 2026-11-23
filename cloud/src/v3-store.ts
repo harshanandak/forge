@@ -40,6 +40,7 @@ import {
   resultMatches,
   verifyRecordFrame,
 } from "./v3-record-transitions.ts";
+import { refusalOf } from "./v3-refusals.ts";
 import { TABLE_PROBE } from "./store.ts";
 import {
   BOUNDED_MAC,
@@ -70,12 +71,12 @@ export const TAIL_ROWS = 1024;
 const TAIL_BYTES = 16 * MiB;
 const MAX_JSON_DEPTH = 64;
 const RESTORE_LEASES = 16;
-const ROOT_FORMAT = "forge-cloud-root/3";
+const ROOT_FORMAT = "forge-cloud-root/4";
 const KINDS = ["directory", "snapshot", "transcript"];
 export const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
 const SYNTHETIC_KEYS = ["changes", "events", "operation", "time"];
 const FRAME_KEYS =
-  "changes,events,format,lease,operation,outcome,sequence,time,witness".split(
+  "basis,changes,events,format,lease,operation,outcome,sequence,time,witness".split(
     ",",
   );
 const empty = "[]";
@@ -658,6 +659,12 @@ function foldRow(
     image.load,
   );
   let done: Frame = verify ? verify(frame) : frame;
+  if (frame.basis !== undefined) {
+    const error = refusalOf(image, frame, claimEffect);
+    if (error === undefined) throw unavailable();
+    const { resultDigest: _digest, ...receipt } = frame.outcome!;
+    done = { ...done, outcome: { ...receipt, result: error } };
+  }
   if (
     records.result !== undefined &&
     done.outcome?.resultDigest !== undefined
@@ -866,11 +873,16 @@ function append(
     const read = (key: string) =>
       pending.get(key) ?? image.entries.record.get(key);
     const refuse = () => fail("INPUT_INVALID", "Invalid v3 record transition");
-    for (const body of bodies) {
+    for (const [i, body] of bodies.entries()) {
       const frame = JSON.parse(body) as Frame & Record<string, unknown>;
       const fault = authorityFault(frame);
       if (fault !== undefined)
         throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
+      if (
+        frame.basis !== undefined &&
+        (i > 0 || refusalOf(image, frame, claimEffect) === undefined)
+      )
+        throw new Error("Refusing a v3 frame with an invalid refusal");
       if (frame.operation === "issue.claim") verifyClaimFrame(image, frame);
       const records = verifyRecordFrame(frame, floor, read, refuse, image.load);
       floor = records.floor;
@@ -893,6 +905,7 @@ function append(
 export interface Frame {
   readonly operation: string;
   readonly time: number;
+  readonly basis?: unknown;
   readonly events: readonly unknown[];
   readonly changes?: readonly unknown[];
   readonly lease?: LeaseRecord;

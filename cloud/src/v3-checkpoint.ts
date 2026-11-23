@@ -7,7 +7,6 @@ import {
 } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { AdmitLeaseRequest } from "./project.ts";
-import type { completeRefusals } from "./v3-restore.ts";
 import { type DurableStorage, TABLE_PROBE } from "./store.ts";
 import {
   COLLECTIONS,
@@ -217,11 +216,10 @@ export function archivedCheck(
   options: {
     admit: AdmitLeaseRequest;
     failure: () => Error;
-    complete: typeof completeRefusals;
     pages?: ReadonlyMap<string, string> | undefined;
   },
 ) {
-  const { admit, failure, complete } = options;
+  const { admit, failure } = options;
   const sealed = ({ root, recordFloor }: V3Image) => {
     try {
       const pages = options.pages ?? storedPages(db, PAGES);
@@ -251,7 +249,6 @@ export function archivedCheck(
         root.activationDigest === undefined ? "archived" : "portable";
       const folded = foldTranscript(db, frames, mode, admit);
       const snapshot = pages.has(SNAPSHOT);
-      if (snapshot) complete(folded, pages);
       const expected = inventory(folded, new Map());
       if (snapshot) reconcile(pages, expected, transcript);
       requireCheckpoint(
@@ -296,20 +293,11 @@ export async function checkpointV3(
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
   admit: AdmitLeaseRequest,
-  complete: typeof completeRefusals,
 ) {
   requireCheckpoint(!activeStages.has(storage));
   activeStages.add(storage);
   try {
-    return await checkpoint(
-      db,
-      commitSeal,
-      storage,
-      warm,
-      replaceWarm,
-      admit,
-      complete,
-    );
+    return await checkpoint(db, commitSeal, storage, warm, replaceWarm, admit);
   } finally {
     activeStages.delete(storage);
   }
@@ -322,7 +310,6 @@ async function checkpoint(
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
   admit: AdmitLeaseRequest,
-  complete: typeof completeRefusals,
 ) {
   const { root, envelope } = readSealedRoot(db, commitSeal);
   requireCheckpoint(root.activationDigest === undefined);
@@ -362,7 +349,7 @@ async function checkpoint(
     [...prior].map(([id, body]) => [id, Buffer.from(body)]),
   );
   const check = (pages: ReadonlyMap<string, string>) =>
-    archivedCheck(db, { admit, failure: unverified, complete, pages });
+    archivedCheck(db, { admit, failure: unverified, pages });
   const image = recoverV3(
     db,
     commitSeal,
