@@ -1380,6 +1380,22 @@ test(
     expect(
       (reply.body as { value: { expiresAt: string } }).value.expiresAt,
     ).toBe(new Date(base + 90 * DAY).toISOString());
+    const { id, token } = (reply.body as { value: Issued }).value;
+    expect(reply).toEqual({
+      status: 200,
+      body: {
+        ok: true,
+        value: {
+          id,
+          token,
+          device: "laptop",
+          expiresAt: new Date(base + 90 * DAY).toISOString(),
+        },
+      },
+    });
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+    expect(token).toMatch(/^fct_[0-9a-f]{16}\.[A-Za-z0-9_-]{43}$/);
+    expect(token.startsWith(`fct_${id}.`)).toBe(true);
     expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
     const input = { device: "laptop", ttlMs: 90 * DAY + 1 };
     const message = err("INPUT_INVALID", "ttlMs is over 90 days");
@@ -1389,12 +1405,26 @@ test(
   timeout,
 );
 
+const revokeReply = (expiresAt: number) => ({
+  status: 200,
+  body: {
+    ok: true,
+    value: {
+      device: "laptop",
+      session: "run-1",
+      expiresAt: new Date(expiresAt).toISOString(),
+      leasesReleased: false,
+    },
+  },
+});
+
 clocked(
   "a repeat revoke gets its first answer until the row is deleted, then the unknown-id answer",
   async (f) => {
     const t = await issued(f);
     const first = await f.send("revoke", { id: t.id });
     answers(first, 200);
+    expect(first).toEqual(revokeReply(base + HOUR));
     expect(exitCode(first.body as Parameters<typeof exitCode>[0])).toBe(0);
     const due = base + RETENTION + HOUR;
     for (const time of [base, base + RETENTION - 1, due - 1]) {
@@ -1417,7 +1447,10 @@ clocked(
   async (f) => {
     const t = await issued(f);
     at(base + 2 * DAY);
-    answers(await f.send("revoke", { id: t.id }), 200);
+    const reply = await f.send("revoke", { id: t.id });
+    answers(reply, 200);
+    expect(reply).toEqual(revokeReply(base + HOUR));
+    expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
     for (const time of [base + HOUR + RETENTION, base + 9 * DAY - 1]) {
       at(time);
       await admit(f, (rows) => rows, time);
@@ -1465,6 +1498,7 @@ clocked(
       for (const device of ["laptop", "tablet"]) {
         const reply = await issue(f, { device, ttlMs: 7 * DAY });
         const id = admitted(reply, now, 7 * DAY, { device });
+        expect(tokenRows(f).length).toBeLessThanOrEqual(30);
         if (last[device])
           answers(await f.send("revoke", { id: last[device] }), 200);
         last[device] = id;
