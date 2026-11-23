@@ -7,6 +7,14 @@
     "pr.merge": {
       "title": "Merge the expected head",
       "summary": "Squash merge a ready PR with the head pinned, then read it back."
+    },
+    "pr.ci-failures": {
+      "title": "Show failed CI jobs",
+      "summary": "List failed checks with a bounded log excerpt and whether the base branch is red too."
+    },
+    "pr.ci-rerun": {
+      "title": "Rerun failed CI jobs",
+      "summary": "Rerun the failed jobs of each failed run, then read back the new attempt number."
     }
   }
 }

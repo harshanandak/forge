@@ -23,14 +23,18 @@ function array(value: unknown): unknown[] {
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "GitHub command failed";
 }
-function client(call: Call) {
+function client(call: Pick<Call, "services" | "signal" | "deadline">) {
   const env = call.services.environment.select(
     "PATH PATHEXT SystemRoot HOME USERPROFILE GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR APPDATA XDG_CONFIG_HOME DBUS_SESSION_BUS_ADDRESS HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy".split(
       " ",
     ),
   );
   const executable = call.services.process.resolve("gh", env);
-  return async (args: string[], json = true): Promise<unknown> => {
+  return async (
+    args: string[],
+    json = true,
+    maxOutputBytes = 1048576,
+  ): Promise<unknown> => {
     if (executable.kind !== "resolved")
       throw new Error("UNAVAILABLE: gh is not installed");
     const result = await call.services.process.run(executable, args, {
@@ -38,7 +42,7 @@ function client(call: Call) {
       env,
       signal: call.signal,
       timeoutMs: Math.max(1, call.deadline - Date.now()),
-      maxOutputBytes: 1048576,
+      maxOutputBytes,
     });
     if (
       result.exitCode !== 0 ||
@@ -47,7 +51,7 @@ function client(call: Call) {
       result.signal
     )
       throw new Error(result.stderr || "GitHub command did not complete");
-    return json ? (JSON.parse(result.stdout) as unknown) : null;
+    return json ? (JSON.parse(result.stdout) as unknown) : result.stdout;
   };
 }
 const ref = (input: Input) => [String(input.number), "--repo", input.repo];
@@ -224,4 +228,200 @@ async function merge(call: Call) {
     };
   }
 }
-module.exports = { "pr.status": status, "pr.merge": merge };
+type CiCall = HandlerArgs<
+  Pick<Input, "repo" | "number">,
+  { ciExcerptLines?: number },
+  Services
+>;
+type Gh = ReturnType<typeof client>;
+type Failed = { name: string; url: string | null; runId: string | null };
+const FAILED = "FAILURE ERROR TIMED_OUT STARTUP_FAILURE".split(" ");
+const LOG_BYTES = 8388608;
+const ciReason = (code: BlockerCode, text: string) => [reason(code, text)];
+const unavailable = (text: string) => ({
+  verdict:
+    text.startsWith("UNAVAILABLE:") || text.startsWith("Only GitHub")
+      ? "UNAVAILABLE"
+      : "BLOCKED",
+  reasons: ciReason("HOST_BLOCKED", text),
+});
+const githubRepo = (repo: string) => /^[\w.-]+\/[\w.-]+$/.test(repo);
+async function failedChecks(gh: Gh, call: CiCall) {
+  const pr = object(
+    await gh(view(call.input, "statusCheckRollup,baseRefName")),
+  );
+  const failed: Failed[] = [];
+  for (const item of array(pr.statusCheckRollup ?? [])) {
+    const check = object(item),
+      result = String(check.conclusion || check.state);
+    if (!FAILED.includes(result)) continue;
+    const link = check.detailsUrl || check.targetUrl,
+      url = typeof link === "string" && link ? link : null;
+    failed.push({
+      name: String(check.name || check.context),
+      url,
+      runId: url?.match(/\/actions\/runs\/(\d+)/)?.[1] ?? null,
+    });
+  }
+  return { failed, base: String(pr.baseRefName) };
+}
+/** Lines of this job's log (its prefix stripped) around the first error, never more than `max`. */
+function excerpt(log: string, job: string, max: number): string {
+  const all = log.split("\n").filter(Boolean);
+  const own = all.filter((line) => line.split("\t")[0] === job);
+  const lines = (own.length ? own : all).map((line) => {
+    const parts = line.split("\t");
+    return (parts.length > 2 ? parts.slice(2).join("\t") : line).slice(0, 400);
+  });
+  const first = lines.findIndex((line) =>
+    /\b(error|failed|failure|exception|panic|fatal)\b/i.test(line),
+  );
+  const start = first < 0 ? Math.max(0, lines.length - max) : first;
+  return lines.slice(start, start + max).join("\n");
+}
+async function ciFailures(call: CiCall) {
+  if (!githubRepo(call.input.repo))
+    return {
+      ...unavailable("Only GitHub owner/repository references are supported"),
+      failures: [],
+    };
+  const reasons: ReturnType<typeof reason>[] = [];
+  const max = Math.min(Math.max(call.config.ciExcerptLines ?? 40, 1), 200);
+  try {
+    const gh = client(call);
+    const { failed, base } = await failedChecks(gh, call);
+    let red: Set<string> | null = null;
+    if (failed.length)
+      try {
+        const pages = array(
+          await gh([
+            "api",
+            "--paginate",
+            "--slurp",
+            `repos/${call.input.repo}/commits/${encodeURIComponent(base)}/check-runs`,
+          ]),
+        );
+        red = new Set(
+          pages.flatMap((page) =>
+            array(object(page).check_runs)
+              .map(object)
+              .filter((run) =>
+                FAILED.includes(String(run.conclusion).toUpperCase()),
+              )
+              .map((run) => String(run.name)),
+          ),
+        );
+      } catch (error) {
+        reasons.push(
+          reason("EVIDENCE_GAP", "Base checks unreadable: " + message(error)),
+        );
+      }
+    const logs = new Map<string, string | null>();
+    const failures = [];
+    for (const check of failed) {
+      let text: string | null = null;
+      if (check.runId) {
+        if (!logs.has(check.runId))
+          try {
+            logs.set(
+              check.runId,
+              String(
+                await gh(
+                  [
+                    "run",
+                    "view",
+                    check.runId,
+                    "--repo",
+                    call.input.repo,
+                    "--log-failed",
+                  ],
+                  false,
+                  LOG_BYTES,
+                ),
+              ),
+            );
+          } catch (error) {
+            logs.set(check.runId, null);
+            reasons.push(
+              reason(
+                "EVIDENCE_GAP",
+                `Log of run ${check.runId} unreadable: ` + message(error),
+              ),
+            );
+          }
+        const log = logs.get(check.runId);
+        if (log) text = excerpt(log, check.name, max);
+      }
+      failures.push({
+        ...check,
+        excerpt: text,
+        alsoRedOnBase: red ? red.has(check.name) : null,
+      });
+    }
+    return {
+      verdict: failures.length ? "FAILING" : "NO_FAILURES",
+      failures,
+      reasons,
+    };
+  } catch (error) {
+    const text = message(error);
+    return { ...unavailable(text), failures: [] };
+  }
+}
+async function ciRerun(call: CiCall) {
+  if (!githubRepo(call.input.repo))
+    return {
+      ...unavailable("Only GitHub owner/repository references are supported"),
+      runs: [],
+    };
+  const reasons: ReturnType<typeof reason>[] = [];
+  const runs: { runId: string; rerun: boolean; attempt: number | null }[] = [];
+  try {
+    const gh = client(call);
+    const { failed } = await failedChecks(gh, call);
+    const ids = [...new Set(failed.flatMap((check) => check.runId ?? []))];
+    for (const runId of ids) {
+      const target = ["--repo", call.input.repo];
+      try {
+        await gh(["run", "rerun", runId, "--failed", ...target], false);
+      } catch (error) {
+        runs.push({ runId, rerun: false, attempt: null });
+        reasons.push(reason("HOST_BLOCKED", `Run ${runId}: ` + message(error)));
+        continue;
+      }
+      let attempt: number | null = null;
+      try {
+        const run = object(
+          await gh(["run", "view", runId, ...target, "--json", "attempt"]),
+        );
+        if (typeof run.attempt !== "number") throw new Error("Missing attempt");
+        attempt = run.attempt;
+      } catch (error) {
+        reasons.push(
+          reason(
+            "EVIDENCE_GAP",
+            `Run ${runId} attempt unreadable: ` + message(error),
+          ),
+        );
+      }
+      runs.push({ runId, rerun: true, attempt });
+    }
+    return {
+      verdict: !ids.length
+        ? "NOTHING_TO_RERUN"
+        : runs.some((run) => run.rerun)
+          ? "RERUN"
+          : "BLOCKED",
+      runs,
+      reasons,
+    };
+  } catch (error) {
+    return { ...unavailable(message(error)), runs: [] };
+  }
+}
+module.exports = {
+  "pr.status": status,
+  "pr.merge": merge,
+  "pr.ci-failures": ciFailures,
+  "pr.ci-rerun": ciRerun,
+};

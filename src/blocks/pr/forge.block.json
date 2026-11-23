@@ -6,11 +6,24 @@
   "profile": "trusted-action/v2",
   "entry": "entry.cjs",
   "configSchema": "schemas/config.json",
-  "nouns": { "pr": { "interface": "1.0.0" } },
+  "nouns": {
+    "pr": {
+      "interface": "1.0.0"
+    }
+  },
   "requires": [
-    { "slot": "process", "interface": "forge.process@1" },
-    { "slot": "files", "interface": "forge.files@1" },
-    { "slot": "environment", "interface": "forge.environment@1" }
+    {
+      "slot": "process",
+      "interface": "forge.process@1"
+    },
+    {
+      "slot": "files",
+      "interface": "forge.files@1"
+    },
+    {
+      "slot": "environment",
+      "interface": "forge.environment@1"
+    }
   ],
   "operations": {
     "pr.status": {
@@ -31,6 +44,37 @@
     "pr.merge": {
       "input": "schemas/merge.input.json",
       "output": "schemas/merge.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "process:write",
+        "external:process",
+        "files:read",
+        "environment:read",
+        "external:write"
+      ],
+      "idempotent": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "pr.ci-failures": {
+      "input": "schemas/ci-failures.input.json",
+      "output": "schemas/ci-failures.output.json",
+      "context": "project",
+      "timeoutMs": 60000,
+      "effects": [
+        "process:write",
+        "external:process",
+        "files:read",
+        "environment:read"
+      ],
+      "idempotent": true,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "pr.ci-rerun": {
+      "input": "schemas/ci-rerun.input.json",
+      "output": "schemas/ci-rerun.output.json",
       "context": "project",
       "timeoutMs": 60000,
       "effects": [

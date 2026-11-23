@@ -6,6 +6,13 @@
       "type": "boolean",
       "default": true,
       "description": "Require all GitHub review threads to be resolved before merging."
+    },
+    "ciExcerptLines": {
+      "type": "integer",
+      "default": 40,
+      "minimum": 1,
+      "maximum": 200,
+      "description": "Most log lines pr.ci-failures returns per failed job (200 is the safety ceiling)."
     }
   }
 }
