@@ -15,10 +15,14 @@ import { authorityFault } from "../../cloud/src/v3-authority.ts";
 import { signToken } from "../../cloud/src/v3-seal.ts";
 import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
 import {
+  changedCommandReply,
+  expectTypedReply,
   guardFixture,
   noWrites,
   probe,
+  readOnlyReply,
   recovered,
+  typedReplyCases,
   verifiedPortable,
 } from "./v3-project.fixture.ts";
 
@@ -255,6 +259,58 @@ async function checkpoint(f: Fixture) {
     body: { value: { image } },
   });
 }
+
+const replyCases = typedReplyCases(time, "laptop");
+
+function replyReplayMatrix(
+  state: string,
+  prepare?: (f: Fixture) => void | Promise<void>,
+) {
+  const cases = Object.values(replyCases);
+  for (const mode of modes)
+    for (const [index, { call, expected }] of cases.entries())
+      test(
+        `v3 ${mode} ${state} replay keeps ${call.requestId} reply text`,
+        async () => {
+          const f = guardFixture(env);
+          using _db = f.db;
+          await provision(f);
+          await enroll(f, mode);
+          const reply = (body: object) =>
+            mode === "owner"
+              ? f.sendText(`${probe}/command`, body, headers())
+              : f.sendText("command", body, {
+                  authorization: `Bearer ${tokens.get(f)!.get("laptop/fixture")!.token}`,
+                });
+          for (const prior of cases.slice(0, index))
+            expectTypedReply(await reply(prior.call), prior.expected, mode);
+          const first = await reply(call);
+          expectTypedReply(first, expected, mode);
+          await prepare?.(f);
+
+          const replay = await readOnlyReply(f, () => reply(call));
+          expectTypedReply(replay, expected, mode);
+          const changed = {
+            ...replyCases.create.call,
+            input: { title: "Changed" },
+          };
+          expectTypedReply(
+            await readOnlyReply(f, () => reply(changed)),
+            changedCommandReply,
+            mode,
+          );
+          expect(replay.text).toBe(first.text);
+        },
+        timeout,
+      );
+}
+
+replyReplayMatrix("warm");
+replyReplayMatrix("cold tail", (f) => f.restart());
+replyReplayMatrix("cold pages", async (f) => {
+  await checkpoint(f);
+  f.restart();
+});
 
 test.each(modes)(
   "v3 typed create writes one scoped result, record and event and replays it after collection (%s)",

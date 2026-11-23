@@ -21,12 +21,16 @@ import {
   viewV3,
 } from "../../cloud/src/v3-store.ts";
 import {
+  changedCommandReply,
+  expectTypedReply,
   guardFixture,
   noWrites,
   probe,
+  readOnlyReply,
   recovered,
   trustedManifest,
   trustedSeal,
+  typedReplyCases,
   verifiedPortable,
 } from "./v3-project.fixture.ts";
 
@@ -2339,6 +2343,98 @@ test(
       });
       expect(exited(reply)).toBe(4);
       expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+const restoreReplies = typedReplyCases(T0, "owner-a");
+const restoreReply = (f: Fixture, body: object) =>
+  f.sendText(`${probe}/command`, body, {
+    "X-Forge-Owner": "owner-a",
+    "X-Forge-Owner-Expires": String(E1),
+  });
+
+function withRestoredReplies(
+  run: (target: Fixture, first: Map<string, string>) => Promise<void>,
+) {
+  return restoring(
+    async (source) => {
+      const cases = Object.values(restoreReplies);
+      const first = new Map<string, string>();
+      for (const { call, expected } of cases) {
+        const reply = await restoreReply(source, call);
+        expectTypedReply(reply, expected);
+        first.set(call.requestId, reply.text);
+      }
+      await drain(source, 0, cases.length);
+      return first;
+    },
+    async ({ source, target, data, built }) => {
+      const db = writableStore(source.storage);
+      const origin = recovered(db, source.seal());
+      const prior = [...origin.entries.outcome.keys()].map(
+        (key) => readV3Value(db, origin, "outcome", key)!.outcome,
+      );
+      expect(await restored(source, target, data)).toEqual(prior);
+      target.restart();
+      await run(target, built);
+    },
+  );
+}
+
+for (const { call, expected } of [
+  restoreReplies.create,
+  restoreReplies.createWithFields,
+  restoreReplies.missing,
+  restoreReplies.revisionConflict,
+]) {
+  test(
+    `v3 restore replays the first ${call.requestId} reply text`,
+    () =>
+      withRestoredReplies(async (target, first) => {
+        const reply = await readOnlyReply(target, () =>
+          restoreReply(target, call),
+        );
+        expectTypedReply(reply, expected);
+        const changed = {
+          ...restoreReplies.create.call,
+          input: { title: "Changed" },
+        };
+        expectTypedReply(
+          await readOnlyReply(target, () => restoreReply(target, changed)),
+          changedCommandReply,
+        );
+        expect(reply.text).toBe(first.get(call.requestId)!);
+      }),
+    timeout,
+  );
+}
+
+test(
+  "v3 restore keeps typed claim and update receipts and refuses their replays as stale",
+  () =>
+    withRestoredReplies(async (target) => {
+      const lease = restoreReplies.update.expected.result.lease;
+      const expected = {
+        status: 409,
+        exit: 4,
+        error: {
+          code: "LEASE_STALE",
+          message:
+            "Request no longer matches the current lease on issue:work-1",
+          retry: "reconcile_first",
+          lease,
+        },
+      } as const;
+      for (const { call } of [restoreReplies.claim, restoreReplies.update]) {
+        const replay = () =>
+          readOnlyReply(target, () => restoreReply(target, call));
+        const first = await replay();
+        const second = await replay();
+        expectTypedReply(first, expected);
+        expectTypedReply(second, expected);
+        expect(second.text).toBe(first.text);
+      }
     }),
   timeout,
 );
