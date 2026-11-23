@@ -17,7 +17,11 @@ import { receiptScope, type ReceiptPrincipal } from "./issue-request-id.ts";
 import { checkedUpdateInput, fence } from "./issue-update.ts";
 import { NAMESPACE, requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
-import { CLAIM_REFUSALS, UPDATE_REFUSALS } from "./v3-authority.ts";
+import {
+  CLAIM_REFUSALS,
+  isPromoteResult,
+  UPDATE_REFUSALS,
+} from "./v3-authority.ts";
 import { updateEffect } from "./v3-record-transitions.ts";
 import {
   CLAIM_INVALID,
@@ -232,6 +236,7 @@ export function commandV3(
     if (now >= prior.time + RETENTION_MS) expiredReplay(status !== "ok");
     if (prior.outcome.fingerprint !== fingerprint) throw requestConflict();
     if (status !== "ok") throw new ForgeFailure(settled(result as ForgeError));
+    if (isPromoteResult(result)) throw requestConflict();
     command.replay?.(state, result);
     return respond(result);
   }

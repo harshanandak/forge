@@ -2,6 +2,7 @@ import { readLaneControl } from "../../src/blocks/work/lane-control.ts";
 import {
   canonicalJson,
   digestBytes,
+  digestValue,
   isObject,
 } from "../../src/core/config/pointer.ts";
 import { checkLeaseRecord } from "../../src/core/state/index.ts";
@@ -14,7 +15,7 @@ export const isDigest = (value: unknown): value is string =>
 export const isNat = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-const keysOf = (value: Record<string, unknown>) =>
+export const keysOf = (value: Record<string, unknown>) =>
   Object.keys(value).sort().join();
 const OUTCOME_KEYS = "fingerprint,id,retryUntil,scope,status";
 const REFUSAL_KEYS = "fingerprint,id,result,retryUntil,scope,status";
@@ -58,7 +59,10 @@ function fingerprintTied(
 ): boolean {
   try {
     const input: unknown = JSON.parse(String(outcome.fingerprint));
-    if (String(operation).startsWith("issue.")) {
+    if (
+      operation === "restore.promote" ||
+      String(operation).startsWith("issue.")
+    ) {
       if (!isObject(input) || !isObject(outcome.scope)) return false;
       const { family: _family, ...scope } = outcome.scope;
       return (
@@ -88,6 +92,7 @@ function outcomeFault(
   typed?: boolean,
   replay = false,
   grant = false,
+  promote = false,
 ) {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
   const { scope, result } = outcome;
@@ -122,6 +127,7 @@ function outcomeFault(
   )
     return "command outcome";
   if (archived) return undefined;
+  if (promote) return isPromoteResult(result) ? undefined : "promote result";
   if (command && outcome.status === "ok")
     return (grant
       ? validators.validateLeaseGrant
@@ -132,6 +138,46 @@ function outcomeFault(
   return status !== undefined && outcome.status === status
     ? undefined
     : "outcome status";
+}
+
+export function isPromoteResult(
+  result: unknown,
+): result is { sequence: number; state: "promoted"; stopped: true } {
+  return (
+    isObject(result) &&
+    keysOf(result) === "sequence,state,stopped" &&
+    result.state === "promoted" &&
+    result.stopped === true &&
+    isNat(result.sequence) &&
+    result.sequence > 0
+  );
+}
+
+export function promoteOutcome(
+  outcome: unknown,
+  time: number,
+  sequence?: number,
+  archived = false,
+) {
+  if (
+    !isObject(outcome) ||
+    outcome.status !== "ok" ||
+    outcomeFault(outcome, true, archived, false, true) !== undefined ||
+    Number(outcome.retryUntil) <= time ||
+    !fingerprintTied("restore.promote", undefined, outcome)
+  )
+    return undefined;
+  const { resultDigest, ...rest } = outcome;
+  const result = archived
+    ? { state: "promoted", stopped: true, sequence }
+    : rest.result;
+  if (
+    !isPromoteResult(result) ||
+    (sequence !== undefined && sequence !== result.sequence) ||
+    (archived && digestValue(result) !== resultDigest)
+  )
+    return undefined;
+  return { ...rest, id: String(outcome.id), result };
 }
 
 function witnessMatches(
@@ -187,6 +233,11 @@ export function sealedAuthorityValid(
       witnessMatches(witness, lease, key)
     );
   if (!isNat(time) || !isObject(outcome) || outcome.id !== key) return false;
+  if (isPromoteResult(outcome.result))
+    return (
+      keysOf(value) === "outcome,time" &&
+      promoteOutcome(outcome, time) !== undefined
+    );
   const grant =
     lease !== undefined ||
     (typeof outcome.status === "string" &&

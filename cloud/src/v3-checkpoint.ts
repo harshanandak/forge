@@ -3,6 +3,7 @@ import {
   canonicalJson,
   digestBytes,
   digestValue,
+  isObject,
 } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { AdmitLeaseRequest } from "./project.ts";
@@ -20,6 +21,7 @@ import {
   recoverV3,
   ROOT,
   TAIL_ROWS,
+  type Discovery,
   type V3Image,
 } from "./v3-store.ts";
 import { BOUNDED_MAC, type Seal, signRoot, verifyRow } from "./v3-seal.ts";
@@ -222,7 +224,8 @@ export function archivedCheck(
   },
 ) {
   const { admit, failure } = options;
-  const sealed = ({ root, recordFloor }: V3Image) => {
+  const sealed = (image: V3Image, { current }: Discovery) => {
+    const { root, recordFloor } = image;
     try {
       const pages = options.pages ?? storedPages(db, PAGES);
       const ids = root.generation === 0 ? "" : `,${SNAPSHOT}`;
@@ -247,9 +250,16 @@ export function archivedCheck(
           digestBytes(transcript) === root.transcriptDigest &&
           canonicalJson(frames) === transcript,
       );
-      const mode =
-        root.activationDigest === undefined ? "archived" : "portable";
-      const folded = foldTranscript(db, frames, mode, admit);
+      const boundary = current
+        ? root.coveredHead + 1
+        : frames.findLastIndex(
+            (frame: unknown) =>
+              isObject(frame) && frame.operation === "restore.activate",
+          ) + 1;
+      const folded = foldTranscript(db, frames, "archived", admit, {
+        root,
+        boundary,
+      });
       const snapshot = pages.has(SNAPSHOT);
       const expected = inventory(folded, new Map());
       if (snapshot) reconcile(pages, expected, transcript);
@@ -259,6 +269,7 @@ export function archivedCheck(
           folded.eventWatermark === root.eventWatermark &&
           folded.recordFloor === recordFloor,
       );
+      image.fold = folded.fold!;
     } catch {
       throw failure();
     }

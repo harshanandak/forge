@@ -37,6 +37,8 @@ import {
   authorityFault,
   isDigest,
   isNat,
+  keysOf,
+  promoteOutcome,
   sealedAuthorityValid,
 } from "./v3-authority.ts";
 import type { roster as checkpointRoster } from "./v3-checkpoint.ts";
@@ -150,6 +152,17 @@ function genesis(incarnation: string, restoreEpoch: string) {
   };
 }
 
+function generationTwoProof(root: V3Image["root"], activationDigest: string) {
+  const base = genesis(root.incarnation as string, root.restoreEpoch as string);
+  const parent = {
+    ...root,
+    generation: 1,
+    parentDigest: digestValue(base),
+    activationDigest,
+  };
+  return digestValue(parent) === root.parentDigest;
+}
+
 type Collection = (typeof COLLECTIONS)[number];
 interface Page {
   readonly id: string;
@@ -198,6 +211,7 @@ export interface V3Image {
   fold?: {
     context: "portable" | "rooted";
     segmentIncarnation?: string;
+    segmentEpoch?: string;
     incarnations: Set<string>;
     restoreEpochs: Set<string>;
     approvalIds: Set<string>;
@@ -427,10 +441,12 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
   };
 }
 
+export type Discovery = { current: boolean };
+
 interface Verification {
   admit: AdmitLeaseRequest;
   pages?: ReadonlyMap<string, Buffer>;
-  sealed: (image: V3Image) => void;
+  sealed: (image: V3Image, discovery: Discovery) => void;
 }
 
 function recoveryImage(
@@ -563,9 +579,73 @@ function foldActivation(db: SqlDatabase, image: V3Image, body: string) {
   fold.incarnations.add(incarnation);
   fold.restoreEpochs.add(restoreEpoch);
   fold.segmentIncarnation = incarnation;
+  fold.segmentEpoch = restoreEpoch;
   fold.pending = { sequence, time, digest: digestBytes(body) };
   apply(image, { events }, sequence, writes);
   return { incarnation, restoreEpoch };
+}
+
+function restoreTime(value: unknown): value is number {
+  return isNat(value) && /^\d{4}-/.test(new Date(value).toJSON() ?? "");
+}
+
+function foldPromote(
+  image: V3Image,
+  body: string,
+  frame: Record<string, unknown>,
+  mode: FoldMode,
+) {
+  const fold = image.fold!;
+  const { pending } = fold;
+  const { activationDigest, approval, operation, sequence, time } = frame;
+  if (
+    !pending ||
+    sequence !== pending.sequence + 1 ||
+    Buffer.byteLength(body) > 4096 ||
+    keysOf(frame) !==
+      "activationDigest,approval,events,format,operation,outcome,sequence,time" ||
+    activationDigest !== pending.digest ||
+    !restoreTime(time) ||
+    !isObject(approval) ||
+    keysOf(approval) !== "approvedAt,approver,expiresAt,id,operationDigest"
+  )
+    throw unavailable();
+  const { id, operationDigest, approver, approvedAt, expiresAt } = approval;
+  if (
+    typeof id !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      id,
+    ) ||
+    operationDigest !== digestValue([operation, activationDigest]) ||
+    !isDigest(approver) ||
+    !restoreTime(approvedAt) ||
+    !restoreTime(expiresAt) ||
+    approvedAt < pending.time ||
+    approvedAt > time ||
+    time >= expiresAt ||
+    expiresAt - approvedAt > 600_000 ||
+    fold.approvalIds.has(id)
+  )
+    throw unavailable();
+  const events = [
+    { type: operation, actor: "owner", at: new Date(time).toISOString() },
+  ];
+  const archived = mode !== "live";
+  const outcome = promoteOutcome(frame.outcome, time, sequence, archived);
+  if (
+    !outcome ||
+    image.entries.outcome.has(outcome.id) ||
+    storedCanonical(frame.events) !== canonicalJson(events)
+  )
+    throw unavailable();
+  const writes: SlotWrite[] = [
+    ["outcome", outcome.id, { value: { outcome, time } }],
+  ];
+  const transcript = archived ? body : canonicalJson(archive(body));
+  countFrame(image.usage, transcript, writes, () => undefined);
+  fold.approvalIds.add(id);
+  delete fold.pending;
+  apply(image, { events }, sequence, writes);
 }
 
 export function recoverV3(
@@ -603,12 +683,7 @@ export function recoverV3(
     root.eventWatermark,
     verification.pages,
   );
-  const fold = image.fold!;
-  fold.context = "rooted";
-  if (root.activationDigest === undefined) {
-    fold.segmentIncarnation = root.incarnation as string;
-    fold.incarnations.add(fold.segmentIncarnation);
-  }
+  image.fold!.context = "rooted";
   const bodies = new Map(
     db
       .all(
@@ -647,9 +722,9 @@ export function recoverV3(
         image.recordFloor = Math.max(image.recordFloor, recordNumber(key));
     }
   }
-  verification.sealed(image);
   if (root.activationDigest !== undefined) {
     if (through !== undefined) throw unavailable();
+    verification.sealed(image, { current: true });
     const { incarnation, restoreEpoch } = applyActivation(db, seal, image);
     if (incarnation !== root.incarnation || restoreEpoch !== root.restoreEpoch)
       throw unavailable();
@@ -661,12 +736,25 @@ export function recoverV3(
     through === undefined ? [root.coveredHead] : [root.coveredHead, through],
   );
   if (rows.length > TAIL_ROWS) throw unavailable();
-  const verify = (row: Frame) => verifyLeaseFrame(db, image, row, verification);
-  for (const { sequence, body, mac } of rows) {
+  for (const { sequence, body, mac } of rows)
     if (!verifyRow(seal, root.incarnation, sequence, body, mac))
       throw unavailable();
-    foldRow(image, sequence, body, verify);
-  }
+  const first =
+    root.generation === 2 && rows[0] ? parse(String(rows[0].body)) : undefined;
+  verification.sealed(image, {
+    current: isObject(first) && first.operation === "restore.activate",
+  });
+  const verify = (row: Frame) => verifyLeaseFrame(db, image, row, verification);
+  for (const { sequence, body } of rows)
+    foldRow(image, sequence, body, verify, db);
+  const { pending, segmentIncarnation, segmentEpoch } = image.fold!;
+  if (
+    pending ||
+    (segmentEpoch !== undefined &&
+      (segmentIncarnation !== root.incarnation ||
+        segmentEpoch !== root.restoreEpoch))
+  )
+    throw unavailable();
   return image;
 }
 
@@ -701,8 +789,18 @@ export function foldTranscript(
   frames: readonly unknown[],
   mode: Exclude<FoldMode, "live">,
   admit: AdmitLeaseRequest,
+  context?: { root: V3Image["root"]; boundary?: number },
 ): V3Image {
   const image = recoveryImage(db, genesis("portable", "portable"), 0);
+  const fold = image.fold!;
+  const boundary = context?.boundary ?? 0;
+  if (context) {
+    fold.context = "rooted";
+    if (!boundary) {
+      fold.segmentIncarnation = context.root.incarnation as string;
+      fold.incarnations.add(fold.segmentIncarnation);
+    }
+  }
   const verification = { admit, pages: new Map<string, Buffer>() };
   const verify = (frame: Frame) =>
     verifyLeaseFrame(db, image, frame, verification);
@@ -714,15 +812,18 @@ export function foldTranscript(
   };
   for (const [index, raw] of frames.entries()) {
     const frame: unknown = raw;
-    const portable = mode === "portable";
+    const rowMode = index + 1 < boundary ? "portable" : mode;
+    const portable = rowMode === "portable";
     if (!isObject(frame) || (portable && frame.operation === marker.operation))
       throw unavailable();
     const body =
       portable && Object.keys(frame).join() === "sequence"
         ? { ...marker, ...frame }
         : frame;
-    foldRow(image, index + 1, storedCanonical(body), verify, mode);
+    const text = storedCanonical(body);
+    foldRow(image, index + 1, text, verify, db, rowMode);
   }
+  if (fold.pending) throw unavailable();
   return image;
 }
 
@@ -731,17 +832,40 @@ function foldRow(
   sequence: unknown,
   body: unknown,
   verify?: (frame: Frame) => Frame,
+  db?: SqlDatabase,
   mode: FoldMode = "live",
 ) {
   const frame = typeof body === "string" ? parse(body) : undefined;
   if (
     sequence !== image.head + 1 ||
-    restoreFrame(frame) ||
+    typeof body !== "string" ||
+    !isObject(frame) ||
     storedCanonical(frame) !== body ||
-    !validShape(frame) ||
-    authorityFault(frame, mode !== "live") !== undefined ||
     frame.format !== COMMIT_FORMAT ||
     frame.sequence !== sequence
+  )
+    throw unavailable();
+  if (image.fold?.pending || restoreFrame(frame)) {
+    const { root } = image;
+    if (!db) throw unavailable();
+    if (frame.operation === "restore.promote")
+      foldPromote(image, body, frame, mode);
+    else if (
+      !image.fold?.pending &&
+      frame.operation === "restore.activate" &&
+      (mode !== "live" ||
+        (root.generation === 2 &&
+          sequence === root.coveredHead + 1 &&
+          generationTwoProof(root, digestBytes(body))))
+    )
+      foldActivation(db, image, body);
+    else throw unavailable();
+    image.tailBytes += Buffer.byteLength(body);
+    return;
+  }
+  if (
+    !validShape(frame) ||
+    authorityFault(frame, mode !== "live") !== undefined
   )
     throw unavailable();
   const { record } = image.entries;
