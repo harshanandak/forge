@@ -10,7 +10,11 @@ import { createWorker } from "../../cloud/src/worker.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { tokenParts } from "../../cloud/src/tokens.ts";
 import { type TokenFields, verifyToken } from "../../cloud/src/v3-seal.ts";
-import { authorizeV3Token, TOKEN_READ } from "../../cloud/src/v3-tokens.ts";
+import {
+  authorizeV3Token,
+  TOKEN_READ,
+  tokenInventory,
+} from "../../cloud/src/v3-tokens.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
@@ -1655,3 +1659,76 @@ for (const [label, trip, attempts] of faults)
     },
     timeout,
   );
+
+const list = (f: Fixture) => tokenInventory(store(f), f.seal());
+const quiet = (f: Fixture, run: () => void) => {
+  const effects = f.observeEffects();
+  run();
+  expect(effects()).toEqual(noWrites);
+};
+const refusedList = (f: Fixture) =>
+  quiet(f, () => expect(refusal(() => list(f))).toBe("UNAVAILABLE"));
+
+clocked("tokenInventory returns nothing for an absent table", (f) => {
+  quiet(f, () => expect(list(f)).toEqual([]));
+  expect(tableNames(f)).not.toContain("cloud_v3_tokens");
+});
+
+clocked("tokenInventory returns nothing for an empty table", (f) => {
+  f.db.run(REAL);
+  quiet(f, () => expect(list(f)).toEqual([]));
+});
+
+clocked(
+  "tokenInventory returns 64 healthy rows with their stored MACs",
+  (f) => {
+    fill(f, 64);
+    const rows = tokenRows(f);
+    quiet(f, () =>
+      expect(list(f)).toEqual(
+        rows.map((row) => ({ fields: fieldsOf(row), mac: row.mac })),
+      ),
+    );
+  },
+);
+
+clocked(
+  "tokenInventory returns a previous-key row with its original MAC",
+  async (f) => {
+    const first = String(f.env.V3_SEAL_KEY);
+    await issued(f);
+    const [row] = tokenRows(f);
+    Reflect.set(f.env, "V3_SEAL_KEY", newKey());
+    Reflect.set(f.env, "V3_SEAL_KEY_PREVIOUS", first);
+    quiet(f, () =>
+      expect(list(f)).toEqual([{ fields: fieldsOf(row!), mac: row!.mac }]),
+    );
+  },
+);
+
+for (const [label, over, damage] of spoiled)
+  clocked(`tokenInventory refuses ${label}`, async (f) => {
+    await issued(f);
+    const x = signed(f, 1, over);
+    put(f, [x]);
+    edit(f, x.id, damage(x));
+    refusedList(f);
+  });
+
+for (const [label, over] of junk)
+  clocked(`tokenInventory refuses a junk row with ${label}`, async (f) => {
+    await issued(f);
+    await issued(f, { device: "tablet" });
+    put(f, [signed(f, 0, over)]);
+    refusedList(f);
+  });
+
+clocked("tokenInventory refuses 65 live rows", (f) => {
+  fill(f, 65);
+  refusedList(f);
+});
+
+clocked("tokenInventory refuses 65 rows even when 5 are old", (f) => {
+  fill(f, 65, (i) => (i > 0 && i < 6 ? old : {}));
+  refusedList(f);
+});
