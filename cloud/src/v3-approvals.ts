@@ -5,10 +5,16 @@ import { TABLE_PROBE } from "./store.ts";
 import { isDigest } from "./v3-authority.ts";
 import {
   type ApprovalFields,
+  approvalHashPattern,
+  approvalPayloadDigest,
+  type BrowserFields,
+  browserTokenPattern,
   type Seal,
   signApproval,
+  signBrowserRow,
   type TokenFields,
   verifyApproval,
+  verifyBrowserRow,
 } from "./v3-seal.ts";
 import {
   fail,
@@ -16,6 +22,7 @@ import {
   readV3Root,
   unavailable,
   V3_APPROVALS,
+  V3_APPROVAL_BROWSER,
   type V3Image,
 } from "./v3-store.ts";
 
@@ -204,5 +211,185 @@ export function requestV3Approval(
       expiresAt: row.expiresAt,
       url: `/promote-approval?id=${row.id}`,
     };
+  });
+}
+
+const MAX_BROWSER_ROWS = 24;
+const MAX_APPROVAL_CONTEXTS = 3;
+const CREATE_BROWSER = `CREATE TABLE IF NOT EXISTS ${V3_APPROVAL_BROWSER} (state_hash TEXT PRIMARY KEY, bind_hash TEXT NOT NULL, project TEXT NOT NULL, approval_id TEXT NOT NULL, payload_digest TEXT NOT NULL, action TEXT NOT NULL, nonce TEXT NOT NULL UNIQUE, verifier TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER, mac TEXT NOT NULL) WITHOUT ROWID`;
+
+type StoredBrowser = BrowserFields & { mac: string };
+const BROWSER_SHAPES = {
+  stateHash: approvalText("state_hash", 64, 64),
+  bindHash: approvalText("bind_hash", 64, 64),
+  project: approvalText("project"),
+  approvalId: approvalText("approval_id", 36, 36),
+  payloadDigest: approvalText("payload_digest", 71, 71),
+  action: approvalText("action", 4, 7),
+  nonce: approvalText("nonce", 43, 43),
+  verifier: approvalText("verifier", 43, 43),
+  createdAt: approvalTime("created_at"),
+  expiresAt: approvalTime("expires_at"),
+  usedAt: approvalTime("used_at", true),
+  mac: approvalText("mac", 81, 81),
+} satisfies Record<keyof StoredBrowser, readonly [string, string]>;
+const BROWSER_COLUMNS = Object.entries(BROWSER_SHAPES) as [
+  keyof StoredBrowser,
+  readonly [string, string],
+][];
+const BROWSER_IDS = `SELECT CASE WHEN ${BROWSER_SHAPES.stateHash[1]} THEN state_hash END AS state_hash FROM ${V3_APPROVAL_BROWSER} ORDER BY ${V3_APPROVAL_BROWSER}.state_hash LIMIT ${MAX_BROWSER_ROWS + 1}`;
+const READ_BROWSER = `SELECT (${BROWSER_COLUMNS.map(([, [, guard]]) => guard).join(" AND ")}) AS shape_ok, ${BROWSER_COLUMNS.map(([field, [column, guard]]) => `CASE WHEN ${guard} THEN ${column} END AS ${field}`).join(", ")} FROM ${V3_APPROVAL_BROWSER} WHERE state_hash=?`;
+const INSERT_BROWSER = `INSERT INTO ${V3_APPROVAL_BROWSER} (${BROWSER_COLUMNS.map(([, [column]]) => column).join(", ")}) VALUES (${BROWSER_COLUMNS.map(() => "?").join(", ")})`;
+
+export interface ApprovalContext {
+  readonly db: SqlDatabase;
+  readonly seal: Seal;
+  readonly project: string;
+  readonly image: () => V3Image;
+  readonly policyIdentity: () => string;
+}
+
+const approvalRequired = () =>
+  fail("APPROVAL_REQUIRED", "A pending promotion approval is required");
+export const invalidBrowser = () =>
+  fail("AUTH_INVALID", "Invalid promotion approval browser request");
+
+function selectedRows(
+  db: SqlDatabase,
+  table: string,
+  key: string,
+  value: string,
+) {
+  if (!db.get(TABLE_PROBE, [table])) return 0;
+  const rows = db.all(`SELECT 1 FROM ${table} WHERE ${key}=? LIMIT 2`, [value]);
+  if (rows.length > 1) throw approvalUnavailable();
+  return rows.length;
+}
+
+export function liveApproval(
+  { db, seal, project, image, policyIdentity }: ApprovalContext,
+  id: string,
+  now: number,
+  payloadDigest?: string,
+): StoredApproval {
+  let row: StoredApproval;
+  try {
+    if (!selectedRows(db, V3_APPROVALS, "id", id)) throw approvalRequired();
+    row = readApproval(db, seal, id);
+  } catch (error) {
+    throw storageFailure(error, true) ?? approvalUnavailable();
+  }
+  if (row.status !== "pending" || now >= row.expiresAt)
+    throw approvalRequired();
+  const root = readV3Root(db, seal);
+  const control = readV3GlobalControl(db, image());
+  if (
+    row.project !== project ||
+    row.incarnation !== root.incarnation ||
+    row.restoreEpoch !== root.restoreEpoch ||
+    row.activationDigest !== root.activationDigest ||
+    control.incarnation !== root.incarnation ||
+    control.epoch !== 1 ||
+    row.policyIdentity !== policyIdentity() ||
+    (payloadDigest !== undefined &&
+      payloadDigest !== approvalPayloadDigest(seal, row))
+  )
+    throw fail(
+      "INPUT_CONFLICT",
+      "Lane control or authorization binding changed",
+    );
+  return row;
+}
+
+function coherentBrowserRow(row: BrowserFields): boolean {
+  const { createdAt, expiresAt, usedAt } = row;
+  return (
+    createdAt < expiresAt &&
+    expiresAt - createdAt <= LIFETIME &&
+    (usedAt === null || (usedAt >= createdAt && usedAt < expiresAt))
+  );
+}
+
+function readBrowserRow(
+  db: SqlDatabase,
+  seal: Seal,
+  stateHash: string,
+): StoredBrowser {
+  const raw = db.get(READ_BROWSER, [stateHash]);
+  if (
+    raw?.shape_ok !== 1 ||
+    raw.stateHash !== stateHash ||
+    !approvalHashPattern.test(stateHash)
+  )
+    throw approvalUnavailable();
+  const row = raw as unknown as StoredBrowser;
+  if (
+    !approvalHashPattern.test(row.bindHash) ||
+    !UUID.test(row.approvalId) ||
+    !isDigest(row.payloadDigest) ||
+    (row.action !== "approve" && row.action !== "deny") ||
+    !browserTokenPattern.test(row.nonce) ||
+    !browserTokenPattern.test(row.verifier) ||
+    !coherentBrowserRow(row) ||
+    !verifyBrowserRow(seal, row, row.mac)
+  )
+    throw approvalUnavailable();
+  return row;
+}
+
+function browserInventory(db: SqlDatabase, seal: Seal): StoredBrowser[] {
+  try {
+    if (!db.get(TABLE_PROBE, [V3_APPROVAL_BROWSER])) return [];
+    const ids = db.all(BROWSER_IDS).map(({ state_hash }) => state_hash);
+    if (ids.length > MAX_BROWSER_ROWS || new Set(ids).size !== ids.length)
+      throw approvalUnavailable();
+    return ids.map((id) => {
+      if (typeof id !== "string") throw approvalUnavailable();
+      return readBrowserRow(db, seal, id);
+    });
+  } catch (error) {
+    throw storageFailure(error, true) ?? approvalUnavailable();
+  }
+}
+
+export function chooseV3Approval(context: ApprovalContext, row: BrowserFields) {
+  const { db, seal } = context;
+  return db.transaction(() => {
+    const approval = liveApproval(
+      context,
+      row.approvalId,
+      row.createdAt,
+      row.payloadDigest,
+    );
+    if (approval.expiresAt !== row.expiresAt || !coherentBrowserRow(row))
+      throw invalidBrowser();
+    const rows = browserInventory(db, seal);
+    if (rows.some(({ nonce }) => nonce === row.nonce)) throw invalidBrowser();
+    const live = rows.filter(({ expiresAt }) => row.createdAt < expiresAt);
+    if (
+      live.length >= MAX_BROWSER_ROWS ||
+      live.filter(({ approvalId }) => approvalId === row.approvalId).length >=
+        MAX_APPROVAL_CONTEXTS
+    )
+      throw fail(
+        "INPUT_CONFLICT",
+        "Too many open promotion approval browser requests",
+      );
+    db.exec(CREATE_BROWSER);
+    for (const { stateHash, mac, expiresAt } of rows) {
+      if (row.createdAt < expiresAt) continue;
+      if (
+        db.run(
+          `DELETE FROM ${V3_APPROVAL_BROWSER} WHERE state_hash=? AND mac=?`,
+          [stateHash, mac],
+        ).changes !== 1
+      )
+        throw approvalUnavailable();
+    }
+    const signed = { ...row, mac: signBrowserRow(seal, row) };
+    db.run(
+      INSERT_BROWSER,
+      BROWSER_COLUMNS.map(([field]) => signed[field]),
+    );
   });
 }

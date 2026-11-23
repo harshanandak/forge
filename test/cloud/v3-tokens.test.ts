@@ -5,6 +5,11 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { afterEach, expect, setSystemTime, test } from "bun:test";
+import type {
+  DeviceBrowserOptions,
+  DeviceUpstream,
+} from "../../cloud/src/auth/device-browser.ts";
+import { Project } from "../../cloud/src/project.ts";
 import { failed } from "../../cloud/src/issue-commands.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import { writableStore } from "../../cloud/src/store.ts";
@@ -2596,5 +2601,1612 @@ approvalCase(
       ),
     );
     await preservesApprovalRetry(f, p);
+  },
+);
+
+const promoteOrigin = "https://fixture.example";
+const promotePage = "/promote-approval";
+const promoteCookie = "__Host-forge_promote";
+const promoteState = "forge-promote.";
+const promoteProvider = "https://issuer.example/provider";
+const promoteEnv = {
+  ...approvalOwner,
+  CLERK_REDIRECT_URI: promoteOrigin + "/callback",
+};
+const browserTable = "cloud_v3_approval_browser";
+const randomBrowserValue = () => randomBytes(32).toString("base64url");
+const emptyState = () => promoteState + randomBrowserValue();
+const cookiePair = (name: string, value: string) => `${name}=${value}`;
+const authInvalid = [401, "AUTH_INVALID"] as const;
+const inputInvalid = [400, "INPUT_INVALID"] as const;
+const inputConflict = [409, "INPUT_CONFLICT"] as const;
+const needsApproval = [409, "APPROVAL_REQUIRED"] as const;
+const unavailableApproval = [503, "UNAVAILABLE"] as const;
+const browserStorageMessage = "Cloud v3 approval storage is unavailable";
+const bindingMessage = "Lane control or authorization binding changed";
+
+type BrowserAction = "approve" | "deny";
+interface BrowserTicket {
+  action: BrowserAction;
+  approvalId: string;
+  cookieHash: string;
+  expiresAt: number;
+  issuedAt: number;
+  nonce: string;
+  payloadDigest: string;
+  project: string;
+}
+interface BrowserRow {
+  state_hash: string;
+  bind_hash: string;
+  project: string;
+  approval_id: string;
+  payload_digest: string;
+  action: BrowserAction;
+  nonce: string;
+  verifier: string;
+  created_at: number;
+  expires_at: number;
+  used_at: number | null;
+  mac: string;
+}
+type BrowserReply =
+  [status: number, code: string] | readonly [status: number, code: string];
+
+function proofMac(
+  f: Base,
+  parts: readonly unknown[],
+  key = f.env.V3_SEAL_KEY,
+  scope = String(f.context.id),
+) {
+  const bytes = Buffer.from(String(key), "base64url");
+  const [domain, ...fields] = parts;
+  return `${sha(bytes).slice(0, 16)}.${createHmac("sha256", bytes)
+    .update(canonicalJson([domain, scope, ...fields]))
+    .digest("hex")}`;
+}
+
+const approvalDigest = (f: Base, row: ApprovalFixtureRow) =>
+  digestValue([
+    "forge/v3/approval/1",
+    String(f.context.id),
+    row.id,
+    row.project,
+    row.incarnation,
+    row.restore_epoch,
+    row.activation_digest,
+    row.operation,
+    row.operation_digest,
+    row.token_id,
+    row.device,
+    row.session,
+    row.control_epoch,
+    row.policy_identity,
+    row.status,
+    row.requested_at,
+    row.expires_at,
+    row.decided_at,
+    row.decider_issuer,
+    row.decider_subject,
+    row.spent_at,
+  ]);
+
+function ticketProof(
+  f: Base,
+  row: BrowserTicket,
+  key?: string,
+  scope?: string,
+) {
+  return proofMac(
+    f,
+    [
+      "forge/v3/approval-ticket/1",
+      row.project,
+      row.approvalId,
+      row.payloadDigest,
+      row.action,
+      row.cookieHash,
+      row.nonce,
+      row.issuedAt,
+      row.expiresAt,
+    ],
+    key,
+    scope,
+  );
+}
+
+function browserProof(
+  f: Base,
+  row: Omit<BrowserRow, "mac">,
+  key?: string,
+  scope?: string,
+) {
+  return proofMac(
+    f,
+    [
+      "forge/v3/approval-browser/1",
+      row.state_hash,
+      row.bind_hash,
+      row.project,
+      row.approval_id,
+      row.payload_digest,
+      row.action,
+      row.nonce,
+      row.verifier,
+      row.created_at,
+      row.expires_at,
+      row.used_at,
+    ],
+    key,
+    scope,
+  );
+}
+
+const packTicket = (fields: object, mac: string) =>
+  `${Buffer.from(canonicalJson(fields)).toString("base64url")}.${mac}`;
+const ticketFields = (ticket: string) =>
+  JSON.parse(
+    Buffer.from(ticket.split(".")[0]!, "base64url").toString(),
+  ) as BrowserTicket;
+function browserTicket(
+  f: Base,
+  approval: ApprovalFixtureRow,
+  cookie: string,
+  action: BrowserAction = "approve",
+  patch: Partial<BrowserTicket> = {},
+) {
+  const row: BrowserTicket = {
+    action,
+    approvalId: String(approval.id),
+    cookieHash: sha(cookie),
+    expiresAt: approval.expires_at,
+    issuedAt: Date.now(),
+    nonce: randomBrowserValue(),
+    payloadDigest: approvalDigest(f, approval),
+    project: approval.project,
+    ...patch,
+  };
+  return packTicket(row, ticketProof(f, row));
+}
+
+const browserRows = (f: Base) =>
+  tableNames(f).includes(browserTable)
+    ? f.db
+        .query<BrowserRow, []>(
+          `SELECT * FROM ${browserTable} ORDER BY state_hash`,
+        )
+        .all()
+    : undefined;
+
+function testBrowserRow(
+  f: Base,
+  row: BrowserRow,
+  patch: Partial<BrowserRow> = {},
+) {
+  const next = {
+    ...row,
+    state_hash: sha(randomBrowserValue()),
+    nonce: randomBrowserValue(),
+    verifier: randomBrowserValue(),
+    ...patch,
+  };
+  return { ...next, mac: browserProof(f, next) };
+}
+
+function addBrowserRows(f: Base, rows: BrowserRow[]) {
+  for (const row of rows) {
+    const fields = Object.keys(row);
+    f.db.run(
+      `INSERT INTO ${browserTable} (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
+      Object.values(row),
+    );
+  }
+}
+
+function editBrowser(f: Base, row: BrowserRow, patch: Partial<BrowserRow>) {
+  f.db.run(
+    `UPDATE ${browserTable} SET ${Object.keys(patch)
+      .map((field) => `${field}=?`)
+      .join(", ")} WHERE state_hash=?`,
+    [...Object.values(patch), row.state_hash],
+  );
+}
+
+function duplicateBrowser(f: Base, row: BrowserRow) {
+  expect(browserRows(f)).toContainEqual(row);
+  f.db.run(`DROP TABLE ${browserTable}`);
+  f.db.run(`CREATE TABLE ${browserTable} (${Object.keys(row).join(", ")})`);
+  addBrowserRows(f, [row, row]);
+  expect(browserRows(f)).toEqual([row, row]);
+}
+
+function duplicateApproval(f: Base, row: ApprovalFixtureRow) {
+  expect(approvalRows(f)).toContainEqual(row);
+  f.db.run(`DROP TABLE ${approvalTable}`);
+  plantApprovals(f, [row, row], unconstrainedApprovals);
+}
+
+function rotateBrowserSeal(f: Base) {
+  Object.assign(f.env, {
+    V3_SEAL_KEY_PREVIOUS: f.env.V3_SEAL_KEY,
+    V3_SEAL_KEY: newKey(),
+  });
+}
+
+function browserRequest(
+  path: string,
+  input?: URLSearchParams | string,
+  jar?: string,
+  origin: string | null = promoteOrigin,
+) {
+  return new Request(promoteOrigin + path, {
+    method: input === undefined ? "GET" : "POST",
+    headers: {
+      ...(jar === undefined ? {} : { Cookie: jar }),
+      ...(origin === null ? {} : { Origin: origin }),
+    },
+    ...(input === undefined ? {} : { body: input }),
+  });
+}
+
+const previewRequest = (id: string | number, cookie: string) =>
+  browserRequest(
+    promotePage,
+    new URLSearchParams({ csrf: cookie, id: String(id) }),
+    cookiePair(promoteCookie, cookie),
+  );
+const browserForm = (
+  ticket: string,
+  csrf: string,
+  action: BrowserAction = "approve",
+) =>
+  new URLSearchParams({
+    ticket,
+    csrf,
+    ...(action === "approve" ? { confirm: "yes" } : {}),
+  });
+const decisionRequest = (
+  ticket: string,
+  cookie: string,
+  action: BrowserAction = "approve",
+) =>
+  browserRequest(
+    `${promotePage}/${action}`,
+    browserForm(ticket, cookie, action),
+    cookiePair(promoteCookie, cookie),
+  );
+const callbackRequest = (state: string, jar?: string) =>
+  browserRequest(`/callback?${new URLSearchParams({ state })}`, undefined, jar);
+
+function browserPorts() {
+  const begins: [string, string][] = [];
+  const verifies: [string, number, string][] = [];
+  const claims: { hash: string; until: number }[] = [];
+  const behavior = { begin: () => Promise.resolve(promoteProvider) };
+  const upstream: DeviceUpstream = {
+    begin(state, verifier) {
+      begins.push([state, verifier]);
+      return behavior.begin();
+    },
+    verify(request, now, verifier) {
+      verifies.push([request.url, now, verifier]);
+      return Promise.resolve({ ok: false, reason: "invalid_proof" });
+    },
+  };
+  const redemption: NonNullable<DeviceBrowserOptions["redemption"]> = {
+    claimOnce(hash, until) {
+      claims.push({ hash, until });
+      return Promise.resolve(false);
+    },
+  };
+  return { begins, verifies, claims, behavior, upstream, redemption };
+}
+
+function browserProject(f: Base, ports: DeviceBrowserOptions, selected = true) {
+  return new Project({ ...f.context, testV3: selected }, f.env, ports);
+}
+
+const browserEnv = (f: Base) => Object.assign(f.env, promoteEnv);
+
+function browserCase(
+  name: string,
+  run: (
+    f: Fixture,
+    t: Issued,
+    p: Portable,
+    ports: ReturnType<typeof browserPorts>,
+    client: Project,
+  ) => Promise<void>,
+) {
+  approvalCase(name, async (f, t, p) => {
+    browserEnv(f);
+    const ports = browserPorts();
+    await run(f, t, p, ports, browserProject(f, ports));
+  });
+}
+
+async function browserRefusal(
+  response: Response,
+  [status, code]: BrowserReply,
+  message?: string,
+) {
+  expect(response.status).toBe(status);
+  const payload = await response.json();
+  expect(payload).toMatchObject({
+    ok: false,
+    error: { code, ...(message === undefined ? {} : { message }) },
+  });
+  expect(response.headers.get("Location")).toBeNull();
+  return (payload as { error: ForgeError }).error;
+}
+
+async function beforeBrowserWrite(
+  f: Fixture,
+  send: () => Promise<Response>,
+  result: BrowserReply,
+  message?: string,
+) {
+  const approvals = approvalRows(f);
+  const browsers = browserRows(f);
+  const effects = f.observeEffects();
+  const error = await browserRefusal(await send(), result, message);
+  expect(approvalRows(f)).toEqual(approvals);
+  expect(browserRows(f)).toEqual(browsers);
+  expect(effects()).toEqual(noWrites);
+  return error;
+}
+
+async function browserChoice(
+  client: Project,
+  f: Base,
+  h: ApprovalFixtureRow,
+  action: BrowserAction = "approve",
+  ticket?: string,
+  cookie = randomBrowserValue(),
+) {
+  const chosen = ticket ?? browserTicket(f, h, cookie, action);
+  const response = await client.fetch(decisionRequest(chosen, cookie, action));
+  expect(response.status).toBe(302);
+  expect(response.headers.get("Location")).toBe(promoteProvider);
+  const setCookie = response.headers.get("Set-Cookie") ?? "";
+  const jar = setCookie.split(";")[0]!;
+  const row = browserRows(f)?.find(
+    ({ nonce }) => nonce === ticketFields(chosen).nonce,
+  );
+  expect(row).toBeDefined();
+  return { row: row!, jar, setCookie, ticket: chosen, cookie };
+}
+
+type BrowserChoice = Awaited<ReturnType<typeof browserChoice>>;
+const callbackFor = (
+  ports: ReturnType<typeof browserPorts>,
+  choice: BrowserChoice,
+) => {
+  const state = ports.begins.find(
+    ([state]) => sha(state) === choice.row.state_hash,
+  )?.[0];
+  expect(state).toBeDefined();
+  return callbackRequest(state!, choice.jar);
+};
+const browserState = (
+  ports: ReturnType<typeof browserPorts>,
+  choice: BrowserChoice,
+) => new URL(callbackFor(ports, choice).url).searchParams.get("state")!;
+
+const browserRoutes = ["page", "preview", "decision", "callback"] as const;
+type BrowserRoute = (typeof browserRoutes)[number];
+
+function routeRequest(
+  f: Base,
+  route: BrowserRoute,
+  h?: ApprovalFixtureRow,
+  malformed = false,
+  state = emptyState(),
+) {
+  const cookie = randomBrowserValue();
+  const id = String(h?.id ?? crypto.randomUUID());
+  if (route === "page") return browserRequest(`${promotePage}?id=${id}`);
+  const form = new URLSearchParams({
+    csrf: malformed ? "bad-csrf" : cookie,
+    id,
+  });
+  const jar = cookiePair(promoteCookie, cookie);
+  if (route === "preview") return browserRequest(promotePage, form, jar);
+  if (route === "decision") {
+    const ticket = h
+      ? browserTicket(f, h, cookie)
+      : browserTicket(
+          f,
+          {
+            ...approvalFields(
+              f,
+              {
+                id: "0123456789abcdef",
+                token: "",
+                parts: { id: "", hash: "" },
+              },
+              id,
+            ),
+            id,
+            mac: "",
+          },
+          cookie,
+        );
+    form.set("ticket", ticket);
+    form.set("confirm", "yes");
+    return browserRequest(promotePage + "/approve", form, jar);
+  }
+  const query = new URLSearchParams({
+    state: malformed ? emptyState() : state,
+  });
+  if (malformed) query.append("state", state);
+  return browserRequest(`/callback?${query}`);
+}
+
+browserCase(
+  "CONTROL G0 promotion test selection off (five requests)",
+  async (f, t, _p, ports) => {
+    const h = await requestedApproval(f, t);
+    const client = browserProject(f, ports, false);
+    const cookie = randomBrowserValue();
+    for (const request of [
+      ...browserRoutes.map((route) => routeRequest(f, route, h)),
+      decisionRequest(browserTicket(f, h, cookie, "deny"), cookie, "deny"),
+    ])
+      await beforeBrowserWrite(f, () => client.fetch(request), [
+        404,
+        "UNKNOWN_COMMAND",
+      ]);
+    expect(ports.begins).toEqual([]);
+    expect(ports.verifies).toEqual([]);
+    expect(ports.claims).toEqual([]);
+  },
+);
+
+async function readPromotionPage(client: Project, id: string, jar?: string) {
+  const response = await client.fetch(
+    browserRequest(`${promotePage}?id=${id}`, undefined, jar),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Location")).toBeNull();
+  const cookie = response.headers.get("Set-Cookie");
+  return { cookie, html: await response.text(), headers: response.headers };
+}
+
+browserCase(
+  "CONTROL G1 promotion page sets and keeps a browser cookie without writes",
+  async (f, t, _p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    const effects = f.observeEffects();
+    const { cookie, html, headers } = await readPromotionPage(
+      client,
+      String(h.id),
+    );
+    expect(cookie).toMatch(
+      /^__Host-forge_promote=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=900$/,
+    );
+    const jar = cookie!.split(";")[0]!;
+    const csrf = jar.slice(promoteCookie.length + 1);
+    expect(html).toContain('action="/promote-approval"');
+    expect(html).toContain(`name="csrf" value="${csrf}"`);
+    expect(html).toContain(`name="id" value="${h.id}"`);
+    expect(html).toContain("Continue");
+    expect(headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    expect(headers.get("Cache-Control")).toBe("no-store");
+    expect(headers.get("X-Frame-Options")).toBe("DENY");
+    expect(headers.get("Content-Security-Policy")).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+    );
+    expect(headers.get("Referrer-Policy")).toBe("same-origin");
+    const kept = await readPromotionPage(client, String(h.id), jar);
+    expect(kept.cookie).toBeNull();
+    expect(kept.html).toContain(`name="csrf" value="${csrf}"`);
+    const invalid = await readPromotionPage(client, "not-an-id", jar);
+    expect(invalid.html).toContain('name="id" value=""');
+    expect(tableNames(f).some((name) => name.startsWith("domain_cloud_"))).toBe(
+      false,
+    );
+    expect(effects()).toEqual(noWrites);
+  },
+);
+
+for (const route of browserRoutes.filter((route) => route !== "callback")) {
+  for (const configured of [true, false]) {
+    v3test(
+      `RED G2 ordinary root refuses ${route} with configuration ${configured ? "present" : "absent"}`,
+      async (f) => {
+        await issued(f);
+        expect(approvalRoot(f).generation).toBe(0);
+        expect(approvalRoot(f).activationDigest).toBeUndefined();
+        if (configured) browserEnv(f);
+        const ports = browserPorts();
+        const client = browserProject(f, ports);
+        await beforeBrowserWrite(
+          f,
+          () => client.fetch(routeRequest(f, route)),
+          inputConflict,
+          "The restored project is not awaiting promotion",
+        );
+        expect(ports.begins).toEqual([]);
+        expect(ports.verifies).toEqual([]);
+        expect(ports.claims).toEqual([]);
+      },
+    );
+  }
+  browserCase(
+    `RED G3 invalid root MAC refuses ${route}`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      expect(approvalRoot(f).activationDigest).toBeDefined();
+      f.db.run("UPDATE cloud_v3_root SET seal=?", ["0".repeat(81)]);
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(routeRequest(f, route, h)),
+        unavailableApproval,
+      );
+      expect(ports.begins).toEqual([]);
+      expect(ports.verifies).toEqual([]);
+      expect(ports.claims).toEqual([]);
+    },
+  );
+}
+
+const configurationGaps = [
+  ...(
+    ["CLERK_ISSUER", "FORGE_OWNER_SUBJECT", "CLERK_CLIENT_ID"] as const
+  ).flatMap((setting) => [
+    { setting, value: undefined },
+    { setting, value: "" },
+  ]),
+  ...[
+    "https://outside.example/callback",
+    "//fixture.example/callback",
+    promoteOrigin + "/callback?extra=1",
+  ].map((value) => ({ setting: "CLERK_REDIRECT_URI", value })),
+  { setting: "upstream port", value: undefined },
+  { setting: "redemption port", value: undefined },
+];
+
+for (const { setting, value } of configurationGaps) {
+  for (const route of browserRoutes.filter((route) => route !== "callback")) {
+    browserCase(
+      `RED G4 ${setting} ${JSON.stringify(value) ?? "absent"} before ${route} input checks`,
+      async (f, t, _p, ports, client) => {
+        const h = await requestedApproval(f, t);
+        const choice = await browserChoice(client, f, h);
+        expect(choice.row.used_at).toBeNull();
+        const brokenPorts =
+          setting === "upstream port"
+            ? { redemption: ports.redemption }
+            : setting === "redemption port"
+              ? { upstream: ports.upstream }
+              : ports;
+        if (!setting.endsWith(" port")) {
+          if (value === undefined) Reflect.deleteProperty(f.env, setting);
+          else Object.assign(f.env, { [setting]: value });
+        }
+        const broken = browserProject(f, brokenPorts);
+        await beforeBrowserWrite(
+          f,
+          () =>
+            broken.fetch(
+              routeRequest(f, route, h, true, browserState(ports, choice)),
+            ),
+          [503, "AUTH_CONFIG_UNAVAILABLE"],
+        );
+        expect(ports.begins).toHaveLength(1);
+        expect(ports.verifies).toEqual([]);
+        expect(ports.claims).toEqual([]);
+      },
+    );
+  }
+}
+
+async function browserPreview(
+  client: Project,
+  h: ApprovalFixtureRow,
+  cookie: string,
+) {
+  const response = await client.fetch(previewRequest(h.id, cookie));
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Location")).toBeNull();
+  const html = await response.text();
+  const tickets = [...html.matchAll(/name="ticket" value="([^"]+)"/g)].map(
+    (match) => match[1]!,
+  );
+  expect(tickets).toHaveLength(2);
+  return { html, approve: tickets[0]!, deny: tickets[1]! };
+}
+
+browserCase(
+  "CONTROL V1 preview displays the pending binding and signs two distinct tickets",
+  async (f, t, _p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    const page = await readPromotionPage(client, String(h.id));
+    const cookie = page.cookie!.split(";")[0]!.slice(promoteCookie.length + 1);
+    const effects = f.observeEffects();
+    const preview = await browserPreview(client, h, cookie);
+    for (const value of [
+      h.project,
+      h.operation,
+      h.activation_digest.slice(7, 19),
+      h.device,
+      h.session,
+      new Date(h.expires_at).toISOString(),
+    ])
+      expect(preview.html).toContain(`<dd>${value}</dd>`);
+    expect(preview.html).toContain('action="/promote-approval/approve"');
+    expect(preview.html).toContain('action="/promote-approval/deny"');
+    expect(preview.html).toContain(
+      'type="checkbox" name="confirm" value="yes" required',
+    );
+    for (const action of ["approve", "deny"] as const) {
+      const actual = preview[action];
+      const fields = ticketFields(actual);
+      expect(fields).toEqual({
+        action,
+        approvalId: String(h.id),
+        cookieHash: sha(cookie),
+        expiresAt: h.expires_at,
+        issuedAt: base,
+        nonce: fields.nonce,
+        payloadDigest: approvalDigest(f, h),
+        project: h.project,
+      });
+      expect(fields.nonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(actual).toBe(packTicket(fields, ticketProof(f, fields)));
+      expect(Buffer.byteLength(actual)).toBeLessThanOrEqual(1024);
+    }
+    expect(ticketFields(preview.approve).nonce).not.toBe(
+      ticketFields(preview.deny).nonce,
+    );
+    expect(effects()).toEqual(noWrites);
+  },
+);
+
+for (const variant of [
+  "missing Origin",
+  "wrong Origin",
+  "missing cookie",
+  "missing csrf",
+  "wrong csrf",
+]) {
+  browserCase(
+    `RED V2 ${variant} before preview id validation`,
+    async (f, t, _p, _ports, client) => {
+      await requestedApproval(f, t);
+      const csrf = randomBrowserValue();
+      const form = new URLSearchParams({ id: "not-an-id", csrf });
+      if (variant === "missing csrf") form.delete("csrf");
+      if (variant === "wrong csrf") form.set("csrf", randomBrowserValue());
+      const origin =
+        variant === "missing Origin"
+          ? null
+          : variant === "wrong Origin"
+            ? "https://outside.example"
+            : promoteOrigin;
+      const jar =
+        variant === "missing cookie"
+          ? undefined
+          : cookiePair(promoteCookie, csrf);
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(browserRequest(promotePage, form, jar, origin)),
+        authInvalid,
+      );
+    },
+  );
+}
+
+for (const variant of ["invalid", "uppercase", "duplicate"]) {
+  browserCase(
+    `RED V3 preview refuses a ${variant} id`,
+    async (f, t, _p, _ports, client) => {
+      const h = await requestedApproval(f, t);
+      const id =
+        variant === "invalid"
+          ? "invalid"
+          : variant === "uppercase"
+            ? "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+            : String(h.id);
+      const csrf = randomBrowserValue();
+      const form = new URLSearchParams({ csrf, id });
+      if (variant === "duplicate") form.append("id", String(h.id));
+      await beforeBrowserWrite(
+        f,
+        () =>
+          client.fetch(
+            browserRequest(promotePage, form, cookiePair(promoteCookie, csrf)),
+          ),
+        inputInvalid,
+      );
+    },
+  );
+}
+
+for (const table of [true, false]) {
+  browserCase(
+    `RED V4 preview absent approval with ${table ? "existing" : "absent"} table`,
+    async (f, t, _p, _ports, client) => {
+      if (table) await requestedApproval(f, t);
+      expect(approvalRows(f) !== undefined).toBe(table);
+      await beforeBrowserWrite(
+        f,
+        () =>
+          client.fetch(
+            previewRequest(crypto.randomUUID(), randomBrowserValue()),
+          ),
+        needsApproval,
+      );
+    },
+  );
+}
+
+type BrowserApprovalEdit = (
+  f: Fixture,
+  h: ApprovalFixtureRow,
+  t: Issued,
+) => Promise<void> | void;
+
+const replaceApproval = (
+  f: Base,
+  h: ApprovalFixtureRow,
+  patch: Partial<ApprovalFixtureRow>,
+  key?: string,
+) => {
+  const next = { ...h, ...patch };
+  editApproval(f, String(h.id), { ...next, mac: approvalMac(f, next, key) });
+};
+
+const swapApproval = (
+  f: Base,
+  h: ApprovalFixtureRow,
+  x: ApprovalFixtureRow,
+) => {
+  const { id: _id, ...other } = x;
+  editApproval(f, String(h.id), other);
+};
+const otherApprovalKey = (f: Base, h: ApprovalFixtureRow) =>
+  replaceApproval(f, h, {}, newKey());
+const otherApprovalScope = (f: Base, h: ApprovalFixtureRow) => {
+  const other = guardFixture(env, { key: String(f.env.V3_SEAL_KEY) });
+  using _db = other.db;
+  editApproval(f, String(h.id), { mac: approvalMac(other, h) });
+};
+const changeOwner = (f: Base) => {
+  Object.assign(f.env, { FORGE_OWNER_SUBJECT: "another-owner" });
+};
+const alternateActivation = () => {
+  const digest = digestValue(["another-activation"]);
+  return {
+    activation_digest: digest,
+    operation_digest: digestValue(["restore.promote", digest]),
+  };
+};
+
+const previewTamper: [string, BrowserApprovalEdit][] = [
+  [
+    "status with old MAC",
+    (f, h) => {
+      editApproval(f, String(h.id), approvedFixture);
+    },
+  ],
+  [
+    "token id",
+    (f, h) => {
+      editApproval(f, String(h.id), { token_id: "0".repeat(16) });
+    },
+  ],
+  [
+    "swapped approval",
+    async (f, h, t) => swapApproval(f, h, await requestedApproval(f, t)),
+  ],
+  ["removed key (B10)", otherApprovalKey],
+  ["cross-object MAC", otherApprovalScope],
+  [
+    "edited expiry",
+    (f, h) => {
+      editApproval(f, String(h.id), { expires_at: h.expires_at - 1 });
+    },
+  ],
+];
+for (const [variant, edit] of previewTamper) {
+  browserCase(
+    `RED V5 preview refuses ${variant}`,
+    async (f, t, _p, _ports, client) => {
+      const h = await requestedApproval(f, t);
+      await edit(f, h, t);
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(previewRequest(h.id, randomBrowserValue())),
+        unavailableApproval,
+        browserStorageMessage,
+      );
+    },
+  );
+}
+
+const terminalApprovals = [
+  approvedFixture,
+  deniedFixture,
+  { ...approvedFixture, status: "spent", spent_at: base },
+];
+for (const variant of [...terminalApprovals, { status: "expired" }]) {
+  browserCase(
+    `RED V6 preview refuses ${variant.status}`,
+    async (f, t, _p, _ports, client) => {
+      const h = await requestedApproval(f, t);
+      if (variant.status === "expired") at(h.expires_at);
+      else replaceApproval(f, h, variant);
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(previewRequest(h.id, randomBrowserValue())),
+        needsApproval,
+      );
+    },
+  );
+}
+
+const previewBindingEdits: [string, BrowserApprovalEdit][] = [
+  [
+    "different activation and epoch",
+    (f, h) =>
+      replaceApproval(f, h, {
+        ...alternateActivation(),
+        restore_epoch: "other-epoch",
+      }),
+  ],
+  ["different project", (f, h) => replaceApproval(f, h, { project: "b" })],
+  ["different owner policy", changeOwner],
+];
+
+for (const [variant, edit] of previewBindingEdits) {
+  browserCase(
+    `RED V7 preview refuses ${variant}`,
+    async (f, t, _p, _ports, client) => {
+      const h = await requestedApproval(f, t);
+      await edit(f, h, t);
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(previewRequest(h.id, randomBrowserValue())),
+        inputConflict,
+        bindingMessage,
+      );
+    },
+  );
+}
+
+browserCase(
+  "RED V8 preview refuses a policy configured after the request",
+  async (f, t, _p, _ports, client) => {
+    for (const setting of Object.keys(approvalOwner))
+      Reflect.deleteProperty(f.env, setting);
+    const h = await requestedApproval(f, t);
+    expect(h.policy_identity).toBe(digestValue([null, null, null]));
+    browserEnv(f);
+    await beforeBrowserWrite(
+      f,
+      () => client.fetch(previewRequest(h.id, randomBrowserValue())),
+      inputConflict,
+      bindingMessage,
+    );
+  },
+);
+
+browserCase(
+  "CONTROL B10 previous approval key still previews and begins the decision",
+  async (f, t, _p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    rotateBrowserSeal(f);
+    const cookie = randomBrowserValue();
+    const { approve } = await browserPreview(client, h, cookie);
+    const choice = await browserChoice(
+      client,
+      f,
+      h,
+      "approve",
+      approve,
+      cookie,
+    );
+    expect(choice.row.used_at).toBeNull();
+    expect(approvalRows(f)).toEqual([h]);
+  },
+);
+
+for (const target of [
+  "https://outside.example/return",
+  "//outside.example/return",
+  "https%3A%2F%2Foutside.example%2Freturn",
+]) {
+  for (const action of ["approve", "deny"] as const) {
+    browserCase(
+      `CONTROL browser routes ignore caller return fields for ${action} ${target}`,
+      async (f, t, _p, ports, client) => {
+        const h = await requestedApproval(f, t);
+        const fields = Object.fromEntries(
+          ["redirect", "redirect_uri", "next", "return_to"].map((key) => [
+            key,
+            target,
+          ]),
+        );
+        const page = await client.fetch(
+          browserRequest(
+            `${promotePage}?${new URLSearchParams({ id: String(h.id), ...fields })}`,
+          ),
+        );
+        expect(page.status).toBe(200);
+        expect(page.headers.get("Location")).toBeNull();
+        const jar = page.headers.get("Set-Cookie")!.split(";")[0]!;
+        const csrf = jar.slice(promoteCookie.length + 1);
+        const preview = await client.fetch(
+          browserRequest(
+            `${promotePage}?${new URLSearchParams(fields)}`,
+            new URLSearchParams({ id: String(h.id), csrf, ...fields }),
+            jar,
+          ),
+        );
+        expect(preview.status).toBe(200);
+        expect(preview.headers.get("Location")).toBeNull();
+        const tickets = [
+          ...(await preview.text()).matchAll(/name="ticket" value="([^"]+)"/g),
+        ];
+        const selected = await client.fetch(
+          browserRequest(
+            `${promotePage}/${action}?${new URLSearchParams(fields)}`,
+            new URLSearchParams({
+              csrf,
+              ticket: tickets[action === "approve" ? 0 : 1]![1]!,
+              ...(action === "approve" ? { confirm: "yes" } : {}),
+              ...fields,
+            }),
+            jar,
+          ),
+        );
+        expect(selected.status).toBe(302);
+        expect(selected.headers.get("Location")).toBe(promoteProvider);
+        expect(approvalRows(f)).toEqual([h]);
+        const [state, verifier] = ports.begins[0]!;
+        const [stored] = browserRows(f)!;
+        expect(ports.begins).toEqual([[state, stored!.verifier]]);
+        expect(state).toMatch(/^forge-promote\.[A-Za-z0-9_-]{43}$/);
+        expect(stored!.state_hash).toBe(sha(state));
+        expect(stored!.action).toBe(action);
+        expect(verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      },
+    );
+  }
+}
+
+browserCase(
+  "RED S1 approval swapped before decision POST",
+  async (f, t, _p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    const x = await requestedApproval(f, t);
+    const cookie = randomBrowserValue();
+    const { approve } = await browserPreview(client, h, cookie);
+    swapApproval(f, h, x);
+    await beforeBrowserWrite(
+      f,
+      () => client.fetch(decisionRequest(approve, cookie)),
+      unavailableApproval,
+      browserStorageMessage,
+    );
+    expect(browserRows(f)).toBeUndefined();
+    expect(approvalRows(f)).toContainEqual(x);
+  },
+);
+
+for (const variant of [
+  "missing Origin",
+  "wrong Origin",
+  "missing cookie",
+  "wrong csrf",
+  "missing confirm",
+  "wrong confirm",
+]) {
+  browserCase(
+    `RED Q1 decision POST refuses ${variant}`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      const cookie = randomBrowserValue();
+      const form = browserForm(browserTicket(f, h, cookie), cookie);
+      if (variant === "wrong csrf") form.set("csrf", randomBrowserValue());
+      if (variant === "missing confirm") form.delete("confirm");
+      if (variant === "wrong confirm") form.set("confirm", "no");
+      const jar =
+        variant === "missing cookie"
+          ? undefined
+          : cookiePair(promoteCookie, cookie);
+      const origin =
+        variant === "missing Origin"
+          ? null
+          : variant === "wrong Origin"
+            ? "https://outside.example"
+            : promoteOrigin;
+      await beforeBrowserWrite(
+        f,
+        () =>
+          client.fetch(
+            browserRequest(promotePage + "/approve", form, jar, origin),
+          ),
+        authInvalid,
+      );
+      expect(ports.begins).toEqual([]);
+    },
+  );
+}
+
+browserCase(
+  "RED Q2 decision POST refuses 2049 bytes before reading the ticket",
+  async (f, t, _p, ports, client) => {
+    const h = await requestedApproval(f, t);
+    const cookie = randomBrowserValue();
+    const form =
+      browserForm(browserTicket(f, h, cookie), cookie).toString() + "&pad=";
+    const oversized = form.padEnd(2049, "x");
+    expect(Buffer.byteLength(oversized)).toBe(2049);
+    await beforeBrowserWrite(
+      f,
+      () =>
+        client.fetch(
+          browserRequest(
+            promotePage + "/approve",
+            oversized,
+            cookiePair(promoteCookie, cookie),
+          ),
+        ),
+      inputInvalid,
+    );
+    expect(ports.begins).toEqual([]);
+  },
+);
+
+const ticketEdits: [
+  keyof BrowserTicket,
+  (h: ApprovalFixtureRow, x: ApprovalFixtureRow) => string | number,
+][] = [
+  ["approvalId", (_h, x) => String(x.id)],
+  ["action", () => "deny"],
+  ["payloadDigest", () => digestValue(["other-payload"])],
+  ["nonce", randomBrowserValue],
+  ["cookieHash", () => sha(randomBrowserValue())],
+  ["project", () => "other"],
+  ["expiresAt", (h) => h.expires_at - 1],
+  ["issuedAt", () => base + 1],
+];
+for (const [field, value] of ticketEdits) {
+  browserCase(
+    `RED S4 edited ticket ${field} fails before approval lookup`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      const x = await requestedApproval(f, t);
+      const cookie = randomBrowserValue();
+      const valid = browserTicket(f, h, cookie);
+      const [, key, mac] = valid.split(".");
+      const edited = packTicket(
+        { ...ticketFields(valid), [field]: value(h, x) },
+        `${key}.${mac}`,
+      );
+      f.db.run(`DELETE FROM ${approvalTable} WHERE id=?`, [h.id]);
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(decisionRequest(edited, cookie)),
+        authInvalid,
+      );
+      expect(ports.begins).toEqual([]);
+    },
+  );
+}
+
+for (const variant of [
+  "extra key",
+  "missing key",
+  "not base64url",
+  "over 1024 bytes",
+  "duplicate ticket",
+  "removed key",
+]) {
+  browserCase(
+    `RED Q3 ticket refuses ${variant}`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      const cookie = randomBrowserValue();
+      const ticket = browserTicket(f, h, cookie);
+      const fields = ticketFields(ticket);
+      const [, key, tag] = ticket.split(".");
+      const mac = `${key}.${tag}`;
+      const form = browserForm(ticket, cookie);
+      if (variant === "extra key")
+        form.set("ticket", packTicket({ ...fields, extra: true }, mac));
+      if (variant === "missing key") {
+        const { issuedAt: _issuedAt, ...short } = fields;
+        form.set("ticket", packTicket(short, mac));
+      }
+      if (variant === "not base64url") form.set("ticket", `!.${mac}`);
+      if (variant === "over 1024 bytes") {
+        const project = "a".repeat(600);
+        replaceApproval(f, h, { project });
+        Object.assign(f.env, { FORGE_CLOUD_PROJECT: project });
+        const long = browserTicket(f, { ...h, project }, cookie);
+        expect(Buffer.byteLength(long)).toBeGreaterThan(1024);
+        expect(Buffer.byteLength(long)).toBeLessThan(1800);
+        form.set("ticket", long);
+      }
+      if (variant === "duplicate ticket") form.append("ticket", ticket);
+      if (variant === "removed key")
+        form.set(
+          "ticket",
+          packTicket(fields, ticketProof(f, fields, newKey())),
+        );
+      await beforeBrowserWrite(
+        f,
+        () =>
+          client.fetch(
+            browserRequest(
+              promotePage + "/approve",
+              form,
+              cookiePair(promoteCookie, cookie),
+            ),
+          ),
+        authInvalid,
+      );
+      expect(ports.begins).toEqual([]);
+    },
+  );
+}
+
+browserCase(
+  "CONTROL Q3b previous seal key still validates a preview ticket",
+  async (f, t, _p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    const cookie = randomBrowserValue();
+    const preview = await browserPreview(client, h, cookie);
+    rotateBrowserSeal(f);
+    const choice = await browserChoice(
+      client,
+      f,
+      h,
+      "approve",
+      preview.approve,
+      cookie,
+    );
+    expect(choice.row.mac).toBe(browserProof(f, choice.row));
+    expect(approvalRows(f)).toEqual([h]);
+  },
+);
+
+for (const action of ["approve", "deny"] as const) {
+  browserCase(
+    `RED Q4 decision ${action} ticket refused at the other action`,
+    async (f, t, _p, _ports, client) => {
+      const h = await requestedApproval(f, t);
+      const cookie = randomBrowserValue();
+      const ticket = browserTicket(f, h, cookie, action);
+      await beforeBrowserWrite(
+        f,
+        () =>
+          client.fetch(
+            decisionRequest(
+              ticket,
+              cookie,
+              action === "approve" ? "deny" : "approve",
+            ),
+          ),
+        authInvalid,
+      );
+    },
+  );
+}
+
+for (const variant of [
+  "another browser",
+  "another object",
+  "at expiry",
+] as const) {
+  browserCase(
+    `RED ${{ "another browser": "B1", "another object": "B3", "at expiry": "Q5" }[variant]} decision ticket ${variant}`,
+    async (f, t, _p, _ports, client) => {
+      const h = await requestedApproval(f, t);
+      const cookie = randomBrowserValue();
+      const ticket = browserTicket(f, h, cookie);
+      if (variant === "at expiry") at(h.expires_at);
+      const fields = ticketFields(ticket);
+      const proof =
+        variant === "another object"
+          ? packTicket(
+              fields,
+              ticketProof(f, fields, undefined, sha("other object scope")),
+            )
+          : ticket;
+      const pageCookie =
+        variant === "another browser" ? randomBrowserValue() : cookie;
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(decisionRequest(proof, pageCookie)),
+        authInvalid,
+      );
+    },
+  );
+}
+
+const postBrowserApprovalEdits: [
+  string,
+  BrowserApprovalEdit,
+  BrowserReply,
+  string?,
+][] = [
+  [
+    "missing row",
+    (f, h) => {
+      f.db.run(`DELETE FROM ${approvalTable} WHERE id=?`, [h.id]);
+    },
+    needsApproval,
+  ],
+  [
+    "edited status",
+    (f, h) => {
+      editApproval(f, String(h.id), approvedFixture);
+    },
+    unavailableApproval,
+    browserStorageMessage,
+  ],
+  ...terminalApprovals.map(
+    (state): [string, BrowserApprovalEdit, BrowserReply] => [
+      state.status,
+      (f, h) => replaceApproval(f, h, state),
+      needsApproval,
+    ],
+  ),
+  [
+    "expired row",
+    (f, h) => replaceApproval(f, h, expiredApproval),
+    needsApproval,
+  ],
+  [
+    "different pending payload",
+    (f, h) =>
+      replaceApproval(f, h, {
+        requested_at: h.requested_at + 1,
+        expires_at: h.expires_at + 1,
+      }),
+    inputConflict,
+    bindingMessage,
+  ],
+  ["changed owner policy", changeOwner, inputConflict, bindingMessage],
+  [
+    "removed approval key (B10)",
+    otherApprovalKey,
+    unavailableApproval,
+    browserStorageMessage,
+  ],
+  [
+    "cross-object approval MAC",
+    otherApprovalScope,
+    unavailableApproval,
+    browserStorageMessage,
+  ],
+];
+for (const [variant, edit, result, message] of postBrowserApprovalEdits) {
+  browserCase(
+    `RED Q6 decision POST refuses ${variant}`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      const cookie = randomBrowserValue();
+      await edit(f, h, t);
+      const ticket = browserTicket(
+        f,
+        h,
+        cookie,
+        "approve",
+        variant === "expired row"
+          ? { payloadDigest: approvalDigest(f, { ...h, ...expiredApproval }) }
+          : {},
+      );
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(decisionRequest(ticket, cookie)),
+        result,
+        message,
+      );
+      expect(ports.begins).toEqual([]);
+    },
+  );
+}
+
+for (const route of ["preview", "decision"] as const) {
+  browserCase(
+    `RED duplicate selected approval at ${route} rejects two coherent signed rows`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      duplicateApproval(f, h);
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(routeRequest(f, route, h)),
+        unavailableApproval,
+        browserStorageMessage,
+      );
+    },
+  );
+}
+
+for (const phase of ["unused pending", "at full cap"] as const) {
+  browserCase(
+    `RED ${phase === "at full cap" ? "Q7" : "B6"} repeated ticket ${phase}`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      const choice = await browserChoice(client, f, h);
+      if (phase === "at full cap") {
+        await browserChoice(client, f, h);
+        await browserChoice(client, f, h);
+        expect(browserRows(f)).toHaveLength(3);
+      }
+      const beginCalls = [...ports.begins];
+      await beforeBrowserWrite(
+        f,
+        () => client.fetch(decisionRequest(choice.ticket, choice.cookie)),
+        authInvalid,
+      );
+      expect(ports.begins).toEqual(beginCalls);
+    },
+  );
+}
+
+function expiredContext(
+  f: Base,
+  row: BrowserRow,
+  approvalId: string | number = row.approval_id,
+) {
+  return testBrowserRow(f, row, {
+    approval_id: String(approvalId),
+    created_at: base - approvalLifetime,
+    expires_at: base,
+    used_at: null,
+  });
+}
+
+for (const [label, live, expired, refusal] of [
+  ["Q8 per-approval live cap", 3, 1, inputConflict],
+  ["Q9 overall live cap", 24, 0, inputConflict],
+  ["Q10 over physical bound with an expired row", 24, 1, unavailableApproval],
+  ["Q11 over physical bound with live rows", 25, 0, unavailableApproval],
+] as const) {
+  browserCase(
+    `RED ${label} preserves every browser row`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      const x = await requestedApproval(f, t);
+      const seed = await browserChoice(client, f, h);
+      if (expired) replaceApproval(f, x, expiredApproval);
+      addBrowserRows(f, [
+        ...Array.from({ length: live - 1 }, (_, index) =>
+          testBrowserRow(f, seed.row, {
+            approval_id:
+              live === 3 || index === 0 ? String(h.id) : crypto.randomUUID(),
+          }),
+        ),
+        ...Array.from({ length: expired }, () =>
+          expiredContext(f, seed.row, x.id),
+        ),
+      ]);
+      expect(browserRows(f)).toHaveLength(live + expired);
+      if (live === 3) rotateBrowserSeal(f);
+      const cookie = randomBrowserValue();
+      await beforeBrowserWrite(
+        f,
+        () =>
+          client.fetch(decisionRequest(browserTicket(f, h, cookie), cookie)),
+        refusal,
+      );
+      expect(ports.begins).toHaveLength(1);
+    },
+  );
+}
+
+browserCase(
+  "RED Q12 authenticate coherent shifted expiry before cleanup",
+  async (f, t, _p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    const original = await browserChoice(client, f, h);
+    await browserChoice(client, f, h);
+    expect(browserRows(f)).toContainEqual(original.row);
+    await withActivated(async (other) => {
+      browserEnv(other);
+      const ports = browserPorts();
+      const otherClient = browserProject(other, ports);
+      const otherToken = await issued(other);
+      const approval = await requestedApproval(other, otherToken);
+      const { row } = await browserChoice(otherClient, other, approval);
+      const delta = row.expires_at - base;
+      const shifted = {
+        ...row,
+        created_at: row.created_at - delta,
+        expires_at: row.expires_at - delta,
+      };
+      expect(shifted.created_at).toBeGreaterThanOrEqual(0);
+      expect(shifted.expires_at).toBeLessThanOrEqual(base);
+      expect(shifted.created_at).toBeLessThan(shifted.expires_at);
+      expect(shifted.expires_at - shifted.created_at).toBe(
+        row.expires_at - row.created_at,
+      );
+      expect(shifted.expires_at - shifted.created_at).toBeLessThanOrEqual(
+        approvalLifetime,
+      );
+      expect(shifted.used_at).toBeNull();
+      expect(browserProof(other, shifted)).not.toBe(row.mac);
+      editBrowser(other, row, {
+        created_at: shifted.created_at,
+        expires_at: shifted.expires_at,
+      });
+      expect(browserRows(other)).toEqual([shifted]);
+      const cookie = randomBrowserValue();
+      await beforeBrowserWrite(
+        other,
+        () =>
+          otherClient.fetch(
+            decisionRequest(browserTicket(other, approval, cookie), cookie),
+          ),
+        unavailableApproval,
+        browserStorageMessage,
+      );
+    });
+  },
+);
+
+browserCase(
+  "CONTROL Q13 removes only authenticated expired browser rows",
+  async (f, t, _p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    const { row } = await browserChoice(client, f, h);
+    addBrowserRows(
+      f,
+      Array.from({ length: 3 }, () => expiredContext(f, row)),
+    );
+    expect(browserRows(f)).toHaveLength(4);
+    const inserted = await browserChoice(client, f, h);
+    expect(browserRows(f)).toEqual(
+      [row, inserted.row].toSorted((a, b) =>
+        a.state_hash.localeCompare(b.state_hash),
+      ),
+    );
+    expect(approvalRows(f)).toEqual([h]);
+  },
+);
+
+const browserEdits: [string, (f: Base, row: BrowserRow) => void][] = [
+  ["MAC", (f, row) => editBrowser(f, row, { mac: "0".repeat(81) })],
+  ["action", (f, row) => editBrowser(f, row, { action: "deny" })],
+  [
+    "approval_id",
+    (f, row) => editBrowser(f, row, { approval_id: crypto.randomUUID() }),
+  ],
+  ["used_at", (f, row) => editBrowser(f, row, { used_at: base })],
+  [
+    "state_hash",
+    (f, row) => editBrowser(f, row, { state_hash: "invalid-state" }),
+  ],
+  [
+    "text expires_at",
+    (f, row) =>
+      f.db.run(
+        `UPDATE ${browserTable} SET expires_at='invalid' WHERE state_hash=?`,
+        [row.state_hash],
+      ),
+  ],
+  [
+    "other object MAC",
+    (f, row) =>
+      editBrowser(f, row, {
+        mac: browserProof(f, row, undefined, sha("other scope")),
+      }),
+  ],
+  [
+    "removed key",
+    (f, row) => editBrowser(f, row, { mac: browserProof(f, row, newKey()) }),
+  ],
+  ["duplicate state hash", duplicateBrowser],
+];
+for (const [variant, edit] of browserEdits) {
+  browserCase(
+    `RED Q14 browser inventory refuses ${variant}`,
+    async (f, t, _p, ports, client) => {
+      const h = await requestedApproval(f, t);
+      const { row } = await browserChoice(client, f, h);
+      edit(f, row);
+      const cookie = randomBrowserValue();
+      await beforeBrowserWrite(
+        f,
+        () =>
+          client.fetch(decisionRequest(browserTicket(f, h, cookie), cookie)),
+        unavailableApproval,
+        browserStorageMessage,
+      );
+      expect(ports.begins).toHaveLength(1);
+    },
+  );
+}
+
+browserCase(
+  "CONTROL Q15 previous-key browser rows are retained and count",
+  async (f, t, _p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    const { row } = await browserChoice(client, f, h);
+    rotateBrowserSeal(f);
+    const fresh = await browserChoice(client, f, h);
+    expect(browserRows(f)).toContainEqual(row);
+    expect(fresh.row.mac).toBe(browserProof(f, fresh.row));
+    expect(browserRows(f)).toHaveLength(2);
+    expect(approvalRows(f)).toEqual([h]);
+  },
+);
+
+browserCase(
+  "RED Q16 provider begin fault maps to unavailable after exactly one browser insert",
+  async (f, t, _p, ports, client) => {
+    const h = await requestedApproval(f, t);
+    const cookie = randomBrowserValue();
+    const ticket = browserTicket(f, h, cookie);
+    ports.behavior.begin = () =>
+      Promise.reject(new Error("fixture provider failure"));
+    const authority = core(f);
+    const effects = f.observeEffects();
+    await browserRefusal(
+      await client.fetch(decisionRequest(ticket, cookie)),
+      unavailableApproval,
+    );
+    expect(approvalRows(f)).toEqual([h]);
+    expect(core(f)).toBe(authority);
+    const [row] = browserRows(f)!;
+    expect(browserRows(f)).toHaveLength(1);
+    expect(row).toMatchObject({
+      approval_id: h.id,
+      nonce: ticketFields(ticket).nonce,
+      used_at: null,
+      mac: browserProof(f, row!),
+    });
+    expect(effects()).toEqual({
+      sqlWriteAttempts: 2,
+      alarmWrites: 0,
+      sqlAndKvIntact: false,
+    });
+  },
+);
+
+browserCase(
+  "CONTROL X7 exact restore retry preserves browser authority",
+  async (f, t, p, _ports, client) => {
+    const h = await requestedApproval(f, t);
+    await browserChoice(client, f, h);
+    const browsers = browserRows(f);
+    const approvals = approvalRows(f);
+    const authority = core(f);
+    const effects = f.observeEffects();
+    const reply = await p.upload(2);
+    expect(reply).toEqual({
+      status: 200,
+      body: { ok: true, value: { page: 2, verified: true } },
+    });
+    expect(browserRows(f)).toEqual(browsers);
+    expect(approvalRows(f)).toEqual(approvals);
+    expect(core(f)).toBe(authority);
+    expect(effects()).toEqual(noWrites);
+    expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+  },
+);
+
+browserCase(
+  "CONTROL 17b-i callback is absent after an honest decision POST",
+  async (f, t, _p, ports, client) => {
+    const h = await requestedApproval(f, t);
+    const context = await browserChoice(client, f, h);
+    await beforeBrowserWrite(
+      f,
+      () => client.fetch(callbackFor(ports, context)),
+      [404, "UNKNOWN_COMMAND"],
+    );
+    expect(approvalRows(f)).toEqual([h]);
+    expect(browserRows(f)).toEqual([context.row]);
+    expect(context.row.used_at).toBeNull();
+    expect(ports.verifies).toEqual([]);
+    expect(ports.claims).toEqual([]);
   },
 );
