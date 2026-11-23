@@ -252,6 +252,8 @@ export const STATUS: Record<string, number> = {
   LEASE_EXPIRED: 409,
 };
 
+const settled = <T>(value: T): T => JSON.parse(canonicalJson(value)) as T;
+
 function text(input: Record<string, unknown>, key: string): string {
   const value = input[key];
   if (typeof value !== "string" || value === "")
@@ -1392,7 +1394,7 @@ export class Project {
               ? this.#open().owner.renew(NAMESPACE, fence, ttlMs!)
               : this.#open().owner.release(NAMESPACE, fence);
         this.#record(requestId, fingerprint, "ok", lease, expiresAt);
-        return lease;
+        return route === "release" ? lease : settled(lease);
       });
     } catch (error) {
       // A refusal changed no lease state (its transaction rolled back), so its receipt is one insert.
