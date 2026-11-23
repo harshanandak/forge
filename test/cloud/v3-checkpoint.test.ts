@@ -1,3 +1,17 @@
+import { requestConflict } from "../../cloud/src/lease-command.ts";
+import { prepareReceipt } from "../../cloud/src/command-write.ts";
+import { parseCommand } from "../../cloud/src/issue-commands.ts";
+import { receiptScope } from "../../cloud/src/issue-request-id.ts";
+import { sealedAuthorityValid } from "../../cloud/src/v3-authority.ts";
+import { commandV3 } from "../../cloud/src/v3-commands.ts";
+import type { V3Image } from "../../cloud/src/v3-store.ts";
+import {
+  archived,
+  jsonBytes,
+  recount,
+  rootedRecount,
+  usageOf,
+} from "./v3-usage.fixture.ts";
 import { readLaneControl } from "../../src/blocks/work/lane-control.ts";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { failed } from "../../cloud/src/issue-commands.ts";
@@ -5210,5 +5224,1835 @@ test.each(["live", "archived", "portable"] as const)(
         await rejectedFinalPage(target, data);
       }
     }),
+  timeout,
+);
+
+type PromotionFold = NonNullable<V3Image["fold"]> & { segmentEpoch?: string };
+type Discovery = { current: boolean };
+type CoveredContext = { root: V3Image["root"]; boundary?: number };
+const foldPromotionHistory: (
+  ...args: [...Parameters<typeof foldTranscript>, context?: CoveredContext]
+) => V3Image = foldTranscript;
+
+const fixtureRow = (sequence: number): Json => ({
+  ...frame(),
+  format: "forge-cloud-commit/3",
+  sequence,
+});
+const activationIdentity = (number: number) => ({
+  incarnation: `promotion-incarnation-${number}`,
+  restoreEpoch: `promotion-epoch-${number}`,
+});
+const approvalId = (number: number) =>
+  `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
+
+function promotionPair(
+  head: number,
+  number: number,
+  identity = activationIdentity(number),
+  activationTime = T0 + number * 10,
+) {
+  const activation = activationRow(identity, head + 1, activationTime);
+  const sequence = head + 2;
+  const time = activation.time + 2;
+  const activationDigest = digestValue(activation);
+  const principal = digestValue(["promotion-owner", number]);
+  const promote = {
+    ...fixtureRow(sequence),
+    operation: "restore.promote",
+    sequence,
+    time,
+    activationDigest,
+    approval: {
+      id: approvalId(number),
+      operationDigest: digestValue(["restore.promote", activationDigest]),
+      approver: digestValue(["owner", "fixture"]),
+      approvedAt: activation.time + 1,
+      expiresAt: time + HOUR / 10,
+    },
+    events: [{ type: "restore.promote", actor: "owner", at: iso(time) }],
+    outcome: {
+      id: `c2:${digestValue(["promotion-id", number]).slice(7)}`,
+      scope: { family: "command" as const, principal, version: 2 as const },
+      fingerprint: canonicalJson({
+        input: digestValue(["fixture-approval", number]),
+        scope: { principal, version: 2 },
+      }),
+      status: "ok",
+      result: { state: "promoted", stopped: true, sequence },
+      retryUntil: time + HOUR,
+    },
+  };
+  return { activation, promote };
+}
+
+type PromotionPair = ReturnType<typeof promotionPair>;
+const pairRows = ({ activation, promote }: PromotionPair): Json[] => [
+  activation,
+  promote,
+];
+const archivedRows = (rows: readonly Json[]): Json[] =>
+  rows.map((row) => archived(canonicalJson(row)));
+
+type FixtureSlot = {
+  collection: keyof V3Image["entries"];
+  key: string;
+  value: unknown;
+  revision?: number;
+};
+
+function promotionProjection(rows: readonly Json[]) {
+  const slots = new Map<string, FixtureSlot>();
+  const put = (
+    collection: FixtureSlot["collection"],
+    key: string,
+    value: unknown,
+    revision?: number,
+  ) =>
+    slots.set(`${collection}/${key}`, {
+      collection,
+      key,
+      value,
+      ...(revision === undefined ? {} : { revision }),
+    });
+  let floor = 0;
+  let watermark = 0;
+  for (const row of rows) {
+    watermark += Array.isArray(row.events) ? row.events.length : 0;
+    if (row.operation === "restore.activate") {
+      for (const [key, slot] of slots) {
+        if (slot.collection !== "lease") continue;
+        const lease = slot.value as Json;
+        if (lease.releasedAt === undefined)
+          slots.set(key, {
+            ...slot,
+            value: { ...lease, releasedAt: iso(row.time as number) },
+          });
+      }
+      put("control", "global", row.control);
+    }
+    for (const { key, value } of (row.changes ?? []) as {
+      key: string;
+      value: Json;
+    }[]) {
+      put("record", key, value.value, value.revision as number);
+      floor = Math.max(floor, Number(key.slice(1)));
+    }
+    const lease = row.lease as Json | undefined;
+    const witness = row.witness as Json | undefined;
+    const outcome = row.outcome as Json | undefined;
+    if (lease) put("lease", String(lease.subject), lease);
+    if (witness) put("witness", String(witness.id), { lease, witness });
+    if (outcome && typeof outcome.id === "string" && outcome.id !== "")
+      put("outcome", outcome.id, {
+        outcome,
+        time: row.time,
+        ...(lease && { lease }),
+      });
+  }
+  return {
+    slots: [...slots.values()].sort((a, b) => {
+      const left = `${a.collection}/${a.key}`;
+      const right = `${b.collection}/${b.key}`;
+      return left < right ? -1 : Number(left !== right);
+    }),
+    floor,
+    watermark,
+  };
+}
+
+function promotionArtifact(
+  rows: readonly Json[],
+  history = archivedRows(rows),
+) {
+  const { slots, floor, watermark } = promotionProjection(rows);
+  let snapshot = "";
+  const directory = slots.map(({ collection, key, value, revision }) => {
+    const body = canonicalJson(value);
+    const offset = Buffer.byteLength(snapshot);
+    snapshot += body;
+    return {
+      collection,
+      key,
+      ...(revision === undefined ? {} : { revision }),
+      page: "snapshot:0",
+      offset,
+      length: Buffer.byteLength(body),
+      digest: digestBytes(body),
+    };
+  });
+  const pages = [
+    { id: "directory:0", body: canonicalJson(directory) },
+    { id: "snapshot:0", body: snapshot },
+    { id: "transcript:0", body: canonicalJson(history) },
+  ];
+  const publicDigest = digestValue(
+    directory.map(({ collection, key, revision, digest }) => [
+      collection,
+      key,
+      revision === undefined ? digest : digestValue([revision, digest]),
+    ]),
+  );
+  return {
+    data: {
+      pages,
+      head: history.length,
+      eventWatermark: watermark,
+      recordFloor: floor,
+      publicDigest,
+      source: "promotion-fixture",
+    },
+    directory,
+    slots,
+  };
+}
+
+function installPromotionRoot(
+  f: Fixture,
+  covered: ReturnType<typeof promotionArtifact>,
+  identity: ReturnType<typeof activationIdentity>,
+  generation: number,
+  tail: readonly Json[] = [],
+  edit: (r: Json) => void = () => undefined,
+) {
+  const base = { ...(JSON.parse(root(f).body) as Json), ...identity };
+  const { data, directory } = covered;
+  const end = (entry?: DirectoryItem) =>
+    entry ? [entry.collection, entry.key] : null;
+  const spans = [
+    [end(directory[0]), end(directory.at(-1))],
+    [null, null],
+    data.head ? [1, data.head] : [null, null],
+  ];
+  const counts = [directory.length, directory.length, data.head];
+  const listed = data.pages.map(({ id, body }, index) => ({
+    id,
+    ordinal: 0,
+    kind: id.split(":")[0]!,
+    count: counts[index],
+    first: spans[index]![0],
+    last: spans[index]![1],
+    bytes: Buffer.byteLength(body),
+    hash: digestBytes(body),
+  }));
+  const activated = {
+    ...base,
+    generation: 1,
+    parentDigest: digestValue(base),
+    activationDigest: digestValue(tail[0] ?? null),
+    coveredHead: data.head,
+    eventWatermark: data.eventWatermark,
+    publicDigest: data.publicDigest,
+    transcriptDigest: listed[2]!.hash,
+    bytes: Object.fromEntries(listed.map(({ kind, bytes }) => [kind, bytes])),
+    counts: Object.fromEntries(listed.map(({ kind, count }) => [kind, count])),
+    pages: listed,
+  };
+  const { activationDigest: _digest, ...ordinary } = activated;
+  const r: Json =
+    generation === 1 && tail[0]?.operation === "restore.activate"
+      ? activated
+      : {
+          ...ordinary,
+          generation,
+          parentDigest:
+            generation === 2 ? digestValue(activated) : digestValue(base),
+        };
+  edit(r);
+  for (const { id, body } of data.pages)
+    f.db.run("INSERT OR REPLACE INTO cloud_v3_pages VALUES (?, ?)", [id, body]);
+  const body = canonicalJson(r);
+  f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
+    body,
+    trustedSeal(f.db, body),
+  ]);
+  insertPromotionTail(f, r, tail);
+  f.restart();
+  return r;
+}
+
+function insertPromotionTail(f: Fixture, r: Json, rows: readonly Json[]) {
+  for (const [index, frame] of rows.entries()) {
+    const sequence = Number(r.coveredHead) + index + 1;
+    const body = canonicalJson(frame);
+    f.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?, ?)", [
+      sequence,
+      body,
+      signRow(f.seal(), r.incarnation, sequence, body),
+    ]);
+  }
+}
+
+async function promotionSource(withLeases = false) {
+  const source = guardFixture(typedEnv);
+  using _source = source.db;
+  ok(await source.send(probe, {}));
+  if (withLeases) {
+    for (const name of ["open", "released"])
+      ok(
+        await rawLease(source, "claim", "owner-a", {
+          subject: `issue:work-${name}`,
+          requestId: `promotion-claim-${name}`,
+          ttlMs: HOUR,
+        }),
+      );
+    ok(
+      await rawLease(source, "release", "owner-a", {
+        subject: "issue:work-released",
+        requestId: "promotion-release",
+        generation: 1,
+      }),
+    );
+  }
+  for (const index of [1, 2, 3])
+    ok(
+      await typed(source, {
+        ...createBody,
+        requestId: `promotion-create-${index}`,
+        input: { title: `Source issue ${index}` },
+      }),
+    );
+  return commits(source).map(({ body }) => JSON.parse(body) as Json);
+}
+
+const atSequence = (row: Json, sequence: number): Json => ({
+  ...row,
+  sequence,
+});
+const cutFold = (
+  f: Fixture,
+  mode: Mode,
+  rows: readonly Json[],
+  context?: CoveredContext,
+) =>
+  foldPromotionHistory(
+    writableStore(f.storage),
+    rows,
+    mode,
+    Project.admitLeaseRequest,
+    context,
+  );
+
+function expectedPromotionUsage(
+  rows: readonly Json[],
+  members = archivedRows(rows),
+) {
+  const { data, directory } = promotionArtifact(rows, members);
+  return {
+    transcript: jsonBytes(members),
+    snapshot: Buffer.byteLength(data.pages[1]!.body),
+    directory:
+      2 +
+      directory.reduce(
+        (bytes, slot) =>
+          bytes +
+          jsonBytes({ ...slot, offset: 999999, length: 999999, digest: ZERO }) +
+          1,
+        0,
+      ),
+  };
+}
+
+function assertPromotionUsage(
+  f: Fixture,
+  image: V3Image,
+  rows: readonly Json[],
+) {
+  expect(usageOf(image)).toEqual(rootedRecount(f, image));
+  expect(usageOf(image)).toEqual(expectedPromotionUsage(rows));
+}
+
+async function promotionCheckpointRefused(f: Fixture) {
+  const before = f.snapshot();
+  const effects = f.observeEffects();
+  const reply = await checkpoint(f);
+  expect(reply).toMatchObject(refused);
+  expect(exited(reply)).toBe(1);
+  expect(effects()).toEqual(noWrites);
+  expect(f.snapshot()).toEqual(before);
+}
+
+test.each([
+  ["B1 one pair", 1, "ordinary"],
+  ["LR0 two pairs", 2, "ordinary"],
+  ["B11s maximum lifetime", 1, "lifetime"],
+  ["B11s approval at activation time", 1, "approval time"],
+] as const)(
+  "v3 portable promotion accepts %s",
+  async (_label, pairs, variant) => {
+    const [first, second, third] = await promotionSource();
+    const one = promotionPair(1, 1);
+    if (variant === "lifetime")
+      one.promote.approval.expiresAt =
+        one.promote.approval.approvedAt + 600_000;
+    if (variant === "approval time")
+      one.promote.approval.approvedAt = one.activation.time;
+    const rows = [first!, ...pairRows(one), atSequence(second!, 4)];
+    if (pairs === 2)
+      rows.push(...pairRows(promotionPair(4, 2)), atSequence(third!, 7));
+    const { data } = promotionArtifact(rows);
+    const f = guardFixture(typedEnv);
+    using _db = f.db;
+    setSystemTime(T0 + 100);
+    const upload = await stageRestore(f, data);
+    const final = await upload(2);
+    expect(final.status).toBe(200);
+    expect(final).toEqual(restoreResult(2, true));
+    expect(exited(final)).toBe(0);
+    const before = f.snapshot();
+    const effects = f.observeEffects();
+    for (const [index, expected] of [
+      restoreResult(0),
+      restoreResult(1),
+      final,
+    ].entries())
+      expect(await upload(index)).toEqual(expected);
+    expect(effects()).toEqual(noWrites);
+    expect(f.snapshot()).toEqual(before);
+    for (const label of ["after restore", "after restart"]) {
+      const image = storedImage(f);
+      expect(image.root.activationDigest, label).toBeDefined();
+      expect(image.root.incarnation).not.toBe(
+        one.activation.control.incarnation,
+      );
+      if (pairs === 2)
+        expect(image.root.incarnation).not.toBe(
+          activationIdentity(2).incarnation,
+        );
+      expect([image.head, image.eventWatermark]).toEqual([
+        data.head + 1,
+        data.eventWatermark + 1,
+      ]);
+      expect(controlSlot(writableStore(f.storage), image)).toEqual(
+        controlGlobal(image.root.incarnation, T0 + 100),
+      );
+      assertPromotionUsage(f, image, [
+        ...rows,
+        activationRow(image.root, data.head + 1, T0 + 100),
+      ]);
+      f.restart();
+    }
+  },
+  timeout,
+);
+
+test(
+  "D0 v3 discovers a current activation above a wholly portable covered pair",
+  () =>
+    withFixture(async (f) => {
+      const [first, second] = await promotionSource();
+      const covered = [
+        first!,
+        ...pairRows(promotionPair(1, 1)),
+        atSequence(second!, 4),
+      ];
+      const identity = activationIdentity(2);
+      installPromotionRoot(f, promotionArtifact(covered), identity, 1, [
+        activationRow(identity, covered.length + 1, T0 + 100),
+      ]);
+      const before = f.snapshot();
+      const effects = f.observeEffects();
+      const reply = await f.send(probe);
+      expect(reply.status).toBe(200);
+      expect(exited(reply)).toBe(0);
+      expect(controlSlot(writableStore(f.storage), storedImage(f))).toEqual(
+        controlGlobal(identity.incarnation, T0 + 100),
+      );
+      expect(effects()).toEqual(noWrites);
+      expect(f.snapshot()).toEqual(before);
+    }),
+  timeout,
+);
+
+async function tailPromotion(
+  options: { stub?: boolean; pointers?: boolean; notes?: number } = {},
+) {
+  const source = await promotionSource(options.pointers);
+  const covered = options.pointers
+    ? [
+        atSequence(source[3]!, 1),
+        ...pairRows(promotionPair(1, 1)),
+        ...source.slice(0, 3).map((row, index) => atSequence(row, index + 4)),
+      ]
+    : source.slice(0, 1);
+  if (options.stub) covered.push({ sequence: covered.length + 1 });
+  const pair = promotionPair(covered.length, 2);
+  const extra = Array.from({ length: options.notes ?? 0 }, (_, i) =>
+    fixtureRow(covered.length + 3 + i),
+  );
+  const prefix = promotionArtifact(covered);
+  const tail = [...pairRows(pair), ...extra];
+  const identity = activationIdentity(2);
+  return { prefix, covered, pair, identity, tail };
+}
+
+test.each([
+  ["B2 ordinary prefix", false],
+  ["U3 page-backed lease and control", true],
+] as const)(
+  "v3 recovers the generation-2 pair with %s twice",
+  (_label, pointers) =>
+    withFixture(async (f) => {
+      const { prefix, covered, pair, identity, tail } = await tailPromotion({
+        pointers,
+      });
+      installPromotionRoot(f, prefix, identity, 2, tail);
+      const h = prefix.data.head;
+      const w = prefix.data.eventWatermark;
+      for (const _label of ["first recovery", "after restart"]) {
+        const image = storedImage(f);
+        expect(image.head).toBe(h + 2);
+        expect(image.eventWatermark).toBe(w + 2);
+        const db = writableStore(f.storage);
+        expect(controlSlot(db, image)).toEqual(pair.activation.control);
+        if (pointers) {
+          expect(
+            readV3Value(db, image, "lease", "issue:work-open"),
+          ).toMatchObject({
+            releasedAt: iso(pair.activation.time),
+          });
+          expect(
+            readV3Value(db, image, "lease", "issue:work-released"),
+          ).toMatchObject({
+            releasedAt: iso(T0),
+          });
+        }
+        assertPromotionUsage(f, image, [...covered, ...tail]);
+        expect(usageOf(image)).toMatchObject({
+          transcript: jsonBytes([
+            ...(JSON.parse(prefix.data.pages[2]!.body) as Json[]),
+            ...archivedRows(tail),
+          ]),
+        });
+        expect(image.tailBytes).toBe(
+          tail.reduce((n, row) => n + jsonBytes(row), 0),
+        );
+        f.restart();
+      }
+    }),
+  timeout,
+);
+
+test.each([
+  ["B3 first checkpoint", false, 0, [2]],
+  ["B4 two cuts", false, 12, [12, 14]],
+  ["B5 mixed covered boundary", true, 1, [3]],
+] as const)(
+  "v3 promotion checkpoint covers %s",
+  (_label, stub, notes, cuts) =>
+    withFixture(async (f) => {
+      const { prefix, covered, identity, tail } = await tailPromotion({
+        stub,
+        notes,
+      });
+      installPromotionRoot(f, prefix, identity, 2, tail);
+      const { head, eventWatermark } = prefix.data;
+      for (const [index, count] of cuts.entries()) {
+        const reply = await checkpoint(f);
+        expect(reply.status).toBe(200);
+        expect(exited(reply)).toBe(0);
+        expect(reply.body).toMatchObject({
+          value: { coveredHead: head + count, more: count !== tail.length },
+        });
+        expect(JSON.parse(root(f).body)).toMatchObject({
+          generation: 3 + index,
+          coveredHead: head + count,
+          eventWatermark: eventWatermark + 2,
+        });
+        expect(commits(f)).toHaveLength(tail.length - count);
+        const warm = storedImage(f);
+        expect([warm.head, warm.eventWatermark]).toEqual([
+          head + tail.length,
+          eventWatermark + 2,
+        ]);
+        assertPromotionUsage(f, warm, [...covered, ...tail]);
+        expect(await f.send(probe)).toEqual({
+          status: 200,
+          body: { ok: true, value: viewV3(warm) },
+        });
+        f.restart();
+        expect(await f.send(probe)).toMatchObject({ status: 200 });
+        const cold = storedImage(f);
+        expect(viewV3(cold)).toEqual(viewV3(warm));
+        assertPromotionUsage(f, cold, [...covered, ...tail]);
+      }
+    }),
+  timeout,
+);
+
+test(
+  "B5c v3 expands a covered stub and keeps a literal note after the activation",
+  () =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const rows = [
+        first!,
+        { sequence: 2 },
+        ...pairRows(promotionPair(2, 1)),
+        fixtureRow(5),
+      ];
+      const artifact = promotionArtifact(rows);
+      installPromotionRoot(f, artifact, activationIdentity(1), 3);
+      const checked = readV3Root(writableStore(f.storage), f.seal());
+      const image = cutFold(f, "archived", archivedRows(rows), {
+        root: checked,
+        boundary: 3,
+      });
+      expect([image.head, image.eventWatermark]).toEqual([
+        5,
+        artifact.data.eventWatermark,
+      ]);
+    }),
+  timeout,
+);
+
+test.each(modes)(
+  "v3 promotion %s usage matches each complete prefix (U1/U2)",
+  (mode) =>
+    withFixture(async (f) => {
+      const source = await promotionSource(true);
+      const before = source.slice(0, 4);
+      const first = promotionPair(before.length, 1);
+      const afterFirst = [...before, ...pairRows(first)];
+      const between = [
+        ...afterFirst,
+        atSequence(source[4]!, afterFirst.length + 1),
+      ];
+      const second = promotionPair(between.length, 2);
+      const afterSecond = [...between, ...pairRows(second)];
+      const rows = [
+        ...afterSecond,
+        atSequence(source[5]!, afterSecond.length + 1),
+      ];
+      const db = writableStore(f.storage);
+      const rooted = readV3Root(db, f.seal());
+      for (const prefix of [before, afterFirst, between, afterSecond, rows]) {
+        const members = archivedRows(prefix);
+        const boundary = members.findLast(
+          (row) => row.operation === "restore.activate",
+        )?.sequence as number | undefined;
+        const context =
+          mode === "archived"
+            ? { root: rooted, ...(boundary === undefined ? {} : { boundary }) }
+            : undefined;
+        const image = cutFold(f, mode, members, context);
+        const expected = promotionArtifact(prefix, members);
+        expect(usageOf(image)).toEqual(expectedPromotionUsage(prefix, members));
+        expect(usageOf(image)).toEqual(recount(image, members));
+        expect([image.head, image.eventWatermark]).toEqual([
+          prefix.length,
+          expected.data.eventWatermark,
+        ]);
+        const released = expected.slots.find(
+          ({ collection, key }) =>
+            collection === "lease" && key === "issue:work-released",
+        );
+        const original = promotionProjection(before).slots.find(
+          ({ collection, key }) =>
+            collection === "lease" && key === "issue:work-released",
+        );
+        expect(
+          canonicalJson(readV3Value(db, image, "lease", "issue:work-released")),
+        ).toBe(canonicalJson(original!.value));
+        expect(released?.value).toEqual(original?.value);
+      }
+    }),
+  timeout,
+);
+
+type PromotionEdit = (row: Json) => void;
+type PromotionFault = readonly [label: string, edit: PromotionEdit];
+
+function fieldAt(value: Json, path: string) {
+  const parts = path.split(".");
+  const field = parts.pop()!;
+  const target = parts.reduce((parent, key) => parent[key] as Json, value);
+  return { target, field };
+}
+
+function replaceField(path: string, value: unknown): PromotionEdit {
+  return (row) => {
+    const { target, field } = fieldAt(row, path);
+    target[field] = value;
+  };
+}
+
+function fingerprintEdit(edit: PromotionEdit): PromotionEdit {
+  return (row) => {
+    const outcome = row.outcome as Json;
+    const fingerprint = JSON.parse(String(outcome.fingerprint)) as Json;
+    edit(fingerprint);
+    outcome.fingerprint = canonicalJson(fingerprint);
+  };
+}
+
+const levels = [
+  ["frame", "", "activationDigest"],
+  ["approval", "approval.", "id"],
+  ["outcome", "outcome.", "status"],
+  ["scope", "outcome.scope.", "principal"],
+  ["result", "outcome.result.", "sequence"],
+  ["event", "events.0.", "actor"],
+  ["fingerprint", "fingerprint.", "input"],
+  ["fingerprint scope", "fingerprint.scope.", "version"],
+] as const;
+
+const promotionKeys: PromotionFault[] = levels.flatMap(([label, prefix, key]) =>
+  ["missing", "extra"].map((kind): PromotionFault => {
+    const edit: PromotionEdit = (row) => {
+      if (kind === "missing") {
+        const { target, field } = fieldAt(
+          row,
+          prefix.replace(/^fingerprint\./, "") + key,
+        );
+        delete target[field];
+      } else {
+        replaceField(
+          prefix.replace(/^fingerprint\./, "") + "unexpected",
+          true,
+        )(row);
+      }
+    };
+    return [
+      `R1 ${label} ${kind} key`,
+      prefix.startsWith("fingerprint.") ? fingerprintEdit(edit) : edit,
+    ];
+  }),
+);
+
+const fieldTypes: PromotionFault[] = [
+  "activationDigest",
+  "approval",
+  "events",
+  "format",
+  "operation",
+  "outcome",
+  "sequence",
+  "time",
+  "approval.id",
+  "approval.operationDigest",
+  "approval.approver",
+  "approval.approvedAt",
+  "approval.expiresAt",
+  "outcome.id",
+  "outcome.scope",
+  "outcome.fingerprint",
+  "outcome.status",
+  "outcome.result",
+  "outcome.retryUntil",
+  "outcome.scope.family",
+  "outcome.scope.principal",
+  "outcome.scope.version",
+  "outcome.result.state",
+  "outcome.result.stopped",
+  "outcome.result.sequence",
+  "events.0.type",
+  "events.0.actor",
+  "events.0.at",
+].map((field) => [`R2 ${field} type`, replaceField(field, null)]);
+
+const fingerprintFaults: PromotionFault[] = [
+  ...[null, [], {}].flatMap((bad): PromotionFault[] => [
+    [
+      `R4 input ${canonicalJson(bad)}`,
+      fingerprintEdit(replaceField("input", bad)),
+    ],
+    [
+      `R4 principal ${canonicalJson(bad)}`,
+      (row) => {
+        replaceField("outcome.scope.principal", bad)(row);
+        fingerprintEdit(replaceField("scope.principal", bad))(row);
+      },
+    ],
+  ]),
+  [
+    "R4 unequal principals",
+    fingerprintEdit(replaceField("scope.principal", ZERO)),
+  ],
+];
+
+const timeFaults: PromotionFault[] = [
+  ...["time", "approval.approvedAt", "approval.expiresAt"].flatMap((field) =>
+    [
+      ["unsafe integer", Number.MAX_SAFE_INTEGER + 1],
+      ["negative integer", -1],
+      ["fraction", T0 + 0.5],
+      ["outside Date range", 8_640_000_000_000_001],
+      ["five-digit year", Date.UTC(10_000, 0, 1)],
+    ].map(([label, value]): PromotionFault => [
+      `R6 ${field} ${label}`,
+      replaceField(field, value),
+    ]),
+  ),
+  ["R6 approved before activation", replaceField("approval.approvedAt", T0)],
+  [
+    "R6 approved after the frame",
+    (row) => replaceField("approval.approvedAt", Number(row.time) + 1)(row),
+  ],
+  [
+    "R6 expiry equals frame time",
+    (row) => replaceField("approval.expiresAt", row.time)(row),
+  ],
+  [
+    "R6 lifetime exceeds 600000 ms",
+    (row) => {
+      const { approvedAt } = row.approval as Json;
+      replaceField("approval.expiresAt", Number(approvedAt) + 600_001)(row);
+    },
+  ],
+  [
+    "R6 frame time precedes activation",
+    (row) => {
+      const time = Number(row.time) - 3;
+      row.time = time;
+      replaceField("events.0.at", iso(time))(row);
+    },
+  ],
+];
+
+const promotionFaults: PromotionFault[] = [
+  ...promotionKeys,
+  ...fieldTypes,
+  ...["input", "scope", "scope.principal", "scope.version"].map(
+    (path): PromotionFault => [
+      `R2 fingerprint ${path} type`,
+      fingerprintEdit(replaceField(path, false)),
+    ],
+  ),
+  [
+    "R2 fingerprint spacing",
+    (row) => {
+      const outcome = row.outcome as Json;
+      outcome.fingerprint = String(outcome.fingerprint).replace(":", ": ");
+    },
+  ],
+  [
+    "R2 fingerprint key order",
+    (row) => {
+      const outcome = row.outcome as Json;
+      const { input, scope } = JSON.parse(String(outcome.fingerprint)) as Json;
+      outcome.fingerprint = JSON.stringify({ scope, input });
+    },
+  ],
+  ...[
+    ["uppercase", "ABCDEF00-0000-4000-8000-000000000001"],
+    ["version 1", "abcdef00-0000-1000-8000-000000000001"],
+    ["short", "abcdef00"],
+  ].map(([label, value]): PromotionFault => [
+    `R3 approval id ${label}`,
+    replaceField("approval.id", value),
+  ]),
+  [
+    "R3 principal not a digest",
+    (row) => {
+      replaceField("outcome.scope.principal", "owner")(row);
+      fingerprintEdit(replaceField("scope.principal", "owner"))(row);
+    },
+  ],
+  ["R3 input not a digest", fingerprintEdit(replaceField("input", "input"))],
+  ...fingerprintFaults,
+  ["R5 approver not a digest", replaceField("approval.approver", "owner")],
+  ...timeFaults,
+  [
+    "R7 sequence overflow",
+    replaceField("sequence", Number.MAX_SAFE_INTEGER + 1),
+  ],
+  [
+    "R7 result sequence differs",
+    (row) =>
+      replaceField("outcome.result.sequence", Number(row.sequence) + 1)(row),
+  ],
+  [
+    "R9 approval binds a different digest",
+    replaceField("approval.operationDigest", ZERO),
+  ],
+  [
+    "R9 frame binds a different activation",
+    (row) => {
+      row.activationDigest = ZERO;
+      replaceField(
+        "approval.operationDigest",
+        digestValue(["restore.promote", ZERO]),
+      )(row);
+    },
+  ],
+  ["R10 no events", replaceField("events", [])],
+  [
+    "R10 two events",
+    (row) => {
+      const [event] = row.events as Json[];
+      row.events = [event, event];
+    },
+  ],
+  ["R10 wrong actor", replaceField("events.0.actor", "restore")],
+  ["R10 wrong time", replaceField("events.0.at", iso(T0))],
+  ["R11 status", replaceField("outcome.status", "INPUT_INVALID")],
+  [
+    "R11 retry deadline",
+    (row) => replaceField("outcome.retryUntil", row.time)(row),
+  ],
+  [
+    "R11 scope version",
+    (row) => {
+      replaceField("outcome.scope.version", 1)(row);
+      fingerprintEdit(replaceField("scope.version", 1))(row);
+    },
+  ],
+  ["R11 scope family", replaceField("outcome.scope.family", "lease")],
+  [
+    "R14 oversized and outside the closed grammar",
+    replaceField("unexpected", "x".repeat(4096)),
+  ],
+];
+
+type PromotionRoute = "cold" | "checkpoint" | "portable";
+const promotionRoutes: readonly PromotionRoute[] = [
+  "cold",
+  "checkpoint",
+  "portable",
+];
+
+async function refusesPromotion(
+  route: PromotionRoute,
+  prefix: Json[],
+  tail: Json[],
+  identity = activationIdentity(1),
+  members?: Json[],
+) {
+  const rows = [...prefix, ...tail];
+  if (route === "portable") {
+    const f = guardFixture(typedEnv);
+    using _db = f.db;
+    await rejectedFinalPage(f, promotionArtifact(rows, members).data);
+    return;
+  }
+  await withFixture(async (f) => {
+    if (route === "cold") {
+      installPromotionRoot(f, promotionArtifact(rows, members), identity, 3);
+      await coldRefused(f);
+    } else {
+      if (members) {
+        installPromotionRoot(f, promotionArtifact(rows, members), identity, 3, [
+          fixtureRow(rows.length + 1),
+        ]);
+      } else {
+        installPromotionRoot(f, promotionArtifact(prefix), identity, 2, tail);
+      }
+      await promotionCheckpointRefused(f);
+    }
+  });
+}
+
+test.each(promotionRoutes)(
+  "R6 v3 %s promotion isolates a five-digit expiry year",
+  async (route) => {
+    const [first] = await promotionSource();
+    const boundary = Date.UTC(10_000, 0, 1);
+    const identity = activationIdentity(1);
+    const pair = promotionPair(1, 1, identity, boundary - 10);
+    const prefix = [first!];
+    const tail = pairRows(pair);
+    pair.promote.approval.expiresAt = boundary - 1;
+
+    if (route === "portable") {
+      setSystemTime(boundary - 7);
+      const f = guardFixture(typedEnv);
+      using _db = f.db;
+      const upload = await stageRestore(
+        f,
+        promotionArtifact([...prefix, ...tail]).data,
+      );
+      const reply = await upload(2);
+      expect(reply).toEqual(restoreResult(2, true));
+      expect(exited(reply)).toBe(0);
+      const effects = f.observeEffects();
+      expect(await upload(2)).toEqual(reply);
+      expect(effects()).toEqual(noWrites);
+    } else {
+      await withFixture(async (f) => {
+        if (route === "checkpoint") {
+          installPromotionRoot(f, promotionArtifact(prefix), identity, 2, tail);
+          const reply = await checkpoint(f);
+          expect(reply).toMatchObject({
+            status: 200,
+            body: { value: { coveredHead: 3, more: false } },
+          });
+          expect(exited(reply)).toBe(0);
+          f.restart();
+        } else {
+          installPromotionRoot(
+            f,
+            promotionArtifact([...prefix, ...tail]),
+            identity,
+            3,
+          );
+        }
+        const effects = f.observeEffects();
+        const reply = await f.send(probe);
+        expect(reply).toMatchObject({
+          status: 200,
+          body: { value: { image: { head: 3 } } },
+        });
+        expect(exited(reply)).toBe(0);
+        expect(effects()).toEqual(noWrites);
+      });
+    }
+
+    pair.promote.approval.expiresAt = boundary;
+    await refusesPromotion(route, prefix, tail, identity);
+  },
+  timeout,
+);
+
+for (const route of promotionRoutes) {
+  test.each(promotionFaults)(
+    `v3 ${route} promotion refuses %s`,
+    async (_name, edit) => {
+      const [first] = await promotionSource();
+      const pair = promotionPair(1, 1);
+      const rows = pairRows(pair);
+      edit(rows[1]!);
+      await refusesPromotion(route, [first!], rows);
+    },
+    timeout,
+  );
+
+  test.each([
+    "both outcome representations",
+    "wrong archived result digest",
+    "wrong archived result digest type",
+  ] as const)(
+    `R8 v3 ${route} promotion refuses %s`,
+    async (fault) => {
+      const [first] = await promotionSource();
+      const pair = promotionPair(1, 1);
+      const tail = pairRows(pair);
+      const members = archivedRows([first!, ...tail]);
+      const mode =
+        route === "checkpoint" && fault === "both outcome representations"
+          ? undefined
+          : members;
+      if (fault === "wrong archived result digest")
+        replaceField("outcome.resultDigest", ZERO)(members[2]!);
+      else if (fault === "wrong archived result digest type")
+        replaceField("outcome.resultDigest", null)(members[2]!);
+      else if (mode)
+        replaceField("outcome.result", pair.promote.outcome.result)(mode[2]!);
+      else
+        replaceField(
+          "outcome.resultDigest",
+          digestValue(pair.promote.outcome.result),
+        )(tail[1]!);
+      await refusesPromotion(
+        route,
+        [first!],
+        tail,
+        activationIdentity(1),
+        mode,
+      );
+    },
+    timeout,
+  );
+
+  test.each(["interrupted", "standalone", "duplicate"] as const)(
+    `R12 v3 ${route} promotion refuses a %s pair`,
+    async (fault) => {
+      const [first, second] = await promotionSource();
+      const pair = promotionPair(1, 1);
+      const duplicate = {
+        ...pair.promote,
+        sequence: 4,
+        outcome: {
+          ...pair.promote.outcome,
+          result: { ...pair.promote.outcome.result, sequence: 4 },
+        },
+      };
+      const tail: Json[] =
+        fault === "interrupted"
+          ? [pair.activation, atSequence(second!, 3), duplicate]
+          : fault === "standalone"
+            ? [
+                {
+                  ...pair.promote,
+                  sequence: 2,
+                  outcome: {
+                    ...pair.promote.outcome,
+                    result: { ...pair.promote.outcome.result, sequence: 2 },
+                  },
+                },
+              ]
+            : [...pairRows(pair), duplicate];
+      await refusesPromotion(route, [first!], tail);
+    },
+    timeout,
+  );
+}
+
+test.each(["incarnation", "restoreEpoch", "approval"] as const)(
+  "R13 v3 refuses reused %s in covered history and across the tail boundary",
+  async (reuse) => {
+    const [first] = await promotionSource();
+    const firstIdentity = activationIdentity(1);
+    const original = activationIdentity(2);
+    const secondIdentity = {
+      ...original,
+      ...(reuse === "incarnation" && {
+        incarnation: firstIdentity.incarnation,
+      }),
+      ...(reuse === "restoreEpoch" && {
+        restoreEpoch: firstIdentity.restoreEpoch,
+      }),
+    };
+    const prefix = [first!, ...pairRows(promotionPair(1, 1))];
+    const second = promotionPair(prefix.length, 2, secondIdentity);
+    if (reuse === "approval") second.promote.approval.id = approvalId(1);
+    const tail = pairRows(second);
+    await refusesPromotion("portable", prefix, tail, secondIdentity);
+    await refusesPromotion("cold", prefix, tail, secondIdentity);
+    await refusesPromotion("checkpoint", prefix, tail, secondIdentity);
+    await withFixture(async (f) => {
+      installPromotionRoot(
+        f,
+        promotionArtifact(prefix),
+        secondIdentity,
+        2,
+        tail,
+      );
+      await coldRefused(f);
+    });
+    await withFixture(async (f) => {
+      installPromotionRoot(
+        f,
+        promotionArtifact([...prefix, ...tail]),
+        secondIdentity,
+        3,
+        [fixtureRow(prefix.length + tail.length + 1)],
+      );
+      await promotionCheckpointRefused(f);
+    });
+  },
+  timeout,
+);
+
+test.each([
+  [
+    "B6 wrong activation digest",
+    (pair: PromotionPair) => {
+      pair.promote.activationDigest = ZERO;
+      pair.promote.approval.operationDigest = digestValue([
+        "restore.promote",
+        ZERO,
+      ]);
+      return pairRows(pair);
+    },
+  ],
+  [
+    "B7 activation with the exact parent and no promote",
+    (pair: PromotionPair) => [pair.activation],
+  ],
+  ["B8 wrong reconstructed parent", pairRows],
+] as const)(
+  "v3 promoted root refuses %s",
+  (_label, tailOf) =>
+    withFixture(async (f) => {
+      const { prefix, pair, identity } = await tailPromotion();
+      installPromotionRoot(f, prefix, identity, 2, tailOf(pair), (r) => {
+        if (_label.startsWith("B8")) r.parentDigest = ZERO;
+      });
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+test.each(["copied identity", "fresh identity"] as const)(
+  "B9 v3 portable history refuses a terminal activation with %s",
+  async (variant) => {
+    const [first] = await promotionSource();
+    const firstPair = promotionPair(1, 1);
+    const f = guardFixture(typedEnv);
+    using _db = f.db;
+    await rejectedFinalPage(
+      f,
+      promotionArtifact([
+        first!,
+        ...pairRows(firstPair),
+        variant === "copied identity"
+          ? atSequence(firstPair.activation, 4)
+          : promotionPair(3, 2).activation,
+      ]).data,
+    );
+  },
+  timeout,
+);
+
+test.each(modes)(
+  "PC3 v3 %s fold refuses incomplete or interrupted promotion",
+  (mode) =>
+    withFixture(async (f) => {
+      const [first, second] = await promotionSource();
+      const { activation } = promotionPair(1, 1);
+      const effects = f.observeEffects();
+      unavailableRead(() =>
+        cutFold(f, mode, archivedRows([first!, activation])),
+      );
+      unavailableRead(() =>
+        cutFold(
+          f,
+          mode,
+          archivedRows([first!, activation, atSequence(second!, 3)]),
+        ),
+      );
+      expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test.each([
+  ["PC1 complete", "complete"],
+  ["PC2 incomplete", "incomplete"],
+  ["PC2 interrupted", "interrupted"],
+] as const)(
+  "v3 cold archived recovery with %s pending completion",
+  (_label, shape) =>
+    withFixture(async (f) => {
+      const [first, second] = await promotionSource();
+      const pair = promotionPair(1, 1);
+      const rows = [first!, pair.activation];
+      if (shape === "complete") rows.push(pair.promote);
+      if (shape === "interrupted") rows.push(atSequence(second!, 3));
+      installPromotionRoot(
+        f,
+        promotionArtifact(rows),
+        activationIdentity(1),
+        3,
+      );
+      if (shape === "complete") {
+        const observed = f.observeEffects();
+        const reply = await f.send(probe);
+        expect(reply.status).toBe(200);
+        expect(exited(reply)).toBe(0);
+        expect(storedImage(f).fold?.pending).toBeUndefined();
+        expect(observed()).toEqual(noWrites);
+      } else {
+        await coldRefused(f);
+        if (shape === "incomplete") await promotionCheckpointRefused(f);
+      }
+    }),
+  timeout,
+);
+
+test.each([
+  ["BD1 covered incarnation", false, "incarnation"],
+  ["BD1 covered restore epoch", false, "restoreEpoch"],
+  ["BD2 tail incarnation", true, "incarnation"],
+  ["BD2 tail restore epoch", true, "restoreEpoch"],
+] as const)(
+  "v3 root identity refuses %s",
+  (_label, live, field) =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const pair = promotionPair(1, 1);
+      const mismatch = {
+        ...activationIdentity(1),
+        [field]: activationIdentity(2)[field],
+      };
+      const tail = pairRows(pair);
+      installPromotionRoot(
+        f,
+        promotionArtifact(live ? [first!] : [first!, ...tail]),
+        mismatch,
+        live ? 2 : 3,
+        live ? tail : [],
+      );
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+test.each([1, 3])(
+  "BD4 v3 ordinary generation %i refuses a first tail activation",
+  (generation) =>
+    withFixture(async (f) => {
+      const { prefix, identity, tail } = await tailPromotion();
+      installPromotionRoot(f, prefix, identity, generation, tail, (r) => {
+        if (generation === 1) {
+          delete r.activationDigest;
+          r.parentDigest = digestValue(["ordinary generation", generation]);
+        }
+      });
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+test(
+  "BD5 v3 does not use a later tail activation as its boundary",
+  () =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const prefix = promotionArtifact([first!]);
+      const pair = promotionPair(2, 1);
+      const tail = [fixtureRow(2), ...pairRows(pair)];
+      installPromotionRoot(f, prefix, activationIdentity(1), 2, tail);
+      await coldRefused(f);
+      const db = writableStore(f.storage);
+      const cut = recoverV3(
+        db,
+        f.seal(),
+        archivedCheck(db, {
+          admit: Project.admitLeaseRequest,
+          failure: () => new Error("through cut"),
+        }),
+        { through: 2 },
+      );
+      expect([cut.head, cut.eventWatermark]).toEqual([
+        2,
+        prefix.data.eventWatermark,
+      ]);
+      expect(cut.tailBytes).toBe(jsonBytes(tail[0]));
+    }),
+  timeout,
+);
+
+test(
+  "BD5 checkpoint through its first twelve rows ignores the out-of-cut activation",
+  () =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const prefix = promotionArtifact([first!]);
+      const pair = promotionPair(13, 1);
+      const tail = [
+        ...Array.from({ length: 12 }, (_, i) => fixtureRow(i + 2)),
+        ...pairRows(pair),
+      ];
+      installPromotionRoot(f, prefix, activationIdentity(1), 2, tail);
+      const reply = await checkpoint(f);
+      expect(reply.status).toBe(200);
+      expect(reply.body).toMatchObject({
+        value: { coveredHead: 13, more: true },
+      });
+      expect(exited(reply)).toBe(0);
+      expect(commits(f).map(({ sequence }) => sequence)).toEqual([14, 15]);
+      f.restart();
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+test.each(["incarnation", "restoreEpoch"] as const)(
+  "BD6 v3 current activation refuses covered %s reuse",
+  (field) =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const prefix = promotionArtifact([
+        first!,
+        ...pairRows(promotionPair(1, 1)),
+      ]);
+      const identity = {
+        ...activationIdentity(2),
+        [field]: activationIdentity(1)[field],
+      };
+      installPromotionRoot(f, prefix, identity, 1, [
+        activationRow(identity, 4, T0 + 100),
+      ]);
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+async function badPromotionMac(f: Fixture) {
+  const { prefix, identity, tail } = await tailPromotion();
+  installPromotionRoot(f, prefix, identity, 2, tail);
+  f.db.run("UPDATE cloud_v3_commits SET mac=? WHERE sequence=?", [
+    "invalid-mac",
+    prefix.data.head + 1,
+  ]);
+}
+
+test(
+  "DC0 v3 checks the tail MAC before sealed receives discovery",
+  () =>
+    withFixture(async (f) => {
+      await badPromotionMac(f);
+      let calls = 0;
+      const effects = f.observeEffects();
+      unavailableRead(() =>
+        recoverV3(writableStore(f.storage), f.seal(), {
+          admit: Project.admitLeaseRequest,
+          sealed() {
+            calls++;
+          },
+        }),
+      );
+      expect(calls).toBe(0);
+      expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test(
+  "DC1 v3 passes authenticated current boundary discovery to sealed",
+  () =>
+    withFixture(async (current) =>
+      withFixture(async (ordinary) => {
+        const { prefix, identity, tail } = await tailPromotion();
+        installPromotionRoot(current, prefix, identity, 2, tail);
+        const seen: (Discovery | undefined)[] = [];
+        const sealed = (_image: V3Image, value?: Discovery) => {
+          seen.push(value);
+        };
+        const verification = { admit: Project.admitLeaseRequest, sealed };
+        let caught: unknown;
+        let image: V3Image | undefined;
+        try {
+          image = recoverV3(
+            writableStore(current.storage),
+            current.seal(),
+            verification,
+          );
+        } catch (error) {
+          caught = error;
+        }
+        expect(seen).toEqual([{ current: true }]);
+        expect(caught).toBeUndefined();
+        expect(image?.head).toBe(prefix.data.head + 2);
+        recoverV3(
+          writableStore(ordinary.storage),
+          ordinary.seal(),
+          verification,
+        );
+        expect(seen).toEqual([{ current: true }, { current: false }]);
+      }),
+    ),
+  timeout,
+);
+
+test(
+  "DC2 v3 cold recovery refuses a bad current activation MAC",
+  () =>
+    withFixture(async (f) => {
+      await badPromotionMac(f);
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+test.each(["row", "byte"] as const)(
+  "DC3 v3 discovery enforces the %s limit",
+  (limit) =>
+    withFixture(async (f) => {
+      const r = JSON.parse(root(f).body) as Json;
+      const bytes = (16 * MiB) / 32;
+      const count = limit === "row" ? 1025 : 33;
+      const rows = Array.from({ length: count }, (_, index) => {
+        const sequence = index + 1;
+        return limit === "row"
+          ? fixtureRow(sequence)
+          : {
+              ...paddedNote(bytes, sequence),
+              format: "forge-cloud-commit/3",
+              sequence,
+            };
+      });
+      insertPromotionTail(f, r, rows);
+      f.restart();
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+function promotionImageState(image: V3Image) {
+  const {
+    root,
+    entries,
+    usage,
+    head,
+    eventWatermark,
+    recordFloor,
+    tailBytes,
+    stale,
+    staged,
+  } = image;
+  return structuredClone({
+    root,
+    entries,
+    usage,
+    head,
+    eventWatermark,
+    recordFloor,
+    tailBytes,
+    stale,
+    staged,
+  });
+}
+
+test.each([
+  ["C6a ordinary handoff", false, undefined],
+  ["C6b covered handoff", true, undefined],
+  ["C6c projection digest", true, "publicDigest"],
+  ["C6d event watermark", true, "eventWatermark"],
+  ["C6e record floor", true, "recordFloor"],
+] as const)(
+  "v3 sealed reconciliation %s",
+  (label, covered, fault) =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const identity = activationIdentity(1);
+      const artifact = promotionArtifact(
+        covered ? [first!, ...pairRows(promotionPair(1, 1))] : [first!],
+      );
+      installPromotionRoot(f, artifact, identity, covered ? 3 : 1, [], (r) => {
+        if (fault === "publicDigest") r.publicDigest = ZERO;
+        if (fault === "eventWatermark")
+          r.eventWatermark = artifact.data.eventWatermark + 1;
+      });
+      const image = sealedComponent(f);
+      if (fault === "recordFloor") image.recordFloor++;
+      image.fold = {
+        context: "portable",
+        segmentIncarnation: "sentinel",
+        incarnations: new Set(["sentinel"]),
+        restoreEpochs: new Set(["sentinel-epoch"]),
+        approvalIds: new Set(["sentinel-approval"]),
+        pending: { sequence: 50, time: 10, digest: ZERO },
+      };
+      const fold = image.fold;
+      const before = promotionImageState(image);
+      const old = structuredClone(fold);
+      const named = new Error(label);
+      const sealed: (image: V3Image, discovery: Discovery) => void =
+        archivedCheck(writableStore(f.storage), {
+          admit: Project.admitLeaseRequest,
+          failure: () => named,
+        }).sealed;
+      if (fault) {
+        expect(() => sealed(image, { current: false })).toThrow(named);
+        expect(image.fold).toBe(fold);
+        expect(image.fold).toEqual(old);
+      } else {
+        sealed(image, { current: false });
+        const expected: PromotionFold = {
+          context: "rooted",
+          segmentIncarnation: identity.incarnation,
+          incarnations: new Set([identity.incarnation]),
+          restoreEpochs: new Set(covered ? [identity.restoreEpoch] : []),
+          approvalIds: new Set(covered ? [approvalId(1)] : []),
+          ...(covered && { segmentEpoch: identity.restoreEpoch }),
+        };
+        expect(image.fold).toEqual(expected);
+      }
+      expect(promotionImageState(image)).toEqual(before);
+      if (fault && fault !== "recordFloor") await coldRefused(f);
+    }),
+  timeout,
+);
+
+test(
+  "C6e v3 cold recovery refuses a directory that raises the record floor",
+  () =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const rows = [first!, ...pairRows(promotionPair(1, 1))];
+      const projected = [
+        {
+          ...first!,
+          changes: (first!.changes as Json[]).map((change) => ({
+            ...change,
+            key: "r2",
+          })),
+        },
+        ...rows.slice(1),
+      ];
+      installPromotionRoot(
+        f,
+        promotionArtifact(projected, archivedRows(rows)),
+        activationIdentity(1),
+        3,
+      );
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+test.each(["in-memory", "page-backed"] as const)(
+  "v3 promote cannot replace an occupied %s outcome (OC1/OC2)",
+  (location) =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const pair = promotionPair(1, 1);
+      const occupied = outcomeOf(first);
+      pair.promote.outcome.id = String(occupied.id);
+      const before = f.snapshot();
+      const effects = f.observeEffects();
+      if (location === "in-memory") {
+        unavailableRead(() =>
+          cutFold(f, "portable", archivedRows([first!, ...pairRows(pair)])),
+        );
+        expect(effects()).toEqual(noWrites);
+        expect(f.snapshot()).toEqual(before);
+      } else {
+        const artifact = promotionArtifact([first!]);
+        installPromotionRoot(
+          f,
+          artifact,
+          activationIdentity(1),
+          2,
+          pairRows(pair),
+        );
+        const member = artifact.directory.find(
+          ({ key }) => key === occupied.id,
+        )!;
+        expect(member.page).toBe("snapshot:0");
+        const readSnapshot = () =>
+          pages(f).find(({ id }) => id === member.page)!.body;
+        const valueBefore = readSnapshot();
+        await coldRefused(f);
+        expect(readSnapshot()).toBe(valueBefore);
+      }
+    }),
+  timeout,
+);
+
+test(
+  "O1 v3 loads a page-backed promote receipt through readV3Value",
+  () =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const pair = promotionPair(1, 1);
+      installPromotionRoot(
+        f,
+        promotionArtifact([first!, ...pairRows(pair)]),
+        activationIdentity(1),
+        3,
+      );
+      const image = sealedComponent(f);
+      const { outcome, time } = pair.promote;
+      expect(image.entries.outcome.get(outcome.id)).toMatchObject({
+        page: "snapshot:0",
+      });
+      expect(
+        readV3Value(writableStore(f.storage), image, "outcome", outcome.id),
+      ).toEqual({ outcome, time });
+    }),
+  timeout,
+);
+
+test(
+  "O1 v3 cold recovery accepts the same page-backed promote receipt",
+  () =>
+    withFixture(async (f) => {
+      const [first] = await promotionSource();
+      const pair = promotionPair(1, 1);
+      const artifact = promotionArtifact([first!, ...pairRows(pair)]);
+      installPromotionRoot(f, artifact, activationIdentity(1), 3);
+      const image = storedImage(f);
+      const { outcome, time } = pair.promote;
+      expect(image.head).toBe(artifact.data.head);
+      expect(
+        readV3Value(writableStore(f.storage), image, "outcome", outcome.id),
+      ).toEqual({ outcome, time });
+    }),
+  timeout,
+);
+
+const promoteSlot = () => {
+  const { outcome, time } = promotionPair(1, 1).promote;
+  return { outcome, time };
+};
+
+test(
+  "O2/O3 v3 validates the closed promote outcome slot",
+  () => {
+    const value = promoteSlot();
+    expect(sealedAuthorityValid("outcome", value.outcome.id, value)).toBe(true);
+  },
+  timeout,
+);
+
+const slotFaults: PromotionFault[] = [
+  ["lease", replaceField("lease", {})],
+  ["witness", replaceField("witness", {})],
+  ["extra member", replaceField("extra", true)],
+  [
+    "missing time",
+    (value) => {
+      delete value.time;
+    },
+  ],
+  ["mismatched slot id", replaceField("outcome.id", `c2:${"f".repeat(64)}`)],
+  ["extra result key", replaceField("outcome.result.extra", true)],
+  ...[0, -1, 1.1, Number.MAX_SAFE_INTEGER + 1].map((bad): PromotionFault => [
+    `sequence ${bad}`,
+    replaceField("outcome.result.sequence", bad),
+  ]),
+  ...[-1, 1.1, Number.MAX_SAFE_INTEGER + 1].map((bad): PromotionFault => [
+    `time ${bad}`,
+    replaceField("time", bad),
+  ]),
+  [
+    "retry deadline",
+    (value) => replaceField("outcome.retryUntil", value.time)(value),
+  ],
+  ...fingerprintFaults,
+];
+
+test.each(slotFaults)(
+  "O3 v3 refuses a promote outcome slot with %s",
+  (_name, edit) => {
+    const value = promoteSlot();
+    const id = value.outcome.id;
+    edit(value);
+    expect(sealedAuthorityValid("outcome", id, value)).toBe(false);
+  },
+  timeout,
+);
+
+test.each([true, false])(
+  "O3 ordinary TrackerItem slot validity is %s",
+  async (valid) => {
+    const [first] = await promotionSource();
+    const outcome = structuredClone(outcomeOf(first));
+    if (!valid) delete (outcome.result as Json).id;
+    expect(
+      sealedAuthorityValid("outcome", String(outcome.id), {
+        outcome,
+        time: first!.time,
+      }),
+    ).toBe(valid);
+  },
+  timeout,
+);
+
+const replayHost = {
+  project: "a",
+  prefix: "forge",
+  device: "owner-a",
+  principal: ["owner", "owner-a", "owner-a"] as const,
+  expiresAt: E1,
+  now: T0 + 100,
+};
+const replayText = canonicalJson(createBody);
+const conflict = {
+  code: "INPUT_CONFLICT",
+  message: "Request ID belongs to a different input",
+  retry: "reconcile_first",
+} satisfies ForgeError;
+
+function promotionReplaySlot(kind: "same" | "other") {
+  const { op, requestId, input, context } = parseCommand(
+    replayText,
+    replayHost,
+  );
+  const receipt = prepareReceipt("command", replayHost.principal, requestId, {
+    op,
+    input,
+    context,
+    device: replayHost.device,
+  });
+  const value = promoteSlot();
+  const prior = {
+    ...value.outcome,
+    id: receipt.requestId,
+    scope: { ...receiptScope(replayHost.principal), family: "command" },
+    fingerprint: receipt.fingerprint,
+  };
+  if (kind === "other") {
+    const other = prepareReceipt("command", replayHost.principal, requestId, {
+      op,
+      context,
+      device: replayHost.device,
+      input: { title: "Other issue" },
+    });
+    prior.fingerprint = other.fingerprint;
+  }
+  return { outcome: prior, time: value.time };
+}
+
+async function ordinaryReplaySlot() {
+  const source = guardFixture(typedEnv);
+  using _db = source.db;
+  ok(await source.send(probe, {}));
+  ok(await typed(source, createBody));
+  const [commit] = commits(source);
+  const row = JSON.parse(commit!.body) as Json;
+  return { outcome: outcomeOf(row) as Json & { id: string }, time: row.time };
+}
+
+test.each([
+  ["RC1 create fingerprint", "same"],
+  ["RC2 ordinary create receipt", "ordinary"],
+  ["RC3 different fingerprint", "other"],
+] as const)(
+  "v3 direct command replay checks %s",
+  (_label, kind) =>
+    withFixture(async (f) => {
+      const image = storedImage(f);
+      const value =
+        kind === "ordinary"
+          ? await ordinaryReplaySlot()
+          : promotionReplaySlot(kind);
+      const { result } = value.outcome;
+      image.entries.outcome.set(value.outcome.id, { value });
+      const before = promotionImageState(image);
+      const effects = f.observeEffects();
+      let reply: Response | undefined;
+      let caught: unknown;
+      try {
+        reply = commandV3(
+          writableStore(f.storage),
+          f.seal(),
+          image,
+          replayText,
+          replayHost,
+        );
+      } catch (error) {
+        caught = error;
+      }
+      if (kind === "ordinary") {
+        expect(caught).toBeUndefined();
+        expect(reply?.status).toBe(200);
+        expect(await reply?.json()).toEqual({
+          ok: true,
+          op: "issue.create",
+          status: "OK",
+          result,
+          warnings: [],
+        });
+      } else {
+        expect(caught).toBeInstanceOf(ForgeFailure);
+        expect((caught as ForgeFailure).error).toEqual(requestConflict().error);
+        expect(reply).toBeUndefined();
+      }
+      expect(effects()).toEqual(noWrites);
+      expect(promotionImageState(image)).toEqual(before);
+    }),
+  timeout,
+);
+
+test(
+  "RC1j v3 command route conflicts with a recovered promote receipt",
+  async () => {
+    const [first] = await promotionSource();
+    const f = guardFixture(typedEnv);
+    using _db = f.db;
+    ok(await f.send(probe, {}));
+    const pair = promotionPair(1, 1);
+    Object.assign(pair.promote.outcome, promotionReplaySlot("same").outcome);
+    const rows = [first!, ...pairRows(pair)];
+    installPromotionRoot(f, promotionArtifact(rows), activationIdentity(1), 3);
+    setSystemTime(replayHost.now);
+    const before = f.snapshot();
+    const effects = f.observeEffects();
+    const image = storedImage(f);
+    expect(image.head).toBe(rows.length);
+    const reply = await typed(f, createBody);
+    expect(reply).toMatchObject({
+      status: 409,
+      body: { ok: false, error: conflict },
+    });
+    expect(exited(reply)).toBe(4);
+    expect(effects()).toEqual(noWrites);
+    expect(f.snapshot()).toEqual(before);
+  },
   timeout,
 );
