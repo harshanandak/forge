@@ -1757,6 +1757,19 @@ for (const [label, over] of junk)
     refusedList(f);
   });
 
+clocked("tokenInventory refuses a duplicate id", (f) => {
+  f.db.run(
+    REAL.replace("id TEXT PRIMARY KEY", "id TEXT").replace(
+      " WITHOUT ROWID",
+      "",
+    ),
+  );
+  const row = signed(f, 1);
+  insertRow(f, { ...row });
+  insertRow(f, { ...row });
+  refusedList(f);
+});
+
 clocked("tokenInventory refuses 65 live rows", (f) => {
   fill(f, 65);
   refusedList(f);

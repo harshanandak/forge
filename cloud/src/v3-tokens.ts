@@ -46,7 +46,7 @@ export const TOKEN_READ = `WITH guarded AS (SELECT ${COLUMNS.map((c) => `(${SHAP
 
 const CREATE = `CREATE TABLE IF NOT EXISTS ${V3_TOKENS} (id TEXT PRIMARY KEY, hash TEXT NOT NULL, device TEXT NOT NULL, session TEXT NOT NULL, agent TEXT, harness TEXT, expires_at INTEGER NOT NULL, revoked_at INTEGER, mac TEXT NOT NULL) WITHOUT ROWID`;
 
-const IDS = `SELECT CASE WHEN ${SHAPES.id} THEN id END AS id FROM ${V3_TOKENS} ORDER BY id LIMIT ${MAX_TOKENS + 1}`;
+const IDS = `SELECT CASE WHEN ${SHAPES.id} THEN id END AS id FROM ${V3_TOKENS} ORDER BY ${V3_TOKENS}.id LIMIT ${MAX_TOKENS + 1}`;
 
 const unavailable = () =>
   fail("UNAVAILABLE", "Cloud v3 token storage is unavailable");
