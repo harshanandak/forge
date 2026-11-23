@@ -85,14 +85,14 @@ function fingerprintTied(
 function outcomeFault(
   outcome: unknown,
   typed?: boolean,
-  portable = false,
+  replay = false,
   grant = false,
 ) {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
   const { scope, result } = outcome;
   const command = typed ?? scope.family === "command";
   const codes = !command ? REFUSALS : grant ? CLAIM_REFUSALS : UPDATE_REFUSALS;
-  const archived = portable && (command || outcome.status !== "ok");
+  const archived = replay && (command || outcome.status !== "ok");
   const liveKeys = result === undefined ? OUTCOME_KEYS : REFUSAL_KEYS;
   if (
     keysOf(outcome) !== (archived ? ARCHIVED_KEYS : liveKeys) ||
@@ -116,7 +116,8 @@ function outcomeFault(
   if (
     command &&
     (!/^c2:[a-f0-9]{64}$/.test(outcome.id) ||
-      (outcome.status !== "ok" && !codes.includes(String(outcome.status))))
+      typeof outcome.status !== "string" ||
+      (outcome.status !== "ok" && !codes.includes(outcome.status)))
   )
     return "command outcome";
   if (archived) return undefined;
@@ -166,7 +167,9 @@ export function sealedAuthorityValid(
     );
   if (!isNat(time) || !isObject(outcome) || outcome.id !== key) return false;
   const grant =
-    lease !== undefined || CLAIM_REFUSALS.includes(String(outcome.status));
+    lease !== undefined ||
+    (typeof outcome.status === "string" &&
+      CLAIM_REFUSALS.includes(outcome.status));
   return (
     outcomeFault(outcome, undefined, false, grant) === undefined &&
     (outcome.status === "ok" && (lease !== undefined || !("result" in outcome))
@@ -177,7 +180,7 @@ export function sealedAuthorityValid(
 
 export function authorityFault(
   { operation, lease, outcome, witness }: Readonly<Record<string, unknown>>,
-  portable = false,
+  replay = false,
 ): string | undefined {
   if (lease !== undefined && !validLease(lease)) return "lease";
   if (
@@ -191,7 +194,7 @@ export function authorityFault(
   const outcomeError =
     outcome === undefined
       ? undefined
-      : outcomeFault(outcome, command, portable, claim);
+      : outcomeFault(outcome, command, replay, claim);
   if (outcomeError !== undefined) return outcomeError;
   if (command && !claim)
     return lease === undefined &&

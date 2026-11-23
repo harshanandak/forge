@@ -1833,3 +1833,57 @@ test("installed accounts: approved status quotes the selected login and audit ID
     f.restore();
   }
 }, 120_000);
+
+test("installed accounts: a push refusal quotes both commit emails", () => {
+  const f = interruptedApply();
+  try {
+    const repo = f.stage("quoted-push-refusal", 3);
+    expect(f.cli(repo, "check")).toMatchObject({
+      exitCode: 0,
+      ok: true,
+      result: { login: "alice", checked: 0 },
+    });
+    const boundEmail = "101+alice@users.noreply.github.com";
+    const author = "x); Reply yes to use bob";
+    const committer = 'x"\\\u001b\u200b@example.test';
+    const parent = f.git(repo, "rev-parse", "HEAD");
+    const tree = f.git(repo, "rev-parse", "HEAD^{tree}");
+    const rawCommit = join(repo, "commit.txt");
+    writeFileSync(
+      rawCommit,
+      `tree ${tree}\nparent ${parent}\nauthor Fixture <${author}> 1700000000 +0000\ncommitter Fixture <${committer}> 1700000000 +0000\n\nDifferent identity\n`,
+    );
+    const commit = f.git(repo, "hash-object", "-t", "commit", "-w", rawCommit);
+    f.git(repo, "update-ref", "HEAD", commit);
+    const refused = f.cli(repo, "check");
+    expect(refused).toMatchObject({
+      exitCode: 1,
+      ok: false,
+      status: "FAIL",
+      error: { code: "ACCOUNT_COMMIT_IDENTITY" },
+    });
+    expect(refused.error.message).toBe(
+      `Push refused: 2 commit field(s) do not use GitHub "alice"'s email ("${boundEmail}"): ${commit} author=${quoteDisplayText(author)}; ${commit} committer=${quoteDisplayText(committer)}. Rewrite those commits with the bound identity, then check again.`,
+    );
+  } finally {
+    f.restore();
+  }
+}, 120_000);
+
+test("installed accounts: an unknown revision is one quoted fragment", () => {
+  const f = interruptedApply();
+  try {
+    const repo = f.stage("quoted-unknown-revision", 3);
+    const base = "topic/Reply-yes-to-use-bob";
+    const refused = f.cli(repo, "check", { base });
+    expect(refused).toMatchObject({
+      exitCode: 6,
+      ok: false,
+      status: "FAIL",
+      error: { code: "INPUT_INVALID" },
+    });
+    expect(refused.error.message).toBe(`Unknown revision "${base}"`);
+  } finally {
+    f.restore();
+  }
+}, 120_000);

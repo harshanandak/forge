@@ -1742,14 +1742,17 @@ module.exports = {
       ) {
         const scope =
           input.scope === undefined ? old.scope : (input.scope ?? undefined);
-        const twins = twinsOf(source, input.text, scope, config, number);
-        if (twins.exact)
+        const twins =
+          ownerTag(newTags, config) === undefined
+            ? undefined
+            : twinsOf(source, input.text, scope, config, number);
+        if (twins?.exact)
           return {
             status: "exists" as const,
             id: twins.exact.id,
             notice: twinNotice(twins.exact),
           };
-        const hint = similarity(twins.similar);
+        const hint = similarity(twins?.similar ?? []);
         const waiting: NoteValue = {
           ...old,
           textRevision: old.textRevision ?? existing.revision,
@@ -3359,6 +3362,7 @@ module.exports = {
       level: Level;
       scope?: string;
       tags: readonly string[];
+      removedOwnerTags: string[];
       text: string;
       proposedBy: { kind: string; id: string };
       value: NoteValue;
@@ -3385,6 +3389,11 @@ module.exports = {
             level: source.level,
             ...(scope === undefined ? {} : { scope }),
             tags: waiting === undefined ? value.tags : waiting.tags,
+            removedOwnerTags: removedOwnerTags(
+              value.tags,
+              waiting?.tags ?? value.tags,
+              config,
+            ),
             text: waiting === undefined ? value.text : waiting.text,
             value,
             proposedBy: {
@@ -3435,8 +3444,9 @@ module.exports = {
       returned,
       ...(skip + returned < flat.length ? { next: skip + returned } : {}),
       groups: shownGroups.map((group) => ({
-        items: group.map(({ text, value, ...entry }) => ({
+        items: group.map(({ text, value, removedOwnerTags, ...entry }) => ({
           ...entry,
+          ...(removedOwnerTags.length === 0 ? {} : { removedOwnerTags }),
           ...relations(replacements, { id: entry.id, value }, config),
           tags: [...entry.tags],
           text: fence(text, `memory:${entry.id}:proposal`, entry.proposedAt),

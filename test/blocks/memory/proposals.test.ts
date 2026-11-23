@@ -24,6 +24,7 @@ interface Item {
   level: string;
   scope?: string;
   tags: string[];
+  removedOwnerTags?: string[];
   text: { kind: string; text: string };
   proposedBy: { kind: string; id: string };
   proposedAt: string;
@@ -55,10 +56,11 @@ const ids = (queue: Queue) =>
 /** What the owner is shown, as memory.accept takes it. */
 const acceptItems = (queue: Queue) =>
   queue.groups.flatMap((group) =>
-    group.items.map(({ id, revision, text }) => ({
+    group.items.map(({ id, revision, text, removedOwnerTags }) => ({
       id,
       revision,
       text: text.text,
+      ...(removedOwnerTags === undefined ? {} : { removedOwnerTags }),
     })),
   );
 
@@ -190,6 +192,122 @@ test("a pending revision of an accepted note is listed with its proposed text", 
       approval: ownerApproval,
     }),
   ).toEqual({ results: [{ id: rule.id, status: "accepted" }] });
+});
+
+async function stageRevision(
+  call: Call,
+  before: { text: string; tags: string[] },
+  after: { text: string; tags: string[] },
+) {
+  const { id, note } = await propose(call, before.text, before.tags);
+  await call("memory.accept", {
+    items: [{ id, revision: note.revision, text: before.text }],
+    approval: ownerApproval,
+  });
+  await call("memory.add", { id, ...after, approval: ownerApproval });
+  return id;
+}
+
+const singleRemoval = (call: Call) =>
+  stageRevision(
+    call,
+    { text: "use bun", tags: ["rule"] },
+    { text: "use npm", tags: [] },
+  );
+
+const listItems = (batch: Queue) =>
+  batch.groups.flatMap((group) => group.items);
+
+test("the queue lists the removed owner tag on a pending revision", async () => {
+  const { call, queue } = setup();
+  const id = await singleRemoval(call);
+  const batch = await queue();
+  expect(listItems(batch)).toMatchObject([
+    { id, kind: "revision", removedOwnerTags: ["rule"] },
+  ]);
+  const validate = blockSchema("memory", "proposals.output.json");
+  expect(validate(JSON.parse(JSON.stringify(batch)))).toEqual([]);
+});
+
+test("memory.accept takes a single tag removal copied from the queue", async () => {
+  const { call, queue } = setup();
+  const id = await singleRemoval(call);
+  expect(
+    await call("memory.accept", {
+      items: acceptItems(await queue()),
+      approval: ownerApproval,
+    }),
+  ).toEqual({ results: [{ id, status: "accepted" }] });
+  expect(await call("memory.show", { id })).toMatchObject({
+    note: { tags: [], text: { text: "use npm" } },
+  });
+});
+
+async function stageTwoTagRevisions(call: Call) {
+  const all = await stageRevision(
+    call,
+    { text: "use bun for scripts", tags: ["rule", "preference"] },
+    { text: "use npm for scripts", tags: [] },
+  );
+  const partial = await stageRevision(
+    call,
+    { text: "pin Node versions", tags: ["rule", "preference"] },
+    { text: "use the current Node release", tags: ["preference"] },
+  );
+  return { all, partial };
+}
+
+test("the queue lists removed tags in order and excludes a retained owner tag", async () => {
+  const { call, queue } = setup();
+  const { all, partial } = await stageTwoTagRevisions(call);
+  const items = listItems(await queue());
+  expect(items.find(({ id }) => id === all)?.removedOwnerTags).toEqual([
+    "preference",
+    "rule",
+  ]);
+  expect(items.find(({ id }) => id === partial)?.removedOwnerTags).toEqual([
+    "rule",
+  ]);
+});
+
+test("memory.accept takes full and partial tag removals copied from the queue", async () => {
+  const { call, queue } = setup();
+  const { all, partial } = await stageTwoTagRevisions(call);
+  const batch = acceptItems(await queue());
+  expect(
+    await call("memory.accept", {
+      items: [
+        batch.find(({ id }) => id === all)!,
+        batch.find(({ id }) => id === partial)!,
+      ],
+      approval: ownerApproval,
+    }),
+  ).toEqual({
+    results: [
+      { id: all, status: "accepted" },
+      { id: partial, status: "accepted" },
+    ],
+  });
+});
+
+test("the queue omits removedOwnerTags when no owner tag is removed", async () => {
+  const { call, queue } = setup();
+  const { id: fresh } = await propose(call, "Write a change summary.");
+  const textOnly = await stageRevision(
+    call,
+    { text: "use npm", tags: ["rule"] },
+    { text: "use bun", tags: ["rule"] },
+  );
+  const nonOwner = await stageRevision(
+    call,
+    { text: "Run the tests on Windows.", tags: ["rule", "testing"] },
+    { text: "Run the tests on Linux.", tags: ["rule"] },
+  );
+  const items = listItems(await queue());
+  expect(items.map(({ id }) => id).sort()).toEqual(
+    [fresh, textOnly, nonOwner].sort(),
+  );
+  for (const item of items) expect(item).not.toHaveProperty("removedOwnerTags");
 });
 
 test("only proposals that still wait are listed", async () => {

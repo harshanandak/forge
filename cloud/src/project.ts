@@ -128,11 +128,12 @@ import {
   bearer,
   wellFormed,
 } from "./tokens.ts";
+import { authorizeV3Token, issueV3Token, revokeV3Token } from "./v3-tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
-import { checkpointV3 } from "./v3-checkpoint.ts";
+import { archivedCheck, checkpointV3 } from "./v3-checkpoint.ts";
 import { commandV3 } from "./v3-commands.ts";
-import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
+import { completeRefusals, hasV3Restore, restoreV3Page } from "./v3-restore.ts";
 import { type Seal, sealOf } from "./v3-seal.ts";
 import {
   appendV3Frames,
@@ -143,6 +144,7 @@ import {
   readV3Root,
   recoverV3,
   type V3Image,
+  unavailable,
   viewV3,
   withinDepth,
 } from "./v3-store.ts";
@@ -266,6 +268,15 @@ function integer(input: Record<string, unknown>, key: string): number {
 function optional(input: Record<string, unknown>, key: string): string | null {
   return input[key] === undefined ? null : text(input, key);
 }
+function deviceFields(input: Record<string, unknown>) {
+  return {
+    device: text(input, "device"),
+    session: optional(input, "session"),
+    agent: optional(input, "agent"),
+    harness: optional(input, "harness"),
+    ttlMs: integer(input, "ttlMs"),
+  };
+}
 function object(body: string): Record<string, unknown> {
   let parsed: unknown;
   try {
@@ -344,6 +355,13 @@ export async function validateUpgrade(request: Request): Promise<void> {
     throw fail("INPUT_INVALID", "Upgrade body must be an empty JSON object");
 }
 
+const ordinaryCheck = (db: SqlDatabase) =>
+  archivedCheck(db, {
+    admit: Project.admitLeaseRequest,
+    failure: unavailable,
+    complete: completeRefusals,
+  });
+
 export class Project {
   readonly #storage: DurableStorage;
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
@@ -414,7 +432,7 @@ export class Project {
 
   #image(db: SqlDatabase, seal: Seal): V3Image {
     if (this.#v3Image === undefined || this.#v3Image.stale)
-      this.#v3Image = recoverV3(db, seal);
+      this.#v3Image = recoverV3(db, seal, ordinaryCheck(db));
     return this.#v3Image;
   }
 
@@ -565,6 +583,7 @@ export class Project {
                 this.#v3Image = image;
             },
             Project.admitLeaseRequest,
+            completeRefusals,
           );
           return Response.json({ ok: true, value });
         }
@@ -586,6 +605,7 @@ export class Project {
               return commandV3(db, seal, this.#image(db, seal), body, {
                 project: url.pathname.split("/")[2]!,
                 device: owner,
+                principal: ["owner", owner, owner],
                 prefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: string })
                   .FORGE_CLOUD_ID_PREFIX!,
                 expiresAt,
@@ -618,7 +638,12 @@ export class Project {
           const legacy =
             (await this.#storage.get(PROVISIONED)) !== undefined ||
             (await this.#storage.get(STAGED)) !== undefined;
-          this.#v3Image = provisionV3(db, seal, legacy || hasV3Restore(db));
+          this.#v3Image = provisionV3(
+            db,
+            seal,
+            legacy || hasV3Restore(db),
+            ordinaryCheck(db),
+          );
           this.#v3Root = true;
           return Response.json({ ok: true, value: viewV3(this.#v3Image) });
         }
@@ -626,7 +651,10 @@ export class Project {
       if (route === "restore" && request.method === "POST" && this.#testV3) {
         const seal = this.#seal();
         const db = writableStore(this.#storage);
-        if (this.#hasV3Root() && readV3Root(db).activationDigest === undefined)
+        if (
+          this.#hasV3Root() &&
+          readV3Root(db, seal).activationDigest === undefined
+        )
           this.#requireV2();
         const body = await bounded(
           request,
@@ -646,6 +674,21 @@ export class Project {
           legacy,
           Project.admitLeaseRequest,
         );
+        return Response.json({ ok: true, value });
+      }
+      if (
+        this.#testV3 &&
+        request.method === "POST" &&
+        (route === "devices" || route === "revoke") &&
+        this.#hasV3Root()
+      ) {
+        const seal = this.#seal();
+        const input = object(await bounded(request));
+        const db = writableStore(this.#storage);
+        const value =
+          route === "devices"
+            ? await issueV3Token(db, seal, deviceFields(input), Date.now())
+            : revokeV3Token(db, seal, text(input, "id"), Date.now());
         return Response.json({ ok: true, value });
       }
       if (route === "upgrade" || route === "devices" || route === "restore")
@@ -717,13 +760,7 @@ export class Project {
       // The Worker has already checked the admin token before it forwards these two routes.
       if (request.method === "POST" && route === "devices") {
         const input = object(await bounded(request));
-        const deviceInput = {
-          device: text(input, "device"),
-          session: optional(input, "session"),
-          agent: optional(input, "agent"),
-          harness: optional(input, "harness"),
-          ttlMs: integer(input, "ttlMs"),
-        };
+        const deviceInput = deviceFields(input);
         if (deviceInput.ttlMs > MAX_TTL_MS)
           throw fail("INPUT_INVALID", "ttlMs is over 90 days");
         // Issuing a token provisions the project, so staged rows are cleared first: they were never checked.
@@ -815,7 +852,7 @@ export class Project {
         if (this.#testV3 && this.#hasV3Root()) {
           const seal = this.#seal();
           const db = writableStore(this.#storage);
-          if (readV3Root(db).activationDigest !== undefined) {
+          if (readV3Root(db, seal).activationDigest !== undefined) {
             this.#image(db, seal);
             return Response.json({
               ok: true,
@@ -1073,6 +1110,24 @@ export class Project {
       if (!wellFormed(presented))
         throw fail("AUTH_FORBIDDEN", "Commands need a device token");
       const parts = await tokenParts(presented);
+      if (this.#testV3 && this.#hasV3Root()) {
+        const seal = this.#seal();
+        const db = writableStore(this.#storage);
+        authorizeV3Token(db, seal, parts, Date.now());
+        const body = await bounded(request, MAX_COMMAND_BODY);
+        const now = Date.now();
+        const token = authorizeV3Token(db, seal, parts, now);
+        return commandV3(db, seal, this.#image(db, seal), body, {
+          project: commandProject(request)!,
+          device: token.device,
+          session: token.session,
+          principal: ["token", token.id, token.device],
+          prefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: string })
+            .FORGE_CLOUD_ID_PREFIX!,
+          expiresAt: token.expiresAt,
+          now,
+        });
+      }
       if (!(await this.#isProvisioned()))
         throw fail("AUTH_INVALID", "Token is not valid");
       // Checked through a read-only view: a refusal must not create a table or run a migration.

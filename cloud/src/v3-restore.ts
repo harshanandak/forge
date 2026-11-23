@@ -14,6 +14,7 @@ import type { AdmitLeaseRequest } from "./project.ts";
 import { TABLE_PROBE } from "./store.ts";
 import { isDigest, isNat, sealedAuthorityValid } from "./v3-authority.ts";
 import {
+  archivedCheck,
   digestProjection,
   inventory,
   PAGE_BYTES,
@@ -21,7 +22,12 @@ import {
   roster,
   storedPages,
 } from "./v3-checkpoint.ts";
-import type { Seal } from "./v3-seal.ts";
+import {
+  authenticateManifest,
+  type Manifest,
+  type Seal,
+  type VerifiedManifest,
+} from "./v3-seal.ts";
 import {
   activateV3,
   fail,
@@ -30,6 +36,7 @@ import {
   PAGES,
   readV3Root,
   recoverV3,
+  rejectOldCommits,
   type V3Image,
   withinDepth,
 } from "./v3-store.ts";
@@ -41,6 +48,12 @@ function check(value: unknown, code = "RESTORE_INVALID_ROW"): asserts value {
   if (!value)
     throw fail(code, "Cloud v3 portable restore could not be verified");
 }
+
+const refused = () =>
+  fail(
+    "RESTORE_INVALID_ROW",
+    "Cloud v3 portable restore could not be verified",
+  );
 
 function decode(text: unknown): unknown {
   check(typeof text === "string" && withinRestoreBudget(text));
@@ -55,19 +68,22 @@ function parse(text: string): unknown {
   }
 }
 
-function manifestOf(value: unknown, pin: unknown) {
+function manifestOf(seal: Seal, value: unknown, pin: unknown) {
   check(isObject(value));
   const { format, head, eventWatermark, recordFloor, publicDigest, pages } =
     value;
   check(
-    Object.keys(value).length === 6 &&
-      format === "forge-cloud-portable/3" &&
+    Object.keys(value).length === 8 &&
+      format === "forge-cloud-portable/4" &&
       [head, eventWatermark, recordFloor].every(isNat) &&
       isDigest(publicDigest) &&
+      typeof value.source === "string" &&
+      value.source !== "" &&
+      typeof value.mac === "string" &&
       Array.isArray(pages) &&
       pages.length === IDS.length,
   );
-  const members = pages.map((member: unknown, i) => {
+  pages.forEach((member: unknown, i) =>
     check(
       isObject(member) &&
         Object.keys(member).length === 3 &&
@@ -75,11 +91,15 @@ function manifestOf(value: unknown, pin: unknown) {
         isNat(member.bytes) &&
         member.bytes <= PAGE_BYTES &&
         isDigest(member.hash),
-    );
-    return { id: IDS[i]!, bytes: member.bytes, hash: member.hash };
-  });
-  check(digestValue(value) === pin);
-  return { head, eventWatermark, recordFloor, publicDigest, members };
+    ),
+  );
+  const verified = authenticateManifest(
+    seal,
+    value as unknown as Manifest,
+    pin,
+  );
+  check(verified);
+  return verified;
 }
 
 const matches = (
@@ -93,7 +113,10 @@ const matches = (
 export const hasV3Restore = (db: SqlDatabase) =>
   db.get(TABLE_PROBE, [STAGE]) !== undefined;
 
-function completeRefusals(image: V3Image, pages: ReadonlyMap<string, string>) {
+export function completeRefusals(
+  image: V3Image,
+  pages: ReadonlyMap<string, string>,
+) {
   const directory = parse(pages.get("directory:0")!);
   check(Array.isArray(directory));
   const entries = new Map(
@@ -131,7 +154,7 @@ function completeRefusals(image: V3Image, pages: ReadonlyMap<string, string>) {
 function verify(
   db: SqlDatabase,
   seal: Seal,
-  manifest: ReturnType<typeof manifestOf>,
+  manifest: VerifiedManifest,
   admit: AdmitLeaseRequest,
   table: string,
 ) {
@@ -141,7 +164,7 @@ function verify(
     for (const member of manifest.members)
       check(matches(pages.get(member.id), member));
     const portableTranscript = pages.get("transcript:0")!;
-    const image = recoverV3(db, seal, { admit, portableTranscript });
+    const image = recoverV3(db, seal, { admit, manifest, portableTranscript });
     completeRefusals(image, pages);
     const expected = inventory(image, new Map());
     reconcile(pages, expected, portableTranscript);
@@ -176,8 +199,9 @@ export function restoreV3Page(
   check(Object.keys(input).length === (page === 0 ? 4 : 3));
   const request = digestBytes(text);
   return db.transaction(() => {
+    rejectOldCommits(db);
     const restored =
-      hasV3Root(db) && readV3Root(db).activationDigest !== undefined;
+      hasV3Root(db) && readV3Root(db, seal).activationDigest !== undefined;
     check(
       !legacy && (restored || !hasPriorV3RestoreState(db)),
       "RESTORE_TARGET_NOT_EMPTY",
@@ -193,11 +217,12 @@ export function restoreV3Page(
     check(prior || (!restored && page === staged.length));
     const first = staged[0];
     const manifest = first
-      ? manifestOf(decode(first.manifest), first.pin)
-      : manifestOf(input.manifest, pin);
+      ? manifestOf(seal, decode(first.manifest), first.pin)
+      : manifestOf(seal, input.manifest, pin);
     check(matches(body, manifest.members[page]!));
     const verified = page === IDS.length - 1;
     const finish = () => {
+      let checked: ReadonlyMap<string, string> | undefined;
       if (verified) {
         const { pages, expected, image } = verify(
           db,
@@ -206,13 +231,24 @@ export function restoreV3Page(
           admit,
           table,
         );
+        checked = pages;
         if (!restored) {
           const projection = roster(pages, expected, image.head);
           activateV3(db, seal, image, projection, pages, manifest.publicDigest);
           db.run(`UPDATE ${STAGE} SET body=''`);
         }
       }
-      if (restored || verified) recoverV3(db, seal);
+      if (restored || verified)
+        recoverV3(
+          db,
+          seal,
+          archivedCheck(db, {
+            admit,
+            failure: refused,
+            complete: completeRefusals,
+            pages: checked,
+          }),
+        );
     };
     if (prior) {
       check(prior.id === id && prior.request === request && prior.pin === pin);

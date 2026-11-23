@@ -19,7 +19,13 @@ import {
   digestBytes,
   digestValue,
 } from "../../src/core/config/pointer.ts";
-import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
+import {
+  guardFixture,
+  noWrites,
+  probe,
+  recovered as recoverOrdinary,
+  verifiedPortable,
+} from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -95,7 +101,7 @@ async function provision(f: Fixture) {
 
 function recovered(f: Fixture) {
   const db = writableStore(f.storage);
-  return { db, image: recoverV3(db, f.seal()) };
+  return { db, image: recoverOrdinary(db, f.seal()) };
 }
 
 async function checkpoint(f: Fixture, head: number) {
@@ -173,6 +179,7 @@ function transcript(pages: Pages) {
 const portable = (f: Fixture, portableTranscript: string) =>
   recoverV3(writableStore(f.storage), f.seal(), {
     admit: Project.admitLeaseRequest,
+    manifest: verifiedPortable(f.seal(), portableTranscript),
     portableTranscript,
   });
 const receipt = (requestId: string) =>

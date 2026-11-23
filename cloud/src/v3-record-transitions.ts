@@ -87,7 +87,11 @@ export function verifyRecordFrame(
   read: (key: string) => { readonly revision?: number } | undefined,
   refuse: () => Error,
   load: V3Image["load"],
-) {
+): {
+  floor: number;
+  changes: { key: string; value: RecordValue }[];
+  result?: unknown;
+} {
   const changes: { key: string; value: RecordValue }[] = [];
   const create = frame.operation === "issue.create";
   const update = frame.operation === "issue.update";
@@ -161,16 +165,16 @@ export function verifyRecordFrame(
       throw refuse();
     const number = recordNumber(key);
     const prior = read(key);
-    if (create) result = created(frame, number, value);
+    const shown = create ? created(frame, number, value) : undefined;
     if (
       !number ||
-      (create &&
-        (prior || number !== floor + 1 || revision !== 1 || !result)) ||
+      (create && (prior || number !== floor + 1 || revision !== 1 || !shown)) ||
       seen.has(key) ||
       (prior && "deleted" in prior) ||
       revision <= (prior?.revision ?? 0)
     )
       throw refuse();
+    result = shown;
     if (!prior) {
       if (!put || number <= floor) throw refuse();
       floor = number;

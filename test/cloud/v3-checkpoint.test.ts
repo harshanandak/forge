@@ -1,15 +1,35 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { failed } from "../../cloud/src/issue-commands.ts";
 import { domain, Project } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
-import { writableStore } from "../../cloud/src/store.ts";
 import {
+  canonicalJson,
+  digestBytes,
+  digestValue,
+} from "../../src/core/config/pointer.ts";
+import type { ForgeError } from "../../src/generated/types.ts";
+import { exitCode } from "../../src/surface/result.ts";
+import { writableStore } from "../../cloud/src/store.ts";
+import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
+import { completeRefusals } from "../../cloud/src/v3-restore.ts";
+import {
+  claimEffect,
+  foldTranscript,
   PAGE_BYTES,
+  readV3Root,
   readV3Value,
   recoverV3,
   viewV3,
 } from "../../cloud/src/v3-store.ts";
-import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
+import {
+  guardFixture,
+  noWrites,
+  probe,
+  recovered,
+  trustedManifest,
+  trustedSeal,
+  verifiedPortable,
+} from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
 const MiB = 1024 * 1024;
@@ -482,7 +502,7 @@ test(
         });
         f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
           body,
-          digestBytes(body),
+          trustedSeal(f.db, body),
         ]);
         changed = active(f);
       });
@@ -858,13 +878,13 @@ test(
       await appendNotes(f, 10);
       await populate(f);
       const db = writableStore(f.storage);
-      const before = recoverV3(db, f.seal());
+      const before = recovered(db, f.seal());
       const cut = await prefix(f, 0, before.head);
       expect(cut).toBeGreaterThanOrEqual(11);
       expect(cut).toBeLessThan(before.head);
       await expectWarmAndCold(f, viewV3(before).image);
       await drain(f, cut, before.head);
-      const after = recoverV3(db, f.seal());
+      const after = recovered(db, f.seal());
       expect(after.root.eventWatermark).toBe(before.eventWatermark);
       expect(after.recordFloor).toBe(before.recordFloor);
       await expectWarmAndCold(f, viewV3(before).image);
@@ -1182,7 +1202,7 @@ test(
       f.db.run("UPDATE cloud_v3_pages SET body=? WHERE id=?", [transcript, id]);
       f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
         updated,
-        digestBytes(updated),
+        trustedSeal(f.db, updated),
       ]);
       f.restart();
       const source = active(f);
@@ -1386,11 +1406,11 @@ const portableHistory = async (source: Fixture) => {
 };
 
 function replayPortable(target: Fixture, frames: readonly unknown[]) {
+  const portableTranscript = canonicalJson(frames);
   const verification = {
     admit: Project.admitLeaseRequest,
-    pages: new Map<string, Buffer>(),
-    sealed: () => {},
-    portableTranscript: canonicalJson(frames),
+    manifest: verifiedPortable(target.seal(), portableTranscript),
+    portableTranscript,
   };
   return recoverV3(writableStore(target.storage), target.seal(), verification);
 }
@@ -1400,7 +1420,7 @@ test(
   () =>
     withFixture(async (source) => {
       const frames = await portableHistory(source);
-      const expected = recoverV3(writableStore(source.storage), source.seal());
+      const expected = recovered(writableStore(source.storage), source.seal());
       await withFixture((target) => {
         const effects = target.observeEffects();
         const replayed = replayPortable(target, frames);
@@ -1438,7 +1458,7 @@ test(
           ? { sequence: entry.sequence }
           : entry,
       );
-      const expected = recoverV3(writableStore(source.storage), source.seal());
+      const expected = recovered(writableStore(source.storage), source.seal());
       expect(expected.head).toBe(1025);
       await withFixture((target) => {
         const replayed = replayPortable(target, frames);
@@ -1465,7 +1485,7 @@ test(
         ({ id }) => id === "transcript:0",
       )!.body;
       const frames = JSON.parse(native) as Json[];
-      const expected = recoverV3(writableStore(source.storage), source.seal());
+      const expected = recovered(writableStore(source.storage), source.seal());
       await withFixture((target) => {
         const replayed = replayPortable(target, frames);
         expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
@@ -1561,6 +1581,7 @@ type Portable = {
   eventWatermark: number;
   recordFloor: number;
   publicDigest: string;
+  source: string;
 };
 
 async function withPortable(
@@ -1602,6 +1623,7 @@ async function withPortable(
         eventWatermark: manifest.eventWatermark,
         recordFloor: 3,
         publicDigest: manifest.publicDigest,
+        source: String(source.context.id),
       };
       await run(target, data, source);
     });
@@ -1654,15 +1676,15 @@ function editProjection(
 }
 
 function portableUpload(target: Fixture, { pages, ...projection }: Portable) {
-  const manifest = {
+  const manifest = trustedManifest(target.seal(), {
     ...projection,
-    format: "forge-cloud-portable/3",
+    format: "forge-cloud-portable/4",
     pages: pages.map(({ id, body }) => ({
       id,
       bytes: Buffer.byteLength(body),
       hash: digestBytes(body),
     })),
-  };
+  });
   const digest = digestBytes(canonicalJson(manifest));
   return (page: number, member = pages[page] ?? pages[0]!, pin = digest) =>
     target.send(
@@ -1768,7 +1790,7 @@ test(
       body: { ok: false, error: { code: "LEASE_HELD" } },
     });
     await drain(source, 0, 4);
-    const { head, eventWatermark, recordFloor, root } = recoverV3(
+    const { head, eventWatermark, recordFloor, root } = recovered(
       writableStore(source.storage),
       source.seal(),
     );
@@ -1778,6 +1800,7 @@ test(
       eventWatermark,
       recordFloor,
       publicDigest: root.publicDigest as string,
+      source: String(source.context.id),
     };
     const upload = await stageRestore(target, data);
     expect(await upload(2)).toMatchObject(restoreResult(2, true));
@@ -1992,7 +2015,7 @@ const typed = (f: Fixture, body: Json, expires = E1) =>
 
 function typedBackup(source: Fixture): Portable {
   const store = writableStore(source.storage);
-  const { head, eventWatermark, recordFloor, root } = recoverV3(
+  const { head, eventWatermark, recordFloor, root } = recovered(
     store,
     source.seal(),
   );
@@ -2002,6 +2025,7 @@ function typedBackup(source: Fixture): Portable {
     eventWatermark,
     recordFloor,
     publicDigest: root.publicDigest as string,
+    source: String(source.context.id),
   };
 }
 
@@ -2095,7 +2119,6 @@ for (const fault of [
   "receipt metadata",
   "refusal digest",
   "missing outcome",
-  "digest-only grant",
 ] as const) {
   test(
     `v3 restore refuses a typed transcript with ${fault}`,
@@ -2105,11 +2128,8 @@ for (const fault of [
       using _source = source.db;
       using _target = target.db;
       expect(await source.send(probe, {})).toMatchObject({ status: 200 });
-      if (fault === "digest-only grant") await grantTypedUpdate(source);
-      else {
-        expect((await typed(source, missingUpdate)).status).toBe(404);
-        await drain(source, 0, 1);
-      }
+      expect((await typed(source, missingUpdate)).status).toBe(404);
+      await drain(source, 0, 1);
       const data = typedBackup(source);
       const [directory, snapshot] = data.pages;
       const [entry] = JSON.parse(directory!.body) as DirectoryItem[];
@@ -2119,12 +2139,8 @@ for (const fault of [
             ? body.replace("Issue was not found", "Issue was not FOUND")
             : body.replace(`"retryUntil":${E1}`, `"retryUntil":${E1 + 1}`),
         );
-      } else if (fault === "refusal digest" || fault === "digest-only grant") {
-        editHistory(data, (frames) => {
-          const frame = frames.find(
-            ({ operation }) =>
-              fault === "refusal digest" || operation === "issue.update",
-          );
+      } else if (fault === "refusal digest") {
+        editHistory(data, ([frame]) => {
           (frame!.outcome as Json).resultDigest =
             digestBytes("different refusal");
         });
@@ -2142,6 +2158,521 @@ for (const fault of [
     timeout,
   );
 }
+
+const createBody = {
+  op: "issue.create",
+  requestId: "restored-create",
+  input: { title: "A" },
+  context: { actor: holder.actor },
+};
+const invalidCreate = {
+  ...createBody,
+  requestId: "invalid-create",
+  input: { title: "A", dependsOn: ["forge-1"] },
+};
+const grantedUpdate = {
+  ...missingUpdate,
+  input: { ...missingUpdate.input, id: "forge-1" },
+};
+const issueClaim = {
+  op: "issue.claim",
+  requestId: "history-claim",
+  input: { id: "forge-1", ttlSeconds: 60 },
+  context: holder,
+};
+const rawLease = (f: Fixture, route: string, owner: string, input: Json) =>
+  sendLease(f, route, owner, { subject: "issue:work-1", ...input });
+const ok = (reply: { status: number }) => expect(reply.status).toBe(200);
+const exited = ({ body }: { body: unknown }) =>
+  exitCode(
+    (body as { error?: ForgeError }).error
+      ? failed((body as { error: ForgeError }).error)
+      : ({ ok: true } as Parameters<typeof exitCode>[0]),
+  );
+
+async function createdHistory(source: Fixture) {
+  const created = await typed(source, createBody);
+  const missing = await typed(source, missingUpdate);
+  expect([created.status, missing.status]).toEqual([200, 404]);
+  const claim = { requestId: "raw-1", ttlMs: HOUR };
+  ok(await rawLease(source, "claim", "owner-a", claim));
+  await drain(source, 0, 3);
+  return [created, missing];
+}
+
+async function restoring<T>(
+  build: (source: Fixture) => Promise<T>,
+  run: (scene: {
+    source: Fixture;
+    target: Fixture;
+    data: Portable;
+    built: T;
+  }) => Promise<void>,
+) {
+  const source = guardFixture(typedEnv);
+  const target = guardFixture(typedEnv);
+  using _source = source.db;
+  using _target = target.db;
+  expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+  const built = await build(source);
+  await run({ source, target, data: typedBackup(source), built });
+}
+
+async function restored(source: Fixture, target: Fixture, data: Portable) {
+  const upload = await stageRestore(target, data);
+  setSystemTime(T0 + 1);
+  const reply = await upload(2);
+  expect(reply).toMatchObject(restoreResult(2, true));
+  expect(exited(reply)).toBe(0);
+  expect(pages(target)).toEqual(data.pages);
+  const from = writableStore(source.storage);
+  const to = writableStore(target.storage);
+  const origin = recovered(from, source.seal());
+  const image = recovered(to, target.seal());
+  const { lease: _lease, ...expected } = viewV3(origin).image as Json;
+  const { lease: _restored, ...actual } = viewV3(image).image as Json;
+  expect(actual).toEqual({
+    ...expected,
+    head: data.head + 1,
+    eventWatermark: data.eventWatermark + 1,
+  });
+  for (const subject of origin.entries.lease.keys()) {
+    const lease = readV3Value(from, origin, "lease", subject)!;
+    expect(readV3Value(to, image, "lease", subject)).toEqual({
+      ...lease,
+      releasedAt: lease.releasedAt ?? iso(T0 + 1),
+    });
+  }
+  return [...origin.entries.outcome.keys()].map(
+    (key) => readV3Value(to, image, "outcome", key)!.outcome,
+  );
+}
+
+async function refusesTampered(
+  build: (source: Fixture) => Promise<unknown>,
+  tamper: (data: Portable, source: Fixture) => void,
+) {
+  const sibling = guardFixture(typedEnv);
+  using _sibling = sibling.db;
+  await restoring(build, async ({ source, target, data }) => {
+    const honest = await stageRestore(sibling, data);
+    expect(await honest(2)).toMatchObject(restoreResult(2, true));
+    tamper(data, source);
+    const upload = await stageRestore(target, data);
+    const staged = target.snapshot();
+    const reply = await upload(2);
+    expect(reply).toMatchObject(restoreRefusal);
+    expect(exited(reply)).toBe(1);
+    await unprovisioned(target);
+    expect(target.snapshot()).toEqual(staged);
+  });
+}
+
+function receiptOf(source: Fixture, revision: number) {
+  const db = writableStore(source.storage);
+  const image = recovered(db, source.seal());
+  for (const key of image.entries.outcome.keys()) {
+    const { result } = readV3Value(db, image, "outcome", key)!.outcome;
+    if ((result as Json | undefined)?.revision === revision)
+      return { key, result: result as Json };
+  }
+  throw new Error("no receipt");
+}
+
+test(
+  "v3 restore accepts a history with a successful create and replays it",
+  () =>
+    restoring(createdHistory, async ({ source, target, data, built }) => {
+      const outcomes = await restored(source, target, data);
+      expect(outcomes.map(({ result }) => result)).toContainEqual(
+        expect.objectContaining({ id: "forge-1", title: "A", revision: 1 }),
+      );
+      target.restart();
+      const effects = target.observeEffects();
+      expect(await typed(target, createBody)).toEqual(built[0]!);
+      expect(await typed(target, missingUpdate)).toEqual(built[1]!);
+      expect(effects()).toEqual(noWrites);
+      expect(built.map(exited)).toEqual([0, 3]);
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore accepts a recorded create refusal and replays it",
+  () =>
+    restoring(
+      async (source) => {
+        const reply = await typed(source, invalidCreate);
+        expect(reply.status).toBe(400);
+        await drain(source, 0, 1);
+        return reply;
+      },
+      async ({ source, target, data, built }) => {
+        await restored(source, target, data);
+        target.restart();
+        const effects = target.observeEffects();
+        expect(await typed(target, invalidCreate)).toEqual(built);
+        expect(effects()).toEqual(noWrites);
+        expect(exited(built)).toBe(6);
+      },
+    ),
+  timeout,
+);
+
+test(
+  "v3 restore accepts a typed update receipt and replays it as stale",
+  () =>
+    restoring(grantTypedUpdate, async ({ source, target, data }) => {
+      const outcomes = await restored(source, target, data);
+      expect(outcomes.map(({ result }) => result)).toContainEqual(
+        expect.objectContaining({
+          title: "After",
+          revision: 2,
+          lease: expect.anything() as unknown,
+        }),
+      );
+      target.restart();
+      const effects = target.observeEffects();
+      const reply = await typed(target, grantedUpdate);
+      expect(reply).toMatchObject({
+        status: 409,
+        body: { error: { code: "LEASE_STALE" } },
+      });
+      expect(exited(reply)).toBe(4);
+      expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore refuses a changed update digest after restoring the honest history",
+  () =>
+    refusesTampered(grantTypedUpdate, (data) =>
+      editHistory(data, (f) => {
+        (f[2]!.outcome as Json).resultDigest = digestBytes("different update");
+      }),
+    ),
+  timeout,
+);
+
+const createEdits: [string, (data: Portable, source: Fixture) => void][] = [
+  [
+    "an edited event value",
+    (data) =>
+      editHistory(data, (f) => {
+        ((f[0]!.events as Json[])[0]!.value as Json).title = "B";
+      }),
+  ],
+  [
+    "edited changes",
+    (data) =>
+      editHistory(data, (f) => {
+        (((f[0]!.changes as Json[])[0]!.value as Json).value as Json).title =
+          "B";
+      }),
+  ],
+  [
+    "an edited digest",
+    (data) =>
+      editHistory(data, (f) => {
+        (f[0]!.outcome as Json).resultDigest = digestBytes("different create");
+      }),
+  ],
+  [
+    "a signed numeric title",
+    (data, source) => {
+      const { key, result } = receiptOf(source, 1);
+      const numeric = (body: string) =>
+        body.replace('"title":"A"', '"title":123');
+      editHistory(data, (f) => {
+        ((f[0]!.events as Json[])[0]!.value as Json).title = 123;
+        (((f[0]!.changes as Json[])[0]!.value as Json).value as Json).title =
+          123;
+        (f[0]!.outcome as Json).resultDigest = digestValue({
+          ...result,
+          title: 123,
+        });
+      });
+      editProjection(data, "record", "r1", numeric);
+      editProjection(data, "outcome", key, numeric);
+    },
+  ],
+];
+
+for (const [name, tamper] of createEdits)
+  test(
+    `v3 restore refuses a create history with ${name}`,
+    () => refusesTampered(createdHistory, tamper),
+    timeout,
+  );
+
+type Mode = "archived" | "portable";
+const modes: Mode[] = ["archived", "portable"];
+const iso = (time: number) => new Date(time).toISOString();
+const ZERO = `sha256:${"0".repeat(64)}`;
+const outcomeOf = (row: Json | undefined) => row!.outcome as Json;
+const transcript = (f: Fixture) =>
+  JSON.parse(pages(f).find(({ id }) => id === "transcript:0")!.body) as Json[];
+
+function foldOf(f: Fixture, mode: Mode, rows: Json[], stubNotes = true) {
+  const db = writableStore(f.storage);
+  const admit = Project.admitLeaseRequest;
+  if (mode === "archived") return foldTranscript(db, rows, mode, admit);
+  const portableTranscript = canonicalJson(
+    rows.map((row) =>
+      stubNotes && row.operation === "fixture.note"
+        ? { sequence: row.sequence }
+        : row,
+    ),
+  );
+  const manifest = verifiedPortable(f.seal(), portableTranscript);
+  return recoverV3(db, f.seal(), { admit, manifest, portableTranscript });
+}
+
+function refuses(f: Fixture, mode: Mode, rows: Json[], stubNotes = true) {
+  const effects = f.observeEffects();
+  let thrown: unknown;
+  try {
+    foldOf(f, mode, rows, stubNotes);
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBeInstanceOf(ForgeFailure);
+  expect((thrown as ForgeFailure).error).toMatchObject({
+    code: "UNAVAILABLE",
+    message: "Cloud v3 root is unavailable",
+  });
+  expect(effects()).toEqual(noWrites);
+}
+
+async function history(source: Fixture) {
+  const lease = (route: string, owner: string, input: Json) =>
+    rawLease(source, route, owner, { ttlMs: HOUR, ...input });
+  ok(await typed(source, createBody));
+  ok(await lease("claim", "owner-a", { requestId: "h-claim" }));
+  ok(await typed(source, grantedUpdate));
+  ok(await lease("renew", "owner-a", { requestId: "h-renew", generation: 1 }));
+  const release = { requestId: "h-release", generation: 1 };
+  ok(await lease("release", "owner-a", release));
+  ok(await typed(source, issueClaim));
+  ok(await append(source, putRecord("r2", 1, "later")));
+  ok(await append(source, frame()));
+  const refused = await lease("claim", "owner-b", { requestId: "h-refused" });
+  expect(refused.status).toBe(409);
+  await drain(source, 0, 9);
+  return transcript(source);
+}
+
+async function withHistory(
+  run: (source: Fixture, rows: Json[]) => void | Promise<void>,
+) {
+  const source = guardFixture(typedEnv);
+  using _source = source.db;
+  expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+  await run(source, await history(source));
+}
+
+for (const mode of modes)
+  test(
+    `v3 ${mode} fold installs the results and leases the live image holds`,
+    () =>
+      withHistory((source, rows) => {
+        const db = writableStore(source.storage);
+        const live = recovered(db, source.seal());
+        const folded = foldOf(source, mode, rows);
+        expect(viewV3(folded).image).toEqual(viewV3(live).image);
+        expect(folded.recordFloor).toBe(live.recordFloor);
+        for (const name of ["lease", "outcome", "witness"] as const)
+          for (const key of live.entries[name].keys())
+            expect(JSON.stringify(readV3Value(db, folded, name, key))).toBe(
+              canonicalJson(readV3Value(db, live, name, key)),
+            );
+        const results = [...live.entries.outcome.keys()]
+          .map((key) => readV3Value(db, folded, "outcome", key)!.outcome)
+          .filter(({ scope }) => scope.family === "command")
+          .map(({ result }) => result);
+        expect(results).toHaveLength(3);
+        for (const expected of [
+          { id: "forge-1", title: "A", revision: 1 },
+          { id: "forge-1", title: "After", revision: 2 },
+          { id: "forge-1", generation: expect.any(Number) as unknown },
+        ])
+          expect(results).toContainEqual(expect.objectContaining(expected));
+      }),
+    timeout,
+  );
+
+const tampers: [string, (rows: Json[]) => void][] = [
+  ["a create digest", (f) => (outcomeOf(f[0]).resultDigest = ZERO)],
+  ["an update digest", (f) => (outcomeOf(f[2]).resultDigest = ZERO)],
+  ["a typed claim digest", (f) => (outcomeOf(f[5]).resultDigest = ZERO)],
+  [
+    "a raw claim expiry",
+    (f) => ((f[1]!.lease as Json).expiresAt = iso(T0 + 2 * HOUR)),
+  ],
+  [
+    "a raw renew expiry",
+    (f) => ((f[3]!.lease as Json).expiresAt = iso(T0 + 2 * HOUR)),
+  ],
+  [
+    "a raw release time",
+    (f) => ((f[4]!.lease as Json).releasedAt = iso(T0 + 1)),
+  ],
+  ["a raw refusal digest", (f) => (outcomeOf(f[8]).resultDigest = ZERO)],
+  ["a raw refusal status", (f) => (outcomeOf(f[8]).status = "INPUT_INVALID")],
+  ["a result beside its digest", (f) => (outcomeOf(f[0]).result = {})],
+  [
+    "a numeric title",
+    (f) => {
+      const [event] = f[0]!.events as Json[];
+      const { id: _id, prefix: _prefix, ...item } = event!.value as Json;
+      (event!.value as Json).title = 7;
+      (((f[0]!.changes as Json[])[0]!.value as Json).value as Json).title = 7;
+      outcomeOf(f[0]).resultDigest = digestValue({
+        ...item,
+        title: 7,
+        id: "forge-1",
+        revision: 1,
+        updatedAt: iso(f[0]!.time as number),
+      });
+    },
+  ],
+];
+
+for (const mode of modes)
+  for (const [name, edit] of tampers)
+    test(
+      `v3 ${mode} fold refuses ${name}`,
+      () =>
+        withHistory((source, rows) => {
+          foldOf(source, mode, rows);
+          const edited = structuredClone(rows);
+          edit(edited);
+          refuses(source, mode, edited);
+        }),
+      timeout,
+    );
+
+test(
+  "v3 portable fold refuses a literal fixture.note frame",
+  () =>
+    withHistory((source, rows) => {
+      foldOf(source, "portable", rows);
+      expect(rows.some((row) => row.operation === "fixture.note")).toBe(true);
+      refuses(source, "portable", rows, false);
+    }),
+  timeout,
+);
+
+test(
+  "v3 archived fold refuses a sequence stub frame",
+  () =>
+    withHistory((source, rows) => {
+      foldOf(source, "archived", rows);
+      const edited = structuredClone(rows);
+      edited[7] = { sequence: rows[7]!.sequence };
+      refuses(source, "archived", edited);
+    }),
+  timeout,
+);
+
+for (const mode of modes)
+  test(
+    `v3 ${mode} fold refuses an update result that is not a tracker item`,
+    async () => {
+      const source = guardFixture(typedEnv);
+      using _source = source.db;
+      expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+      await grantTypedUpdate(source);
+      const rows = transcript(source);
+      foldOf(source, mode, rows);
+      const edited = structuredClone(rows);
+      const extra = (item: unknown) => ((item as Json).extra = 1);
+      extra((edited[0]!.events as Json[])[0]!.value);
+      extra(((edited[0]!.changes as Json[])[0]!.value as Json).value);
+      extra(((edited[2]!.changes as Json[])[0]!.value as Json).value);
+      outcomeOf(edited[2]).resultDigest = digestValue({
+        ...receiptOf(source, 2).result,
+        extra: 1,
+      });
+      refuses(source, mode, edited);
+    },
+    timeout,
+  );
+
+const dependent = (id: string, dependsOn: string[]) => ({
+  id,
+  prefix: "forge",
+  title: "A",
+  status: "open",
+  labels: [],
+  dependsOn,
+  createdAt: iso(T0),
+});
+
+for (const mode of ["archived", "portable", "tail"] as const)
+  test(
+    `v3 ${mode} replay keeps the claim blocker text live publication wrote`,
+    async () => {
+      const source = guardFixture(typedEnv);
+      using _source = source.db;
+      expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+      const puts = putRecords(
+        { key: "r1", revision: 1, value: dependent("work-1", ["work-2"]) },
+        { key: "r2", revision: 1, value: dependent("work-2", []) },
+      );
+      ok(await append(source, puts));
+      const dependency = { subject: "issue:work-2", requestId: "dependency" };
+      ok(
+        await rawLease(source, "claim", "owner-a", {
+          ...dependency,
+          ttlMs: HOUR,
+        }),
+      );
+      const first = await typed(source, issueClaim);
+      expect(first).toMatchObject({
+        status: 409,
+        body: { error: { code: "CLAIM_BLOCKED" } },
+      });
+      expect(exited(first)).toBe(1);
+      const db = writableStore(source.storage);
+      const liveImage = recovered(db, source.seal());
+      const live = readV3Value(db, liveImage, "lease", "issue:work-2");
+      let folded: ReturnType<typeof recoverV3>;
+      if (mode === "tail")
+        folded = recoverV3(db, source.seal(), {
+          admit: Project.admitLeaseRequest,
+          pages: new Map(),
+          sealed: () => undefined,
+        });
+      else {
+        await drain(source, 0, 3);
+        folded = foldOf(source, mode, transcript(source));
+      }
+      expect(
+        JSON.stringify(readV3Value(db, folded, "lease", "issue:work-2")),
+      ).toBe(canonicalJson(live));
+      let thrown: unknown;
+      try {
+        const claim = {
+          subject: "issue:work-1",
+          prefix: "forge",
+          holder,
+          ttlMs: 60_000,
+        } as Parameters<typeof claimEffect>[1];
+        claimEffect(folded, claim, T0, T0 + HOUR);
+      } catch (error) {
+        thrown = error;
+      }
+      const { error } = first.body as { error: ForgeError };
+      expect((thrown as ForgeFailure).error).toMatchObject({
+        code: "CLAIM_BLOCKED",
+        message: error.message,
+        observed: error.observed,
+      });
+    },
+    timeout,
+  );
 
 test(
   "v3 restore activates in one commit and recovers the entire stopped image",
@@ -2177,8 +2708,8 @@ test(
 
       const from = writableStore(source.storage);
       const to = writableStore(target.storage);
-      const origin = recoverV3(from, source.seal());
-      const restored = recoverV3(to, target.seal());
+      const origin = recovered(from, source.seal());
+      const restored = recovered(to, target.seal());
       const { lease: _lease, ...expected } = viewV3(origin).image as Json;
       const { lease: _restoredLease, ...actual } = viewV3(restored)
         .image as Json;
@@ -2368,5 +2899,717 @@ test(
       await unprovisioned(target);
       expect(target.snapshot()).toEqual(before);
     }, 16),
+  timeout,
+);
+
+async function withTyped(
+  run: (target: Fixture, data: Portable) => Promise<void>,
+) {
+  const source = guardFixture(typedEnv);
+  const target = guardFixture(typedEnv);
+  using _source = source.db;
+  using _target = target.db;
+  expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+  expect((await typed(source, missingUpdate)).status).toBe(404);
+  expect((await typed(source, invalidUpdate)).status).toBe(400);
+  await drain(source, 0, 2);
+  await run(target, typedBackup(source));
+}
+
+function refusalEntry(data: Portable) {
+  const entries = JSON.parse(data.pages[0]!.body) as DirectoryItem[];
+  const bytes = Buffer.from(data.pages[1]!.body);
+  const text = ({ offset, length }: DirectoryItem) =>
+    bytes.subarray(offset, offset! + length!).toString();
+  const item = entries.find((e) => text(e).includes('"code":"NOT_FOUND"'))!;
+  return { entries, item, text, size: bytes.length };
+}
+
+function forgeRefusal(data: Portable, edit: (result: Json) => unknown) {
+  const { entries, item, text } = refusalEntry(data);
+  const saved = JSON.parse(text(item)) as { outcome: { result: Json } };
+  edit(saved.outcome.result);
+  const parts = entries.map((e) =>
+    e === item ? canonicalJson(saved) : text(e),
+  );
+  let offset = 0;
+  for (const [i, e] of entries.entries()) {
+    const length = Buffer.byteLength(parts[i]!);
+    Object.assign(e, { offset, length, digest: digestBytes(parts[i]!) });
+    offset += length;
+  }
+  data.pages[1]!.body = parts.join("");
+  data.pages[0]!.body = canonicalJson(entries);
+  editProjection(data, item.collection, item.key, (same) => same);
+  editHistory(data, (frames) => {
+    const { outcome } = frames.find(
+      (f) => (f.outcome as Json).id === item.key,
+    )!;
+    (outcome as Json).resultDigest = digestBytes(
+      canonicalJson(saved.outcome.result),
+    );
+  });
+}
+
+function retarget(
+  data: Portable,
+  edit: (found: ReturnType<typeof refusalEntry>) => unknown,
+) {
+  const found = refusalEntry(data);
+  edit(found);
+  data.pages[0]!.body = canonicalJson(found.entries);
+}
+
+const accent = (result: Json) =>
+  Object.assign(result, { message: "caf\u00e9" });
+const splitAccent = (data: Portable, atEnd: boolean) => {
+  forgeRefusal(data, accent);
+  retarget(data, ({ item, text }) => {
+    const at = Buffer.from(text(item)).indexOf(0xc3) + 1;
+    return atEnd
+      ? Object.assign(item, { length: at })
+      : Object.assign(item, {
+          offset: item.offset! + at,
+          length: item.length! - at,
+        });
+  });
+};
+
+test(
+  "v3 restore restores and replays a refused typed update with a multi-byte message",
+  () =>
+    withTyped(async (target, data) => {
+      forgeRefusal(data, accent);
+      const upload = await stageRestore(target, data);
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+      target.restart();
+      expect(await typed(target, missingUpdate)).toMatchObject({
+        status: 404,
+        body: { error: { code: "NOT_FOUND", message: "caf\u00e9" } },
+      });
+    }),
+  timeout,
+);
+
+for (const [fault, tamper] of [
+  [
+    "a result missing a field",
+    (d: Portable) => forgeRefusal(d, (r) => delete r.message),
+  ],
+  [
+    "a result code that contradicts the status",
+    (d: Portable) =>
+      forgeRefusal(d, (r) => Object.assign(r, { code: "INPUT_INVALID" })),
+  ],
+  [
+    "a result with an extra field",
+    (d: Portable) => forgeRefusal(d, (r) => Object.assign(r, { extra: true })),
+  ],
+  [
+    "a duplicate directory entry",
+    (d: Portable) =>
+      retarget(d, ({ entries, item }) =>
+        entries.splice(entries.indexOf(item), 0, { ...item }),
+      ),
+  ],
+  [
+    "an offset past the snapshot",
+    (d: Portable) =>
+      retarget(d, ({ item, size }) => Object.assign(item, { offset: size })),
+  ],
+  [
+    "a last entry whose length runs past the snapshot end",
+    (d: Portable) =>
+      retarget(d, ({ entries, size }) => {
+        const last = entries.at(-1)!;
+        last.length = size - last.offset! + 1;
+      }),
+  ],
+  [
+    "a saved outcome nested past 64 levels",
+    (d: Portable) =>
+      forgeRefusal(d, (r) =>
+        Object.assign(r, {
+          observed: JSON.parse("[".repeat(70) + "]".repeat(70)) as unknown,
+        }),
+      ),
+  ],
+  [
+    "an entry that overlaps another outcome",
+    (d: Portable) =>
+      retarget(d, ({ entries, item }) => {
+        const { offset, length } = entries.find((e) => e !== item)!;
+        Object.assign(item, { offset, length });
+      }),
+  ],
+  [
+    "a slice that ends inside a multi-byte character",
+    (d: Portable) => splitAccent(d, true),
+  ],
+  [
+    "a slice that starts inside a multi-byte character",
+    (d: Portable) => splitAccent(d, false),
+  ],
+  [
+    "a 100000-level directory page inside the page cap",
+    (d: Portable) => {
+      d.pages[0]!.body = "[".repeat(100_000) + "]".repeat(100_000);
+    },
+  ],
+] as const) {
+  test(
+    `v3 restore guards a saved refusal against ${fault}`,
+    () =>
+      withTyped(async (target, data) => {
+        tamper(data);
+        const upload = await stageRestore(target, data);
+        const staged = target.snapshot();
+        expect(await upload(2)).toMatchObject(restoreRefusal);
+        await unprovisioned(target);
+        expect(target.snapshot()).toEqual(staged);
+      }),
+    timeout,
+  );
+}
+
+type Edit = (data: Portable, r: Json) => void;
+const kRequests = {
+  create: createBody,
+  invalid: invalidCreate,
+  denied: { ...grantedUpdate, requestId: "k-denied" },
+  update: { ...grantedUpdate, requestId: "k-update" },
+  missing: { ...missingUpdate, requestId: "k-missing" },
+  claim: { ...issueClaim, requestId: "k-claim" },
+};
+const kOrder = Object.values(kRequests);
+
+async function typedFixture(run: (f: Fixture) => Promise<void>) {
+  const f = guardFixture(typedEnv);
+  using _db = f.db;
+  expect(await f.send(probe, {})).toMatchObject({ status: 200 });
+  await run(f);
+}
+
+async function kBuild(f: Fixture, withTail = false) {
+  const replies = [
+    await typed(f, kRequests.create),
+    await typed(f, kRequests.invalid),
+    await typed(f, kRequests.denied),
+  ];
+  const raw = (route: string, owner: string, input: Json) =>
+    rawLease(f, route, owner, { ttlMs: HOUR, ...input });
+  ok(await raw("claim", "owner-a", { requestId: "k-raw" }));
+  replies.push(
+    await typed(f, kRequests.update),
+    await typed(f, kRequests.missing),
+  );
+  expect(await raw("claim", "owner-b", { requestId: "k-held" })).toMatchObject({
+    status: 409,
+  });
+  ok(await raw("renew", "owner-a", { requestId: "k-renew", generation: 1 }));
+  ok(
+    await raw("release", "owner-a", { requestId: "k-release", generation: 1 }),
+  );
+  await drain(f, 0, 9);
+  ok(await append(f, putRecord("r2", 1, "later")));
+  ok(await append(f, frame()));
+  f.restart();
+  await drain(f, 9, 11);
+  if (!withTail) return replies;
+  replies.push(await typed(f, kRequests.claim));
+  ok(await append(f, frame()));
+  return replies;
+}
+
+function tamperRoot(
+  f: Fixture,
+  edit: Edit,
+  late: (r: Json) => void = () => undefined,
+) {
+  const data = { pages: pages(f) } as Portable;
+  const r = JSON.parse(root(f).body) as Json;
+  edit(data, r);
+  const listed = r.pages as Json[];
+  for (const entry of listed) {
+    const body = data.pages.find(({ id }) => id === entry.id)!.body;
+    Object.assign(entry, {
+      bytes: Buffer.byteLength(body),
+      hash: digestBytes(body),
+    });
+  }
+  r.bytes = Object.fromEntries(
+    listed.map(({ kind, bytes }) => [String(kind), bytes]),
+  );
+  late(r);
+  for (const { id, body } of data.pages)
+    f.db.run("UPDATE cloud_v3_pages SET body=? WHERE id=?", [body, id]);
+  const body = canonicalJson(r);
+  f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
+    body,
+    trustedSeal(f.db, body),
+  ]);
+  f.restart();
+}
+
+async function coldRefused(f: Fixture) {
+  const before = f.snapshot();
+  const effects = f.observeEffects();
+  const reply = await f.send(probe);
+  expect(reply).toMatchObject(refused);
+  expect(reply.body).not.toHaveProperty("value");
+  expect(exited(reply)).toBe(1);
+  expect(effects()).toEqual(noWrites);
+  expect(f.snapshot()).toEqual(before);
+  return before;
+}
+
+async function refusesCold(f: Fixture, edit: Edit, late?: (r: Json) => void) {
+  f.restart();
+  expect((await f.send(probe)).status).toBe(200);
+  tamperRoot(f, edit, late);
+  return coldRefused(f);
+}
+
+const smallHistory = async (f: Fixture) => {
+  ok(await append(f, putRecord("r1", 1, "x")));
+  await drain(f, 0, 1);
+};
+const editedTitle = (data: Portable) =>
+  editProjection(data, "record", "r1", (body) =>
+    body.replace("After", "Bfter"),
+  );
+const brokenJson = (body: string) => `[${body.slice(1)}`;
+const reTranscript = (
+  data: Portable,
+  r: Json,
+  edit: (frames: Json[]) => void,
+) => {
+  editHistory(data, edit);
+  r.transcriptDigest = digestBytes(data.pages[2]!.body);
+};
+const differentRefusal = (frames: Json[]) => {
+  (frames[1]!.outcome as Json).resultDigest = digestBytes("different refusal");
+};
+const refusalSource = async (f: Fixture) => {
+  expect(await leaseClaim(f, "owner-a")).toMatchObject({ status: 200 });
+  expect(await leaseClaim(f, "owner-b")).toMatchObject({
+    status: 409,
+    body: { error: { code: "LEASE_HELD" } },
+  });
+};
+const refusedCheckpoint = async (f: Fixture) => {
+  const before = f.snapshot();
+  const effects = f.observeEffects();
+  const reply = await checkpoint(f);
+  expect(reply).toMatchObject(refused);
+  expect(exited(reply)).toBe(1);
+  expect(effects()).toEqual(noWrites);
+  expect(f.snapshot()).toEqual(before);
+  expect(stagingTables(f)).toEqual([]);
+};
+
+test(
+  "v3 cold recovery after two checkpoints serves the honest history and replays every typed request",
+  () =>
+    typedFixture(async (f) => {
+      const originals = await kBuild(f, true);
+      const warm = await view(f);
+      expect(warm).toMatchObject({ coveredHead: 11, image: { head: 13 } });
+      const replayAll = async () => {
+        const out = [];
+        for (const body of kOrder) out.push(await typed(f, body));
+        return out;
+      };
+      let effects = f.observeEffects();
+      const replays = await replayAll();
+      expect(effects()).toEqual(noWrites);
+      expect(replays.map(({ status }) => status)).toEqual([
+        200, 400, 409, 409, 404, 200,
+      ]);
+      expect(replays.map(exited)).toEqual([0, 6, 4, 4, 3, 0]);
+      expect(replays[2]).toMatchObject({
+        body: { error: { code: "LEASE_NOT_HELD" } },
+      });
+      expect(replays[3]).toMatchObject({
+        body: { error: { code: "LEASE_STALE" } },
+      });
+      for (const i of [0, 1, 2, 4, 5]) expect(replays[i]).toEqual(originals[i]);
+      expect(originals[3]!.status).toBe(200);
+      expect(receiptOf(f, 2).result).toMatchObject({
+        title: "After",
+        revision: 2,
+      });
+      f.restart();
+      effects = f.observeEffects();
+      expect(await view(f)).toEqual(warm);
+      expect(await replayAll()).toEqual(replays);
+      expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test(
+  "v3 cold recovery refuses an edited record value that was re-signed with its directory entry",
+  () =>
+    typedFixture(async (f) => {
+      await kBuild(f);
+      const before = await refusesCold(f, editedTitle);
+      const effects = f.observeEffects();
+      const reply = await typed(f, kRequests.create);
+      expect(reply).toMatchObject(refused);
+      expect(exited(reply)).toBe(1);
+      expect(effects()).toEqual(noWrites);
+      expect(f.snapshot()).toEqual(before);
+    }),
+  timeout,
+);
+
+for (const slot of ["record", "outcome"] as const)
+  test(
+    `v3 checkpoint refuses an edited ${slot} value before staging anything`,
+    () =>
+      typedFixture(async (sibling) => {
+        await kBuild(sibling, true);
+        expect(await checkpoint(sibling)).toMatchObject({ status: 200 });
+        await typedFixture(async (f) => {
+          await kBuild(f, true);
+          const { key } = receiptOf(f, 1);
+          tamperRoot(f, (data) =>
+            slot === "record"
+              ? editedTitle(data)
+              : editProjection(data, "outcome", key, (body) =>
+                  body.replace('"title":"A"', '"title":"B"'),
+                ),
+          );
+          await refusedCheckpoint(f);
+        });
+      }),
+    timeout,
+  );
+
+test(
+  "v3 archived check accepts the honest image and refuses an edited one through the pass 2 call shape",
+  () =>
+    typedFixture(async (f) => {
+      await kBuild(f);
+      const db = writableStore(f.storage);
+      const failure = () =>
+        new ForgeFailure({
+          code: "UNAVAILABLE",
+          message: "direct check refusal",
+          retry: "never",
+        });
+      const run = () => {
+        const check = archivedCheck(db, {
+          admit: Project.admitLeaseRequest,
+          failure,
+          complete: completeRefusals,
+          pages: new Map(pages(f).map(({ id, body }) => [id, body])),
+        });
+        const { coveredHead } = readV3Root(db, f.seal());
+        return recoverV3(db, f.seal(), check, {
+          through: coveredHead,
+        });
+      };
+      expect(run().head).toBe(11);
+      tamperRoot(f, editedTitle);
+      const effects = f.observeEffects();
+      let thrown: unknown;
+      try {
+        run();
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(ForgeFailure);
+      expect((thrown as ForgeFailure).error).toMatchObject({
+        code: "UNAVAILABLE",
+        message: "direct check refusal",
+      });
+      expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+const coldCases: [string, Edit, ((r: Json) => void)?][] = [
+  [
+    "a snapshot roster hash that differs from its bytes",
+    () => undefined,
+    (r) => {
+      (r.pages as Json[])[1]!.hash = digestBytes("another snapshot");
+    },
+  ],
+  [
+    "a public digest that differs from the projection of the history",
+    (_, r) => {
+      r.publicDigest = digestBytes("another projection");
+    },
+  ],
+  [
+    "an event watermark one above the history",
+    (_, r) => {
+      r.eventWatermark = Number(r.eventWatermark) + 1;
+    },
+  ],
+  [
+    "a transcript digest that differs from the transcript bytes",
+    (_, r) => {
+      r.transcriptDigest = digestBytes("another transcript");
+    },
+  ],
+  [
+    "a directory revision that differs from the history",
+    (data) => {
+      const entries = JSON.parse(data.pages[0]!.body) as DirectoryItem[];
+      entries.find(({ key }) => key === "r1")!.revision = 2;
+      data.pages[0]!.body = canonicalJson(entries);
+    },
+  ],
+  [
+    "a transcript with a leading space",
+    (data, r) => {
+      data.pages[2]!.body = ` ${data.pages[2]!.body}`;
+      r.transcriptDigest = digestBytes(data.pages[2]!.body);
+    },
+  ],
+];
+
+for (const [name, edit, late] of coldCases)
+  test(
+    `v3 cold recovery refuses ${name}`,
+    () =>
+      typedFixture(async (f) => {
+        await smallHistory(f);
+        await refusesCold(f, edit, late);
+      }),
+    timeout,
+  );
+
+test(
+  "v3 cold recovery refuses an overwritten receipt whose archived digest was edited",
+  () =>
+    typedFixture(async (f) => {
+      await grantTypedUpdate(f);
+      setSystemTime(E1 + 1);
+      expect((await typed(f, missingUpdate, E1 + HOUR)).status).toBe(404);
+      await drain(f, 4, 5);
+      await refusesCold(f, (data, r) =>
+        reTranscript(data, r, (frames) => {
+          (frames[2]!.outcome as Json).resultDigest =
+            digestBytes("different update");
+        }),
+      );
+    }),
+  timeout,
+);
+
+test(
+  "v3 cold recovery maps a broken saved command refusal to the cold refusal",
+  () =>
+    typedFixture(async (f) => {
+      expect((await typed(f, missingUpdate)).status).toBe(404);
+      await drain(f, 0, 1);
+      const before = await refusesCold(f, (d) =>
+        editProjection(d, "outcome", refusalEntry(d).item.key, brokenJson),
+      );
+      const effects = f.observeEffects();
+      const reply = await typed(f, missingUpdate);
+      expect(reply).toMatchObject(refused);
+      expect(exited(reply)).toBe(1);
+      expect(effects()).toEqual(noWrites);
+      expect(f.snapshot()).toEqual(before);
+    }),
+  timeout,
+);
+
+test(
+  "v3 cold recovery refuses an edited lease refusal message in the uncheckpointed tail",
+  () =>
+    withFixture(async (f) => {
+      await refusalSource(f);
+      f.restart();
+      expect((await f.send(probe)).status).toBe(200);
+      const parsed = JSON.parse(commits(f)[1]!.body) as Json;
+      const result = (parsed.outcome as Json).result as Json;
+      result.message = `${String(result.message)}!`;
+      const body = canonicalJson(parsed);
+      f.db.run("UPDATE cloud_v3_commits SET body=?, mac=? WHERE sequence=2", [
+        body,
+        f.sign(2, body),
+      ]);
+      f.restart();
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+test(
+  "v3 cold recovery refuses an edited lease refusal digest in the archived transcript",
+  () =>
+    withFixture(async (f) => {
+      await refusalSource(f);
+      await drain(f, 0, 2);
+      await refusesCold(f, (data, r) =>
+        reTranscript(data, r, differentRefusal),
+      );
+    }),
+  timeout,
+);
+
+test(
+  "v3 checkpoint refuses an edited lease refusal digest in the archived transcript",
+  () =>
+    withFixture(async (sibling) => {
+      const build = async (f: Fixture) => {
+        await refusalSource(f);
+        await drain(f, 0, 2);
+        ok(await append(f, frame()));
+      };
+      await build(sibling);
+      expect(await checkpoint(sibling)).toMatchObject({ status: 200 });
+      await withFixture(async (f) => {
+        await build(f);
+        tamperRoot(f, (data, r) => reTranscript(data, r, differentRefusal));
+        await refusedCheckpoint(f);
+      });
+    }),
+  timeout,
+);
+
+test(
+  "v3 cold recovery serves a fresh genesis root and its first checkpoint succeeds",
+  () =>
+    withFixture(async (f) => {
+      f.restart();
+      const effects = f.observeEffects();
+      expect(await view(f)).toMatchObject({
+        coveredHead: 0,
+        image: { head: 0 },
+      });
+      expect(effects()).toEqual(noWrites);
+      ok(await append(f, frame()));
+      expect(await checkpoint(f)).toMatchObject({ status: 200 });
+    }),
+  timeout,
+);
+
+test(
+  "v3 cold recovery refuses a genesis transcript replaced by a same-length body",
+  () =>
+    withFixture(async (f) => {
+      f.restart();
+      expect((await f.send(probe)).status).toBe(200);
+      f.db.run("UPDATE cloud_v3_pages SET body='{}' WHERE id='transcript:0'");
+      f.restart();
+      await coldRefused(f);
+    }),
+  timeout,
+);
+
+async function activatedScene(
+  run: (
+    copy: () => Promise<Fixture>,
+    scene: { data: Portable; replies: { status: number; body: unknown }[] },
+  ) => Promise<void>,
+) {
+  const source = guardFixture(typedEnv);
+  using _source = source.db;
+  expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+  const raw = (route: string, input: Json) =>
+    rawLease(source, route, "owner-a", { ttlMs: HOUR, ...input });
+  const replies = [
+    await typed(source, createBody),
+    await typed(source, missingUpdate),
+  ];
+  ok(await raw("claim", { requestId: "m-raw" }));
+  replies.push(
+    await typed(source, { ...grantedUpdate, requestId: "m-update" }),
+  );
+  ok(await raw("renew", { requestId: "m-renew", generation: 1 }));
+  ok(await raw("release", { requestId: "m-release", generation: 1 }));
+  replies.push(await typed(source, issueClaim));
+  ok(await append(source, frame()));
+  await drain(source, 0, 8);
+  const data = typedBackup(source);
+  editHistory(data, (frames) => {
+    for (const [i, row] of frames.entries())
+      if (row.operation === "fixture.note")
+        frames[i] = { sequence: row.sequence };
+  });
+  const copy = async () => {
+    const target = guardFixture(typedEnv);
+    const upload = await stageRestore(target, data);
+    setSystemTime(T0 + 1);
+    expect(await upload(2)).toMatchObject(restoreResult(2, true));
+    return target;
+  };
+  await run(copy, { data, replies });
+}
+
+test(
+  "v3 activated recovery folds in portable mode and replays the imported receipts",
+  () =>
+    activatedScene(async (copy, { data, replies }) => {
+      const target = await copy();
+      using _target = target.db;
+      target.restart();
+      const effects = target.observeEffects();
+      expect(await view(target)).toMatchObject({
+        image: {
+          head: data.head + 1,
+          eventWatermark: data.eventWatermark + 1,
+        },
+      });
+      const replay = [
+        await typed(target, createBody),
+        await typed(target, missingUpdate),
+        await typed(target, { ...grantedUpdate, requestId: "m-update" }),
+        await typed(target, issueClaim),
+      ];
+      expect(effects()).toEqual(noWrites);
+      expect(replay.slice(0, 2)).toEqual([replies[0]!, replies[1]!]);
+      for (const stale of replay.slice(2)) {
+        expect(stale).toMatchObject({
+          status: 409,
+          body: { error: { code: "LEASE_STALE" } },
+        });
+        expect(exited(stale)).toBe(4);
+      }
+      expect(receiptOf(target, 1).result).toMatchObject({
+        id: "forge-1",
+        title: "A",
+      });
+      expect(receiptOf(target, 2).result).toMatchObject({
+        title: "After",
+        revision: 2,
+      });
+      const db = writableStore(target.storage);
+      expect(
+        readV3Value(db, recovered(db, target.seal()), "lease", "issue:work-1"),
+      ).toHaveProperty("releasedAt", iso(T0 + 1));
+    }),
+  timeout,
+);
+
+test(
+  "v3 activated recovery refuses an edited record value",
+  () =>
+    activatedScene(async (copy) => {
+      const target = await copy();
+      using _target = target.db;
+      await refusesCold(target, editedTitle);
+    }),
+  timeout,
+);
+
+test(
+  "v3 activated recovery maps a broken saved command refusal to the cold refusal",
+  () =>
+    activatedScene(async (copy) => {
+      const target = await copy();
+      using _target = target.db;
+      await refusesCold(target, (d) =>
+        editProjection(d, "outcome", refusalEntry(d).item.key, brokenJson),
+      );
+    }),
   timeout,
 );

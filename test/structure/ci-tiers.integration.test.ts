@@ -137,6 +137,22 @@ test("CI_HEAD uses the queued commit and Speed compares its base", () => {
   );
 }, 1_000);
 
+test("packed CI builds and tests share the event commit", () => {
+  assert.equal(workflow.env.CI_BUILD_SHA, "${{ github.sha }}");
+  assert.equal(
+    workflow.env.CI_HEAD,
+    "${{ github.event.pull_request.head.sha || github.sha }}",
+  );
+  const checkout = (id: string) =>
+    jobs[id]!.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+  assert.equal(checkout("pack")?.with?.ref, "${{ env.CI_BUILD_SHA }}");
+  for (const id of ["verify", "verify-main", "verify-node26"]) {
+    const step = checkout(id);
+    assert.ok(step, `${id} checkout must exist`);
+    assert.equal(step.with?.ref ?? "${{ github.sha }}", "${{ github.sha }}");
+  }
+}, 1_000);
+
 test("Quick runs structure, lint, format and typecheck", () => {
   const structure = jobs.structure!;
   assert.equal(structure.needs, "changes");

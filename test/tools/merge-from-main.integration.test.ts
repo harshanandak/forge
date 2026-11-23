@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { afterAll, beforeAll, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -80,11 +86,23 @@ function createHistory(cwd: string) {
     [followUp(`${conflict} ${base}`), merge],
   ];
 
-  const run = (base: string, head: string, ref = "unfetched", dir = cwd) => {
+  const run = (
+    base: string,
+    head: string,
+    ref = "unfetched",
+    dir = cwd,
+    trace?: string,
+  ) => {
     const result = spawnSync(process.execPath, [tool], {
       ...options,
       cwd: dir,
-      env: { ...process.env, BASE_SHA: base, HEAD_SHA: head, BASE_REF: ref },
+      env: {
+        ...process.env,
+        BASE_SHA: base,
+        HEAD_SHA: head,
+        BASE_REF: ref,
+        ...(trace && { GIT_TRACE2_EVENT: trace }),
+      },
     });
     if (result.error) throw result.error;
     return [result.status, (result.stdout + result.stderr).trim()] as const;
@@ -113,6 +131,7 @@ beforeAll(() => {
 
 afterAll(() => {
   if (cwd) rmSync(cwd, { recursive: true, force: true });
+  for (const dir of metadataDirs) rmSync(dir, { recursive: true, force: true });
 }, timeout);
 
 function assertAllowed(heads: readonly string[], baseRef?: string) {
@@ -202,6 +221,137 @@ test(
     const [exit, log] = history.runShallow();
     assert.equal(exit, 1, log);
     assert.match(log, /^::error::Cannot inspect PR merge commits\./);
+  },
+  timeout,
+);
+
+const metadataDirs: string[] = [];
+
+function metadataCheckout(scenario: string) {
+  const dir = mkdtempSync(join(tmpdir(), "forge merge metadata "));
+  metadataDirs.push(dir);
+  const executable = gitExecutable();
+  const options = { cwd: dir, encoding: "utf8", timeout } as const;
+  const git = (...args: string[]) =>
+    execFileSync(executable, args, options).trim();
+  if (scenario !== "outside a Git repository")
+    git("clone", "-q", "--local", "--no-hardlinks", cwd!, ".");
+  const merge = history.unexcused[0]!;
+  const grafts = join(dir, ".git", "info", "grafts");
+  const checkout =
+    scenario === "linked worktree" ? join(dir, "linked checkout") : dir;
+  if (checkout !== dir)
+    git("worktree", "add", "-q", "--detach", checkout, merge);
+  return { dir, git, merge, grafts, checkout };
+}
+
+function inspectMetadata(dir: string) {
+  return history.run(history.base, history.topic, "unfetched", dir);
+}
+
+const replacementError =
+  /^::error::.*refs\/replace\/.*(?:git replace -d|fresh checkout)/;
+const graftError =
+  /^::error::.*info\/grafts.*(?:Delete|Remove|fresh checkout)/i;
+const dirtyCases = [
+  ["replacement", "merge"],
+  ["replacement", "unrelated target"],
+  ["replacement", "packed ref"],
+  ["replacement", "unknown objects"],
+  ["replacement", "cross-worktree no-echo"],
+  ["graft", "merge"],
+  ["graft", "linked worktree"],
+  ["graft", "empty graft file"],
+  ["both", "merge"],
+] as const;
+
+test.each(dirtyCases)(
+  "refuses %s metadata with %s before reading history",
+  (kind, scenario) => {
+    const { dir, git, merge, grafts, checkout } = metadataCheckout(scenario);
+    const { topic, newerMerge, unrelated, excused } = history;
+    const annotation = scenario === "cross-worktree no-echo";
+    const alternate = scenario === "unrelated target" || annotation;
+    const ref = `refs/replace/${alternate ? newerMerge : merge}`;
+    if (alternate) git("update-ref", ref, unrelated[0]!);
+    else if (kind !== "graft") git("replace", merge, topic);
+    if (kind !== "replacement")
+      writeFileSync(
+        grafts,
+        scenario === "empty graft file" ? "" : `${merge}\n`,
+      );
+    if (scenario === "packed ref") {
+      git("pack-refs", "--all");
+      const packed = readFileSync(join(dir, ".git", "packed-refs"), "utf8");
+      assert.ok(packed.split(/\r?\n/).includes(`${topic} ${ref}`));
+      assert.equal(existsSync(join(dir, ".git", ref)), false);
+    }
+    let head = topic;
+    if (scenario === "merge" || scenario === "linked worktree") head = merge;
+    if (scenario === "unknown objects") head = "0".repeat(40);
+    if (annotation) head = excused[3]!;
+
+    const trace = join(dir, "git-trace.jsonl");
+    const base = scenario === "unknown objects" ? "f".repeat(40) : history.base;
+    const [exit, log] = history.run(base, head, "unfetched", checkout, trace);
+    const diagnostics = log.split(/\r?\n/);
+    if (kind !== "graft") assert.match(diagnostics[0]!, replacementError);
+    if (kind !== "replacement") assert.match(diagnostics.at(-1)!, graftError);
+    assert.equal(diagnostics.length, kind === "both" ? 2 : 1, log);
+    assert.equal(exit, 1, log);
+    assert.doesNotMatch(log, /::error::x|without a recorded reason/);
+    assert.ok(!log.includes(ref));
+    const events = readFileSync(trace, "utf8").trim().split("\n");
+    const commands = events
+      .map((line) => JSON.parse(line) as { event: string; argv: string[] })
+      .filter(({ event }) => event === "start")
+      .map(({ argv }) => argv.slice(1));
+    assert.deepEqual(commands, [
+      ["for-each-ref", "--count=1", "--format=%(refname)", "refs/replace/"],
+      ["rev-parse", "--git-path", "info/grafts"],
+    ]);
+  },
+  timeout,
+);
+
+const cleanCases = [
+  "clone",
+  "linked worktree",
+  "refs/heads/replace",
+  "refs/heads/replace/x",
+  "refs/tags/replace/x",
+  "refs/replaces/x",
+];
+test.each(cleanCases)(
+  "allows clean %s",
+  (scenario) => {
+    const { git, checkout } = metadataCheckout(scenario);
+    if (scenario.startsWith("refs/"))
+      git("update-ref", scenario, history.topic);
+    assert.deepEqual(inspectMetadata(checkout), [0, ""]);
+  },
+  timeout,
+);
+
+test.each([
+  "outside a Git repository",
+  "when the graft path cannot be inspected",
+])(
+  "fails closed %s",
+  (scenario) => {
+    const { dir } = metadataCheckout(scenario);
+    if (scenario !== "outside a Git repository") {
+      const info = join(dir, ".git", "info");
+      rmSync(info, { recursive: true });
+      writeFileSync(info, "");
+      if (process.platform === "win32") {
+        assert.deepEqual(inspectMetadata(dir), [0, ""]);
+        return;
+      }
+    }
+    const [exit, log] = inspectMetadata(dir);
+    assert.match(log, /^::error::Cannot inspect PR merge commits\./);
+    assert.equal(exit, 1, log);
   },
   timeout,
 );

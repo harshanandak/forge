@@ -136,6 +136,7 @@ describe("Accidental packed journey environment drift between CI and Release. Co
     ]);
     assert.deepEqual(Object.keys(ci.env ?? {}).sort(), [
       "BUN_VERSION",
+      "CI_BUILD_SHA",
       "CI_HEAD",
       "COMMENT_GUARD_PATHS",
     ]);

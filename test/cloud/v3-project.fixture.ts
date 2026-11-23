@@ -1,8 +1,24 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
+import type { SqlDatabase } from "../../src/ports/store.ts";
+import { archivedCheck } from "../../cloud/src/v3-checkpoint.ts";
+import { completeRefusals } from "../../cloud/src/v3-restore.ts";
+import { recoverV3, unavailable } from "../../cloud/src/v3-store.ts";
+import {
+  canonicalJson,
+  digestBytes,
+  digestValue,
+} from "../../src/core/config/pointer.ts";
 import type { DurableState } from "../../cloud/src/store.ts";
-import { sealOf, signRow } from "../../cloud/src/v3-seal.ts";
+import {
+  authenticateManifest,
+  type Manifest,
+  type Seal,
+  sealOf,
+  signRoot,
+  signRow,
+} from "../../cloud/src/v3-seal.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 
 export const probe = "test-v3";
@@ -13,6 +29,53 @@ export const noWrites = {
   alarmWrites: 0,
   sqlAndKvIntact: true,
 };
+
+const sealers = new WeakMap<Database, () => Seal>();
+export const trustedSeal = (db: Database, body: string) =>
+  signRoot(sealers.get(db)!(), body);
+
+export const trustedManifest = (
+  { keys: [key] }: Seal,
+  manifest: Omit<Manifest, "mac">,
+): Manifest => ({
+  ...manifest,
+  mac: `${key.id}.${createHmac("sha256", key.bytes)
+    .update(canonicalJson(["forge/v3/manifest/1", manifest]))
+    .digest("hex")}`,
+});
+
+export function verifiedPortable(seal: Seal, transcript: string) {
+  const member = (id: string, body: string) => ({
+    id,
+    bytes: Buffer.byteLength(body),
+    hash: digestBytes(body),
+  });
+  const manifest = trustedManifest(seal, {
+    format: "forge-cloud-portable/4",
+    head: 0,
+    eventWatermark: 0,
+    recordFloor: 0,
+    publicDigest: digestBytes("[]"),
+    pages: [
+      member("directory:0", "[]"),
+      member("snapshot:0", ""),
+      member("transcript:0", transcript),
+    ],
+    source: "direct-fold-source",
+  });
+  return authenticateManifest(seal, manifest, digestValue(manifest))!;
+}
+
+export const recovered = (db: SqlDatabase, seal: Seal) =>
+  recoverV3(
+    db,
+    seal,
+    archivedCheck(db, {
+      admit: Project.admitLeaseRequest,
+      failure: unavailable,
+      complete: completeRefusals,
+    }),
+  );
 
 export interface SealSetup {
   key?: string | null;
@@ -67,6 +130,7 @@ export function fixture(
   };
   let project = new Project(context, sealed);
   const seal = () => sealOf(sealed, context.id);
+  sealers.set(db, seal);
   const sign = (sequence: number, body: string) =>
     signRow(
       seal(),
@@ -98,6 +162,7 @@ export function fixture(
     alarms,
     alarm: () => project.alarm(),
     request,
+    fetch: (incoming: Request) => project.fetch(incoming),
     env: sealed,
     context,
     seal,
@@ -147,4 +212,19 @@ export function guardFixture(env?: unknown, setup?: SealSetup) {
       };
     },
   };
+}
+
+export function copyTables(from: { db: Database }, to: { db: Database }) {
+  for (const table of ["cloud_v3_commits", "cloud_v3_pages", "cloud_v3_root"]) {
+    to.db.run(`DELETE FROM ${table}`);
+    for (const row of from.db
+      .query<Record<string, string | number>, []>(`SELECT * FROM ${table}`)
+      .all()) {
+      const names = Object.keys(row);
+      to.db.run(
+        `INSERT INTO ${table} (${names.join()}) VALUES (${names.map(() => "?").join()})`,
+        Object.values(row),
+      );
+    }
+  }
 }

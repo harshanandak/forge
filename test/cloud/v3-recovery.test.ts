@@ -7,11 +7,22 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { failed } from "../../cloud/src/issue-commands.ts";
 import { scopeRequestId } from "../../cloud/src/issue-request-id.ts";
 import { writableStore } from "../../cloud/src/store.ts";
-import { readV3Value, recoverV3 } from "../../cloud/src/v3-store.ts";
+import { digestProjection } from "../../cloud/src/v3-checkpoint.ts";
+import { PAGE_BYTES, readV3Value } from "../../cloud/src/v3-store.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
-import { fixture, probe } from "./v3-project.fixture.ts";
+import type { ForgeError } from "../../src/generated/types.ts";
+import { exitCode } from "../../src/surface/result.ts";
+import {
+  fixture,
+  guardFixture,
+  noWrites,
+  probe,
+  recovered as recover,
+  trustedSeal,
+} from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
 const MiB = 1024 * 1024;
@@ -23,6 +34,8 @@ const TAIL_BYTES = 16 * MiB;
 const COLD_ROWS = 1750;
 const COLD_BYTES = 22 * MiB;
 const COLD_QUERY_ROWS = 4;
+const STANDARD_PAGES = 3;
+const CHECK_PAGE_READS = 3;
 const T0 = Date.parse("2026-11-20T12:00:00.000Z");
 const HOUR = 3_600_000;
 const E1 = T0 + 2 * HOUR;
@@ -100,6 +113,8 @@ const putRecords = (
 });
 const image = (response: { body: unknown }) =>
   (response.body as { value?: { image?: Json } }).value?.image;
+const exited = ({ body }: { body: unknown }) =>
+  exitCode(failed((body as { error: ForgeError }).error));
 const unavailable = {
   status: 503,
   body: {
@@ -172,7 +187,20 @@ function writeRoot(db: Database, pages: readonly Page[], fields: Json) {
     bytes: total("bytes"),
     pages: roster,
   });
-  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [body, digestBytes(body)]);
+  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [
+    body,
+    trustedSeal(db, body),
+  ]);
+}
+
+function archive(frame: Json): Json {
+  const outcome = frame.outcome as Json | undefined;
+  if (!outcome || !("result" in outcome)) return frame;
+  const { result, ...receipt } = outcome;
+  return {
+    ...frame,
+    outcome: { ...receipt, resultDigest: digestOf(result) },
+  };
 }
 
 function seal(
@@ -182,6 +210,7 @@ function seal(
   eventWatermark: number,
   directoryPages = 1,
   snapshotPages = 1,
+  frames: readonly Json[] = [],
 ) {
   const sorted = [...items].sort(([a, k], [b, l]) =>
     a === b ? (k < l ? -1 : 1) : a < b ? -1 : 1,
@@ -207,6 +236,7 @@ function seal(
     }
     return page("snapshot", ordinal, body, chunk.length);
   });
+  const transcript = canonicalJson(frames.map(archive));
   const entries = sorted.map((item) => ({
     collection: item[0],
     key: item[1],
@@ -225,7 +255,7 @@ function seal(
     page(
       "transcript",
       0,
-      "[]",
+      transcript,
       coveredHead,
       coveredHead ? 1 : null,
       coveredHead || null,
@@ -236,9 +266,25 @@ function seal(
   for (const { id, body } of pages) insert.run(id, body);
   writeRoot(db, pages, {
     generation: 1,
-    parentDigest: rootOf(db).seal,
+    parentDigest: digestBytes(rootOf(db).body),
     coveredHead,
     eventWatermark,
+    transcriptDigest: digestBytes(transcript),
+    publicDigest: digestProjection(
+      sorted.map(
+        ([collection, key, slot]): [
+          string,
+          string,
+          string | null,
+          number | undefined,
+        ] => [
+          collection,
+          key,
+          "value" in slot ? canonicalJson(slot.value) : null,
+          slot.revision,
+        ],
+      ),
+    ),
   });
   db.run("DELETE FROM cloud_v3_commits WHERE sequence<=?", [coveredHead]);
   return pages;
@@ -250,7 +296,7 @@ function checkpoint(f: Fixture) {
       "SELECT body FROM cloud_v3_commits ORDER BY sequence",
     )
     .all()
-    .map(({ body }) => JSON.parse(body) as Frame);
+    .map(({ body }) => JSON.parse(body) as Frame & Json);
   const items = new Map<string, Item>();
   const put = (collection: string, key: string, slot: Slot) =>
     items.set(`${collection}/${key}`, [collection, key, slot]);
@@ -273,7 +319,15 @@ function checkpoint(f: Fixture) {
       put("record", change.key, change.value);
     events += frame.events.length;
   }
-  const pages = seal(f.db, [...items.values()], frames.length, events);
+  const pages = seal(
+    f.db,
+    [...items.values()],
+    frames.length,
+    events,
+    1,
+    1,
+    frames,
+  );
   f.restart();
   return pages;
 }
@@ -324,6 +378,7 @@ interface Capacity {
   readonly directoryBytes?: number;
   readonly tailRows?: number;
   readonly rowBytes?: (i: number) => number;
+  readonly honest?: boolean;
 }
 
 async function capacity(f: Fixture, shape: Capacity = {}) {
@@ -369,35 +424,116 @@ async function capacity(f: Fixture, shape: Capacity = {}) {
   };
 }
 
+const grown = (i: number) => ({
+  ...putRecords({
+    key: `r${100_000 + i}`,
+    revision: 1,
+    value: { x: "x".repeat(150) },
+  }),
+  format: "forge-cloud-commit/3",
+  sequence: i,
+});
+
+async function honest(f: Fixture, shape: Capacity = {}) {
+  const { tailRows = TAIL_ROWS, rowBytes = () => TAIL_BYTES / TAIL_ROWS } =
+    shape;
+  expect((await f.send(probe, {})).status).toBe(200);
+  const puts: Json[] = [];
+  let size = 2;
+  while (
+    size + bytesOf(canonicalJson(grown(puts.length + 1))) <
+    PAGE_BYTES - 1000
+  ) {
+    puts.push(grown(puts.length + 1));
+    size += bytesOf(canonicalJson(puts.at(-1))) + 1;
+  }
+  const last = `r${100_000 + puts.length}`;
+  const frames = [
+    ...puts,
+    {
+      ...note,
+      operation: "fixture.delete",
+      events: [{ key: last, revision: 2 }],
+      changes: [{ key: last, value: { revision: 2, deleted: true } }],
+      format: "forge-cloud-commit/3",
+      sequence: puts.length + 1,
+    },
+  ];
+  const items: Item[] = [
+    ...puts
+      .slice(0, -1)
+      .map((_, i): Item => [
+        "record",
+        `r${100_001 + i}`,
+        { value: { x: "x".repeat(150) }, revision: 1 },
+      ]),
+    ["record", last, { deleted: true, revision: 2 }],
+  ];
+  const pages = seal(f.db, items, frames.length, frames.length, 1, 1, frames);
+  tail(
+    f,
+    frames.length,
+    tailRows,
+    rowBytes,
+    items.slice(0, -1).map(([, key]) => key),
+  );
+  f.restart();
+  f.reads.rows = 0;
+  f.reads.bytes = 0;
+  return { items, pages, frames, last };
+}
+
 test(
-  "a cold routed read rebuilds a snapshot plus tail at the design limits within 1,750 rows and 22 MiB",
+  "a cold routed read of an honest history at the transcript page limit and a full tail rebuilds the exact state within 1,750 rows and 22 MiB",
   async () => {
-    const f = fixture();
+    const f = guardFixture();
     try {
-      const { items, pages, directoryBytes } = await capacity(f);
-      expect(pages).toHaveLength(ROSTER_PAGES);
-      expect(directoryBytes).toBeLessThanOrEqual(DIRECTORY_BYTES);
-      expect(directoryBytes).toBeGreaterThan(DIRECTORY_BYTES - 128 * 1024);
+      const { items, pages, frames, last } = await honest(f);
+      const transcript = pages.find(({ kind }) => kind === "transcript")!;
+      expect(pages).toHaveLength(STANDARD_PAGES);
+      expect(transcript.bytes).toBeLessThanOrEqual(PAGE_BYTES);
+      expect(transcript.bytes).toBeGreaterThan(PAGE_BYTES - 2048);
+      const directoryBytes = pages[0]!.bytes;
+      const effects = f.observeEffects();
       const cold = await f.send(probe);
       const reads = { ...f.reads };
       expect(cold.status).toBe(200);
+      expect(effects()).toEqual(noWrites);
       const rebuilt = image(cold)!;
       expect(rebuilt).toMatchObject({
-        head: COVERED + TAIL_ROWS,
-        eventWatermark: WATERMARK + TAIL_ROWS,
+        head: frames.length + TAIL_ROWS,
+        eventWatermark: frames.length + TAIL_ROWS,
         lease: {},
         outcome: {},
         witness: {},
       });
       const records = rebuilt.record as Record<string, unknown>;
       expect(Object.keys(records)).toHaveLength(items.length);
-      const [, last, slot] = items.at(-1)!;
-      expect(records[last]).toBe(digestOf([1, digestOf(slot.value)]));
-      const [, first, previous] = items[0]!;
-      expect(records[first]).not.toBe(digestOf([1, digestOf(previous.value)]));
+      expect(records[last]).toBe(digestOf([2, null]));
+      const expected: Record<string, string> = Object.fromEntries(
+        items.map(([, key, slot]) => [
+          key,
+          "deleted" in slot
+            ? digestOf([2, null])
+            : digestOf([1, digestOf(slot.value)]),
+        ]),
+      );
+      const stored = f.db
+        .query<{ body: string }, [number]>(
+          "SELECT body FROM cloud_v3_commits WHERE sequence>? ORDER BY sequence",
+        )
+        .all(frames.length);
+      expect(stored).toHaveLength(TAIL_ROWS);
+      for (const { body } of stored)
+        for (const change of (JSON.parse(body) as Frame).changes ?? [])
+          expected[change.key] = digestOf([
+            2,
+            digestOf((change.value as { value: unknown }).value),
+          ]);
+      expect(records).toEqual(expected);
       console.log("v3 cold record recovery reads", reads);
       expect(reads.rows).toBe(
-        COLD_QUERY_ROWS + ROSTER_PAGES + DIRECTORY_PAGES + TAIL_ROWS,
+        COLD_QUERY_ROWS + STANDARD_PAGES + 1 + TAIL_ROWS + CHECK_PAGE_READS,
       );
       expect(reads.rows).toBeLessThanOrEqual(COLD_ROWS);
       expect(reads.bytes).toBeGreaterThan(directoryBytes + TAIL_BYTES);
@@ -419,10 +555,17 @@ const overLimits: readonly [string, Capacity][] = [
     { directoryPages: DIRECTORY_PAGES + 1, directoryBytes: MiB },
   ],
   ["directory pages over 4 MiB", { directoryBytes: DIRECTORY_BYTES + MiB }],
-  ["1,025 tail rows", { tailRows: TAIL_ROWS + 1, rowBytes: () => 256 }],
+  ["the former synthetic 640-page root", {}],
+  [
+    "1,025 tail rows",
+    { tailRows: TAIL_ROWS + 1, rowBytes: () => 256, honest: true },
+  ],
   [
     "a tail one byte over 16 MiB",
-    { rowBytes: (i) => TAIL_BYTES / TAIL_ROWS + (i === TAIL_ROWS - 1 ? 1 : 0) },
+    {
+      rowBytes: (i) => TAIL_BYTES / TAIL_ROWS + (i === TAIL_ROWS - 1 ? 1 : 0),
+      honest: true,
+    },
   ],
 ];
 
@@ -430,11 +573,22 @@ for (const [label, shape] of overLimits) {
   test(
     `a cold read of ${label} is refused within the read limits and serves nothing`,
     async () => {
-      const f = fixture();
+      const f = guardFixture();
       try {
-        await capacity(f, shape);
+        if (shape.honest) {
+          const sibling = fixture();
+          try {
+            await honest(sibling);
+            expect((await sibling.send(probe)).status).toBe(200);
+          } finally {
+            sibling.db.close();
+          }
+          await honest(f, shape);
+        } else await capacity(f, shape);
         const before = f.snapshot();
+        const effects = f.observeEffects();
         const read = await f.send(probe);
+        expect(effects()).toEqual(noWrites);
         expect(f.reads.rows).toBeLessThanOrEqual(COLD_ROWS);
         expect(f.reads.bytes).toBeLessThanOrEqual(COLD_BYTES);
         expect(read).toMatchObject(unavailable);
@@ -550,7 +704,7 @@ for (const at of ["tail", "directory"] as const) {
           },
         });
         const db = writableStore(f.storage);
-        const recovered = recoverV3(db, f.seal());
+        const recovered = recover(db, f.seal());
         const before = { ...f.reads };
         expect(readV3Value(db, recovered, "record", "r1")).toBeUndefined();
         expect(f.reads).toEqual(before);
@@ -873,7 +1027,7 @@ test(
 test(
   "a changed payload slice on a sealed page is unavailable without a write",
   async () => {
-    const f = fixture();
+    const f = guardFixture();
     try {
       await snapshotWithClaim(f);
       expect(
@@ -882,8 +1036,13 @@ test(
         ).changes,
       ).toBe(1);
       f.restart();
-      expect((await f.send(probe)).status).toBe(200);
       const before = f.snapshot();
+      const effects = f.observeEffects();
+      const read = await f.send(probe);
+      expect(read).toMatchObject(unavailable);
+      expect(read.body).not.toHaveProperty("value");
+      expect(exited(read)).toBe(1);
+      expect(effects()).toEqual(noWrites);
       expect(await claim(f, "owner-a")).toMatchObject(unavailable);
       expect(f.snapshot()).toEqual(before);
     } finally {
@@ -1067,7 +1226,10 @@ for (const [label, corrupt] of corruptions) {
 
 function resealRoot(db: Database, edit: (root: Json) => Json) {
   const body = canonicalJson(edit(JSON.parse(rootOf(db).body) as Json));
-  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [body, digestBytes(body)]);
+  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [
+    body,
+    trustedSeal(db, body),
+  ]);
 }
 
 const set = (change: Json) => (root: Json) => ({ ...root, ...change });

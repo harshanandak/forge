@@ -13,6 +13,7 @@ import {
   leaseExpiry,
 } from "../../src/core/state/index.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
+import * as validators from "../../src/generated/validators.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { checkedValue, configured, holds, shownId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
@@ -40,9 +41,19 @@ import {
   verifyRecordFrame,
 } from "./v3-record-transitions.ts";
 import { TABLE_PROBE } from "./store.ts";
-import { BOUNDED_MAC, type Seal, signRow, verifyRow } from "./v3-seal.ts";
+import {
+  BOUNDED_MAC,
+  bounded,
+  isVerifiedManifest,
+  type Seal,
+  signRoot,
+  signRow,
+  verifyRoot,
+  verifyRow,
+  type VerifiedManifest,
+} from "./v3-seal.ts";
 
-export { withinDepth };
+export { unavailable, withinDepth };
 export const ROOT = "cloud_v3_root";
 export const PAGES = "cloud_v3_pages";
 export const PAGE_BYTES = 256 * 1024;
@@ -98,9 +109,11 @@ const hasTable = (db: SqlDatabase, name: string): boolean =>
 
 export const hasV3Root = (db: SqlDatabase): boolean => hasTable(db, ROOT);
 
+export const V3_TOKENS = "cloud_v3_tokens";
+
 export const hasPriorV3RestoreState = (db: SqlDatabase): boolean =>
   db.get(legacyTables) !== undefined ||
-  tables.some((table) => hasTable(db, table));
+  [...tables, V3_TOKENS].some((table) => hasTable(db, table));
 
 function genesis(incarnation: string, restoreEpoch: string) {
   return {
@@ -236,15 +249,32 @@ function sealedFields(root: Record<string, unknown>) {
   );
 }
 
-export function readV3Root(
+export function rejectOldCommits(db: SqlDatabase): void {
+  if (db.get(oldCommits)) throw unavailable();
+}
+
+type StoredRoot = V3Image["root"] & {
+  generation: number;
+  eventWatermark: number;
+};
+
+export const readV3Root = (db: SqlDatabase, seal: Seal): StoredRoot =>
+  readSealedRoot(db, seal).root;
+
+export function readSealedRoot(
   db: SqlDatabase,
-): V3Image["root"] & { generation: number; eventWatermark: number } {
-  if (!tables.every((table) => hasTable(db, table)) || db.get(oldCommits))
-    throw unavailable();
+  seal: Seal,
+): { root: StoredRoot; envelope: string } {
+  if (!tables.every((table) => hasTable(db, table))) throw unavailable();
+  rejectOldCommits(db);
   const row = db.get(
-    `SELECT body, seal FROM ${ROOT} WHERE id=1 AND length(CAST(body AS BLOB))<=${MANIFEST_BYTES}`,
+    `SELECT body, ${bounded("seal")} FROM ${ROOT} WHERE id=1 AND length(CAST(body AS BLOB))<=${MANIFEST_BYTES}`,
   );
-  if (typeof row?.body !== "string" || row.seal !== digestBytes(row.body))
+  if (
+    typeof row?.body !== "string" ||
+    typeof row.seal !== "string" ||
+    !verifyRoot(seal, row.body, row.seal)
+  )
     throw unavailable();
   const root = parse(row.body);
   if (
@@ -323,7 +353,10 @@ export function readV3Root(
     (bytes.directory ?? 0) > DIRECTORY_BYTES
   )
     throw unavailable();
-  return { ...manifest, generation, coveredHead, eventWatermark };
+  return {
+    root: { ...manifest, generation, coveredHead, eventWatermark },
+    envelope: row.seal,
+  };
 }
 
 function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
@@ -369,7 +402,7 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
 
 interface Verification {
   admit: AdmitLeaseRequest;
-  pages: ReadonlyMap<string, Buffer>;
+  pages?: ReadonlyMap<string, Buffer>;
   sealed: (image: V3Image) => void;
 }
 
@@ -458,18 +491,18 @@ export function recoverV3(
 export function recoverV3(
   db: SqlDatabase,
   seal: Seal,
-  verification?: Verification,
+  verification: Verification & { readonly portableTranscript?: never },
   options?: { through: number },
 ): V3Image;
 export function recoverV3(
   db: SqlDatabase,
   seal: Seal,
-  verification?: Verification | PortableVerification,
+  verification: Verification | PortableVerification,
   { through }: { through?: number } = {},
 ): V3Image {
-  if (verification && "portableTranscript" in verification)
+  if ("portableTranscript" in verification)
     return recoverPortableV3(db, verification);
-  const root = readV3Root(db);
+  const root = readV3Root(db, seal);
   const byId = new Map(root.pages.map((page) => [page.id, page]));
   const headers = db.all(
     `SELECT id, length(CAST(body AS BLOB)) AS bytes FROM ${PAGES} LIMIT ${ROSTER_PAGES + 1}`,
@@ -483,7 +516,7 @@ export function recoverV3(
     db,
     root,
     root.eventWatermark,
-    verification?.pages,
+    verification.pages,
   );
   const bodies = new Map(
     db
@@ -522,11 +555,11 @@ export function recoverV3(
         image.recordFloor = Math.max(image.recordFloor, recordNumber(key));
     }
   }
+  verification.sealed(image);
   if (root.activationDigest !== undefined) {
-    if (through !== undefined || verification) throw unavailable();
+    if (through !== undefined) throw unavailable();
     return applyActivation(db, seal, image);
   }
-  verification?.sealed(image);
   const upper = through === undefined ? "" : " AND sequence<=?";
   const rows = db.all(
     `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body, mac FROM ${COMMITS} WHERE sequence>?${upper} ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
@@ -544,17 +577,36 @@ export function recoverV3(
 
 interface PortableVerification {
   admit: AdmitLeaseRequest;
+  manifest: VerifiedManifest;
   portableTranscript: string;
 }
 
 function recoverPortableV3(
   db: SqlDatabase,
-  { admit, portableTranscript }: PortableVerification,
+  { admit, manifest, portableTranscript }: PortableVerification,
 ): V3Image {
-  if (Buffer.byteLength(portableTranscript) > PAGE_BYTES) throw unavailable();
+  const bytes = Buffer.byteLength(portableTranscript);
+  if (
+    bytes > PAGE_BYTES ||
+    !isVerifiedManifest(manifest) ||
+    bytes !== manifest.transcript.bytes ||
+    digestBytes(portableTranscript) !== manifest.transcript.hash
+  )
+    throw unavailable();
   const frames = parse(portableTranscript, MAX_JSON_DEPTH + 1);
   if (!Array.isArray(frames) || storedCanonical(frames) !== portableTranscript)
     throw unavailable();
+  return foldTranscript(db, frames, "portable", admit);
+}
+
+type FoldMode = "live" | "archived" | "portable";
+
+export function foldTranscript(
+  db: SqlDatabase,
+  frames: readonly unknown[],
+  mode: Exclude<FoldMode, "live">,
+  admit: AdmitLeaseRequest,
+): V3Image {
   const image = recoveryImage(db, genesis("portable", "portable"), 0);
   const verification = { admit, pages: new Map<string, Buffer>() };
   const verify = (frame: Frame) =>
@@ -567,13 +619,14 @@ function recoverPortableV3(
   };
   for (const [index, raw] of frames.entries()) {
     const frame: unknown = raw;
-    if (!isObject(frame) || frame.operation === marker.operation)
+    const portable = mode === "portable";
+    if (!isObject(frame) || (portable && frame.operation === marker.operation))
       throw unavailable();
     const body =
-      Object.keys(frame).join() === "sequence"
+      portable && Object.keys(frame).join() === "sequence"
         ? { ...marker, ...frame }
         : frame;
-    foldRow(image, index + 1, storedCanonical(body), verify, true);
+    foldRow(image, index + 1, storedCanonical(body), verify, mode);
   }
   return image;
 }
@@ -583,14 +636,14 @@ function foldRow(
   sequence: unknown,
   body: unknown,
   verify?: (frame: Frame) => Frame,
-  portable = false,
+  mode: FoldMode = "live",
 ) {
   const frame = typeof body === "string" ? parse(body) : undefined;
   if (
     sequence !== image.head + 1 ||
     storedCanonical(frame) !== body ||
     !validShape(frame) ||
-    authorityFault(frame, portable) !== undefined ||
+    authorityFault(frame, mode !== "live") !== undefined ||
     frame.format !== COMMIT_FORMAT ||
     frame.sequence !== sequence
   )
@@ -604,16 +657,17 @@ function foldRow(
     unavailable,
     image.load,
   );
-  const verified = verify ? verify(frame) : frame;
-  const { outcome } = verified;
-  if (records.result !== undefined && outcome) {
-    const { resultDigest: _digest, ...receipt } = outcome;
-    apply(
-      image,
-      { ...verified, outcome: { ...receipt, result: records.result } },
-      nat(sequence),
-    );
-  } else apply(image, verified, nat(sequence));
+  let done: Frame = verify ? verify(frame) : frame;
+  if (
+    records.result !== undefined &&
+    done.outcome?.resultDigest !== undefined
+  ) {
+    const { resultDigest: _digest, ...receipt } = done.outcome;
+    done = { ...done, outcome: { ...receipt, result: records.result } };
+  }
+  const canonical =
+    done === frame ? done : (parse(storedCanonical(done)) as Frame);
+  apply(image, canonical, nat(sequence));
   image.recordFloor = records.floor;
   for (const { key, value } of records.changes) record.set(key, value);
   image.tailBytes += Buffer.byteLength(String(body));
@@ -629,11 +683,12 @@ export function provisionV3(
   db: SqlDatabase,
   seal: Seal,
   legacyMarker: boolean,
+  verification: Verification & { readonly portableTranscript?: never },
 ) {
   return db.transaction(() => {
     if (legacyMarker || db.get(legacyTables))
       throw fail("INPUT_CONFLICT", "Cloud v3 requires a fresh project");
-    if (!tables.some((table) => hasTable(db, table))) {
+    if (![...tables, V3_TOKENS].some((table) => hasTable(db, table))) {
       for (const [table, definition] of Object.entries(schema))
         db.exec(`CREATE TABLE ${table} ${definition}`);
       for (const page of pages)
@@ -641,9 +696,12 @@ export function provisionV3(
       const body = canonicalJson(
         genesis(crypto.randomUUID(), crypto.randomUUID()),
       );
-      db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
+      db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [
+        body,
+        signRoot(seal, body),
+      ]);
     }
-    return recoverV3(db, seal);
+    return recoverV3(db, seal, verification);
   });
 }
 
@@ -677,7 +735,7 @@ export function activateV3(
     db.exec(`CREATE TABLE ${table} ${definition}`);
   for (const [id, page] of published)
     db.run(`INSERT INTO ${PAGES} VALUES (?, ?)`, [id, page]);
-  db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
+  db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, signRoot(seal, body)]);
   const sequence = imported.head + 1;
   db.run(`INSERT INTO ${COMMITS} VALUES (?, ?, ?)`, [
     sequence,
@@ -780,7 +838,7 @@ function append(
   if (!batch.every(validAppendFrame))
     throw fail("INPUT_INVALID", "Invalid v3 frame");
   return db.transaction(() => {
-    const { activationDigest, coveredHead, incarnation } = readV3Root(db);
+    const { activationDigest, coveredHead, incarnation } = readV3Root(db, seal);
     if (activationDigest) throw stopped();
     const last = db.get(
       `SELECT sequence FROM ${COMMITS} ORDER BY sequence DESC LIMIT 1`,
@@ -885,10 +943,10 @@ function apply(image: V3Image, frame: Frame, sequence: number) {
   if (lease) image.entries.lease.set(lease.subject, { value: lease });
   if (outcome)
     image.entries.outcome.set(outcome.id, {
-      value: { time, outcome, ...(lease && { lease }) },
+      value: { ...(lease && { lease }), outcome, time },
     });
   if (witness)
-    image.entries.witness.set(witness.id, { value: { witness, lease } });
+    image.entries.witness.set(witness.id, { value: { lease, witness } });
   image.head = sequence;
   image.eventWatermark += frame.events.length;
 }
@@ -1019,7 +1077,8 @@ function verifyClaimFrame(image: V3Image, frame: Frame): Frame {
     if (
       canonicalJson(frame.lease) !== canonicalJson(lease) ||
       canonicalJson(frame.events) !== canonicalJson(events) ||
-      !resultMatches(outcome, result)
+      !resultMatches(outcome, result) ||
+      !validators.validateLeaseGrant(result).ok
     )
       throw unavailable();
     return { ...frame, outcome: { ...receipt, result } };
