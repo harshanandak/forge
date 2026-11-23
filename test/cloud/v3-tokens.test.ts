@@ -393,10 +393,28 @@ for (const [field, max] of labelCaps)
             expect(tableNames(f)).not.toContain("cloud_v3_tokens");
             return;
           }
-          expect(reply).toMatchObject({ status: 200, body: { ok: true } });
           const { token, id } = (reply.body as { value: Issued }).value;
           const [row, ...others] = tokenRows(f);
           expect(others).toEqual([]);
+          const secret = token.split(".")[1]!;
+          expect(token).toBe(`fct_${row!.id}.${secret}`);
+          expect(row!.hash).toBe(sha(secret));
+          const { ttlMs: _ttl, ...labels } = input;
+          expect(reply).toEqual({
+            status: 200,
+            body: {
+              ok: true,
+              value: {
+                id: row!.id,
+                token,
+                ...labels,
+                expiresAt: new Date(row!.expires_at).toISOString(),
+              },
+            },
+          });
+          expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(
+            0,
+          );
           expect(row![field]).toBe(value);
           expect(row!.mac).toBe(macOf(f, row!));
           const parts = await tokenParts(token);

@@ -1898,6 +1898,42 @@ async function guarded(
 }
 
 const grant = { id: "forge-1", ttlSeconds: 60 };
+const okBody = (op: string, result: unknown) => ({
+  ok: true,
+  op,
+  status: "OK",
+  result,
+  warnings: [],
+});
+const claimed = (id: string) => ({
+  id,
+  generation: 1,
+  expiresAt: new Date(time + 60_000).toISOString(),
+});
+const recorded = (f: Fixture) => (frames(f).at(-1)!.outcome as Json).result;
+const storedLease = (f: Fixture) => {
+  const db = writableStore(f.storage);
+  return readV3Value(db, recoverV3(db, f.seal()), "lease", subject);
+};
+async function replays(
+  f: Fixture,
+  body: object,
+  owner: string,
+  sid: string,
+  first: Reply,
+) {
+  const state = snap(f);
+  const rows = tokenRows(f);
+  const count = frames(f).length;
+  const effects = f.observeEffects();
+  const again = await send(f, body, owner, sid);
+  const seen = effects();
+  expect(again).toEqual(first);
+  expect(seen).toEqual(noWrites);
+  expect(snap(f)).toEqual(state);
+  expect(tokenRows(f)).toBe(rows);
+  expect(frames(f)).toHaveLength(count);
+}
 
 test.each(modes)(
   "v3 typed claim of an open issue is refused before recording for a device label over the limit (%s)",
@@ -1944,18 +1980,16 @@ test.each(modes)(
     await fixtureIssue(f);
     const body = sessioned(clm("full-claim", grant), fullSession);
     const reply = await oneRow(f, () => send(f, body, fullDevice, fullSession));
-    expect(reply.body).toMatchObject({
-      ok: true,
-      result: {
-        id: "forge-1",
-        generation: 1,
-        expiresAt: new Date(time + 60_000).toISOString(),
-      },
+    expect(reply).toEqual({
+      status: 200,
+      body: okBody("issue.claim", claimed("forge-1")),
     });
+    expect(recorded(f)).toEqual(claimed("forge-1"));
     expect(lease(f).holder).toEqual({
       actor,
       session: { id: fullSession, device: fullDevice },
     });
+    await replays(f, body, fullDevice, fullSession, reply);
   },
   timeout,
 );
@@ -1993,12 +2027,14 @@ test.each(modes)(
     await enroll(f, mode);
     await fixtureIssue(f);
     await rawClaim(f);
-    const first = await oneRow(f, () =>
-      send(f, upd("held-update", update.input)),
-    );
-    expect(first.body).toMatchObject({
-      result: { id: "forge-1", revision: 2 },
+    const held = upd("held-update", update.input);
+    const first = await oneRow(f, () => send(f, held));
+    expect(first).toEqual({
+      status: 200,
+      body: okBody("issue.update", recorded(f)),
     });
+    expect(recorded(f)).toMatchObject({ id: "forge-1", revision: 2 });
+    await replays(f, held, "laptop", "fixture", first);
     await fixtureIssue(f, { ...initial, id: "work-2" });
     await enrollAs(f, fullDevice, fullSession);
     const claim = sessioned(
@@ -2008,17 +2044,27 @@ test.each(modes)(
     const granted = await oneRow(f, () =>
       send(f, claim, fullDevice, fullSession),
     );
-    expect(granted.body).toMatchObject({
-      result: { id: "forge-2", generation: 1 },
+    expect(granted).toEqual({
+      status: 200,
+      body: okBody("issue.claim", claimed("forge-2")),
     });
+    expect(recorded(f)).toEqual(claimed("forge-2"));
+    await replays(f, claim, fullDevice, fullSession, granted);
     const body = sessioned(
       upd("full-update", { id: "forge-2", expectRevision: 1, title: "After" }),
       fullSession,
     );
     const reply = await oneRow(f, () => send(f, body, fullDevice, fullSession));
-    expect(reply.body).toMatchObject({
-      result: { id: "forge-2", revision: 2, title: "After" },
+    expect(reply).toEqual({
+      status: 200,
+      body: okBody("issue.update", recorded(f)),
     });
+    expect(recorded(f)).toMatchObject({
+      id: "forge-2",
+      revision: 2,
+      title: "After",
+    });
+    await replays(f, body, fullDevice, fullSession, reply);
   },
   timeout,
 );
@@ -2035,11 +2081,17 @@ test(
     const [full, over] = [astral(cap.device.maxLength), astral(257)];
     await enrollAs(f, full);
     await enrollAs(f, over);
-    await oneRow(f, () => send(f, clm("astral-full", grant), full));
+    const body = clm("astral-full", grant);
+    const first = await oneRow(f, () => send(f, body, full));
+    expect(first).toEqual({
+      status: 200,
+      body: okBody("issue.claim", claimed("forge-1")),
+    });
     expect(lease(f).holder).toEqual({
       actor,
       session: { ...session, device: full },
     });
+    await replays(f, body, full, "fixture", first);
     await guarded(
       f,
       "token",
@@ -2082,11 +2134,19 @@ test(
       expect(effects()).toEqual(noWrites);
       expect(snap(f)).toEqual(state);
     }
-    for (const [route, extra] of steps)
-      expect(await call(route, extra, fullDevice)).toMatchObject({
+    for (const [route, extra] of steps) {
+      const reply = await call(route, extra, fullDevice);
+      expect(reply).toEqual({
         status: 200,
-        body: { ok: true },
+        body: { ok: true, value: storedLease(f) },
       });
+      expect(exitCode(reply.body as Parameters<typeof exitCode>[0])).toBe(0);
+      expect(storedLease(f)).toMatchObject({
+        subject,
+        holder: { actor, session: { ...session, device: fullDevice } },
+        ...(route === "release" ? {} : { generation: 1 }),
+      });
+    }
   },
   timeout,
 );
@@ -2170,7 +2230,11 @@ test.each(modes)(
       context: { actor, session: { id: sid, device } },
     });
     const full = naming("full-named", "forge-1", fullDevice, fullSession);
-    await oneRow(f, () => send(f, full, fullDevice, fullSession));
+    const named = await oneRow(f, () => send(f, full, fullDevice, fullSession));
+    expect(named).toEqual({
+      status: 200,
+      body: okBody("issue.claim", claimed("forge-1")),
+    });
     const state = snap(f);
     const effects = f.observeEffects();
     const long = naming("long-named", "forge-2", longDevice, "fixture");
@@ -2202,26 +2266,36 @@ test(
 );
 
 const oldRefusals = [
-  ["claim", "issue.claim", grant, never("INPUT_INVALID", "Invalid lease")],
+  [
+    "claim",
+    "issue.claim",
+    grant,
+    never("INPUT_INVALID", "Invalid lease"),
+    { leaseMode: "acquire" },
+  ],
   [
     "update",
     "issue.update",
     { ...update.input, id: "forge-9" },
     never("NOT_FOUND", "Issue was not found"),
+    { leaseMode: "held", leaseGeneration: 1 },
   ],
 ] as const;
-for (const [name, op, input, result] of oldRefusals)
+for (const [name, op, input, result, mode] of oldRefusals)
   test(
     `v3 still folds, checkpoints and reads an old recorded ${name} refusal from an over-long holder`,
     async () => {
       const f = guardFixture(env);
       using _db = f.db;
       await provision(f);
+      if (name === "claim") await fixtureIssue(f);
       const principal = ["owner", longDevice, longDevice] as const;
       const context = {
         variant: "leased",
         actor,
         session: { id: "fixture", device: longDevice },
+        project: { id: "a" },
+        ...mode,
       };
       const { requestId, fingerprint } = prepareReceipt(
         "command",
