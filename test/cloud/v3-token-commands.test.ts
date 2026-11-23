@@ -765,6 +765,35 @@ row(
   },
 );
 
+for (const state of ["warm", "cold"]) {
+  row(
+    `an empty object id on a ${state} object refuses before any token read`,
+    async (f, t) => {
+      answers(await post(f, create, t), 200);
+      f.context.id!.toString = () => "";
+      if (state === "cold") f.restart();
+
+      const seen = statements(f);
+      const effects = f.observeEffects();
+      const answer = await post(f, { ...create, requestId: "empty-id" }, t);
+
+      answers(answer, 503, "UNAVAILABLE", 1);
+      expect(answer.body).toEqual({
+        ok: false,
+        status: "FAIL",
+        error: {
+          code: "UNAVAILABLE",
+          message: "Cloud v3 seal is not configured",
+          retry: "never",
+        },
+        warnings: [],
+      });
+      expect(effects()).toEqual(noWrites);
+      expect(seen).toEqual(state === "cold" ? [TABLE_PROBE] : []);
+    },
+  );
+}
+
 row(
   "a damaged root is refused after the token and before the body is parsed",
   async (f, t) => {
