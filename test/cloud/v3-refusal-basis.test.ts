@@ -342,9 +342,16 @@ const sid = "s".repeat(200);
 const longId = `forge-${"1".repeat(194)}`;
 const named = (body: Json, id: string): Json => ({
   ...body,
-  context: { ...(body.context as Json), session: { id } },
+  context: {
+    ...(body.context as Json),
+    ...widest,
+    session: { ...widest.session, id },
+  },
 });
-const tokenHolder = { actor, session: { id: sid, device } };
+const tokenHolder = {
+  ...wideHolder,
+  session: { ...wideHolder.session, id: sid },
+};
 const stale = upd(update.input, { ...update.context, leaseGeneration: 2 });
 
 type Kind = [
@@ -535,11 +542,23 @@ async function lifecycle([
   expect(frames(f)).toHaveLength(before + 1);
   expect(last(f).basis).toEqual(basis);
   const id = idOf(last(f));
-  const again = async () => {
-    const replay = f.observeEffects();
-    expect(await go(f)).toEqual(reply);
+  const clash = {
+    status: 409,
+    body: answer(mode, {
+      code: "INPUT_CONFLICT",
+      message: "Request ID belongs to a different input",
+      retry: "reconcile_first",
+    }),
+  };
+  const replays = async (g: Fixture) => {
+    const replay = g.observeEffects();
+    expect(await go(g)).toEqual(reply);
+    const changed = await go(g, { ...body, input: { changed: true } });
+    expect(changed).toEqual(clash);
+    exited(changed, "INPUT_CONFLICT");
     expect(replay()).toEqual(noWrites);
   };
+  const again = () => replays(f);
   await again();
   f.restart();
   await again();
@@ -554,9 +573,7 @@ async function lifecycle([
   target.restart();
   if (mode === "token")
     return expect(stored(target, id)).toEqual(stored(f, id));
-  const after = target.observeEffects();
-  expect(await go(target)).toEqual(reply);
-  expect(after()).toEqual(noWrites);
+  await replays(target);
 }
 
 const via = "through recovery, checkpoints and restore";
@@ -772,6 +789,19 @@ async function honest([, body, status, , basis, setup]: Kind, extra?: Setup) {
 }
 const reach = (f: Fixture, place: Place) =>
   place === "cold" ? f.send(probe) : f.send(checkpointRoute, {});
+async function rejects(
+  f: Fixture,
+  request: () => Promise<{ status: number; body: unknown }>,
+  expected = unavailable,
+) {
+  const before = f.snapshot();
+  const effects = f.observeEffects();
+  const reply = await request();
+  expect(reply).toEqual(expected);
+  exited(reply, expected.body.error.code);
+  expect(effects()).toEqual(noWrites);
+  expect(f.snapshot()).toEqual(before);
+}
 async function tampered(name: string, edit: Edit, place: Place, extra?: Setup) {
   const { f, id, sequence } = await honest(K(name), extra);
   using _db = f.db;
@@ -785,11 +815,7 @@ async function tampered(name: string, edit: Edit, place: Place, extra?: Setup) {
     return;
   }
   retamper(f, sequence, tail(edit));
-  const before = f.snapshot();
-  const effects = f.observeEffects();
-  expect(await reach(f, place)).toEqual(unavailable);
-  expect(effects()).toEqual(noWrites);
-  expect(f.snapshot()).toEqual(before);
+  await rejects(f, () => reach(f, place));
 }
 const message: Edit = {
   result: (x) => Object.assign(x, { message: "Edited message" }),
@@ -839,7 +865,7 @@ for (const name of ["update not found", "claim not found"])
     using _db = f.db;
     await checkpoint(f);
     rewritePages(f, id, message);
-    expect(await f.send(probe)).toEqual(unavailable);
+    await rejects(f, () => f.send(probe));
   });
 test("v3 refuses an edited refusal inside the transcript of an activated restore", async () => {
   const { f, id } = await honest(K("claim not found"));
@@ -849,7 +875,7 @@ test("v3 refuses an edited refusal inside the transcript of an activated restore
   using _target = target.db;
   await restoreAll(target, portableOf(f));
   rewritePages(target, id, message);
-  expect(await target.send(probe)).toEqual(unavailable);
+  await rejects(target, () => target.send(probe));
 });
 
 const refusal = (
@@ -927,14 +953,14 @@ for (const [op, name] of [
     const { f, sequence } = await honest(K(name));
     using _db = f.db;
     retamper(f, sequence, (row) => delete row.basis);
-    expect(await f.send(probe)).toEqual(unavailable);
+    await rejects(f, () => f.send(probe));
   });
   test(`v3 cold recovery refuses a ${op} refusal that has no basis in a checkpointed transcript`, async () => {
     const { f, id } = await honest(K(name));
     using _db = f.db;
     await checkpoint(f);
     rewritePages(f, id, { frame: (row) => delete row.basis });
-    expect(await f.send(probe)).toEqual(unavailable);
+    await rejects(f, () => f.send(probe));
   });
 }
 
@@ -973,7 +999,7 @@ for (const [name, op, input, result, mode] of olds)
       );
       if (place === "append") return refuses(f, noBasis, row);
       install(f, row);
-      expect(await reach(f, place)).toEqual(unavailable);
+      await rejects(f, () => reach(f, place));
     });
 
 const malformed: [string, "claim" | "update", Json, boolean?][] = [
@@ -1023,7 +1049,7 @@ for (const [name, op, wrong, both] of malformed)
       expect((await f.send(probe)).status).toBe(200);
       f.db.run("DELETE FROM cloud_v3_commits");
       install(f, make("bad", wrong), 1);
-      expect(await f.send(probe)).toEqual(unavailable);
+      await rejects(f, () => f.send(probe));
     });
   }
 
@@ -1050,7 +1076,7 @@ for (const [op, body, setup] of oks) {
     const f = await written();
     using _db = f.db;
     retamper(f, frames(f).length, attach);
-    expect(await f.send(probe)).toEqual(unavailable);
+    await rejects(f, () => f.send(probe));
   });
 }
 

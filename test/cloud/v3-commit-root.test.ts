@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { failed } from "../../cloud/src/issue-commands.ts";
 import { verifyRoot } from "../../cloud/src/v3-seal.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -7,6 +8,8 @@ import {
   digestBytes,
   isObject,
 } from "../../src/core/config/pointer.ts";
+import type { ForgeError } from "../../src/generated/types.ts";
+import { exitCode } from "../../src/surface/result.ts";
 import {
   fixture,
   guardFixture,
@@ -140,9 +143,9 @@ function reformat(f: ReturnType<typeof fixture>, value: string) {
   ]);
 }
 
-type Fixture = ReturnType<typeof fixture>;
+type Fixture = ReturnType<typeof guardFixture>;
 async function sourceOf(opened: Set<Fixture>, history: boolean) {
-  const f = fixture();
+  const f = guardFixture();
   opened.add(f);
   expect((await f.send(probe, {})).status).toBe(200);
   if (history) {
@@ -160,7 +163,7 @@ const roots: [string, (opened: Set<Fixture>) => Promise<Fixture>][] = [
     "activated",
     async (opened) => {
       const from = await sourceOf(opened, true);
-      const target = fixture();
+      const target = guardFixture();
       opened.add(target);
       const upload = portableUpload(target, portableOf(from));
       for (const page of [0, 1, 2])
@@ -184,10 +187,22 @@ for (const [label, make] of roots)
         reformat(f, "forge-cloud-root/3");
         const before = f.snapshot();
         f.restart();
-        expect(await f.send(probe)).toMatchObject({
+        const effects = f.observeEffects();
+        const read = await f.send(probe);
+        expect(read).toEqual({
           status: 503,
-          body: { ok: false, error: { code: "UNAVAILABLE" } },
+          body: {
+            ok: false,
+            error: {
+              code: "UNAVAILABLE",
+              message: "Cloud v3 root is unavailable",
+              retry: "never",
+            },
+          },
         });
+        const error = (read.body as { error: ForgeError }).error;
+        expect(exitCode(failed(error))).toBe(1);
+        expect(effects()).toEqual(noWrites);
         expect(f.snapshot()).toEqual(before);
       } finally {
         for (const f of opened) f.db.close();
