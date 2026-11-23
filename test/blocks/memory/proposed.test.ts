@@ -53,9 +53,8 @@ interface Rules {
     proposed?: { count: number; message: string };
   };
 }
-function setup() {
+function setup(state = memoryState()) {
   const entry = loadEntry("memory");
-  const state = memoryState();
   const services = { state, levels: state };
   const call = <T = Reply>(op: string, input: unknown) =>
     entry[op]!({ input, services }) as Promise<T>;
@@ -90,6 +89,127 @@ async function activeRule(call: Call, text: string) {
 async function propose(call: Call, text: string, tags = ["rule"]) {
   return call("memory.add", { level: "device", text, tags });
 }
+
+const absent = { id: "device/note-999", revision: 1, text: "unseen text" };
+const peerIdentity = { id: "0123456789abcdef", name: "peer" };
+const peerItem = { ...absent, id: `project/${peerIdentity.id}/note-1` };
+type DecisionReply = Pick<Reply, "results">;
+const dryDecision = { results: [] };
+const unusedApproval = "nothing was written and no owner approval was used";
+const proposalChange = (result: Promise<unknown>, message: unknown) =>
+  expect(result).rejects.toMatchObject({
+    error: { code: "PROPOSAL_CHANGED", message },
+  });
+const writes = (state: ReturnType<typeof memoryState>) => {
+  const { put, putMany } = state.counts;
+  return { put, putMany };
+};
+
+test("the private accept check reports every skipped id without writing", async () => {
+  const { call, state } = setup();
+  const pending = await propose(call, "pending rule");
+  const accepted = await activeRule(call, "accepted rule");
+  const [item, served] = await decisionItems(call, [pending.id, accepted.id]);
+  const before = writes(state);
+  await proposalChange(
+    call("memory.accept#check", { items: [item, absent, served, peerItem] }),
+    `${absent.id} is not found; ${accepted.id} is not proposed; ${peerItem.id} is not found; ${unusedApproval}. Only pending proposals can be accepted or rejected. Read these items again, ask the owner about what is pending now, and retry without the others.`,
+  );
+  expect(writes(state)).toEqual(before);
+  const shown = await call("memory.show", { id: pending.id });
+  expect(shown.note.status).toBe("proposed");
+}, 30_000);
+
+test("private decision checks validate current text, revisions, removals and repeated ids", async () => {
+  const { call, state } = setup();
+  const pending = await propose(call, "pending rule");
+  const item = decisionItem(pending.id, pending);
+  const { id, revision } = item;
+  const stale = { ...item, revision: revision + 1 };
+  const alias = { ...item, id: id.replace("note-", "note-0") };
+  const { id: active } = await activeRule(call, "active rule");
+  const edited = await call("memory.add", {
+    id: active,
+    text: "revised rule",
+    tags: [],
+    approval: ownerApproval,
+  });
+  const { removedOwnerTags, ...unnamed } = decisionItem(active, edited);
+  expect(removedOwnerTags).toEqual(["rule"]);
+  const before = writes(state);
+  const message = (requested: number, approval: string, outcome: string) =>
+    `${id} is at revision ${revision}, not the revision ${requested}${approval}, or its proposed text differs; ${outcome}. Show it again, ask the owner about what it says now, and retry with that revision and text.`;
+  const removal = (outcome: string) =>
+    `${active} removes the owner tags [rule]; ${outcome}. Retry with removedOwnerTags set to that list.`;
+  const accept = (items: readonly unknown[]) =>
+    call<DecisionReply>("memory.accept#check", { items });
+  const write = (item: unknown) =>
+    call("memory.accept", { items: [item], approval: ownerApproval });
+  const writeMessage = message(
+    stale.revision,
+    " the owner approved",
+    "nothing was written",
+  );
+  await proposalChange(write(stale), writeMessage);
+  await proposalChange(write(unnamed), removal("nothing was written"));
+  for (const [items, requested] of [
+    [[stale], stale.revision],
+    [[{ ...item, text: "other text" }], revision],
+    [[{ id, revision }], revision],
+    [[absent, stale], stale.revision],
+    [[item, { ...alias, revision: stale.revision }], stale.revision],
+  ] as const)
+    await proposalChange(accept(items), message(requested, "", unusedApproval));
+  await proposalChange(accept([unnamed]), removal(unusedApproval));
+  const rejected = await call<DecisionReply>("memory.reject#check", {
+    items: [{ id, revision }],
+  });
+  expect(rejected).toEqual(dryDecision);
+  expect(await accept([item, alias])).toEqual(dryDecision);
+  expect(writes(state)).toEqual(before);
+}, 30_000);
+
+test("the private accept check refuses an existing read-only peer proposal", async () => {
+  const peer = setup();
+  const added = await propose(peer.call, "peer rule");
+  const { state: peerState } = peer;
+  const found = {
+    status: "found" as const,
+    identity: peerIdentity,
+    state: peerState,
+  };
+  const state = memoryState(undefined, { peer: () => Promise.resolve(found) });
+  const before = writes(peer.state);
+  const item = decisionItem(peerItem.id, added);
+  await proposalChange(
+    setup(state).call("memory.accept#check", { items: [item] }),
+    expect.stringContaining(`${item.id} is read only; ${unusedApproval}.`),
+  );
+  expect(writes(peer.state)).toEqual(before);
+}, 30_000);
+
+test("honest private accept and reject checks write neither device nor own-project notes", async () => {
+  const project = memoryState();
+  const identity = peerIdentity;
+  const ownStore = { identity, projectId: identity.id, state: project };
+  const state = memoryState(undefined, {
+    inProject: true,
+    project: () => Promise.resolve(ownStore),
+  });
+  const { call } = setup(state);
+  const first = await propose(call, "first device rule");
+  const second = await propose(call, "second device rule");
+  const own = await call("memory.add", {
+    level: "project",
+    tags: ["rule"],
+    text: "own project rule",
+  });
+  const items = await decisionItems(call, [first.id, second.id, own.id]);
+  const before = [writes(state), writes(project)];
+  for (const op of ["memory.accept#check", "memory.reject#check"])
+    expect(await call<DecisionReply>(op, { items })).toEqual(dryDecision);
+  expect([writes(state), writes(project)]).toEqual(before);
+}, 30_000);
 
 test("a new rule note waits for the owner and is not served as a rule", async () => {
   const { call, rules } = setup();

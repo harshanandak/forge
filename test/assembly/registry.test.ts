@@ -1,11 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,15 +42,20 @@ function denySavedPath(denied: string, touched: string[] = []) {
   );
 }
 
-async function fixture() {
+async function fixture(onDisk = false) {
   const root = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-registry-")),
   );
   const memory = () => new LocalState(":memory:", createSqliteStore(root));
   const device = memory();
   const owner = (await device.open(true))!;
-  const project = memory();
-  const open = (stateRoot: string, requestId = "test") =>
+  const path = join(root, ".forge", "state.sqlite");
+  const project = onDisk ? new LocalState(path) : memory();
+  const open = (
+    stateRoot: string,
+    requestId = "test",
+    options: LevelsOptions = {},
+  ) =>
     openLevels({
       root: stateRoot,
       stateRoot,
@@ -60,12 +67,14 @@ async function fixture() {
       caller: "human",
       write: true,
       requestId,
+      ...options,
     });
   return {
     root,
     device,
     owner,
     project,
+    path,
     open,
     async close() {
       await project.close();
@@ -74,6 +83,71 @@ async function fixture() {
     },
   };
 }
+
+type LevelsOptions = { write?: boolean; checking?: () => void };
+const projectCases = ["mismatch", "blocked", "missing", "reader"] as const;
+test.each(projectCases)(
+  "project checks: %s",
+  async (mode) => {
+    const f = await fixture(mode === "missing");
+    const acquired = spyOn(f.project, "acquire");
+    const failure = new ForgeFailure({
+      code: "UNAVAILABLE",
+      message: "project write refused",
+      retry: "never",
+    });
+    const checking = () => {
+      if (mode === "blocked") throw failure;
+    };
+    const options = {
+      write: false,
+      ...(mode === "reader" ? {} : { checking }),
+    };
+    const opened = f.open(f.root, "test", options);
+    try {
+      if (mode === "blocked") {
+        const result = await opened.levels
+          .project()
+          .catch((error: unknown) => error);
+        expect(result).toBe(failure);
+        expect(acquired.mock.calls).toEqual([]);
+        return;
+      }
+      if (mode === "missing") {
+        expect(await opened.levels.project()).toBeUndefined();
+        expect(existsSync(f.path)).toBe(false);
+        expect(await f.project.open(false)).toBeUndefined();
+        expect(f.owner.list(registry)).toEqual([]);
+        return;
+      }
+      mkdirSync(join(f.root, ".forge"));
+      const manifestId = "5b0f3c1e-2a4d-4e8f-9a6b-7c1d2e3f4a5b";
+      const projectId = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+      const manifest = JSON.stringify({ schema: 1, id: manifestId });
+      writeFileSync(join(f.root, ".forge", "project.json"), manifest);
+      const owner = (await f.project.open(true))!;
+      const identity = { id: oldId, projectId };
+      owner.put("forge/core-project", "identity", identity, actor, {
+        expectRevision: 0,
+      });
+      const result = opened.levels.project();
+      if (mode === "mismatch")
+        await expect(result).rejects.toMatchObject({
+          error: { code: "PROJECT_ID_CONFLICT" },
+        });
+      else
+        expect(await result).toMatchObject({
+          identity: { id: oldId },
+          projectId,
+        });
+    } finally {
+      acquired.mockRestore();
+      await opened.close();
+      await f.close();
+    }
+  },
+  30_000,
+);
 
 test("two first project writes with overlapping registry reads both succeed", async () => {
   const f = await fixture();
