@@ -1094,11 +1094,29 @@ export class Project {
   }
 
   async #requestApproval(request: Request, project: string): Promise<Response> {
-    const parts = await tokenParts(bearer(request) ?? "");
+    if (
+      project !== this.#env.FORGE_CLOUD_PROJECT ||
+      request.headers.has("X-Forge-Owner") ||
+      request.headers.has("X-Forge-Owner-Expires")
+    )
+      throw fail(
+        "AUTH_FORBIDDEN",
+        "Approval requests are for the admitted project and a device token",
+      );
+    const presented = bearer(request);
+    if (presented === undefined)
+      throw fail("AUTH_REQUIRED", "A device token is required");
+    if (!wellFormed(presented))
+      throw fail("AUTH_FORBIDDEN", "Approval requests need a device token");
+    const parts = await tokenParts(presented);
     const seal = this.#seal();
     const db = writableStore(this.#storage);
-    const token = authorizeV3Token(db, seal, parts, Date.now());
-    await request.text();
+    authorizeV3Token(db, seal, parts, Date.now());
+    const body = await bounded(request);
+    const now = Date.now();
+    const token = authorizeV3Token(db, seal, parts, now);
+    if (Object.keys(object(body)).length)
+      throw fail("INPUT_INVALID", "Expected an empty approval request body");
     const policyIdentity = digestValue([
       this.#env.CLERK_ISSUER,
       this.#env.FORGE_OWNER_SUBJECT,
@@ -1110,7 +1128,8 @@ export class Project {
       project,
       token,
       policyIdentity,
-      Date.now(),
+      now,
+      () => this.#image(db, seal),
     );
     return Response.json({ ok: true, value });
   }

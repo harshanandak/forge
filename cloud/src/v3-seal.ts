@@ -228,7 +228,7 @@ export interface ApprovalFields {
   readonly project: string;
   readonly incarnation: string;
   readonly restoreEpoch: string;
-  readonly activationDigest: string | null;
+  readonly activationDigest: string;
   readonly operation: "restore.promote";
   readonly operationDigest: string;
   readonly tokenId: string;

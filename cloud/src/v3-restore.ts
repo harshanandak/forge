@@ -37,7 +37,6 @@ import {
   readV3Root,
   recoverV3,
   rejectOldCommits,
-  V3_APPROVALS,
 } from "./v3-store.ts";
 
 const STAGE = "cloud_v3_restore";
@@ -217,8 +216,6 @@ export function restoreV3Page(
       );
       check(saved?.body === body && prior.verified === Number(verified));
       finish();
-      if (restored && verified && db.get(TABLE_PROBE, [V3_APPROVALS]))
-        db.run(`DELETE FROM ${V3_APPROVALS}`);
       return { page, verified: prior.verified === 1 };
     }
     if (page === 0)
