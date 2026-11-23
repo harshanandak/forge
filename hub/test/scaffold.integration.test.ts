@@ -151,6 +151,8 @@ const importGuard = `
   import promises from "node:fs/promises";
   import http from "node:http";
   import { registerHooks, syncBuiltinESMExports } from "node:module";
+  let phase = 81;
+  process.on("uncaughtException", () => process.exit(phase));
   const loadFile = fs.readFileSync;
   const root = new URL(".", process.argv[1]).href;
   registerHooks({
@@ -161,9 +163,10 @@ const importGuard = `
       return nextLoad(url, context);
     },
   });
-  const deny = () => { throw new Error("blocked import effect"); };
-  for (const name of ["fs", "fs/promises", "http", "https", "net", "tls", "dns", "dns/promises", "dgram", "http2"]) {
-    const module = process.getBuiltinModule(name);
+  function deny() { throw new Error("blocked import effect"); }
+  const modules = ["fs", "fs/promises", "http", "https", "net", "tls", "dns", "dns/promises", "dgram", "http2"]
+    .map((name) => process.getBuiltinModule(name));
+  for (const module of modules) {
     for (const key of Object.keys(module)) {
       if (typeof module[key] === "function") module[key] = deny;
     }
@@ -174,6 +177,7 @@ const importGuard = `
   process.env = new Proxy({}, { get: deny, set: deny, has: deny, ownKeys: deny });
   syncBuiltinESMExports();
   Object.defineProperty(process, "env", { get: deny, set: deny });
+  phase = 82;
   for (const effect of [
     () => fs.readFileSync("missing"),
     () => readFileSync("missing"),
@@ -185,6 +189,7 @@ const importGuard = `
     () => fetch("http://127.0.0.1"),
     () => new WebSocket("ws://127.0.0.1"),
   ]) assert.throws(effect, /blocked import effect/);
+  phase = 83;
   await import(process.argv[2]);
 `;
 
@@ -459,7 +464,13 @@ const localPath =
 const secretShape =
   /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|xox[baprs]-[A-Za-z0-9-]{16,}|(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b|-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/;
 
-function scanText(path: string, read: () => Buffer<ArrayBufferLike>): boolean {
+function scanText(
+  path: string,
+  read: () => Buffer<ArrayBufferLike>,
+  reject = (hit: string): void => {
+    throw new Error(hit);
+  },
+): boolean {
   safePath(path);
   const bytes = read();
   const encoding =
@@ -470,12 +481,22 @@ function scanText(path: string, read: () => Buffer<ArrayBufferLike>): boolean {
         : "utf-8";
   if (encoding === "utf-8" && bytes.includes(0)) return false;
   const text = new TextDecoder(encoding).decode(bytes);
-  ok(
-    !localPath.test(text) && !secretShape.test(text),
-    "Pack text contains a forbidden path or token shape",
-  );
+  const kind = localPath.test(text)
+    ? "local path"
+    : secretShape.test(text)
+      ? "token shape"
+      : undefined;
+  if (kind) {
+    const label =
+      localPath.test(path) || secretShape.test(path)
+        ? "[redacted path]"
+        : JSON.stringify(path);
+    reject("A8 found " + kind + " in " + label);
+  }
   return true;
 }
+
+let packedPaths: Promise<string[]> | undefined;
 
 test(
   "npm pack carries exactly the hub and its installed production closure",
@@ -500,7 +521,7 @@ test(
     const manifestPath = join(hub, "package.json");
     const before = readFileSync(manifestPath);
     const [paths, expected] = await Promise.all([
-      packReport(npm),
+      (packedPaths ??= packReport(npm)),
       packableFiles(npm),
     ]);
     ok(
@@ -532,22 +553,39 @@ test(
         "Unexpected hub own-file inventory",
       );
 
+    console.log(
+      "A7 verified %d own files and %d bundled files in %d packages.",
+      ownFiles.length,
+      paths.length - ownFiles.length,
+      closure.size,
+    );
+  },
+  timeout,
+);
+
+test(
+  "packed hub text contains no local paths or token shapes",
+  async () => {
+    const paths = await (packedPaths ??= packReport(npmManifestPath()));
+    const hits: string[] = [];
     const scanned = new Set(
       paths.filter((path) =>
-        scanText(path, () => readFileSync(join(hub, path))),
+        scanText(
+          path,
+          () => readFileSync(join(hub, path)),
+          (hit) => {
+            if (hits.length < 5) hits.push(hit);
+          },
+        ),
       ),
     );
+    for (const hit of hits) console.error(hit);
     ok(
       ownFiles.every((path) => scanned.has(path)),
       "Pack scan must include all own text files",
     );
-    console.log(
-      "Packed %d own files and %d bundled files in %d packages. Scanned %d text files.",
-      ownFiles.length,
-      paths.length - ownFiles.length,
-      closure.size,
-      scanned.size,
-    );
+    ok(hits.length === 0, "Pack text contains a forbidden path or token shape");
+    console.log("A8 scanned %d packed text files.", scanned.size);
   },
   timeout,
 );
