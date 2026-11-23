@@ -1160,6 +1160,21 @@ async function traceStatements(f: Fixture, run: () => Promise<Answer>) {
   }
 }
 
+function expectNoImageRead(seen: string[]) {
+  const schemaProbe =
+    "SELECT 1 FROM (SELECT count(*) AS n, sum(name='mac') AS m FROM pragma_table_info('cloud_v3_commits')) WHERE n>0 AND m=0";
+  expect(seen.filter((sql) => sql === schemaProbe)).toHaveLength(1);
+  expect(
+    seen.filter(
+      (sql) =>
+        sql !== schemaProbe &&
+        /\bcloud_v3_(?:commits|pages|checkpoint(?:_pages)?|retired_pages)\b/i.test(
+          sql,
+        ),
+    ),
+  ).toEqual([]);
+}
+
 row(
   "1 last token revokes and commits exactly its signed lease release",
   async (f, t) => {
@@ -1216,9 +1231,7 @@ row(
     f.restart();
     const { reply, seen } = await traceStatements(f, () => revoke(f, t));
     kept(reply);
-    expect(seen.filter((sql) => /cloud_v3_(commits|pages)/i.test(sql))).toEqual(
-      [],
-    );
+    expectNoImageRead(seen);
     expect(frames(f)).toEqual(before);
     expect(heldLease(f)).toEqual(held);
     expect(tokenRow(f, sibling)).toEqual(row);
@@ -1705,7 +1718,7 @@ test(
       revoke(target, t),
     );
     kept(reply);
-    expect(seen.filter((sql) => /cloud_v3_commits/i.test(sql))).toEqual([]);
+    expectNoImageRead(seen);
     expect(tokenRow(target, t).revoked_at).toBe(time);
   },
   timeout,
@@ -1731,7 +1744,7 @@ test.each([false, true])(
     const { reply, seen } = await traceStatements(f, () => revoke(f, t));
     if (sibling) {
       kept(reply);
-      expect(seen.filter((sql) => /cloud_v3_commits/i.test(sql))).toEqual([]);
+      expectNoImageRead(seen);
     } else {
       legacy(reply, 503, "UNAVAILABLE");
       expect(observe()).toEqual(noWrites);
