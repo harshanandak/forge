@@ -1607,7 +1607,11 @@ type Portable = {
 };
 
 async function withPortable(
-  run: (target: Fixture, data: Portable, source: Fixture) => Promise<void>,
+  run: (
+    target: Fixture,
+    data: Portable,
+    source: Fixture,
+  ) => void | Promise<void>,
   extra = 0,
 ) {
   const target = guardFixture();
@@ -3740,7 +3744,7 @@ const withActivation = (
     image: ReturnType<typeof recoverV3>;
     upload: Awaited<ReturnType<typeof stageRestore>>;
     sourceIncarnation: unknown;
-  }) => Promise<void>,
+  }) => void | Promise<void>,
 ) =>
   withPortable(async (target, data, source) => {
     const upload = await stageRestore(target, data);
@@ -3878,7 +3882,7 @@ test.each([
 ] as const)(
   "v3 activation serves only its global with %s",
   (_label, imported) =>
-    withActivation(async ({ target, image, sourceIncarnation }) => {
+    withActivation(({ target, image, sourceIncarnation }) => {
       if (imported)
         addRootControl(target, [
           ["global", controlGlobal(sourceIncarnation, T0)],
@@ -3927,7 +3931,7 @@ test.each([
 ] as const)(
   "v3 component recovery checks %s control slots",
   (_label, swapped, malformed) =>
-    withPortable(async (_target, _data, source) => {
+    withPortable((_target, _data, source) => {
       const origin = storedImage(source);
       const global = controlGlobal(origin.root.incarnation, T0);
       const issue = issueControl(origin.root.incarnation);
