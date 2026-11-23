@@ -4,6 +4,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 const timeout = 30_000;
+const runtimeSyntax =
+  /\b(?:function|class|const|let|var|enum|namespace)\b|=>\s*\{|\/\/|\/\*/;
 const seamExports = [
   "Tx",
   "StoreDeps",
@@ -33,9 +35,7 @@ test(
       ...source.matchAll(/^export (?:type|interface) (\w+)/gm),
     ].map((match) => match[1]);
     expect(exports).toEqual(seamExports);
-    expect(source).not.toMatch(
-      /\b(?:function|class|const|let|var|enum|namespace)\b|=>\s*\{|\/\/|\/\*/,
-    );
+    expect(source).not.toMatch(runtimeSyntax);
     expect(source).not.toMatch(
       /^import\s+(?!type\b)|^export\s+(?!type\b|interface\b)/m,
     );
