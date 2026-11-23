@@ -2975,12 +2975,66 @@ test(
     withTyped(async (target, data) => {
       forgeRefusal(data, accent);
       const upload = await stageRestore(target, data);
-      expect(await upload(2)).toMatchObject(restoreResult(2, true));
-      target.restart();
-      expect(await typed(target, missingUpdate)).toMatchObject({
-        status: 404,
-        body: { error: { code: "NOT_FOUND", message: "caf\u00e9" } },
+      const staged = target.snapshot();
+      const effects = target.observeEffects();
+      expect(await upload(2)).toEqual({
+        status: 400,
+        body: {
+          ok: false,
+          error: {
+            code: "RESTORE_INVALID_ROW",
+            message: "Cloud v3 portable restore could not be verified",
+            retry: "never",
+          },
+        },
       });
+      expect(effects()).toEqual({
+        sqlWriteAttempts: 1,
+        alarmWrites: 0,
+        sqlAndKvIntact: true,
+      });
+      expect(target.snapshot()).toEqual(staged);
+      await unprovisioned(target);
+      const glyphs = "caf\u00e9 \u{1F600}";
+      const source = guardFixture(typedEnv);
+      const honest = guardFixture(typedEnv);
+      using _source = source.db;
+      using _honest = honest.db;
+      expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+      ok(
+        await append(
+          source,
+          putRecords(
+            { key: "r1", revision: 1, value: dependent("work-1", ["work-2"]) },
+            { key: "r2", revision: 1, value: dependent("work-2", []) },
+          ),
+        ),
+      );
+      const named = {
+        actor: { kind: "agent", id: glyphs },
+        session: { id: glyphs, device: "owner-a" },
+      };
+      ok(
+        await rawLease(source, "claim", "owner-a", {
+          subject: "issue:work-2",
+          requestId: "dependency",
+          ttlMs: HOUR,
+          holder: named,
+        }),
+      );
+      const blocked = await typed(source, issueClaim);
+      expect(blocked).toMatchObject({
+        status: 409,
+        body: { error: { code: "CLAIM_BLOCKED" } },
+      });
+      expect((blocked.body as { error: ForgeError }).error.message).toContain(
+        glyphs,
+      );
+      await drain(source, 0, 3);
+      const restored = await stageRestore(honest, typedBackup(source));
+      expect(await restored(2)).toMatchObject(restoreResult(2, true));
+      honest.restart();
+      expect(await typed(honest, issueClaim)).toEqual(blocked);
     }),
   timeout,
 );

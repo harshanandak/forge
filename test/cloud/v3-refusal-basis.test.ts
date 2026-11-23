@@ -1060,7 +1060,7 @@ for (const [op, body, setup] of oks) {
 
 const lone = (id: string, error: object) =>
   refusal("issue.claim", id, error, cb("forge-1"));
-const unfollowed: [string, () => Json, Setup?][] = [
+const unfollowed: [string, (f: Fixture) => Json, Setup?][] = [
   [
     "an update LEASE_NOT_HELD while the holder holds the lease",
     () => refusal("issue.update", "u1", E.noLease, ub("forge-1")),
@@ -1078,7 +1078,7 @@ const unfollowed: [string, () => Json, Setup?][] = [
   ],
   [
     "a claim refusal while a witness exists for its request id",
-    () => lone("w", leased("LEASE_HELD", "held", { subject })),
+    (f) => lone("w", E.held(f)),
     async (f) => {
       await fixtureIssue(f);
       await send(f, { ...typedClaim, requestId: "w" });
@@ -1100,7 +1100,7 @@ for (const [name, candidate, setup] of unfollowed)
     using _db = f.db;
     await provision(f);
     await setup?.(f);
-    refuses(f, noRefusal, candidate());
+    refuses(f, noRefusal, candidate(f));
   });
 test("v3 append refuses a valid refusal at batch index 1", async () => {
   const f = guardFixture(env);
