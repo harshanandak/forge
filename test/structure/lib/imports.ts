@@ -50,6 +50,11 @@ const scanners = {
   tsx: new Bun.Transpiler({ loader: "tsx" }),
 };
 
+const decodeEscapedString = (name: string): string | undefined =>
+  scanners.ts.scan(
+    `import "${name.replace(/\\(?:\r\n|[\s\S])|["\r\n]/g, (part) => (part.startsWith("\\") ? part : JSON.stringify(part).slice(1, -1)))}";`,
+  ).imports[0]?.path;
+
 /** Normalize TypeScript syntax without removing unused value references. */
 export function parsedSource(file: SourceFile): string {
   const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
@@ -68,7 +73,8 @@ export function importsOf(
   const found = new Set<string>();
   // Keep type-only dependencies visible in JavaScript-named inputs too.
   const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
-  const source = file.text.replace(/^\uFEFF/, "").replace(/^#![^\r\n]*/, "");
+  const normalized = file.text.replaceAll("\\\r\n", "\\\n");
+  const source = normalized.replace(/^\uFEFF/, "").replace(/^#![^\r\n]*/, "");
   try {
     for (const entry of scanners[loader].scan(source).imports)
       found.add(entry.path);
@@ -109,6 +115,24 @@ export function importsOf(
     "g",
   );
   let computedBuiltin = false;
+  if (withStrings.includes("\\u")) {
+    for (const { 0: use, 1: quote, index } of codeOnly.matchAll(
+      /\[\s*(["'\x60])\s*\1\s*\]|(?:[$\p{ID_Continue}\u200c\u200d]|\\u(?:\{[\da-fA-F]+\}|[\da-fA-F]{4}))+/gu,
+    )) {
+      const raw = withStrings.slice(index, index + use.length);
+      if (!raw.includes("\\u")) continue;
+      const name = quote
+        ? raw.slice(raw.indexOf(quote) + 1, raw.lastIndexOf(quote))
+        : raw;
+      try {
+        if (decodeEscapedString(name) !== "getBuiltinModule") continue;
+        computedBuiltin = true;
+        break;
+      } catch {
+        continue;
+      }
+    }
+  }
   for (const { 0: use, index } of withStrings.matchAll(builtinUses)) {
     if (codeOnly[index] !== use[0] || declarations.has(index)) continue;
     const argument = use.endsWith("(")
@@ -119,9 +143,7 @@ export function importsOf(
         .exec(argument)?.[1]
         ?.slice(1, -1);
     const specifier = name?.includes("\\")
-      ? scanners.ts.scan(
-          `import "${name.replace(/\\(?:\r\n|[\s\S])|["\r\n]/g, (part) => (part.startsWith("\\") ? part : JSON.stringify(part).slice(1, -1)))}";`,
-        ).imports[0]?.path
+      ? decodeEscapedString(name)
       : name?.replace(/\r\n?/g, "\n");
     if (specifier === undefined) computedBuiltin = true;
     else found.add(specifier);
