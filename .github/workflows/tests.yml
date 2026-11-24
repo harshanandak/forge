@@ -58,7 +58,7 @@ jobs:
           [[ $TEST_NODE =~ ^(24|26)$ ]] || refuse "node must be 24 or 26."
           [[ $TEST_REPEAT =~ ^([1-9]|1[0-9]|20)$ ]] || refuse "repeat must be an integer from 1 to 20."
           file_list='^[A-Za-z0-9._/ -]*$'
-          test_path='^(hub/)?test/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.test\.ts$'
+          test_path='^test/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.test\.ts$'
           [[ $TEST_FILES =~ $file_list ]] || refuse "files must be space-separated test paths without special characters."
           read -ra files <<< "$TEST_FILES"
           [[ -z $TEST_FILES || ${#files[@]} -gt 0 ]] || refuse "files must be empty or name at least one test."
@@ -92,11 +92,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile --ignore-scripts
         working-directory: cloud
-      - if: contains(env.TEST_FILES, 'hub/test/')
-        run: bun install --frozen-lockfile --ignore-scripts --linker hoisted
-        working-directory: hub
-      - if: contains(env.TEST_FILES, 'hub/test/')
-        run: bun run build:hub
       - if: env.TEST_FILES != ''
         run: bun run build
       - name: Run test attempts
