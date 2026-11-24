@@ -72,6 +72,8 @@ for (const name of [
   "getBuiltinModule code point identifier",
   "getBuiltinModule escaped bracket string",
   "getBuiltinModule code point bracket string",
+  "parenthesized escaped bracket string",
+  "escaped destructuring key",
   "getBuiltinModule call forwarding",
   "getBuiltinModule apply forwarding",
   "getBuiltinModule assignment alias",
