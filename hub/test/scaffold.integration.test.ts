@@ -5,7 +5,6 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -13,7 +12,6 @@ import {
   statSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import {
   basename,
   dirname,
@@ -27,6 +25,7 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { expect, test } from "bun:test";
 import { SECRET_PATTERNS } from "../src/contract/errors.js";
+import { hubTestTemp } from "./temp.ts";
 
 const timeout = 30_000;
 const hub = realpathSync(resolve(import.meta.dir, ".."));
@@ -52,7 +51,7 @@ function isolatedNode(
   stderr: string,
   env = {},
 ): void {
-  const cwd = mkdtempSync(join(tmpdir(), "forge-hub-cli-"));
+  const cwd = hubTestTemp("forge-hub-cli-");
   try {
     const result = node(args, cwd, env);
     expect(result.status).toBe(exit);
@@ -120,7 +119,7 @@ test(
   "no argument and an unknown command print usage and exit 2",
   () => {
     for (const args of [[bin], [bin, "bogus"]])
-      isolatedNode(args, 2, "", usage);
+      isolatedNode(["--no-experimental-sqlite", ...args], 2, "", usage);
   },
   timeout,
 );
@@ -148,10 +147,21 @@ test(
 const ownFiles = [
   "package.json",
   "LICENSE",
+  "README.md",
   "THIRD_PARTY_NOTICES.md",
   "bin/forge-hub.mjs",
   "manifests/slack-socket.yaml",
+  "dist/chat/canvas.js",
+  "dist/chat/cards.js",
+  "dist/chat/config.js",
+  "dist/chat/failure.js",
+  "dist/chat/inbound.js",
   "dist/chat/index.js",
+  "dist/chat/logger.js",
+  "dist/chat/probe.js",
+  "dist/chat/slack.js",
+  "dist/chat/state.js",
+  "dist/chat/summary.js",
   "dist/contract/chat-state.js",
   "dist/contract/chat.js",
   "dist/contract/core.js",
@@ -161,7 +171,18 @@ const ownFiles = [
   "dist/contract/ids.js",
   "dist/contract/mcp.js",
   "dist/contract/runtime.js",
+  "dist/core/config.js",
+  "dist/core/credentials.js",
+  "dist/core/db.js",
+  "dist/core/directory.js",
+  "dist/core/errors.js",
+  "dist/core/guards.js",
   "dist/core/index.js",
+  "dist/core/protect.js",
+  "dist/core/schema.js",
+  "dist/core/sessions.js",
+  "dist/core/storage.js",
+  "dist/core/store.js",
   "dist/hooks/pre-tool.js",
   "dist/hooks/session-start.js",
   "dist/hooks/shared.js",
@@ -211,7 +232,11 @@ const fields = [
   "optionalDependencies",
   "peerDependencies",
 ] as const;
-type Package = { path: string; metadata: Record<string, unknown> };
+type Package = {
+  path: string;
+  metadata: Record<string, unknown>;
+  notices: string[];
+};
 
 function installedFolder(owner: string, name: string): string | undefined {
   ok(/^(?:@[\w.-]+\/)?[\w-][\w.-]*$/.test(name), "Invalid dependency name");
@@ -265,7 +290,10 @@ function installedClosure(): Map<string, Package> {
             installed.version === record(metadata.dependencies)[name],
             "Direct dependency pin differs from the hub install",
           );
-        closure.set(key, { path, metadata: installed });
+        const notices = readdirSync(path).filter((name) =>
+          /^(?:licen[cs]e|notice|copying)(?:[._-]|$)/i.test(name),
+        );
+        closure.set(key, { path, metadata: installed, notices });
         visit(path, installed);
       }
     }
@@ -316,15 +344,35 @@ function npmManifestPath(): string {
     : resolve(dirname(realpathSync(executable)), "../package.json");
 }
 
-async function packableFiles(npm: string): Promise<string[]> {
+async function packableFiles(
+  npm: string,
+  closure: Map<string, Package>,
+): Promise<string[]> {
   const requireNpm = createRequire(npm);
-  const Arborist = requireNpm("@npmcli/arborist") as new (options: {
-    path: string;
-  }) => { loadActual(): Promise<unknown> };
+  const packageJson = requireNpm("@npmcli/package-json") as {
+    normalize(path: string): Promise<{ content: Record<string, unknown> }>;
+  };
   const packlist = requireNpm("npm-packlist") as (
     tree: unknown,
   ) => Promise<string[]>;
-  return packlist(await new Arborist({ path: hub }).loadActual());
+  const edgesOut = new Map(
+    await Promise.all(
+      [...closure].map(async ([name, { path }]) => {
+        const { content } = await packageJson.normalize(path);
+        const node = { path, package: content, edgesOut: new Map() };
+        return [name, { to: { ...node, target: node } }] as const;
+      }),
+    ),
+  );
+  const { content } = await packageJson.normalize(hub);
+  return (
+    await packlist({
+      path: hub,
+      isProjectRoot: true,
+      package: { ...content, bundleDependencies: [...closure.keys()] },
+      edgesOut,
+    })
+  ).sort();
 }
 
 async function packReport(npm: string): Promise<string[]> {
@@ -398,13 +446,11 @@ function checkInventory(
       "Pack omitted a production package",
     );
     runtimeTargets(installed.metadata, files);
-    for (const name of readdirSync(installed.path).filter((name) =>
-      /^(?:licen[cs]e|notice|copying)(?:[._-]|$)/i.test(name),
-    ))
+    for (const name of installed.notices)
       ok(files.includes(name), "Pack omitted a bundled licence or notice file");
   }
   ok(
-    isDeepStrictEqual(paths.toSorted(), expected.toSorted()),
+    isDeepStrictEqual(paths.toSorted(), expected),
     "Pack inventory differs from the packable installed files",
   );
 }
@@ -499,15 +545,25 @@ test(
 
     const manifestPath = join(hub, "package.json");
     const before = readFileSync(manifestPath);
+    const started = performance.now();
+    const closure = installedClosure();
+    const closureMs = performance.now() - started;
+    let packMs = 0;
+    let packlistMs = 0;
     const [paths, expected] = await Promise.all([
-      (packedPaths ??= packReport(npm)),
-      packableFiles(npm),
+      (packedPaths ??= packReport(npm)).then((files) => {
+        packMs = performance.now() - started - closureMs;
+        return files;
+      }),
+      packableFiles(npm, closure).then((files) => {
+        packlistMs = performance.now() - started - closureMs;
+        return files;
+      }),
     ]);
     ok(
       before.equals(readFileSync(manifestPath)),
       "npm pack changed the hub manifest",
     );
-    const closure = installedClosure();
     checkInventory(paths, expected, closure);
 
     const omitPackage = (owner: string) =>
@@ -537,6 +593,12 @@ test(
       ownFiles.length,
       paths.length - ownFiles.length,
       closure.size,
+    );
+    console.log(
+      "A7 phases: closure %d ms, npm pack %d ms, expected files %d ms.",
+      Math.round(closureMs),
+      Math.round(packMs),
+      Math.round(packlistMs),
     );
   },
   timeout,

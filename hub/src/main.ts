@@ -12,14 +12,11 @@ import type {
   ReadSecret,
 } from "./contract/runtime.ts";
 import {
-  createHubCore,
   createPeopleDirectory,
   inspectStorage,
   loadConfig,
-  nullTracker,
-  openHubDb,
-  protectPath,
-} from "./core/index.ts";
+} from "./core/config.ts";
+import { protectPath } from "./core/protect.ts";
 import {
   createDoorbell,
   createRemoteHandler,
@@ -156,7 +153,8 @@ export async function main(
       return await postSummary(loadConfig(path), secret, project);
     }
     const config = loadConfig(path);
-
+    const { createHubCore, nullTracker, openHubDb } =
+      await import("./core/index.ts");
     const db = openHubDb(join(config.dataDir, "hub.sqlite"));
     try {
       const serve = command === "serve";
