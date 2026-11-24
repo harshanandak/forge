@@ -126,6 +126,10 @@ export function createOpenHubDb(
   };
 }
 
-export const openHubDb = createOpenHubDb(
-  (path, options) => new DatabaseSync(path, options),
-);
+let defaultOpen: OpenHubDb | undefined;
+export function openHubDb(path: string): HubDb {
+  defaultOpen ??= createOpenHubDb(
+    (target, options) => new DatabaseSync(target, options),
+  );
+  return defaultOpen(path);
+}
