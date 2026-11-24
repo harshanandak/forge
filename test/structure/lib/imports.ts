@@ -62,7 +62,7 @@ export function parsedSource(file: SourceFile): string {
 /** Import specifiers of a code file, including `import type` (erased at run time, but still a leak). */
 export function importsOf(
   file: SourceFile,
-  onNonliteral?: () => void,
+  onNonliteral?: (loader?: "getBuiltinModule") => void,
 ): string[] {
   if (!CODE_FILE.test(file.path)) return [];
   const found = new Set<string>();
@@ -91,6 +91,42 @@ export function importsOf(
     if (match[1] === undefined) onNonliteral?.();
     else found.add(match[1]);
   }
+
+  const aliases = new Set<string>();
+  const declarations = new Set<number>();
+  for (const match of codeOnly.matchAll(
+    /\b(?:const|let|var)\s*\{\s*(getBuiltinModule(?:\s*:\s*([\w$]+))?)\s*,?\s*\}\s*=\s*(?:globalThis\s*\.\s*)?process\b(?!\s*[.([])/g,
+  )) {
+    const [, property = "", binding = "getBuiltinModule"] = match;
+    const index = match.index + match[0].indexOf("getBuiltinModule");
+    declarations.add(index);
+    declarations.add(index + property.length - binding.length);
+    aliases.add(binding.replaceAll("$", "\\$"));
+  }
+  const direct = String.raw`(?:globalThis\s*\.\s*)?process\s*\.\s*getBuiltinModule`;
+  const builtinUses = new RegExp(
+    String.raw`(?<![\w$.])(?:${[direct, ...aliases].join("|")})\s*\(|\[\s*(["'\x60])getBuiltinModule\1\s*\]|(?<![\w$])(?:${["getBuiltinModule", ...aliases].join("|")})(?![\w$])`,
+    "g",
+  );
+  let computedBuiltin = false;
+  for (const { 0: use, index } of withStrings.matchAll(builtinUses)) {
+    if (codeOnly[index] !== use[0] || declarations.has(index)) continue;
+    const argument = use.endsWith("(")
+      ? withStrings.slice(index + use.length)
+      : "";
+    const name =
+      /^\s*("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\$]|\$(?!\{))*`)\s*[,)]/
+        .exec(argument)?.[1]
+        ?.slice(1, -1);
+    const specifier = name?.includes("\\")
+      ? scanners.ts.scan(
+          `import "${name.replace(/\\(?:\r\n|[\s\S])|["\r\n]/g, (part) => (part.startsWith("\\") ? part : JSON.stringify(part).slice(1, -1)))}";`,
+        ).imports[0]?.path
+      : name?.replace(/\r\n?/g, "\n");
+    if (specifier === undefined) computedBuiltin = true;
+    else found.add(specifier);
+  }
+  if (computedBuiltin) onNonliteral?.("getBuiltinModule");
   return [...found];
 }
 
@@ -322,8 +358,13 @@ export function findDependencyViolations(
         if (inTeam(posix.join(posix.dirname(file.path), slashPath(match[1]!))))
           reportTeam("triple-slash reference reaches removable team/");
     }
-    for (const specifier of importsOf(file, () => {
-      if (publicCode && !(file.path in TEAM_LOADING_SITES))
+    for (const specifier of importsOf(file, (loader) => {
+      if (!publicCode) return;
+      if (loader === "getBuiltinModule")
+        reportTeam(
+          "getBuiltinModule with a computed name can hide a dependency; use a string literal",
+        );
+      else if (!(file.path in TEAM_LOADING_SITES))
         reportTeam(
           "nonliteral module loading can hide team/; use literal imports and inject providers",
         );
