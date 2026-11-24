@@ -1,14 +1,10 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmod, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  inspectStorage,
-  createPrivateFile,
-  createPrivateDirectory,
-} from "../../src/core/index.ts";
+import { inspectStorage, createPrivateFile } from "../../src/core/index.ts";
 import { refuseNetworkPath } from "../../src/core/storage.ts";
-import { fixture } from "./fixture.ts";
+import { closeDb, fixture } from "./fixture.ts";
 
 const timeout = 30_000;
 
@@ -18,23 +14,26 @@ test(
     const { config, db, path, root } = await fixture();
     const rows = (dataDir = config.dataDir) =>
       inspectStorage({ ...config, dataDir });
-    const check = (name: string, dir?: string) =>
-      rows(dir).find((row) => row.check === name);
+    const check = (name: string, snapshot = rows()) =>
+      snapshot.find((row) => row.check === name);
     const before = await readFile(path);
     const privateDir = "The data directory is private.";
     const compatible = "The database schema is compatible.";
     const absent = "The service lock file is absent.";
-    expect(rows()).toHaveLength(4);
-    expect(check("data_directory")).toMatchObject({
+    const initial = rows();
+    expect(initial).toHaveLength(4);
+    expect(check("data_directory", initial)).toMatchObject({
       status: "ok",
       detail: privateDir,
     });
-    expect(check("storage_placement")?.status).toMatch(/^(ok|skipped)$/);
-    expect(check("schema_version")).toMatchObject({
+    expect(check("storage_placement", initial)?.status).toMatch(
+      /^(ok|skipped)$/,
+    );
+    expect(check("schema_version", initial)).toMatchObject({
       status: "ok",
       detail: compatible,
     });
-    expect(check("service_lock")).toMatchObject({
+    expect(check("service_lock", initial)).toMatchObject({
       status: "ok",
       detail: absent,
     });
@@ -55,20 +54,21 @@ test(
     });
     expect(await readFile(path)).toEqual(unsupported);
     db.exec("UPDATE meta SET value = '1'; DROP TABLE chat_kv");
-    expect(check("schema_version")?.status).toBe("action");
-    expect(JSON.stringify(rows())).not.toContain(config.dataDir);
+    const incomplete = rows();
+    expect(check("schema_version", incomplete)?.status).toBe("action");
+    expect(JSON.stringify(incomplete)).not.toContain(config.dataDir);
     if (process.platform !== "win32") {
       const sidecar = await stat(path + "-shm").catch(() => undefined);
       if (sidecar) expect(sidecar.mode & 0o077).toBe(0);
     }
-    const missing = check("data_directory", join(root, "missing"));
+    const missing = check("data_directory", rows(join(root, "missing")));
     expect(missing).toMatchObject({
       status: "action",
       detail: "The data directory is missing.",
     });
-    const empty = join(root, "empty");
-    expect(await createPrivateDirectory(empty)).toBe(true);
-    const schema = check("schema_version", empty);
+    closeDb(db);
+    await unlink(path);
+    const schema = check("schema_version");
     expect(schema).toMatchObject({
       status: "skipped",
       detail: "The database is not initialised.",
