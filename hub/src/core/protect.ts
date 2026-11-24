@@ -43,53 +43,37 @@ const windowsHelper = `
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-function Read-Descriptor($path, $isDir) {
+function Assert-PathKind($path, $isDir) {
   $attributes = [IO.File]::GetAttributes($path)
   $directory = [bool]($attributes -band [IO.FileAttributes]::Directory)
   if ($directory -ne $isDir -or ($attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'kind' }
-  if ($directory) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) }
+}
+function Read-Descriptor($path, $isDir) {
+  Assert-PathKind $path $isDir
+  if ($isDir) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) }
 }
 function Test-DirectoryChain($path) {
-  $trusted = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544',
-    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-  $genericAll = 0x10000000
-  $replacement = [Security.AccessControl.FileSystemRights]::Delete -bor
-    [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-    [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-    [Security.AccessControl.FileSystemRights]::TakeOwnership -bor $genericAll
   $depth = 0
   for ($dir = [IO.DirectoryInfo]::new($path); $null -ne $dir; $dir = $dir.Parent) {
-    try {
-      $acl = Read-Descriptor $dir.FullName $true
-      $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-    } catch { [Console]::Error.WriteLine("chain_descriptor:$depth"); return $false }
-    if ($raw.Owner.Value -notin $trusted -or $null -eq $raw.DiscretionaryAcl) {
-      [Console]::Error.WriteLine("chain_owner_or_dacl:$depth")
-      return $false
-    }
-    foreach ($ace in $raw.DiscretionaryAcl) {
-      if ($ace -isnot [Security.AccessControl.QualifiedAce]) { [Console]::Error.WriteLine("chain_ace:$depth"); return $false }
-      if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessDenied) { continue }
-      if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { [Console]::Error.WriteLine("chain_ace:$depth"); return $false }
-      if (($ace.AccessMask -band $replacement) -eq 0 -or $ace.SecurityIdentifier.Value -in $trusted) { continue }
-      $flags = [int]$ace.AceFlags
-      if ($ace.SecurityIdentifier.Value -eq 'S-1-3-0' -and ($flags -band 8) -and ($flags -band 3)) { continue }
-      [Console]::Error.WriteLine("chain_replacement:$depth")
+    try { Assert-PathKind $dir.FullName $true } catch {
+      [Console]::Error.WriteLine("chain_component:$depth")
       return $false
     }
     $depth += 1
   }
   return $true
 }
-function Test-Private($path, $isDir) {
+function Test-Private($path, $isDir, $effectiveOnly = $false) {
   $acl = Read-Descriptor $path $isDir
   $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-  if ($raw.Owner -ne $sid -or !$acl.AreAccessRulesProtected -or $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -ne 1) { return $false }
-  $ace = $raw.DiscretionaryAcl[0]
-  $flags = if ($isDir) { 3 } else { 0 }
-  return ($ace.AceType -eq [Security.AccessControl.AceType]::AccessAllowed -and
-    $ace.SecurityIdentifier -eq $sid -and [int]$ace.AceFlags -eq $flags -and
-    $ace.AccessMask -eq [int][Security.AccessControl.FileSystemRights]::FullControl)
+  $strictDirectory = $isDir -and !$effectiveOnly
+  if ($raw.Owner -ne $sid -or $null -eq $raw.DiscretionaryAcl -or !$raw.DiscretionaryAcl.Count) { return $false }
+  if ($strictDirectory -and (!$acl.AreAccessRulesProtected -or $raw.DiscretionaryAcl.Count -ne 1)) { return $false }
+  foreach ($ace in $raw.DiscretionaryAcl) {
+    if ($ace.AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or $ace.SecurityIdentifier -ne $sid) { return $false }
+    if ($strictDirectory -and ([int]$ace.AceFlags -ne 3 -or $ace.AccessMask -ne [int][Security.AccessControl.FileSystemRights]::FullControl)) { return $false }
+  }
+  return $true
 }
 function New-PrivateAcl($isDir) {
   $acl = if ($isDir) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
@@ -131,9 +115,12 @@ try {
     if ($acl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $sid) { exit 1 }
     [IO.File]::SetAccessControl($path, (New-PrivateAcl $false))
   }
-  if ($request.operation -eq 'verify-chain') {
-    if (!(Test-DirectoryChain $path)) { exit 1 }
-  } elseif (!(Test-Private $path $isDir)) { exit 1 }
+  $verifyChain = $request.operation -eq 'verify-chain'
+  if ($verifyChain -and !(Test-DirectoryChain $path)) { exit 1 }
+  if (!(Test-Private $path $isDir $verifyChain)) {
+    if ($verifyChain) { [Console]::Error.WriteLine('chain_private:0') }
+    exit 1
+  }
   [Console]::WriteLine('private')
 } catch { exit 1 }
 `;

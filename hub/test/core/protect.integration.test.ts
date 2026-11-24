@@ -242,7 +242,7 @@ $ErrorActionPreference = 'Stop'
 $request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())))
 $world = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
 $allow = [Security.AccessControl.AccessControlType]::Allow
-$right = if ($request.expected -eq 'creation') { [Security.AccessControl.FileSystemRights]::CreateDirectories } else { [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles }
+$right = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
 if ($request.grant) {
   $parent = [IO.Directory]::GetAccessControl($request.parent)
   $inheritance = if ($request.grant -eq 'inherited') { 3 } else { 0 }
@@ -268,7 +268,7 @@ if ($grant.Count -ne 1 -or $grant[0].IsInherited -ne $inherited -or
 `;
 
 test.skipIf(!windows)(
-  "Windows rejects an extra ancestor grant and leaves explicit and inherited DACL grants untouched",
+  "Windows accepts a clean chain and refuses junctions and extra leaf grants without changing DACLs",
   async () => {
     const base = temp();
     const { protector, diagnostics } = observedWindowsProtection();
@@ -281,36 +281,32 @@ test.skipIf(!windows)(
     expect(protector.protectDirectoryChain(child), diagnostics.join("\n")).toBe(
       true,
     );
-    readWindowsAcl(
-      fixtureAcl,
-      JSON.stringify({
-        path: parent,
-        parent,
-        expected: "creation",
-        grant: "explicit",
-      }),
+    const junction = join(base, "alias");
+    symlinkSync(parent, junction, "junction");
+    expect(protector.protectDirectoryChain(join(junction, "child"))).toBe(
+      false,
     );
-    expect(protector.protectDirectoryChain(child), diagnostics.join("\n")).toBe(
-      true,
-    );
-    const explicit = { path: parent, expected: "explicit" };
+    expect(diagnostics).toContain("chain_component:1");
+    const explicit = { path: child, expected: "explicit" };
     const before = readWindowsAcl(
       fixtureAcl,
-      JSON.stringify({ ...explicit, parent, grant: "explicit" }),
+      JSON.stringify({ ...explicit, parent: child, grant: "explicit" }),
     );
     expect(before).toMatch(/^[A-Za-z0-9+/]+=*$/);
-    expect(protectPath(parent, "dir")).toBe(false);
-    expect(protectPath(child, "dir")).toBe(true);
+    expect(protectPath(child, "dir")).toBe(false);
     expect(protector.protectDirectoryChain(child)).toBe(false);
-    expect(diagnostics).toContain("chain_replacement:1");
+    expect(diagnostics).toContain("chain_private:0");
     expect(readWindowsAcl(fixtureAcl, JSON.stringify(explicit))).toBe(before);
-    const inherited = { path: child, expected: "inherited" };
+    const inheritedPath = join(parent, "inherited");
+    expect(await protector.createPrivateDirectory(inheritedPath)).toBe(true);
+    const inherited = { path: inheritedPath, expected: "inherited" };
     const inheritedBefore = readWindowsAcl(
       fixtureAcl,
       JSON.stringify({ ...inherited, parent, grant: "inherited" }),
     );
     expect(inheritedBefore).toMatch(/^[A-Za-z0-9+/]+=*$/);
-    expect(protectPath(child, "dir")).toBe(false);
+    expect(protectPath(inheritedPath, "dir")).toBe(false);
+    expect(protector.protectDirectoryChain(inheritedPath)).toBe(false);
     expect(readWindowsAcl(fixtureAcl, JSON.stringify(inherited))).toBe(
       inheritedBefore,
     );

@@ -90,8 +90,6 @@ export function createOpenHubDb(
       throw new Error("Hub database directory is not private");
     const statOptions = { bigint: true, throwIfNoEntry: false } as const;
     const existing = lstatSync(target, statOptions);
-    if (existing !== undefined && (!existing.isFile() || existing.nlink !== 1n))
-      throw new Error("Hub database path must be a regular file with one link");
     for (const suffix of ["", "-wal", "-shm", "-journal"]) {
       const file = target + suffix;
       const present = suffix ? lstatSync(file, statOptions) : existing;

@@ -2,41 +2,19 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestSchema } from "./ddl.ts";
+import { schemaFixture } from "./schema-fixture.ts";
 
 const timeout = 30_000;
-const paths: string[] = [];
-const handles = new Set<{ close(): void }>();
+const { temp, track, cleanup } = schemaFixture();
 
-function dbPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "forge-hub-schema-"));
-  paths.push(dir);
-  return join(dir, "hub.sqlite");
-}
-
-function track<T extends { close(): void }>(db: T): T {
-  handles.add(db);
-  return db;
-}
-
-function close(db: { close(): void }): void {
-  handles.delete(db);
-  db.close();
-}
-
-afterEach(() => {
-  for (const db of handles) close(db);
-  for (const dir of paths.splice(0))
-    rmSync(dir, { recursive: true, force: true });
-});
+afterEach(cleanup);
 
 test(
   "C1: the independent schema admits just one answer across two raw connections",
   () => {
-    const path = dbPath();
+    const path = join(temp(), "hub.sqlite");
     const first = track(new Database(path));
     createTestSchema(first);
     first.exec(`

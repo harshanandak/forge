@@ -4,14 +4,11 @@ import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import {
   chmodSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { HubDb } from "../../src/contract/runtime.ts";
@@ -23,34 +20,18 @@ import {
   protectPath,
 } from "../../src/core/index.ts";
 import { createTestSchema } from "./ddl.ts";
+import { schemaFixture } from "./schema-fixture.ts";
 
 const timeout = 30_000;
-const paths: string[] = [];
-const handles = new Set<{ close(): void }>();
+const { temp, track, close, cleanup } = schemaFixture();
 
 async function dbPath(): Promise<string> {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "forge-hub-schema-")));
-  paths.push(dir);
-  const data = join(dir, "data");
+  const data = join(realpathSync(temp()), "data");
   expect(await createPrivateDirectory(data)).toBe(true);
   return join(data, "hub.sqlite");
 }
 
-function track<T extends { close(): void }>(db: T): T {
-  handles.add(db);
-  return db;
-}
-
-function close(db: { close(): void }): void {
-  handles.delete(db);
-  db.close();
-}
-
-afterEach(() => {
-  for (const db of handles) close(db);
-  for (const dir of paths.splice(0))
-    rmSync(dir, { recursive: true, force: true });
-});
+afterEach(cleanup);
 
 const schemaObjects =
   "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE type IN ('table', 'index') AND name NOT GLOB 'sqlite_*' ORDER BY type, name";
@@ -83,7 +64,7 @@ function insertInbox(db: HubDb) {
 }
 
 test(
-  "H1: creates the frozen schema and reopens without changing it",
+  "H1: creates the frozen schema and reopens with live, leftover and clean WAL state",
   async () => {
     const path = await dbPath();
     const db = track(openHubDb(path));
@@ -112,6 +93,20 @@ test(
     expect(
       db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get(),
     ).toEqual({ value: "1" });
+    db.exec("PRAGMA wal_autocheckpoint=0");
+    seedPeopleAndProject(db);
+    const leftover = await dbPath();
+    for (const suffix of ["", "-wal", "-shm"])
+      writeFileSync(leftover + suffix, readFileSync(path + suffix), {
+        mode: 0o600,
+      });
+    for (const candidate of [path, leftover]) {
+      const reopened = track(openHubDb(candidate));
+      expect(reopened.prepare("SELECT person_id FROM people").get()).toEqual({
+        person_id: "per_a",
+      });
+      close(reopened);
+    }
     close(db);
     expect(protectPath(path, "file")).toBe(true);
     const bytes = readFileSync(path);
