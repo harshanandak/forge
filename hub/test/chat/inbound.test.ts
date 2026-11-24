@@ -295,17 +295,26 @@ startedCase(
   "MC1 MC2 MC5 an edit and delete in a subscribed thread keep the original message identity",
   async (h) => {
     await subscribeChannel(h);
-    const edit = callback(changed(), "Ev0EDIT");
-    expect(await h.status(edit)).toBe(200);
-    await waitFor(() => h.changes.length === 1);
-    expect(
-      await h.status(edit, { headers: { "X-Slack-Retry-Num": "1" } }),
-    ).toBe(200);
-    expect(await h.status(callback(deleted(), "Ev0DELETE"))).toBe(200);
+    const events = [
+      callback(changed(), "Ev0EDIT"),
+      callback(deleted(), "Ev0DELETE"),
+    ];
+    for (const [index, event] of events.entries()) {
+      const responses = await Promise.all([h.status(event), h.status(event)]);
+      expect(responses).toEqual([200, 200]);
+      await waitFor(() => h.changes.length >= index + 1);
+      for (const count of ["0", "malformed", "1"])
+        expect(
+          await h.status(event, { headers: { "X-Slack-Retry-Num": count } }),
+        ).toBe(200);
+    }
+    await h.restart();
+    for (const event of events) expect(await h.status(event)).toBe(200);
     await h.stop();
     expect(h.changes).toEqual(subscribedChanges);
     expect(h.messages).toHaveLength(1);
   },
+  { disk: true },
 );
 
 startedCase(

@@ -127,6 +127,7 @@ test(
     expect(new URL(fake.url).hostname).toBe("127.0.0.1");
     const result = await fetch(new URL("chat.delete", fake.url), {
       method: "POST",
+      headers: { Authorization: "Bearer " + sampleBotToken },
     });
     expect(result.status).toBe(500);
     expect(fake.unexpected).toEqual(["chat.delete"]);

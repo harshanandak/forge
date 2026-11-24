@@ -1,5 +1,6 @@
 import { SlackAdapter, type SlackAdapterConfig } from "@chat-adapter/slack";
 import type { Chat, Message, Thread } from "chat";
+import { CHAT_DEDUPE_TTL_MS } from "../contract/chat-state.ts";
 import {
   ASK_ACTION_PREFIX,
   ChatWriteFailure,
@@ -126,6 +127,28 @@ export class PinnedSlackAdapter extends SlackAdapter {
       return Promise.resolve(true);
     const event = record(args[0].event);
     if (event && this.ownsSender(event)) return Promise.resolve(true);
+    if (
+      event?.type === "message" &&
+      (event.subtype === "message_changed" ||
+        event.subtype === "message_deleted")
+    ) {
+      const sender = record(
+        event.subtype === "message_changed"
+          ? event.message
+          : (event.previous_message ?? event.message),
+      );
+      const eventId = string(args[0].event_id);
+      const state = this.chat?.getState();
+      if (!eventId || !state || (sender && this.ownsSender(sender)))
+        return Promise.resolve(true);
+      return state
+        .setIfNotExists(
+          "slack:lifecycle:" + this.workspace + ":" + eventId,
+          true,
+          CHAT_DEDUPE_TTL_MS,
+        )
+        .then((claimed) => !claimed);
+    }
     return super.isDuplicateEventDelivery(...args);
   }
 

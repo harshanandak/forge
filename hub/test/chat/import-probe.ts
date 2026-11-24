@@ -22,13 +22,19 @@ const timerGuards = {
 Object.assign(globalThis, timerGuards);
 Object.assign(timers, timerGuards);
 Object.assign(promiseTimers, timerGuards);
+Object.assign(promiseTimers.scheduler, {
+  wait: refuse("scheduler wait"),
+  yield: refuse("scheduler yield"),
+});
 Server.prototype.listen = refuse("server listener");
 process.on("newListener", () => {
   effects.push("process listener");
 });
 
 const resources = process.getActiveResourcesInfo().toSorted();
-const loaded = await import("../../src/chat/index.ts");
+const loaded = process.argv[2]
+  ? await import("./import-side-effect.fixture.ts")
+  : await import("../../src/chat/index.ts");
 deepStrictEqual(Object.keys(loaded), ["createSlackChatPort"], "public exports");
 deepStrictEqual(env.reads, [], "Slack environment reads");
 deepStrictEqual(effects, [], "import-time listeners and timers");

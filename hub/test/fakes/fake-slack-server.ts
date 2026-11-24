@@ -237,9 +237,19 @@ export async function fakeSlackServer(socketMode = false) {
   }
 
   async function answer(request: IncomingMessage, response: ServerResponse) {
-    const pathname = new URL(request.url ?? "/", `http://${loopback}`).pathname;
-    const method = pathname.replace(/^\/api\//, "");
+    const url = new URL(request.url ?? "/", `http://${loopback}`);
+    const method = url.pathname.replace(/^\/api\//, "");
     const body = await requestBody(request);
+    const credential =
+      request.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];
+    if (
+      !credential ||
+      Object.hasOwn(body, "token") ||
+      JSON.stringify(body).includes(credential) ||
+      decodeURIComponent(url.href).includes(credential) ||
+      url.searchParams.has("token")
+    )
+      throw new Error("invalid credential placement in fixture request");
     calls.push({ method, body });
     const script = scripts.get(method)?.shift();
     if (script?.delayMs !== undefined) {

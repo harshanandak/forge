@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { SlackAdapter, SlackAdapterConfig } from "@chat-adapter/slack";
 import type { ChatConfig } from "chat";
+import { ChatWriteFailure } from "../contract/chat.ts";
 import { CHAT_DEDUPE_TTL_MS } from "../contract/chat-state.ts";
 import type { ChatDeps, SecretName } from "../contract/runtime.ts";
 import { validateRetryAfterResponse } from "./failure.ts";
@@ -50,6 +51,22 @@ export function slackAdapterConfig(deps: ChatDeps): SlackAdapterConfig {
       timeout: 10_000,
       logger,
       requestInterceptor(request) {
+        const data: unknown = request.data;
+        if (typeof data !== "string") throw new ChatWriteFailure("refused");
+        const body = new URLSearchParams(data);
+        body.delete("token");
+        const url = decodeURIComponent(
+          (request.baseURL ?? "") + (request.url ?? ""),
+        );
+        if (
+          url.includes(botToken) ||
+          [...body].some(
+            ([key, value]) =>
+              key.includes(botToken) || value.includes(botToken),
+          )
+        )
+          throw new ChatWriteFailure("refused");
+        request.data = body.toString();
         const transforms = [request.transformResponse ?? []].flat();
         request.transformResponse = [validateRetryAfterResponse, ...transforms];
         return request;
