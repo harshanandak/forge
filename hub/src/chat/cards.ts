@@ -14,46 +14,26 @@ export function escapeSlackText(text: string): string {
 }
 
 export function renderAskCard(view: AskCardView): CardElement {
-  const {
-    askId,
-    kind,
-    projectName,
-    askedForName,
-    requesterName,
-    issueId,
-    question,
-    state,
-    choices,
-  } = view;
-  const subject = issueId ? projectName + " / " + issueId : projectName;
+  const { askId, kind, state, choices } = view;
+  const subject = view.issueId
+    ? `${view.projectName} / ${view.issueId}`
+    : view.projectName;
   const heading =
     kind === "work_request"
-      ? "Approve work on " +
-        subject +
-        " requested by " +
-        (requesterName ?? "your agent") +
-        ":"
-      : "Ask for " + askedForName + " on " + projectName;
-  const card = [CardText(escapeSlackText(heading + "\n" + question))];
-  if (state.kind === "answered")
-    card.push(
-      CardText(
-        escapeSlackText(
-          "Answered by " + state.answeredByName + ": " + state.choiceLabel,
-        ),
-      ),
-    );
+      ? `Approve work on ${subject} requested by ${view.requesterName ?? "your agent"}:`
+      : `Ask for ${view.askedForName} on ${view.projectName}`;
+  const card = [CardText(escapeSlackText(`${heading}\n${view.question}`))];
+  if (state.kind === "answered") {
+    const label = `Answered by ${state.answeredByName}: ${state.choiceLabel}`;
+    card.push(CardText(escapeSlackText(label)));
+  }
   if (state.kind === "expired") card.push(CardText("This ask has expired."));
   if (state.kind !== "open") return Card({ children: card });
   if (state.digitFallback) {
     const instructions = [
       "Typed reply",
-      ...choices.map(
-        (choice, i) => "Reply " + (i + 1) + " for " + choice.label,
-      ),
-      "Reply under this card with the number, or send " +
-        askId +
-        " <number> in this DM.",
+      ...choices.map((choice, i) => `Reply ${i + 1} for ${choice.label}`),
+      `Reply under this card with the number, or send ${askId} <number> in this DM.`,
     ];
     return Card({
       children: [...card, CardText(escapeSlackText(instructions.join("\n")))],

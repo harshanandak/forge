@@ -1,5 +1,6 @@
 import type { SlackAdapter } from "@chat-adapter/slack";
 import {
+  ChatWriteFailure,
   SUMMARY_KEY_MARKER,
   SUMMARY_LOOKUP_LIMIT,
   SUMMARY_LOOKUP_MAX_PAGES,
@@ -7,16 +8,13 @@ import {
   type SummaryLookup,
 } from "../contract/chat.ts";
 import { messageRef, timestamp } from "./inbound.ts";
-import { list, readSlackIdentity, record } from "./probe.ts";
+import { list, readSlackIdentity, record, string } from "./probe.ts";
 
 type SlackIdentity = Awaited<ReturnType<typeof readSlackIdentity>>;
 
 function carriesMarker(block: unknown, marker: string): boolean {
   const elements = list(record(block)?.elements) ?? [];
-  return elements.some((item) => {
-    const text = record(item)?.text;
-    return typeof text === "string" && text.includes(marker);
-  });
+  return elements.some((item) => string(record(item)?.text)?.includes(marker));
 }
 
 function ownsMessage(
@@ -31,6 +29,42 @@ function ownsMessage(
     ([id, expected]) => id !== undefined && expected !== undefined,
   );
   return known.length > 0 && known.every(([id, expected]) => id === expected);
+}
+
+function canonicalMarker(block: unknown): string | undefined {
+  const context = record(block);
+  const elements = list(context?.elements);
+  const item = record(elements?.[0]);
+  if (
+    context?.type === "context" &&
+    elements?.length === 1 &&
+    item?.type === "mrkdwn"
+  )
+    return string(item.text);
+  return undefined;
+}
+
+export async function readSummaryKey(
+  adapter: SlackAdapter,
+  ref: ChatMessageRef,
+) {
+  const page = record(
+    await adapter.webClient.conversations.history({
+      channel: ref.channelId,
+      latest: ref.chatMessageId,
+      inclusive: true,
+      limit: 1,
+    }),
+  );
+  const messages = list(page?.messages);
+  if (page?.ok !== true || !messages) throw new ChatWriteFailure("unknown");
+  const current = messages
+    .map(record)
+    .find((message) => message?.ts === ref.chatMessageId);
+  const marker = canonicalMarker(list(current?.blocks)?.at(-1));
+  if (!marker?.startsWith(SUMMARY_KEY_MARKER)) return undefined;
+  const key = marker.slice(SUMMARY_KEY_MARKER.length);
+  return /^sum_[A-Za-z0-9_-]{1,64}$/.test(key) ? key : undefined;
 }
 
 const incomplete: SummaryLookup = { kind: "unknown" };
@@ -66,22 +100,12 @@ export async function findSummary(
         const message = record(raw);
         if (!message || !timestamp(message.ts)) return incomplete;
         const blocks = list(message.blocks) ?? [];
-        if (
-          !(
-            typeof message.text === "string" && message.text.includes(marker)
-          ) &&
-          !blocks.some((block) => carriesMarker(block, marker))
-        )
+        const inText = string(message.text)?.includes(marker);
+        if (!inText && !blocks.some((block) => carriesMarker(block, marker)))
           continue;
-        const last = record(blocks.at(-1));
-        const elements = list(last?.elements);
-        const item = record(elements?.[0]);
         if (
           found ||
-          last?.type !== "context" ||
-          elements?.length !== 1 ||
-          item?.type !== "mrkdwn" ||
-          item.text !== marker ||
+          canonicalMarker(blocks.at(-1)) !== marker ||
           !ownsMessage(message, identity)
         )
           return incomplete;

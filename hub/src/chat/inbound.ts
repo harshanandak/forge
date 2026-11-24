@@ -34,7 +34,7 @@ export function messageRef(
   };
 }
 
-function inboundRef(
+export function parseMessageRef(
   threadId: string,
   messageId: string,
 ): ChatMessageRef | undefined {
@@ -112,6 +112,13 @@ export class PinnedSlackAdapter extends SlackAdapter {
     );
   }
 
+  protected override threadIdForMessageEvent(
+    event: Parameters<SlackAdapter["threadIdForMessageEvent"]>[0],
+  ): string {
+    const { channel = "", thread_ts, ts } = event;
+    return this.encodeThreadId({ channel, threadTs: thread_ts || ts || "" });
+  }
+
   protected override isDuplicateEventDelivery(
     ...args: EventDelivery
   ): Promise<boolean> {
@@ -173,7 +180,7 @@ export function registerInboundHandlers(
 ): void {
   async function deliver(thread: Thread, message: Message) {
     const raw = record(message.raw);
-    const ref = inboundRef(thread.id, message.id);
+    const ref = parseMessageRef(thread.id, message.id);
     const userId = string(message.author.userId);
     if (
       !raw ||
@@ -225,7 +232,7 @@ export function registerInboundHandlers(
         user.userId === adapter.botUserId
       )
         return;
-      const message = inboundRef(threadId, messageId);
+      const message = parseMessageRef(threadId, messageId);
       if (!message) return;
       const action = list(record(raw)?.actions)
         ?.map(record)
@@ -255,7 +262,7 @@ export function registerInboundHandlers(
 
   chat.onMessageUpdated(async (thread, message) => {
     const raw = record(message.raw);
-    const ref = inboundRef(thread.id, message.id);
+    const ref = parseMessageRef(thread.id, message.id);
     if (
       !ref ||
       !raw ||
@@ -277,7 +284,7 @@ export function registerInboundHandlers(
       const event = record(raw);
       const previous =
         record(previousMessage?.raw) ?? record(event?.previous_message);
-      const ref = inboundRef(threadId, messageId);
+      const ref = parseMessageRef(threadId, messageId);
       if (
         !ref ||
         previousMessage?.author.isMe ||

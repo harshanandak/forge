@@ -56,6 +56,10 @@ startedCase(
     const edits = h.fake.only("chat.update");
     expect(edits).toHaveLength(1);
     expect(edits[0]).toMatchObject({ channel, ts: posted.chatMessageId });
+    const editedBlocks = edits[0]?.blocks;
+    if (!Array.isArray(editedBlocks)) throw new Error("expected Slack blocks");
+    expect(editedBlocks.at(-1)).toEqual(markerBlock());
+    expect(await find(h)).toEqual({ kind: "found", ref: posted });
   },
 );
 

@@ -16,13 +16,14 @@ import { slackPlatformCode, toChatWriteFailure } from "./failure.ts";
 import {
   channelId,
   messageRef,
+  parseMessageRef,
   PinnedSlackAdapter,
   registerInboundHandlers,
   timestamp,
 } from "./inbound.ts";
 import { probeSlack, record } from "./probe.ts";
 import { createChatLogger } from "./logger.ts";
-import { findSummary } from "./summary.ts";
+import { findSummary, readSummaryKey } from "./summary.ts";
 
 function invalidBlocksCause(error: unknown): unknown {
   const cause = record(error)?.cause;
@@ -42,8 +43,7 @@ function postedRef(
   ts: unknown,
   root?: string,
 ): ChatMessageRef {
-  if (!channelId(channel) || !timestamp(ts))
-    throw new ChatWriteFailure("unknown");
+  if (!timestamp(ts)) throw new ChatWriteFailure("unknown");
   return messageRef(channel, ts, root);
 }
 
@@ -71,7 +71,6 @@ export const createSlackChatPort: CreateChatPort = (deps) => {
     track,
   );
   const chat = new Chat(chatConfig(adapter, deps));
-  const state = chat.getState();
   const mode = adapter.isSocketMode ? "socket" : "webhook";
   let buttons = deps.config.slack.buttons;
   let active = false;
@@ -99,13 +98,8 @@ export const createSlackChatPort: CreateChatPort = (deps) => {
   }
 
   function validateRef(ref: ChatMessageRef): void {
-    const target = adapter.decodeThreadId(ref.chatThreadId);
-    if (
-      !channelId(ref.channelId) ||
-      target.channel !== ref.channelId ||
-      !timestamp(target.threadTs) ||
-      !timestamp(ref.chatMessageId)
-    )
+    const parsed = parseMessageRef(ref.chatThreadId, ref.chatMessageId);
+    if (parsed?.channelId !== ref.channelId)
       throw new ChatWriteFailure("refused");
   }
 
@@ -232,7 +226,8 @@ export const createSlackChatPort: CreateChatPort = (deps) => {
           const result = await adapter.postMessage(threadId, card);
           ref = postedRef(channel, result.id, root);
         }
-        if (target.kind === "channel") await state.subscribe(ref.chatThreadId);
+        if (target.kind === "channel")
+          await chat.getState().subscribe(ref.chatThreadId);
         return ref;
       });
     },
@@ -260,7 +255,7 @@ export const createSlackChatPort: CreateChatPort = (deps) => {
         await adapter.editMessage(
           ref.chatThreadId,
           ref.chatMessageId,
-          renderSummaryCard(summary),
+          renderSummaryCard(summary, await readSummaryKey(adapter, ref)),
         );
         return "edited";
       } catch (error) {
@@ -268,13 +263,14 @@ export const createSlackChatPort: CreateChatPort = (deps) => {
         throw toChatWriteFailure(invalidBlocksCause(error));
       }
     },
-    react(ref, emoji) {
+    react(ref, name) {
       return slackOperation(async () => {
         validateRef(ref);
-        if (!/^[a-z0-9_+-]{1,50}$/.test(emoji))
+        if (!/^[a-z0-9_+-]{1,50}$/.test(name))
           throw new ChatWriteFailure("refused");
         try {
-          await adapter.addReaction(ref.chatThreadId, ref.chatMessageId, emoji);
+          const { channelId: channel, chatMessageId: timestamp } = ref;
+          await adapter.webClient.reactions.add({ channel, timestamp, name });
         } catch (error) {
           if (slackPlatformCode(error) !== "already_reacted") throw error;
         }
