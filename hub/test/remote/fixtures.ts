@@ -305,7 +305,7 @@ export function request(
 
 export function rpcRequest(
   method: string,
-  params = {},
+  params: Record<string, unknown> = {},
   era: Era = "2026-07-28",
 ) {
   const meta = {
@@ -319,9 +319,16 @@ export function rpcRequest(
     method,
     params: era === eras[0] ? params : { ...params, _meta: meta },
   };
-  return request("/mcp", body, token, {
-    headers: { accept: "application/json, text/event-stream" },
+  const headers = new Headers({
+    accept: "application/json, text/event-stream",
   });
+  if (era !== eras[0]) {
+    headers.set("MCP-Protocol-Version", era);
+    headers.set("Mcp-Method", method);
+    if (method === "tools/call" && typeof params.name === "string")
+      headers.set("Mcp-Name", params.name);
+  }
+  return request("/mcp", body, token, { headers });
 }
 
 export function json<T>(text: string): T {
