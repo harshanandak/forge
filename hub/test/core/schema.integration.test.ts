@@ -2,6 +2,8 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
+import { strictEqual, throws } from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   readFileSync,
@@ -13,6 +15,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import type { HubDb } from "../../src/contract/runtime.ts";
 import { createOpenHubDb } from "../../src/core/db.ts";
 import {
@@ -211,6 +214,41 @@ test(
       if (file === path + "-wal") expect(statSync(file).size).toBe(0);
       else expect(file).toBe(path + "-shm");
     }
+  },
+  timeout,
+);
+
+test(
+  "refuses an unsupported schema in a crash-leftover WAL without changing data files",
+  async () => {
+    const path = await dbPath();
+    close(track(openHubDb(path)));
+    const database = readFileSync(path);
+    const writer = fileURLToPath(
+      new URL("./schema-crash.fixture.ts", import.meta.url),
+    );
+    const child = spawnSync(
+      process.execPath,
+      ["run", "--no-env-file", "--no-install", writer, path],
+      { encoding: "utf8", env: {}, timeout: 10_000, windowsHide: true },
+    );
+    if (child.error) throw child.error;
+    strictEqual(child.status, 0, child.stderr);
+
+    const files = ["hub.sqlite", "hub.sqlite-shm", "hub.sqlite-wal"];
+    const directory = dirname(path);
+    expect(readdirSync(directory).sort()).toEqual(files);
+    expect(readFileSync(path)).toEqual(database);
+    const wal = readFileSync(path + "-wal");
+    expect(wal.byteLength).toBeGreaterThan(32);
+
+    throws(() => close(track(openHubDb(path))), {
+      name: "Error",
+      message: "Unsupported hub database schema version",
+    });
+    expect(readFileSync(path)).toEqual(database);
+    expect(readFileSync(path + "-wal")).toEqual(wal);
+    expect(readdirSync(directory).sort()).toEqual(files);
   },
   timeout,
 );
