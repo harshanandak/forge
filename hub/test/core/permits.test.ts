@@ -112,6 +112,25 @@ test(
     expect(rows(f.db, "permits")).toMatchObject([
       { source: "approved_request", evidence: "owner_approval" },
     ]);
+    const approved = f.asks
+      .answerRows(f.sessionId, 10)
+      .find(({ view }) => view.permitId);
+    expect(approved?.view).toMatchObject({
+      choiceId: "approve",
+      answeredBy: refA,
+    });
+    const remove = f.db.prepare(
+      "DELETE FROM project_members WHERE project_id = ? AND person_id = ?",
+    );
+    remove.run(p1, a.personId);
+    expect(f.asks.answerRows(f.sessionId, 10)).toEqual([]);
+    expect(rows(f.db, "ask_answers")).toHaveLength(4);
+    f.setTime(f.deps.now() + 1);
+    const other = value(await f.request({ projectId: p2 }));
+    f.asks.answerAction(button(other.askId, "P3-other", slackA, "approve"));
+    expect(
+      f.asks.answerRows(f.sessionId, 1).map(({ view }) => view.askId),
+    ).toEqual([other.askId]);
   },
   timeout,
 );
