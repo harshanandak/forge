@@ -79,7 +79,8 @@ function assertIdentity(path: string, expected: BigIntStats): void {
 }
 
 export function createOpenHubDb(
-  connect: (path: string, options: DatabaseSyncOptions) => DatabaseSync,
+  connect = (path: string, options: DatabaseSyncOptions) =>
+    new DatabaseSync(path, options),
 ): OpenHubDb {
   return (path) => {
     const target = resolve(path);
@@ -127,9 +128,5 @@ export function createOpenHubDb(
 }
 
 let defaultOpen: OpenHubDb | undefined;
-export function openHubDb(path: string): HubDb {
-  defaultOpen ??= createOpenHubDb(
-    (target, options) => new DatabaseSync(target, options),
-  );
-  return defaultOpen(path);
-}
+export const openHubDb: OpenHubDb = (path) =>
+  (defaultOpen ??= createOpenHubDb())(path);

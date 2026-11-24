@@ -7,7 +7,6 @@ import type {
   OpenHubDb,
   ProtectPath,
 } from "../contract/runtime.ts";
-import { loadConfig as readConfig } from "./config.ts";
 import { openHubDb as openDb } from "./db.ts";
 import { protectPath as verifyPath } from "./protect.ts";
 
@@ -17,7 +16,7 @@ function notBuilt(): never {
 
 export const openHubDb: OpenHubDb = openDb;
 export const createHubCore: CreateHubCore = notBuilt;
-export const loadConfig: (path: string) => HubConfig = readConfig;
+export { loadConfig } from "./config.ts";
 export const nullTracker: TrackerReader = {
   issue: () => Promise.resolve(undefined),
 };

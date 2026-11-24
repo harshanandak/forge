@@ -52,20 +52,21 @@ test.each(["test:integration", "test:changed"])(
     const files = [
       ...(script === "test:integration"
         ? [
-            "test/adapters/l5-state/private-repair.integration.test.ts",
-            "test/assembly/state-acl-cli.integration.test.ts",
+            ["adapters/l5-state", "private-repair"],
+            ["assembly", "state-acl-cli"],
           ]
         : []),
-      "test/adapters/l5-state/private-files.integration.test.ts",
-      "test/surface/help-examples.integration.test.ts",
-      "test/adapters/process/windows-spawn-speed.integration.test.ts",
-      "test/adapters/vcs-git/vcs-git.integration.test.ts",
-      "test/assembly/shared-store/shared-store.integration.test.ts",
-      "test/tools/lane-run.integration.test.ts",
-      "test/tools/lane.integration.test.ts",
-      "test/tools/cli-speed.integration.test.ts",
-      ...hubSerial,
-    ];
+      ["adapters/l5-state", "private-files"],
+      ["surface", "help-examples"],
+      ["adapters/process", "windows-spawn-speed"],
+      ["adapters/vcs-git", "vcs-git"],
+      ["assembly/shared-store", "shared-store"],
+      ["tools", "lane-run"],
+      ["tools", "lane"],
+      ["tools", "cli-speed"],
+    ]
+      .map(([folder, name]) => `test/${folder}/${name}.integration.test.ts`)
+      .concat(hubSerial);
     for (const path of files) {
       expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);
       expect(ignore.match(path), `${path} excluded from bulk`).toBe(true);
