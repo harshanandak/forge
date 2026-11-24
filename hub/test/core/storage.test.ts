@@ -53,6 +53,8 @@ test(
       detail: "The database schema is incompatible.",
     });
     expect(await readFile(path)).toEqual(unsupported);
+    db.exec("UPDATE meta SET value = '1'; DROP TABLE chat_kv");
+    expect(check("schema_version")?.status).toBe("action");
     expect(JSON.stringify(rows())).not.toContain(config.dataDir);
     if (process.platform !== "win32") {
       const sidecar = await stat(path + "-shm").catch(() => undefined);

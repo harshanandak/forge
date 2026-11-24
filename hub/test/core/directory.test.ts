@@ -14,6 +14,8 @@ test(
   () => {
     const directory = createPeopleDirectory(people);
     expect(directory.all()).toHaveLength(3);
+    for (const person of people)
+      expect(directory.byPersonId(person.personId)).toEqual(person);
     for (const person of [people[0], people[1]]) {
       expect(directory.byPersonId(person.personId)).toBe(
         directory.bySlackUserId(person.slackUserId),

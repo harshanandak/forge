@@ -269,7 +269,7 @@ create table doorbell_rings (
 );
 `;
 
-export function schemaVersion(db: HubDb): 0 | 1 {
+export function schemaVersion(db: Pick<HubDb, "prepare">): 0 | 1 {
   const objects = db
     .prepare(
       "SELECT type || ':' || name AS key FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",

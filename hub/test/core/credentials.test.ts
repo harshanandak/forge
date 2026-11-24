@@ -117,12 +117,12 @@ test(
     );
     expect(() =>
       f.db.exec("INSERT INTO people VALUES ('per_c','Duplicate','U00000001')"),
-    ).toThrow();
+    ).toThrow(/UNIQUE constraint failed: people\.slack_user_id/);
     expect(() =>
       f.db.exec(
         "INSERT INTO projects (project_id,name,slack_channel_id,front_person_id) VALUES ('prj_bad','Bad','C00000001','per_a')",
       ),
-    ).toThrow();
+    ).toThrow(/CHECK constraint failed/);
     expect(f.db.prepare("SELECT count(*) AS n FROM people").get()?.n).toBe(2);
     expect(f.db.prepare("SELECT count(*) AS n FROM projects").get()?.n).toBe(2);
   },
