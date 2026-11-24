@@ -382,10 +382,17 @@ export function createPathProtection(
   };
 }
 
-export const {
-  protectPath,
-  protectDirectoryChain,
-  createPrivateWindowsFile,
-  createPrivateDirectory,
-  createPrivateFile,
-} = createPathProtection();
+let defaultInstance: PathProtection | undefined;
+const defaultProtection = () => (defaultInstance ??= createPathProtection());
+
+export const protectPath: ProtectPath = (path, kind) =>
+  defaultProtection().protectPath(path, kind);
+export const protectDirectoryChain: PathProtection["protectDirectoryChain"] = (
+  path,
+) => defaultProtection().protectDirectoryChain(path);
+export const createPrivateWindowsFile: PathProtection["createPrivateWindowsFile"] =
+  (path) => defaultProtection().createPrivateWindowsFile(path);
+export const createPrivateDirectory: PathProtection["createPrivateDirectory"] =
+  (path) => defaultProtection().createPrivateDirectory(path);
+export const createPrivateFile: PathProtection["createPrivateFile"] = (path) =>
+  defaultProtection().createPrivateFile(path);
