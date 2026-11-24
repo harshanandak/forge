@@ -262,14 +262,15 @@ startedCase(
   },
 );
 
+const cardTextImport =
+  /import\s+\{[^}]*\bCardText\b[^}]*\}\s+from\s+["']chat["']/;
+
 test(
   "O10 cards use CardText and no production chat module imports mdast Text",
   () => {
     const root = new URL("../../src/chat/", import.meta.url);
     const cards = readFileSync(new URL("cards.ts", root), "utf8");
-    expect(cards).toMatch(
-      /import\s+\{[^}]*\bCardText\b[^}]*\}\s+from\s+["']chat["']/,
-    );
+    expect(cards).toMatch(cardTextImport);
     for (const name of readdirSync(root).filter((path) =>
       path.endsWith(".ts"),
     )) {
