@@ -124,6 +124,8 @@ export class PinnedSlackAdapter extends SlackAdapter {
   ): Promise<boolean> {
     if (args[0].type === "event_callback" && !this.acceptsEvent(args[0]))
       return Promise.resolve(true);
+    const event = record(args[0].event);
+    if (event && this.ownsSender(event)) return Promise.resolve(true);
     return super.isDuplicateEventDelivery(...args);
   }
 
