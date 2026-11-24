@@ -1,12 +1,12 @@
 import { ChatWriteFailure, type ChatFailureReason } from "../contract/chat.ts";
 
-const uncertainSlackCodes = new Set([
+const uncertainSlackCodes = [
   "fatal_error",
   "internal_error",
   "ratelimited",
   "request_timeout",
   "service_unavailable",
-]);
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -69,7 +69,7 @@ export function toChatWriteFailure(error: unknown): ChatWriteFailure {
     if (reason) return new ChatWriteFailure("refused", undefined, reason);
   }
   const code = slackPlatformCode(error);
-  return code === undefined || uncertainSlackCodes.has(code)
+  return code === undefined || uncertainSlackCodes.includes(code)
     ? new ChatWriteFailure("unknown")
     : new ChatWriteFailure("refused", undefined, refusalReason(code));
 }
