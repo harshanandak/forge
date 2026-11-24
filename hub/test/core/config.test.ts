@@ -1,11 +1,11 @@
 /// <reference types="bun" />
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HubConfigError } from "../../src/contract/runtime.ts";
 import { loadConfig } from "../../src/core/index.ts";
+import { hubTestTemp } from "../temp.ts";
 import { configFixture } from "./config-fixture.ts";
 
 const timeout = 30_000;
@@ -29,7 +29,7 @@ function change(root: object, [path, value]: Edit): void {
 }
 
 function writeConfig(edits: readonly Edit[] = []) {
-  const dir = mkdtempSync(join(tmpdir(), "forge-hub-config-"));
+  const dir = hubTestTemp("forge-hub-config-");
   dirs.push(dir);
   const path = join(dir, "hub.json");
   const fixture = configFixture();

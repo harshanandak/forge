@@ -2,11 +2,11 @@
 
 import { ok } from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { expect, test } from "bun:test";
+import { hubTestTemp } from "./temp.ts";
 
 const timeout = 30_000;
 const hub = resolve(import.meta.dir, "..");
@@ -268,7 +268,7 @@ function checkTypecheckWiring(
 }
 
 function probeConfig(parent: string): void {
-  const cwd = mkdtempSync(join(tmpdir(), "forge-hub-typecheck-"));
+  const cwd = hubTestTemp("forge-hub-typecheck-");
   try {
     const config = join(cwd, "tsconfig.json");
     writeFileSync(join(cwd, "package.json"), '{"type":"module"}\n');

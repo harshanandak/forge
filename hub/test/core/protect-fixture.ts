@@ -1,8 +1,8 @@
 import { expect } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { PathProtection } from "../../src/core/protect.ts";
+import { hubTestTemp } from "../temp.ts";
 
 export const timeout = 30_000;
 export const fileText = "stored data";
@@ -11,7 +11,7 @@ export function protectionFixture() {
   const dirs: string[] = [];
   return {
     temp(this: void) {
-      const dir = mkdtempSync(join(tmpdir(), "forge-hub-protect-"));
+      const dir = hubTestTemp("forge-hub-protect-");
       dirs.push(dir);
       return dir;
     },

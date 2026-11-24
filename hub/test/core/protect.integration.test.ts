@@ -108,11 +108,23 @@ function verifyWindowsAcl(path: string): void {
   expect(readWindowsAcl(systemPowerShellCheck, path)).toBe("private");
 }
 
-function observedWindowsProtection() {
+function observedWindowsProtection(rewrite?: (script: string) => string) {
   const diagnostics: string[] = [];
   const protector = createPathProtection({
     execute(exe, args, options) {
-      const result = spawnSync(exe, args, options);
+      let scriptArgs = args;
+      if (rewrite) {
+        const encoded = args.at(-1);
+        if (!encoded) throw new Error("Expected an encoded PowerShell script");
+        const script = rewrite(
+          Buffer.from(encoded, "base64").toString("utf16le"),
+        );
+        scriptArgs = [
+          ...args.slice(0, -1),
+          Buffer.from(script, "utf16le").toString("base64"),
+        ];
+      }
+      const result = spawnSync(exe, scriptArgs, options);
       if (result.error) diagnostics.push(result.error.message);
       if (result.stderr) diagnostics.push(result.stderr.trim());
       return result;
@@ -268,7 +280,7 @@ if ($grant.Count -ne 1 -or $grant[0].IsInherited -ne $inherited -or
 `;
 
 test.skipIf(!windows)(
-  "Windows accepts a clean chain and refuses junctions and extra leaf grants without changing DACLs",
+  "Windows refuses junctions, untrusted owners and replacement grants without changing DACLs",
   async () => {
     const base = temp();
     const { protector, diagnostics } = observedWindowsProtection();
@@ -281,6 +293,20 @@ test.skipIf(!windows)(
     expect(protector.protectDirectoryChain(child), diagnostics.join("\n")).toBe(
       true,
     );
+    const foreign = observedWindowsProtection((script) =>
+      script.replace(
+        "[IO.Directory]::GetAccessControl($path) }",
+        `$acl = [IO.Directory]::GetAccessControl($path)
+         if ([IO.Path]::GetFileName($path) -eq 'parent') {
+           $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-20'))
+         }
+         $acl }`,
+      ),
+    );
+    expect(foreign.protector.protectDirectoryChain(child)).toBe(false);
+    expect(foreign.diagnostics).toContain("chain_owner_or_dacl:1");
+    const nested = join(child, "nested");
+    expect(await protector.createPrivateDirectory(nested)).toBe(true);
     const junction = join(base, "alias");
     symlinkSync(parent, junction, "junction");
     expect(protector.protectDirectoryChain(join(junction, "child"))).toBe(
@@ -295,7 +321,10 @@ test.skipIf(!windows)(
     expect(before).toMatch(/^[A-Za-z0-9+/]+=*$/);
     expect(protectPath(child, "dir")).toBe(false);
     expect(protector.protectDirectoryChain(child)).toBe(false);
-    expect(diagnostics).toContain("chain_private:0");
+    expect(diagnostics).toContain("chain_replacement:0");
+    expect(protectPath(nested, "dir")).toBe(true);
+    expect(protector.protectDirectoryChain(nested)).toBe(false);
+    expect(diagnostics).toContain("chain_replacement:1");
     expect(readWindowsAcl(fixtureAcl, JSON.stringify(explicit))).toBe(before);
     const inheritedPath = join(parent, "inherited");
     expect(await protector.createPrivateDirectory(inheritedPath)).toBe(true);

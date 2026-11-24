@@ -5,7 +5,6 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -13,7 +12,6 @@ import {
   statSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import {
   basename,
   dirname,
@@ -27,6 +25,7 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { expect, test } from "bun:test";
 import { SECRET_PATTERNS } from "../src/contract/errors.js";
+import { hubTestTemp } from "./temp.ts";
 
 const timeout = 30_000;
 const hub = realpathSync(resolve(import.meta.dir, ".."));
@@ -52,7 +51,7 @@ function isolatedNode(
   stderr: string,
   env = {},
 ): void {
-  const cwd = mkdtempSync(join(tmpdir(), "forge-hub-cli-"));
+  const cwd = hubTestTemp("forge-hub-cli-");
   try {
     const result = node(args, cwd, env);
     expect(result.status).toBe(exit);
@@ -148,6 +147,7 @@ test(
 const ownFiles = [
   "package.json",
   "LICENSE",
+  "README.md",
   "THIRD_PARTY_NOTICES.md",
   "bin/forge-hub.mjs",
   "manifests/slack-socket.yaml",
