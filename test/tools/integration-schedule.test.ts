@@ -44,24 +44,25 @@ test.each(["test:integration", "test:changed"])(
       expect(groups[1]).toContain("--changed=origin/main");
       expect(serial).toContain("--changed=origin/main");
     }
+    const scaffold = "hub/test/scaffold.integration.test.ts";
     const files = [
       ...(script === "test:integration"
         ? [
-            ["adapters/l5-state", "private-repair"],
-            ["assembly", "state-acl-cli"],
+            "test/adapters/l5-state/private-repair.integration.test.ts",
+            "test/assembly/state-acl-cli.integration.test.ts",
           ]
         : []),
-      ["adapters/l5-state", "private-files"],
-      ["surface", "help-examples"],
-      ["adapters/process", "windows-spawn-speed"],
-      ["adapters/vcs-git", "vcs-git"],
-      ["assembly/shared-store", "shared-store"],
-      ["tools", "lane-run"],
-      ["tools", "lane"],
-      ["tools", "cli-speed"],
+      "test/adapters/l5-state/private-files.integration.test.ts",
+      "test/surface/help-examples.integration.test.ts",
+      "test/adapters/process/windows-spawn-speed.integration.test.ts",
+      "test/adapters/vcs-git/vcs-git.integration.test.ts",
+      "test/assembly/shared-store/shared-store.integration.test.ts",
+      "test/tools/lane-run.integration.test.ts",
+      "test/tools/lane.integration.test.ts",
+      "test/tools/cli-speed.integration.test.ts",
+      scaffold,
     ];
-    for (const [folder, name] of files) {
-      const path = `test/${folder}/${name}.integration.test.ts`;
+    for (const path of files) {
       expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);
       expect(ignore.match(path), `${path} excluded from bulk`).toBe(true);
     }
@@ -74,6 +75,7 @@ test.each(["test:integration", "test:changed"])(
     expect(serialPaths).toHaveLength(files.length);
     const integrationPaths = [
       ...new Bun.Glob("test/**/*.integration.test.ts").scanSync("."),
+      ...new Bun.Glob(scaffold).scanSync("."),
     ]
       .map((path) => path.replaceAll("\\", "/"))
       .filter((path) => !path.endsWith("/packed.integration.test.ts"));
