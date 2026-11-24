@@ -47,6 +47,7 @@ test.each(["test:integration", "test:changed"])(
     const hubSerial = [
       "hub/test/scaffold.integration.test.ts",
       "hub/test/core/protect.integration.test.ts",
+      "hub/test/core/schema.integration.test.ts",
     ];
     const files = [
       ...(script === "test:integration"

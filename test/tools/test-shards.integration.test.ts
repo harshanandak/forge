@@ -244,6 +244,7 @@ function coverShards(count: number) {
     "cli-speed",
     "scaffold",
     "protect",
+    "schema",
   ];
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
     scripts: Record<string, string>;

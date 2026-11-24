@@ -58,7 +58,7 @@ test(
 );
 
 test(
-  "PP3: Windows verification refuses extra and inherited ACEs, timeout and non-protocol output",
+  "PP3: Windows verification requires the success marker, zero status and empty stderr",
   () => {
     const path = resolve(temp(), "name [with spaces] & apostrophe's file");
     writeFileSync(path, fileText);
@@ -71,6 +71,11 @@ test(
       ],
       ["extra ACE", { status: 1, stdout: "refused\n", stderr: "" }, false],
       ["inherited ACE", { status: 1, stdout: "refused\n", stderr: "" }, false],
+      [
+        "successful stdout with stderr",
+        { status: 0, stdout: "private\n", stderr: "unexpected error\n" },
+        false,
+      ],
       [
         "timeout",
         { status: null, stdout: "", stderr: "", error: new Error("timeout") },

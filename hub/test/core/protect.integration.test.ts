@@ -7,11 +7,12 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { protectPath } from "../../src/core/index.ts";
+import { protectDirectoryChain, protectPath } from "../../src/core/index.ts";
 import { createPathProtection } from "../../src/core/protect.ts";
 import {
   fileText,
@@ -72,7 +73,7 @@ if ($acl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $owner -or
 [Console]::WriteLine('private')
 `;
 
-function verifyWindowsAcl(path: string): void {
+function readWindowsAcl(script: string, input: string): string {
   const executable = join(
     process.env.SystemRoot ?? "C:\\Windows",
     "System32",
@@ -86,10 +87,10 @@ function verifyWindowsAcl(path: string): void {
       "-NoProfile",
       "-NonInteractive",
       "-EncodedCommand",
-      Buffer.from(systemPowerShellCheck, "utf16le").toString("base64"),
+      Buffer.from(script, "utf16le").toString("base64"),
     ],
     {
-      input: Buffer.from(path).toString("base64"),
+      input: Buffer.from(input).toString("base64"),
       encoding: "utf8",
       windowsHide: true,
       shell: false,
@@ -98,8 +99,12 @@ function verifyWindowsAcl(path: string): void {
   );
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(0);
-  expect(result.stdout.trim()).toBe("private");
   expect(result.stderr).toBe("");
+  return result.stdout.trim();
+}
+
+function verifyWindowsAcl(path: string): void {
+  expect(readWindowsAcl(systemPowerShellCheck, path)).toBe("private");
 }
 
 test.skipIf(!windows)(
@@ -187,6 +192,96 @@ test.skipIf(!windows)(
     const dir = join(base, "private-dir");
     verifyWindowsAcl(dir);
     verifyWindowsAcl(join(dir, "private-file"));
+  },
+  timeout,
+);
+
+test.skipIf(windows)(
+  "Directory chain refuses a symlink component and a writable non-sticky ancestor",
+  () => {
+    const base = realpathSync(temp());
+    const ancestor = join(base, "ancestor");
+    const data = join(ancestor, "data");
+    mkdirSync(ancestor, { mode: 0o700 });
+    mkdirSync(data, { mode: 0o700 });
+    expect(protectDirectoryChain(data)).toBe(true);
+    const alias = join(base, "alias");
+    symlinkSync(ancestor, alias);
+    expect(protectDirectoryChain(join(alias, "data"))).toBe(false);
+    for (const mode of [0o770, 0o707]) {
+      chmodSync(ancestor, mode);
+      expect(currentMode(ancestor)).toBe(mode);
+      expect(protectDirectoryChain(data)).toBe(false);
+    }
+    chmodSync(ancestor, 0o1777);
+    expect(protectDirectoryChain(data)).toBe(true);
+  },
+  timeout,
+);
+
+const fixtureAcl = `
+$ProgressPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
+$request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())))
+$world = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$allow = [Security.AccessControl.AccessControlType]::Allow
+if ($request.grant) {
+  $parent = Get-Acl -LiteralPath $request.parent
+  $inheritance = if ($request.grant -eq 'inherited') { 3 } else { 0 }
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new($world,
+    [Security.AccessControl.FileSystemRights]::Write,
+    [Security.AccessControl.InheritanceFlags]$inheritance,
+    [Security.AccessControl.PropagationFlags]::None, $allow)
+  $parent.AddAccessRule($rule)
+  Set-Acl -LiteralPath $request.parent -AclObject $parent
+  if ($request.grant -eq 'inherited') {
+    $childAcl = Get-Acl -LiteralPath $request.path
+    $childAcl.SetAccessRuleProtection($false, $false)
+    Set-Acl -LiteralPath $request.path -AclObject $childAcl
+  }
+}
+$acl = Get-Acl -LiteralPath $request.path
+$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+$grant = @($rules | Where-Object { $_.IdentityReference -eq $world -and $_.AccessControlType -eq $allow })
+$inherited = $request.expected -eq 'inherited'
+if ($grant.Count -ne 1 -or $grant[0].IsInherited -ne $inherited -or
+    $acl.AreAccessRulesProtected -eq $inherited -or
+    ($grant[0].FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -ne [Security.AccessControl.FileSystemRights]::Write) { exit 1 }
+[Console]::WriteLine([Convert]::ToBase64String($acl.GetSecurityDescriptorBinaryForm()))
+`;
+
+test.skipIf(!windows)(
+  "Windows rejects an extra ancestor grant and leaves explicit and inherited DACL grants untouched",
+  async () => {
+    const base = temp();
+    const protector = createPathProtection();
+    const parent = join(base, "parent");
+    const child = join(parent, "child");
+    expect(await protector.createPrivateDirectory(parent)).toBe(true);
+    expect(await protector.createPrivateDirectory(child)).toBe(true);
+    expect(protectPath(parent, "dir")).toBe(true);
+    expect(protectPath(child, "dir")).toBe(true);
+    expect(protectDirectoryChain(child)).toBe(true);
+    const explicit = { path: parent, expected: "explicit" };
+    const before = readWindowsAcl(
+      fixtureAcl,
+      JSON.stringify({ ...explicit, parent, grant: "explicit" }),
+    );
+    expect(before).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    expect(protectPath(parent, "dir")).toBe(false);
+    expect(protectPath(child, "dir")).toBe(true);
+    expect(protectDirectoryChain(child)).toBe(false);
+    expect(readWindowsAcl(fixtureAcl, JSON.stringify(explicit))).toBe(before);
+    const inherited = { path: child, expected: "inherited" };
+    const inheritedBefore = readWindowsAcl(
+      fixtureAcl,
+      JSON.stringify({ ...inherited, parent, grant: "inherited" }),
+    );
+    expect(inheritedBefore).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    expect(protectPath(child, "dir")).toBe(false);
+    expect(readWindowsAcl(fixtureAcl, JSON.stringify(inherited))).toBe(
+      inheritedBefore,
+    );
   },
   timeout,
 );

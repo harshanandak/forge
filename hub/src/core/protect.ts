@@ -3,7 +3,7 @@ import {
   type SpawnSyncOptionsWithStringEncoding,
   type SpawnSyncReturns,
 } from "node:child_process";
-import { lstatSync, type Stats } from "node:fs";
+import { lstatSync, realpathSync, type Stats } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -16,10 +16,11 @@ import { dirname, join, resolve, win32 } from "node:path";
 import type { ProtectPath } from "../contract/runtime.ts";
 
 type Kind = "dir" | "file";
-type Operation = "verify" | "create-dir" | "harden-file";
+type Operation = "verify" | "create-dir" | "harden-file" | "verify-chain";
 
 export interface PathProtection {
   readonly protectPath: ProtectPath;
+  protectDirectoryChain(this: void, path: string): boolean;
   createPrivateDirectory(this: void, path: string): Promise<boolean>;
   createPrivateFile(this: void, path: string): Promise<FileHandle | null>;
 }
@@ -44,6 +45,32 @@ function Read-Descriptor($path, $isDir) {
   $item = Get-Item -LiteralPath $path -Force
   if ($item.PSIsContainer -ne $isDir -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'kind' }
   Get-Acl -LiteralPath $path
+}
+function Test-DirectoryChain($path) {
+  $trusted = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544',
+    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+  $genericWrite = 0x40000000
+  $genericAll = 0x10000000
+  $mutation = [Security.AccessControl.FileSystemRights]::Write -bor
+    [Security.AccessControl.FileSystemRights]::Delete -bor
+    [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+    [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [Security.AccessControl.FileSystemRights]::TakeOwnership -bor $genericWrite -bor $genericAll
+  for ($dir = [IO.DirectoryInfo]::new($path); $null -ne $dir; $dir = $dir.Parent) {
+    $acl = Read-Descriptor $dir.FullName $true
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    if ($raw.Owner.Value -notin $trusted -or $null -eq $raw.DiscretionaryAcl) { return $false }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      if ($ace -isnot [Security.AccessControl.QualifiedAce]) { return $false }
+      if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessDenied) { continue }
+      if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { return $false }
+      if (($ace.AccessMask -band $mutation) -eq 0 -or $ace.SecurityIdentifier.Value -in $trusted) { continue }
+      $flags = [int]$ace.AceFlags
+      if ($ace.SecurityIdentifier.Value -eq 'S-1-3-0' -and ($flags -band 8) -and ($flags -band 3)) { continue }
+      return $false
+    }
+  }
+  return $true
 }
 function Test-Private($path, $isDir) {
   $acl = Read-Descriptor $path $isDir
@@ -90,7 +117,9 @@ try {
     if ($acl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $sid) { exit 1 }
     Set-Acl -LiteralPath $path -AclObject (New-PrivateAcl $false)
   }
-  if (!(Test-Private $path $isDir)) { exit 1 }
+  if ($request.operation -eq 'verify-chain') {
+    if (!(Test-DirectoryChain $path)) { exit 1 }
+  } elseif (!(Test-Private $path $isDir)) { exit 1 }
   [Console]::WriteLine('private')
 } catch { exit 1 }
 `;
@@ -217,6 +246,29 @@ export function createPathProtection(
   }
 
   return {
+    protectDirectoryChain(path) {
+      try {
+        const target = resolve(path);
+        if (windows) return win(target, "dir", "verify-chain", now() + budget);
+        let component = realpathSync(target);
+        const owner = geteuid();
+        if (component !== target || owner === undefined) return false;
+        for (;;) {
+          const stat = lstat(component);
+          if (
+            !stat.isDirectory() ||
+            (stat.uid !== owner && stat.uid !== 0) ||
+            ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0)
+          )
+            return false;
+          const parent = dirname(component);
+          if (parent === component) return true;
+          component = parent;
+        }
+      } catch {
+        return false;
+      }
+    },
     protectPath(path, kind) {
       try {
         return verified(resolve(path), kind, now() + budget);
@@ -286,5 +338,9 @@ export function createPathProtection(
   };
 }
 
-export const { protectPath, createPrivateDirectory, createPrivateFile } =
-  createPathProtection();
+export const {
+  protectPath,
+  protectDirectoryChain,
+  createPrivateDirectory,
+  createPrivateFile,
+} = createPathProtection();

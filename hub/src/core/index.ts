@@ -23,6 +23,7 @@ export const nullTracker: TrackerReader = {
 };
 export const createPeopleDirectory: CreatePeopleDirectory = notBuilt;
 export const protectPath: ProtectPath = verifyPath;
+export { protectDirectoryChain } from "./protect.ts";
 export { createPrivateDirectory } from "./protect.ts";
 export { createPrivateFile } from "./protect.ts";
 export const inspectStorage: (config: HubConfig) => readonly DoctorCheck[] =
