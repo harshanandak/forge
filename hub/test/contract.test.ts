@@ -100,6 +100,9 @@ test(
     expect(unknown.effect).toBe("unknown");
     expect(unknown.retryAfterMs).toBeUndefined();
     expect(unknown.reason).toBeUndefined();
+    expect(Object.keys(unknown)).toEqual(["effect"]);
+    const plainRefusal = new ChatWriteFailure("refused");
+    expect(Object.keys(plainRefusal)).toEqual(["effect"]);
     const config = new HubConfigError(
       "/projects/0",
       "must be unique",
