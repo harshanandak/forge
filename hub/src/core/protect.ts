@@ -16,11 +16,13 @@ import { dirname, join, resolve, win32 } from "node:path";
 import type { ProtectPath } from "../contract/runtime.ts";
 
 type Kind = "dir" | "file";
-type Operation = "verify" | "create-dir" | "harden-file" | "verify-chain";
+type Operation =
+  "verify" | "create-dir" | "create-file" | "harden-file" | "verify-chain";
 
 export interface PathProtection {
   readonly protectPath: ProtectPath;
   protectDirectoryChain(this: void, path: string): boolean;
+  createPrivateWindowsFile(this: void, path: string): boolean;
   createPrivateDirectory(this: void, path: string): Promise<boolean>;
   createPrivateFile(this: void, path: string): Promise<FileHandle | null>;
 }
@@ -42,33 +44,40 @@ $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
 function Read-Descriptor($path, $isDir) {
-  $item = Get-Item -LiteralPath $path -Force
-  if ($item.PSIsContainer -ne $isDir -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'kind' }
-  Get-Acl -LiteralPath $path
+  $attributes = [IO.File]::GetAttributes($path)
+  $directory = [bool]($attributes -band [IO.FileAttributes]::Directory)
+  if ($directory -ne $isDir -or ($attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'kind' }
+  if ($directory) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) }
 }
 function Test-DirectoryChain($path) {
   $trusted = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544',
     'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-  $genericWrite = 0x40000000
   $genericAll = 0x10000000
-  $mutation = [Security.AccessControl.FileSystemRights]::Write -bor
-    [Security.AccessControl.FileSystemRights]::Delete -bor
+  $replacement = [Security.AccessControl.FileSystemRights]::Delete -bor
     [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
     [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-    [Security.AccessControl.FileSystemRights]::TakeOwnership -bor $genericWrite -bor $genericAll
+    [Security.AccessControl.FileSystemRights]::TakeOwnership -bor $genericAll
+  $depth = 0
   for ($dir = [IO.DirectoryInfo]::new($path); $null -ne $dir; $dir = $dir.Parent) {
-    $acl = Read-Descriptor $dir.FullName $true
-    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-    if ($raw.Owner.Value -notin $trusted -or $null -eq $raw.DiscretionaryAcl) { return $false }
-    foreach ($ace in $raw.DiscretionaryAcl) {
-      if ($ace -isnot [Security.AccessControl.QualifiedAce]) { return $false }
-      if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessDenied) { continue }
-      if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { return $false }
-      if (($ace.AccessMask -band $mutation) -eq 0 -or $ace.SecurityIdentifier.Value -in $trusted) { continue }
-      $flags = [int]$ace.AceFlags
-      if ($ace.SecurityIdentifier.Value -eq 'S-1-3-0' -and ($flags -band 8) -and ($flags -band 3)) { continue }
+    try {
+      $acl = Read-Descriptor $dir.FullName $true
+      $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    } catch { [Console]::Error.WriteLine("chain_descriptor:$depth"); return $false }
+    if ($raw.Owner.Value -notin $trusted -or $null -eq $raw.DiscretionaryAcl) {
+      [Console]::Error.WriteLine("chain_owner_or_dacl:$depth")
       return $false
     }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      if ($ace -isnot [Security.AccessControl.QualifiedAce]) { [Console]::Error.WriteLine("chain_ace:$depth"); return $false }
+      if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessDenied) { continue }
+      if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { [Console]::Error.WriteLine("chain_ace:$depth"); return $false }
+      if (($ace.AccessMask -band $replacement) -eq 0 -or $ace.SecurityIdentifier.Value -in $trusted) { continue }
+      $flags = [int]$ace.AceFlags
+      if ($ace.SecurityIdentifier.Value -eq 'S-1-3-0' -and ($flags -band 8) -and ($flags -band 3)) { continue }
+      [Console]::Error.WriteLine("chain_replacement:$depth")
+      return $false
+    }
+    $depth += 1
   }
   return $true
 }
@@ -101,7 +110,7 @@ try {
   $path = $request.path
   $isDir = $request.kind -eq 'dir'
   if ($request.operation -eq 'create-dir') {
-    if (Test-Path -LiteralPath $path) { exit 1 }
+    if ([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) { exit 1 }
     $parent = [IO.Path]::GetDirectoryName($path)
     $staging = [IO.Path]::Combine($parent, '.forge-private-' + [Guid]::NewGuid().ToString('N'))
     $null = [IO.Directory]::CreateDirectory($staging, (New-PrivateAcl $true))
@@ -111,11 +120,16 @@ try {
     } finally {
       if ([IO.Directory]::Exists($staging)) { [IO.Directory]::Delete($staging) }
     }
+  } elseif ($request.operation -eq 'create-file') {
+    $file = [IO.FileStream]::new($path, [IO.FileMode]::CreateNew,
+      [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None,
+      4096, [IO.FileOptions]::None, (New-PrivateAcl $false))
+    $file.Dispose()
   } elseif ($request.operation -eq 'harden-file') {
     if (!(Test-Private ([IO.Path]::GetDirectoryName($path)) $true)) { exit 1 }
     $acl = Read-Descriptor $path $false
     if ($acl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $sid) { exit 1 }
-    Set-Acl -LiteralPath $path -AclObject (New-PrivateAcl $false)
+    [IO.File]::SetAccessControl($path, (New-PrivateAcl $false))
   }
   if ($request.operation -eq 'verify-chain') {
     if (!(Test-DirectoryChain $path)) { exit 1 }
@@ -191,20 +205,56 @@ export function createPathProtection(
     return (
       run(
         executable,
-        ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-NoLogo",
+          "-EncodedCommand",
+          encoded,
+        ],
         end,
         input,
       )?.trim() === "private"
     );
   }
 
-  function noAcl(path: string, kind: Kind, end: number): boolean {
+  function safeMacAcl(
+    path: string,
+    kind: Kind,
+    end: number,
+    chainOwner?: number,
+  ): boolean {
     const output = run("/bin/ls", ["-lde", path], end)?.trimEnd();
-    const prefix = kind === "dir" ? "d" : "-";
-    if (output === undefined || /[\r\n]/.test(output)) return false;
-    return (
-      output.startsWith(prefix) && /^[d-][rwxstST-]{9}@?\s+\d+\s/.test(output)
-    );
+    if (output === undefined || /\r/.test(output) || /[\r\n]/.test(path))
+      return false;
+    const [header = "", ...entries] = output.split("\n");
+    const fields = /^([d-])[rwxstST-]{9}([+@]?)\s+\d+\s/.exec(header);
+    if (!fields || fields[1] !== (kind === "dir" ? "d" : "-")) return false;
+    if (fields[2] === "+" && entries.length === 0) return false;
+    if (chainOwner === undefined) return entries.length === 0;
+    if (!fields[2] && entries.length > 0) return false;
+    const nonReplacing =
+      /^(?:list|search|readattr|readextattr|readsecurity|add_file|add_subdirectory|write|writeattr|writeextattr|file_inherit|directory_inherit|limit_inherit|only_inherit)$/;
+    return entries.every((line, index) => {
+      const entry =
+        /^ (\d+): (\S+)(?: inherited)? (allow|deny) ([a-z_]+(?:,[a-z_]+)*)$/.exec(
+          line,
+        );
+      if (entry?.[1] !== String(index)) return false;
+      if (
+        entry[3] === "deny" ||
+        entry[4]!.split(",").every((right) => nonReplacing.test(right))
+      )
+        return true;
+      const principal = /^user:([A-Za-z_][A-Za-z0-9_.-]*)$/.exec(
+        entry[2]!,
+      )?.[1];
+      return (
+        principal !== undefined &&
+        run("/usr/bin/id", ["-u", principal], end)?.trim() ===
+          String(chainOwner)
+      );
+    });
   }
 
   function verified(
@@ -221,7 +271,7 @@ export function createPathProtection(
     } else {
       if (stat.uid !== geteuid() || (stat.mode & 0o7777) !== mode[kind])
         return false;
-      if (mac && !noAcl(path, kind, end)) return false;
+      if (mac && !safeMacAcl(path, kind, end)) return false;
     }
     const after = lstat(path);
     return (
@@ -253,6 +303,7 @@ export function createPathProtection(
         let component = realpathSync(target);
         const owner = geteuid();
         if (component !== target || owner === undefined) return false;
+        const end = now() + budget;
         for (;;) {
           const stat = lstat(component);
           if (
@@ -261,6 +312,7 @@ export function createPathProtection(
             ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0)
           )
             return false;
+          if (mac && !safeMacAcl(component, "dir", end, stat.uid)) return false;
           const parent = dirname(component);
           if (parent === component) return true;
           component = parent;
@@ -275,6 +327,11 @@ export function createPathProtection(
       } catch {
         return false;
       }
+    },
+    createPrivateWindowsFile(path) {
+      return (
+        windows && win(resolve(path), "file", "create-file", now() + budget)
+      );
     },
     async createPrivateDirectory(path) {
       const target = resolve(path);
@@ -341,6 +398,7 @@ export function createPathProtection(
 export const {
   protectPath,
   protectDirectoryChain,
+  createPrivateWindowsFile,
   createPrivateDirectory,
   createPrivateFile,
 } = createPathProtection();

@@ -61,9 +61,9 @@ $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))
 $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = Get-Acl -LiteralPath $path
+$inherit = if ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) { 3 } else { 0 }
+$acl = if ($inherit) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) }
 $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-$inherit = if ((Get-Item -LiteralPath $path).PSIsContainer) { 3 } else { 0 }
 if ($acl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $owner -or
     !$acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
     $rules[0].IdentityReference -ne $owner -or $rules[0].IsInherited -or
@@ -86,6 +86,7 @@ function readWindowsAcl(script: string, input: string): string {
     [
       "-NoProfile",
       "-NonInteractive",
+      "-NoLogo",
       "-EncodedCommand",
       Buffer.from(script, "utf16le").toString("base64"),
     ],
@@ -107,6 +108,19 @@ function verifyWindowsAcl(path: string): void {
   expect(readWindowsAcl(systemPowerShellCheck, path)).toBe("private");
 }
 
+function observedWindowsProtection() {
+  const diagnostics: string[] = [];
+  const protector = createPathProtection({
+    execute(exe, args, options) {
+      const result = spawnSync(exe, args, options);
+      if (result.error) diagnostics.push(result.error.message);
+      if (result.stderr) diagnostics.push(result.stderr.trim());
+      return result;
+    },
+  });
+  return { protector, diagnostics };
+}
+
 test.skipIf(!windows)(
   "Q2: independently reads the owner-only Windows DACL and refuses missing and system paths",
   async () => {
@@ -114,9 +128,12 @@ test.skipIf(!windows)(
     const missing = join(base, "missing");
     expect(protectPath(missing, "dir")).toBe(false);
     expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
-    const protector = createPathProtection();
+    const { protector, diagnostics } = observedWindowsProtection();
     const dir = join(base, "private");
-    expect(await protector.createPrivateDirectory(dir)).toBe(true);
+    expect(
+      await protector.createPrivateDirectory(dir),
+      diagnostics.join("\n"),
+    ).toBe(true);
     const path = join(dir, "private-file");
     const file = await protector.createPrivateFile(path);
     if (file === null) throw new Error("Expected a private file");
@@ -225,28 +242,28 @@ $ErrorActionPreference = 'Stop'
 $request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())))
 $world = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
 $allow = [Security.AccessControl.AccessControlType]::Allow
+$right = if ($request.expected -eq 'creation') { [Security.AccessControl.FileSystemRights]::CreateDirectories } else { [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles }
 if ($request.grant) {
-  $parent = Get-Acl -LiteralPath $request.parent
+  $parent = [IO.Directory]::GetAccessControl($request.parent)
   $inheritance = if ($request.grant -eq 'inherited') { 3 } else { 0 }
-  $rule = [Security.AccessControl.FileSystemAccessRule]::new($world,
-    [Security.AccessControl.FileSystemRights]::Write,
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new($world, $right,
     [Security.AccessControl.InheritanceFlags]$inheritance,
     [Security.AccessControl.PropagationFlags]::None, $allow)
-  $parent.AddAccessRule($rule)
-  Set-Acl -LiteralPath $request.parent -AclObject $parent
+  $parent.SetAccessRule($rule)
+  [IO.Directory]::SetAccessControl($request.parent, $parent)
   if ($request.grant -eq 'inherited') {
-    $childAcl = Get-Acl -LiteralPath $request.path
+    $childAcl = [IO.Directory]::GetAccessControl($request.path)
     $childAcl.SetAccessRuleProtection($false, $false)
-    Set-Acl -LiteralPath $request.path -AclObject $childAcl
+    [IO.Directory]::SetAccessControl($request.path, $childAcl)
   }
 }
-$acl = Get-Acl -LiteralPath $request.path
+$acl = [IO.Directory]::GetAccessControl($request.path)
 $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
 $grant = @($rules | Where-Object { $_.IdentityReference -eq $world -and $_.AccessControlType -eq $allow })
 $inherited = $request.expected -eq 'inherited'
 if ($grant.Count -ne 1 -or $grant[0].IsInherited -ne $inherited -or
     $acl.AreAccessRulesProtected -eq $inherited -or
-    ($grant[0].FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -ne [Security.AccessControl.FileSystemRights]::Write) { exit 1 }
+    ($grant[0].FileSystemRights -band $right) -ne $right) { exit 1 }
 [Console]::WriteLine([Convert]::ToBase64String($acl.GetSecurityDescriptorBinaryForm()))
 `;
 
@@ -254,14 +271,28 @@ test.skipIf(!windows)(
   "Windows rejects an extra ancestor grant and leaves explicit and inherited DACL grants untouched",
   async () => {
     const base = temp();
-    const protector = createPathProtection();
+    const { protector, diagnostics } = observedWindowsProtection();
     const parent = join(base, "parent");
     const child = join(parent, "child");
     expect(await protector.createPrivateDirectory(parent)).toBe(true);
     expect(await protector.createPrivateDirectory(child)).toBe(true);
     expect(protectPath(parent, "dir")).toBe(true);
     expect(protectPath(child, "dir")).toBe(true);
-    expect(protectDirectoryChain(child)).toBe(true);
+    expect(protector.protectDirectoryChain(child), diagnostics.join("\n")).toBe(
+      true,
+    );
+    readWindowsAcl(
+      fixtureAcl,
+      JSON.stringify({
+        path: parent,
+        parent,
+        expected: "creation",
+        grant: "explicit",
+      }),
+    );
+    expect(protector.protectDirectoryChain(child), diagnostics.join("\n")).toBe(
+      true,
+    );
     const explicit = { path: parent, expected: "explicit" };
     const before = readWindowsAcl(
       fixtureAcl,
@@ -270,7 +301,8 @@ test.skipIf(!windows)(
     expect(before).toMatch(/^[A-Za-z0-9+/]+=*$/);
     expect(protectPath(parent, "dir")).toBe(false);
     expect(protectPath(child, "dir")).toBe(true);
-    expect(protectDirectoryChain(child)).toBe(false);
+    expect(protector.protectDirectoryChain(child)).toBe(false);
+    expect(diagnostics).toContain("chain_replacement:1");
     expect(readWindowsAcl(fixtureAcl, JSON.stringify(explicit))).toBe(before);
     const inherited = { path: child, expected: "inherited" };
     const inheritedBefore = readWindowsAcl(

@@ -1,8 +1,8 @@
 /// <reference types="bun" />
 
 import { afterEach, expect, test } from "bun:test";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import {
   createPathProtection,
   type ProtectionDeps,
@@ -28,6 +28,43 @@ function fakeMacStat(path: string) {
 const noMacAcl = "drwx------  2 owner group 64 Nov 23 12:00 private\n";
 const macAcl =
   "drwx------+ 2 owner group 64 Nov 23 12:00 private\n 0: user:other allow read\n";
+
+test.each([
+  ["group:everyone deny delete", true],
+  ["user:owner allow writesecurity", true],
+  ["user:other allow delete_child", false],
+  ["user:other inherited allow add_file,add_subdirectory", true],
+] as const)(
+  "macOS directory chain checks ancestor ACE %s",
+  (ace, expected) => {
+    const path = realpathSync(temp());
+    const ancestor = dirname(path);
+    const mac = createPathProtection({
+      platform: "darwin",
+      lstat: fakeMacStat,
+      geteuid: () => 123,
+      now: () => 100,
+      execute(exe, args) {
+        if (exe === "/usr/bin/id") {
+          expect(args[0]).toBe("-u");
+          return {
+            status: 0,
+            stdout: args[1] === "owner" ? "123\n" : "456\n",
+            stderr: "",
+          };
+        }
+        expect(exe).toBe("/bin/ls");
+        const stdout =
+          args[1] === ancestor
+            ? `${noMacAcl.replace("drwx------ ", "drwx------+ ")} 0: ${ace}\n`
+            : noMacAcl;
+        return { status: 0, stdout, stderr: "" };
+      },
+    });
+    expect(mac.protectDirectoryChain(path)).toBe(expected);
+  },
+  timeout,
+);
 
 test(
   "PP2: accepts macOS read-back only for a private path without ACL entries",
@@ -97,6 +134,7 @@ test(
           expect(exe.toLowerCase()).toEndWith("powershell.exe");
           expect(args).toContain("-NoProfile");
           expect(args).toContain("-NonInteractive");
+          expect(args).toContain("-NoLogo");
           expect(options.windowsHide).toBe(true);
           expect(options.shell).toBe(false);
           expect(options.timeout).toBeGreaterThan(0);

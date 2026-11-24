@@ -8,7 +8,11 @@ import {
 import { dirname, resolve } from "node:path";
 import { DatabaseSync, type DatabaseSyncOptions } from "node:sqlite";
 import type { HubDb, OpenHubDb } from "../contract/runtime.ts";
-import { protectDirectoryChain } from "./protect.ts";
+import {
+  createPrivateWindowsFile,
+  protectDirectoryChain,
+  protectPath,
+} from "./protect.ts";
 import { migrate, schemaVersion } from "./schema.ts";
 
 function handle(raw: DatabaseSync): HubDb {
@@ -50,6 +54,11 @@ function handle(raw: DatabaseSync): HubDb {
 }
 
 function reserveFile(path: string): BigIntStats {
+  if (process.platform === "win32") {
+    if (!createPrivateWindowsFile(path))
+      throw new Error("Cannot create a private hub database file");
+    return lstatSync(path, { bigint: true });
+  }
   const fd = openSync(path, "wx", 0o600);
   try {
     return fstatSync(fd, { bigint: true });
@@ -70,15 +79,25 @@ function assertIdentity(path: string, expected: BigIntStats): void {
 }
 
 export function createOpenHubDb(
-  connect: (path: string, options?: DatabaseSyncOptions) => DatabaseSync,
+  connect: (path: string, options: DatabaseSyncOptions) => DatabaseSync,
 ): OpenHubDb {
   return (path) => {
     const target = resolve(path);
-    if (!protectDirectoryChain(dirname(target)))
+    const parent = dirname(target);
+    if (!protectDirectoryChain(parent))
       throw new Error("Hub database parent chain is unsafe");
-    const existing = lstatSync(target, { bigint: true, throwIfNoEntry: false });
+    if (!protectPath(parent, "dir"))
+      throw new Error("Hub database directory is not private");
+    const statOptions = { bigint: true, throwIfNoEntry: false } as const;
+    const existing = lstatSync(target, statOptions);
     if (existing !== undefined && (!existing.isFile() || existing.nlink !== 1n))
       throw new Error("Hub database path must be a regular file with one link");
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      const file = target + suffix;
+      const present = suffix ? lstatSync(file, statOptions) : existing;
+      if (present && !protectPath(file, "file"))
+        throw new Error("Hub database file is not private");
+    }
     const expected = existing ?? reserveFile(target);
     if (expected.ino === 0n)
       throw new Error("Hub database file identity is unavailable");
@@ -93,7 +112,7 @@ export function createOpenHubDb(
       }
     }
     assertIdentity(target, expected);
-    const db = handle(connect(target));
+    const db = handle(connect(target, {}));
     try {
       assertIdentity(target, expected);
       db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");

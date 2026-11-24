@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import {
+  chmodSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -11,21 +12,28 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { HubDb } from "../../src/contract/runtime.ts";
 import { createOpenHubDb } from "../../src/core/db.ts";
-import { openHubDb } from "../../src/core/index.ts";
+import {
+  createPrivateDirectory,
+  createPrivateFile,
+  openHubDb,
+  protectPath,
+} from "../../src/core/index.ts";
 import { createTestSchema } from "./ddl.ts";
 
 const timeout = 30_000;
 const paths: string[] = [];
 const handles = new Set<{ close(): void }>();
 
-function dbPath(): string {
+async function dbPath(): Promise<string> {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "forge-hub-schema-")));
   paths.push(dir);
-  return join(dir, "hub.sqlite");
+  const data = join(dir, "data");
+  expect(await createPrivateDirectory(data)).toBe(true);
+  return join(data, "hub.sqlite");
 }
 
 function track<T extends { close(): void }>(db: T): T {
@@ -76,10 +84,10 @@ function insertInbox(db: HubDb) {
 
 test(
   "H1: creates the frozen schema and reopens without changing it",
-  () => {
-    const path = dbPath();
+  async () => {
+    const path = await dbPath();
     const db = track(openHubDb(path));
-    const oracle = track(new Database(dbPath()));
+    const oracle = track(new Database(await dbPath()));
     createTestSchema(oracle);
     const rows = normalizedSchema(db.prepare(schemaObjects).all());
     expect(rows).toEqual(
@@ -105,6 +113,7 @@ test(
       db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get(),
     ).toEqual({ value: "1" });
     close(db);
+    expect(protectPath(path, "file")).toBe(true);
     const bytes = readFileSync(path);
     const reopened = track(openHubDb(path));
     expect(normalizedSchema(reopened.prepare(schemaObjects).all())).toEqual(
@@ -118,10 +127,13 @@ test(
 
 test.each(["read-only", "read-write"] as const)(
   "Database refuses a replacement at the %s open before writing",
-  (phase) => {
-    const path = dbPath();
-    const saved = dbPath();
-    const replacement = dbPath();
+  async (phase) => {
+    const path = await dbPath();
+    const saved = await dbPath();
+    const replacement = await dbPath();
+    const seed = await createPrivateFile(path);
+    if (seed === null) throw new Error("Expected a private database fixture");
+    await seed.close();
     const original = track(new Database(path));
     original.exec(`
       CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -132,7 +144,7 @@ test.each(["read-only", "read-write"] as const)(
     writeFileSync(replacement, "", { mode: 0o600 });
     const opens: string[] = [];
     const guardedOpen = createOpenHubDb((target, options) => {
-      const mode = options?.readOnly ? "read-only" : "read-write";
+      const mode = options.readOnly ? "read-only" : "read-write";
       opens.push(mode);
       if (mode === phase) {
         renameSync(target, saved);
@@ -152,10 +164,37 @@ test.each(["read-only", "read-write"] as const)(
   timeout,
 );
 
+test.skipIf(process.platform === "win32")(
+  "Database refuses a readable database or sidecar before opening SQLite",
+  async () => {
+    const path = await dbPath();
+    close(track(openHubDb(path)));
+    const guardedOpen = createOpenHubDb(() => {
+      throw new Error("SQLite was opened before privacy verification");
+    });
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      const file = path + suffix;
+      if (suffix) writeFileSync(file, "sidecar");
+      chmodSync(file, 0o644);
+      const bytes = readFileSync(file);
+      expect(() => guardedOpen(path)).toThrow(
+        "Hub database file is not private",
+      );
+      expect(readFileSync(file)).toEqual(bytes);
+      chmodSync(file, 0o600);
+    }
+    chmodSync(dirname(path), 0o755);
+    expect(() => guardedOpen(path)).toThrow(
+      "Hub database directory is not private",
+    );
+  },
+  timeout,
+);
+
 test(
   "H2: enforces CLI and agent trust checks and refuses a newer schema without writing",
-  () => {
-    const path = dbPath();
+  async () => {
+    const path = await dbPath();
     const db = track(openHubDb(path));
     seedPeopleAndProject(db);
     const insert = insertInbox(db);
@@ -187,8 +226,8 @@ test(
 
 test(
   "H3: enforces thread identity, context pairs and per-person conversation uniqueness",
-  () => {
-    const db = track(openHubDb(dbPath()));
+  async () => {
+    const db = track(openHubDb(await dbPath()));
     seedPeopleAndProject(db);
     const thread = db.prepare(`
     INSERT INTO thread_messages (adapter, chat_thread_id, channel_id, project_id,
