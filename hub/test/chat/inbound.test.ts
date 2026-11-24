@@ -259,8 +259,9 @@ startedCase(
   },
 );
 
-for (const [files, expected] of [
+for (const [label, files, expected] of [
   [
+    "named attachments",
     [
       {
         name: "plan.pdf",
@@ -272,11 +273,11 @@ for (const [files, expected] of [
     ],
     ["plan.pdf", "a b.png"],
   ],
-  [undefined, []],
-  [[{ id: "F0FIRST", title: "Private title" }], []],
+  ["no attachments", undefined, []],
+  ["unnamed attachment", [{ id: "F0FIRST", title: "Private title" }], []],
 ] as const) {
   startedCase(
-    `FL1 forwards only well-formed attached file names (${expected.length})`,
+    `FL1 forwards only well-formed attached file names (${label})`,
     async (h) => {
       expect(await h.status(callback(dm({ files })))).toBe(200);
       await h.stop();

@@ -1,5 +1,6 @@
-import type { ChatPort } from "../contract/chat.ts";
+import { ChatWriteFailure, type ChatPort } from "../contract/chat.ts";
 
-export const createLongAnswer: ChatPort["createLongAnswer"] = () => {
-  throw new Error("not_built");
-};
+export const createLongAnswer: ChatPort["createLongAnswer"] = () =>
+  Promise.reject(
+    new ChatWriteFailure("refused", undefined, "canvas_unavailable"),
+  );

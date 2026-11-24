@@ -15,3 +15,4 @@ deepStrictEqual(
   resources,
   "active resources",
 );
+process.stdout.write("chat import checked");

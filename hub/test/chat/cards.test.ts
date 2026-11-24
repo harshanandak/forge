@@ -263,9 +263,13 @@ startedCase(
 );
 
 test(
-  "O10 no production chat module imports the mdast Text type or value for cards",
+  "O10 cards use CardText and no production chat module imports mdast Text",
   () => {
     const root = new URL("../../src/chat/", import.meta.url);
+    const cards = readFileSync(new URL("cards.ts", root), "utf8");
+    expect(cards).toMatch(
+      /import\s+\{[^}]*\bCardText\b[^}]*\}\s+from\s+["']chat["']/,
+    );
     for (const name of readdirSync(root).filter((path) =>
       path.endsWith(".ts"),
     )) {

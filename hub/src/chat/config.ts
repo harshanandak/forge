@@ -1,14 +1,73 @@
+import { randomBytes } from "node:crypto";
 import type { SlackAdapter, SlackAdapterConfig } from "@chat-adapter/slack";
 import type { ChatConfig } from "chat";
-import type { ChatDeps } from "../contract/runtime.ts";
+import { CHAT_DEDUPE_TTL_MS } from "../contract/chat-state.ts";
+import type { ChatDeps, SecretName } from "../contract/runtime.ts";
+import { validateRetryAfterResponse } from "./failure.ts";
+import { createChatLogger } from "./logger.ts";
+import { createSqliteChatState } from "./state.ts";
 
-export function slackAdapterConfig(_deps: ChatDeps): SlackAdapterConfig {
-  throw new Error("not_built");
+let forwardingSecret: string | undefined;
+
+function requiredSecret(deps: ChatDeps, name: SecretName): string {
+  const value: unknown = deps.secret(name);
+  if (typeof value !== "string" || !value.trim())
+    throw new Error("Missing " + name);
+  return value;
+}
+
+export function slackWorkspace(deps: ChatDeps): string {
+  const team = deps.config.slack.teamId;
+  if (typeof team !== "string" || !/^T[A-Z0-9]+$/.test(team))
+    throw new Error("Invalid Slack workspace");
+  return team;
+}
+
+export function slackAdapterConfig(deps: ChatDeps): SlackAdapterConfig {
+  slackWorkspace(deps);
+  const { mode } = deps.config.slack;
+  if (mode === "off") throw new Error("Slack is disabled");
+  if (!deps.slackApiUrl.trim()) throw new Error("Missing Slack API URL");
+  const botToken = requiredSecret(deps, "SLACK_BOT_TOKEN");
+  const signingSecret =
+    mode === "webhook" ? requiredSecret(deps, "SLACK_SIGNING_SECRET") : "";
+  const appToken =
+    mode === "socket" ? requiredSecret(deps, "SLACK_APP_TOKEN") : "";
+  const logger = createChatLogger(deps.log);
+  return {
+    mode,
+    botToken,
+    signingSecret,
+    appToken,
+    apiUrl: deps.slackApiUrl,
+    encryptionKey: "",
+    socketForwardingSecret: (forwardingSecret ??=
+      randomBytes(32).toString("base64url")),
+    logger,
+    webClientOptions: {
+      retryConfig: { retries: 0 },
+      rejectRateLimitedCalls: true,
+      timeout: 10_000,
+      logger,
+      requestInterceptor(request) {
+        const transforms = [request.transformResponse ?? []].flat();
+        request.transformResponse = [validateRetryAfterResponse, ...transforms];
+        return request;
+      },
+    },
+  };
 }
 
 export function chatConfig(
-  _adapter: SlackAdapter,
-  _deps: ChatDeps,
+  adapter: SlackAdapter,
+  deps: ChatDeps,
 ): ChatConfig<{ slack: SlackAdapter }> {
-  throw new Error("not_built");
+  return {
+    adapters: { slack: adapter },
+    state: createSqliteChatState(deps.db),
+    userName: "Forge",
+    concurrency: "concurrent",
+    dedupeTtlMs: CHAT_DEDUPE_TTL_MS,
+    logger: createChatLogger(deps.log),
+  };
 }

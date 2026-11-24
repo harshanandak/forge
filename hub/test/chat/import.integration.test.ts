@@ -16,6 +16,7 @@ test(
     );
     if (result.error) throw result.error;
     strictEqual(result.status, 0, result.stderr);
+    strictEqual(result.stdout, "chat import checked");
   },
   timeout,
 );
