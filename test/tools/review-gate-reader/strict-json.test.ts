@@ -38,6 +38,27 @@ test.each([
 });
 
 test.each([
+  [
+    "S4 constructor at root",
+    '{"id":1,"constructor":{"prototype":{"x":1}}}',
+    "$.constructor",
+  ],
+  ["S4 prototype at root", '{"id":1,"prototype":1}', "$.prototype"],
+  [
+    "S13 constructor in dropped extra",
+    '{"id":1,"extra":{"constructor":{"prototype":{"x":1}}}}',
+    "$.extra.constructor",
+  ],
+  [
+    "S13 prototype in dropped extra",
+    '{"id":1,"extra":{"prototype":1}}',
+    "$.extra.prototype",
+  ],
+])("%s", (_name, text, where) => {
+  expect(parseStrictJson(text, openId)).toEqual(fail("json_invalid", where));
+});
+
+test.each([
   ["S6 string Boolean", '{"ok":"true"}', { ok: bool }, "$.ok"],
   ["S9 missing key", "{}", exact, "$.a"],
   ["S10 wrong nested kind", '{"a":[]}', exact, "$.a"],
