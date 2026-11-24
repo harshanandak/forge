@@ -50,6 +50,29 @@ const scanners = {
   tsx: new Bun.Transpiler({ loader: "tsx" }),
 };
 
+function hasEscapedBuiltinName(source: string): boolean {
+  const name = "getBuiltinModule";
+  const decodedOffsets: number[] = [];
+  let removed = 0;
+  const decoded = source.replace(
+    /\\u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})/g,
+    (raw, offset: number) => {
+      const digits = raw[2] === "{" ? raw.slice(3, -1) : raw.slice(2);
+      const codePoint = Number.parseInt(digits, 16);
+      if (codePoint > 0x10ffff) return raw;
+      const value = String.fromCodePoint(codePoint);
+      decodedOffsets.push(offset - removed);
+      removed += raw.length - value.length;
+      return value;
+    },
+  );
+  return decodedOffsets.some((offset) =>
+    decoded
+      .slice(Math.max(0, offset - name.length + 1), offset + name.length)
+      .includes(name),
+  );
+}
+
 /** Normalize TypeScript syntax without removing unused value references. */
 export function parsedSource(file: SourceFile): string {
   const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
@@ -108,7 +131,7 @@ export function importsOf(
     String.raw`(?<![\w$.])(?:${[direct, ...aliases].join("|")})\s*\(|\[\s*(["'\x60])getBuiltinModule\1\s*\]|(?<![\w$])(?:${["getBuiltinModule", ...aliases].join("|")})(?![\w$])`,
     "g",
   );
-  let computedBuiltin = false;
+  let computedBuiltin = hasEscapedBuiltinName(file.text);
   for (const { 0: use, index } of withStrings.matchAll(builtinUses)) {
     if (codeOnly[index] !== use[0] || declarations.has(index)) continue;
     const argument = use.endsWith("(")
