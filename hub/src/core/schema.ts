@@ -270,18 +270,24 @@ create table doorbell_rings (
 `;
 
 export function schemaVersion(db: HubDb): 0 | 1 {
-  const state: unknown = db
+  const objects = db
     .prepare(
-      "SELECT max(name='meta' AND type='table') AS present FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
+      "SELECT type || ':' || name AS key FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
     )
-    .get()?.present;
-  if (state === null) return 0;
-  if (state !== 1)
+    .all();
+  if (objects.length === 0) return 0;
+  const present = new Set(objects.map(({ key }) => key));
+  if (!present.has("table:meta"))
     throw new Error("Hub database is missing its schema version");
   const value: unknown = db
     .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
     .get()?.value;
   if (value !== "1") throw new Error("Unsupported hub database schema version");
+  const objectPattern = /^create (?:unique )?(table|index) (\w+)\b/gm;
+  for (const ddl of [schema, ...CHAT_STATE_DDL])
+    for (const [, type, name] of ddl.matchAll(objectPattern))
+      if (!present.has(`${type}:${name}`))
+        throw new Error("Hub database schema is incomplete");
   return 1;
 }
 

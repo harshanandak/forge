@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PathProtection } from "../../src/core/protect.ts";
@@ -28,6 +28,10 @@ export async function verifyCreation(
 ): Promise<void> {
   const dir = join(base, "private-dir");
   const path = join(dir, "private-file");
+  const missing = join(base, "missing");
+  const child = join(missing, "child");
+  expect(await protector.createPrivateDirectory(child)).toBe(false);
+  expect(existsSync(missing)).toBe(false);
   expect(await protector.createPrivateDirectory(dir)).toBe(true);
   expect(protector.protectPath(dir, "dir")).toBe(true);
   const file = await protector.createPrivateFile(path);

@@ -39,15 +39,7 @@ const schemaObjects =
   "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE type IN ('table', 'index') AND name NOT GLOB 'sqlite_*' ORDER BY type, name";
 
 function normalizedSchema(rows: readonly Record<string, unknown>[]) {
-  return rows.map(({ type, name, tbl_name, sql }) => ({
-    type,
-    name,
-    tbl_name,
-    sql:
-      typeof sql === "string"
-        ? sql.trim().replace(/\s+/g, " ").toLowerCase()
-        : sql,
-  }));
+  return rows.map((row) => ({ ...row }));
 }
 
 function seedPeopleAndProject(db: HubDb): void {
@@ -131,10 +123,7 @@ test.each(["read-only", "read-write"] as const)(
     if (seed === null) throw new Error("Expected a private database fixture");
     await seed.close();
     const original = track(new Database(path));
-    original.exec(`
-      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO meta (key, value) VALUES ('schema_version', '1');
-    `);
+    createTestSchema(original);
     close(original);
     const bytes = readFileSync(path);
     writeFileSync(replacement, "", { mode: 0o600 });
@@ -233,6 +222,7 @@ test("refuses a marker-only database", async () => {
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '1')",
   );
   close(marker);
+  chmodSync(path, 0o600);
   expect(() => close(track(openHubDb(path)))).toThrow(
     "Hub database schema is incomplete",
   );

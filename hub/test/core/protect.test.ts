@@ -26,9 +26,9 @@ const { temp, cleanup } = protectionFixture();
 afterEach(cleanup);
 
 function fakeMacStat(path: string) {
-  const stat = lstatSync(path);
-  stat.uid = 123;
-  stat.mode = (stat.mode & ~0o7777) | (stat.isDirectory() ? 0o700 : 0o600);
+  const stat = lstatSync(path, { bigint: true });
+  stat.uid = 123n;
+  stat.mode = (stat.mode & ~0o7777n) | (stat.isDirectory() ? 0o700n : 0o600n);
   return stat;
 }
 
@@ -41,13 +41,7 @@ test("distinguishes adjacent large file IDs", () => {
   const guard = createPathProtection({
     platform: "linux",
     geteuid: () => 123,
-    lstat: fakeMacStat,
-    preciseLstat: (path) =>
-      Object.assign(lstatSync(path, { bigint: true }), {
-        uid: 123n,
-        mode: 0o700n,
-        ino: ino++,
-      }),
+    lstat: (path) => Object.assign(fakeMacStat(path), { ino: ino++ }),
   });
   expect(guard.protectPath(temp(), "dir")).toBe(false);
 });
@@ -61,7 +55,7 @@ test.each(["linux", "win32"] as const)(
         throw new Error("stat failed");
       },
       execute: () => ({
-        status: 1,
+        status: 0,
         stdout: "published_unverified",
         stderr: "",
       }),

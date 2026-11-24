@@ -3,7 +3,7 @@ import {
   type SpawnSyncOptionsWithStringEncoding,
   type SpawnSyncReturns,
 } from "node:child_process";
-import { lstatSync, realpathSync, type BigIntStats, type Stats } from "node:fs";
+import { lstatSync, realpathSync, type BigIntStats } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -29,9 +29,8 @@ export interface PathProtection {
 
 export interface ProtectionDeps {
   readonly platform: NodeJS.Platform;
-  readonly lstat: (path: string) => Stats;
-  readonly preciseLstat: (path: string) => BigIntStats;
-  readonly statFile: (file: FileHandle) => Promise<Stats>;
+  readonly lstat: (path: string) => BigIntStats;
+  readonly statFile: (file: FileHandle) => Promise<BigIntStats>;
   readonly geteuid: () => number | undefined;
   readonly now: () => number;
   readonly execute: (
@@ -41,7 +40,11 @@ export interface ProtectionDeps {
   ) => Pick<SpawnSyncReturns<string>, "status" | "stdout" | "stderr" | "error">;
 }
 
-export class UnverifiedDirectoryCreation extends Error {}
+export class UnverifiedDirectoryCreation extends Error {
+  constructor(cause?: unknown) {
+    super("Created directory could not be verified", { cause });
+  }
+}
 
 const windowsHelper = `
 $ProgressPreference = 'SilentlyContinue'
@@ -92,21 +95,23 @@ function New-PrivateAcl($isDir) {
   $acl.AddAccessRule($rule)
   $acl
 }
+$published = $false
 try {
   $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))
   $request = ConvertFrom-Json -InputObject $json
   $path = $request.path
   $isDir = $request.kind -eq 'dir'
   if ($request.operation -eq 'create-dir') {
-    if ([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) { exit 1 }
     $parent = [IO.Path]::GetDirectoryName($path)
+    if (![IO.Directory]::Exists($parent)) { exit 1 }
     $staging = [IO.Path]::Combine($parent, '.forge-private-' + [Guid]::NewGuid().ToString('N'))
     $null = [IO.Directory]::CreateDirectory($staging, (New-PrivateAcl $true))
     try {
       if (!(Test-Private $staging $true)) { exit 1 }
       [IO.Directory]::Move($staging, $path)
+      $published = $true
     } finally {
-      if ([IO.Directory]::Exists($staging)) { [IO.Directory]::Delete($staging) }
+      if (!$published -and [IO.Directory]::Exists($staging)) { [IO.Directory]::Delete($staging) }
     }
   } elseif ($request.operation -eq 'create-file') {
     $file = [IO.FileStream]::new($path, [IO.FileMode]::CreateNew,
@@ -123,24 +128,27 @@ try {
   if ($verifyChain -and !(Test-DirectoryChain $path)) { exit 1 }
   if (!(Test-Private $path $isDir $verifyChain)) {
     if ($verifyChain) { [Console]::Error.WriteLine('chain_private:0') }
-    exit 1
+    throw 'private'
   }
   [Console]::WriteLine('private')
-} catch { exit 1 }
+} catch {
+  if (!$published) { exit 1 }
+  [Console]::WriteLine('published_unverified')
+}
 `;
 
 const budget = 5_000;
 const mode = { dir: 0o700, file: 0o600 };
 
-function sameObject(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
+function sameObject(left: BigIntStats, right: BigIntStats): boolean {
+  return left.ino !== 0n && left.dev === right.dev && left.ino === right.ino;
 }
 
-function correctKind(stat: Stats, kind: Kind): boolean {
-  return (
-    !stat.isSymbolicLink() &&
-    (kind === "dir" ? stat.isDirectory() : stat.isFile() && stat.nlink === 1)
-  );
+function correctKind(stat: BigIntStats, kind: Kind): boolean {
+  if (stat.isSymbolicLink()) return false;
+  return kind === "dir"
+    ? stat.isDirectory()
+    : stat.isFile() && stat.nlink === 1n;
 }
 
 export function createPathProtection(
@@ -148,8 +156,8 @@ export function createPathProtection(
 ): PathProtection {
   const {
     platform = process.platform,
-    lstat = lstatSync,
-    statFile = (file: FileHandle) => file.stat(),
+    lstat = (path: string) => lstatSync(path, { bigint: true }),
+    statFile = (file: FileHandle) => file.stat({ bigint: true }),
     geteuid = () => process.geteuid?.(),
     now = Date.now,
     execute = spawnSync,
@@ -194,20 +202,15 @@ export function createPathProtection(
     const input = Buffer.from(
       JSON.stringify({ path, kind, operation }),
     ).toString("base64");
-    return (
-      run(
-        executable,
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-NoLogo",
-          "-EncodedCommand",
-          encoded,
-        ],
-        end,
-        input,
-      )?.trim() === "private"
-    );
+    const marker = run(
+      executable,
+      ["-NoProfile", "-NonInteractive", "-NoLogo", "-EncodedCommand", encoded],
+      end,
+      input,
+    )?.trim();
+    if (operation === "create-dir" && marker === "published_unverified")
+      throw new UnverifiedDirectoryCreation();
+    return marker === "private";
   }
 
   function safeMacAcl(
@@ -253,7 +256,7 @@ export function createPathProtection(
     path: string,
     kind: Kind,
     end: number,
-    known?: Stats,
+    known?: BigIntStats,
   ): boolean {
     const stat = lstat(path);
     if (!correctKind(stat, kind)) return false;
@@ -261,7 +264,10 @@ export function createPathProtection(
     if (windows) {
       if (!win(path, kind, "verify", end)) return false;
     } else {
-      if (stat.uid !== geteuid() || (stat.mode & 0o7777) !== mode[kind])
+      if (
+        Number(stat.uid) !== geteuid() ||
+        Number(stat.mode & 0o7777n) !== mode[kind]
+      )
         return false;
       if (mac && !safeMacAcl(path, kind, end)) return false;
     }
@@ -276,12 +282,11 @@ export function createPathProtection(
 
   async function removeCreated(
     path: string,
-    identity: Stats | undefined,
+    identity: BigIntStats | undefined,
     remove: (path: string) => Promise<void>,
   ) {
     try {
-      if (identity === undefined || sameObject(identity, lstat(path)))
-        await remove(path);
+      if (identity && sameObject(identity, lstat(path))) await remove(path);
     } catch {
       return;
     }
@@ -298,13 +303,14 @@ export function createPathProtection(
         const end = now() + budget;
         for (;;) {
           const stat = lstat(component);
+          const uid = Number(stat.uid);
           if (
             !stat.isDirectory() ||
-            (stat.uid !== owner && stat.uid !== 0) ||
-            ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0)
+            (uid !== owner && uid !== 0) ||
+            ((stat.mode & 0o022n) !== 0n && (stat.mode & 0o1000n) === 0n)
           )
             return false;
-          if (mac && !safeMacAcl(component, "dir", end, stat.uid)) return false;
+          if (mac && !safeMacAcl(component, "dir", end, uid)) return false;
           const parent = dirname(component);
           if (parent === component) return true;
           component = parent;
@@ -321,27 +327,33 @@ export function createPathProtection(
       }
     },
     createPrivateWindowsFile(path) {
-      return (
-        windows && win(resolve(path), "file", "create-file", now() + budget)
-      );
+      if (!windows) return false;
+      return win(resolve(path), "file", "create-file", now() + budget);
     },
     async createPrivateDirectory(path) {
       const target = resolve(path);
-      let created: Stats | undefined;
+      let created: BigIntStats | undefined;
+      let made = false;
       try {
         const end = now() + budget;
         if (windows) return win(target, "dir", "create-dir", end);
         await mkdir(target, { mode: mode.dir });
-        created = lstat(target);
-        if (!correctKind(created, "dir") || created.uid !== geteuid())
-          return false;
+        made = true;
+        const identity = lstat(target);
+        const owned = Number(identity.uid) === geteuid();
+        if (!owned || !identity.ino || !correctKind(identity, "dir"))
+          throw new UnverifiedDirectoryCreation();
+        created = identity;
         await chmod(target, mode.dir);
         if (mac && run("/bin/chmod", ["-N", target], end) === undefined)
           return false;
         if (!verified(target, "dir", end, created)) return false;
         created = undefined;
         return true;
-      } catch {
+      } catch (error) {
+        if (error instanceof UnverifiedDirectoryCreation) throw error;
+        if (made && created === undefined)
+          throw new UnverifiedDirectoryCreation(error);
         return false;
       } finally {
         if (created !== undefined) await removeCreated(target, created, rmdir);
@@ -351,7 +363,7 @@ export function createPathProtection(
       const target = resolve(path);
       const parent = dirname(target);
       let file: FileHandle | undefined;
-      let identity: Stats | undefined;
+      let identity: BigIntStats | undefined;
       try {
         const end = now() + budget;
         if (!verified(parent, "dir", end)) return null;

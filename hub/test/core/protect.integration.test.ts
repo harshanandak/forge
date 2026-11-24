@@ -31,8 +31,8 @@ function currentMode(path: string): number {
 }
 
 function fakeOwner(path: string) {
-  const stat = lstatSync(path);
-  stat.uid = stat.uid + 1;
+  const stat = lstatSync(path, { bigint: true });
+  stat.uid += 1n;
   return stat;
 }
 
@@ -205,16 +205,10 @@ test.skipIf(!windows)(
   "K11 (Windows): creates and reads back private paths without replacing them",
   async () => {
     const base = temp();
-    const protector = createPathProtection();
-    await verifyCreation(protector, base);
+    await verifyCreation(createPathProtection(), base);
     const dir = join(base, "private-dir");
     verifyWindowsAcl(dir);
     verifyWindowsAcl(join(dir, "private-file"));
-    const missing = join(base, "missing");
-    expect(await protector.createPrivateDirectory(join(missing, "child"))).toBe(
-      false,
-    );
-    expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
   },
   timeout,
 );
