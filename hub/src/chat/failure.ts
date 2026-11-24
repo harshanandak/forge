@@ -56,7 +56,8 @@ function retryDelay(seconds: unknown): number | undefined {
 }
 
 export function toChatWriteFailure(error: unknown): ChatWriteFailure {
-  if (error instanceof ChatWriteFailure) return error;
+  if (error instanceof ChatWriteFailure)
+    return new ChatWriteFailure(error.effect, error.retryAfterMs, error.reason);
   if (!isRecord(error)) return new ChatWriteFailure("unknown");
   if (error.code === "slack_webapi_rate_limited_error") {
     const retryAfterMs = retryDelay(error.retryAfter);
