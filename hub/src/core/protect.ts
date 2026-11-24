@@ -60,11 +60,33 @@ function Read-Descriptor($path, $isDir) {
   if ($isDir) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) }
 }
 function Test-DirectoryChain($path) {
+  $trusted = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544',
+    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+  $replacement = 0x10000 -bor 0x40 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
   $depth = 0
   for ($dir = [IO.DirectoryInfo]::new($path); $null -ne $dir; $dir = $dir.Parent) {
-    try { Assert-PathKind $dir.FullName $true } catch {
+    try {
+      $acl = Read-Descriptor $dir.FullName $true
+      $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    } catch {
       [Console]::Error.WriteLine("chain_component:$depth")
       return $false
+    }
+    if ($raw.Owner.Value -notin $trusted -or $null -eq $raw.DiscretionaryAcl) {
+      [Console]::Error.WriteLine("chain_owner_or_dacl:$depth")
+      return $false
+    }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      if ($ace -isnot [Security.AccessControl.QualifiedAce]) {
+        [Console]::Error.WriteLine("chain_ace:$depth")
+        return $false
+      }
+      if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
+          !($ace.AceFlags -band [Security.AccessControl.AceFlags]::InheritOnly) -and
+          $ace.SecurityIdentifier.Value -notin $trusted -and ($ace.AccessMask -band $replacement)) {
+        [Console]::Error.WriteLine("chain_replacement:$depth")
+        return $false
+      }
     }
     $depth += 1
   }
