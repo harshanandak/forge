@@ -67,9 +67,13 @@ export function createAsk(
 
   return async (caller, input) => {
     const { projectId, kind, question, inboxItemId, issueId } = input;
+    const work = kind === "work_request";
     const guard =
       validateAskAuthority(input) ?? guards.outboundText(question, "/question");
     if (guard) return { ok: false, error: guard };
+    if (work && input.to !== undefined) return refuse("INPUT_INVALID", "/to");
+    if (work && input.choices !== undefined)
+      return refuse("INPUT_INVALID", "/choices");
     for (const [i, option] of (input.choices ?? []).entries()) {
       const error =
         guards.outboundText(option.label, `/choices/${i}/label`) ??
@@ -90,7 +94,6 @@ export function createAsk(
     )
       return refuse("INPUT_INVALID", "/expiresInMinutes");
 
-    const work = kind === "work_request";
     const choices = work ? WORK_REQUEST_CHOICES : (input.choices ?? []);
     if (
       choices.length < LIMITS.choicesMin ||

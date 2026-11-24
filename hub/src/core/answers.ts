@@ -57,7 +57,7 @@ export function createAnswers(
     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(ask_id) DO NOTHING
   `);
   const retry = db.prepare(
-    "SELECT ask_id, outcome FROM answer_attempts WHERE event_key = ?",
+    "SELECT ask_id, outcome, slack_user_id FROM answer_attempts WHERE event_key = ?",
   );
   const record = db.prepare(`
     INSERT INTO answer_attempts (event_key, ask_id, slack_user_id, choice_id, outcome, at) VALUES (?, ?, ?, ?, ?, ?)
@@ -90,6 +90,7 @@ export function createAnswers(
   const readRows = db.prepare(`
     SELECT x.*, a.kind, a.choices_json, p.display_name, m.permit_id FROM ask_answers AS x
     JOIN asks AS a ON a.ask_id = x.ask_id
+    JOIN project_members AS member ON member.project_id = a.project_id AND member.person_id = a.from_person_id
     JOIN people AS p ON p.person_id = x.answered_by_person_id
     LEFT JOIN permits AS m ON m.request_ask_id = a.ask_id AND m.person_id = a.from_person_id
       AND m.project_id = a.project_id AND m.scope_key = 'request:' || a.ask_id
@@ -133,9 +134,11 @@ export function createAnswers(
     digitEvent?: ChatMessageEvent,
   ) {
     return db.transaction(() => {
+      const prior = retry.get(eventKey);
+      if (prior && prior.slack_user_id !== slackId) return;
       const person = people.bySlackUserId(slackId);
-      let id = explicit;
-      if (digitEvent) {
+      let id = prior ? text(prior.ask_id) : explicit;
+      if (!prior && digitEvent) {
         if (!person) return;
         const refs = explicit
           ? byId.all(person.personId, explicit)
@@ -148,72 +151,69 @@ export function createAnswers(
         id = text(refs[0].ask_id);
       }
       if (id === undefined) return;
-      const prior = retry.get(eventKey);
-      if (prior)
-        return {
-          ...describe(oneOf(prior.outcome, outcomes), text(prior.ask_id)),
-          after: undefined,
-        };
-
-      const at = now();
       const row = ask.get(id);
+      const actor = person?.personId;
+      const eligible =
+        row &&
+        actor !== undefined &&
+        allowed(row).includes(actor) &&
+        sessions.isMember(text(row.project_id), actor) &&
+        (kind(row) === "choice" || row.from_person_id === actor);
+      const at = now();
       let verdict: AnswerOutcome["kind"];
       let after: AnswerAfter | undefined;
       let choiceId = String(selection);
       if (!row) verdict = "unknown_ask";
-      else if (!person) verdict = "unknown_answerer";
+      else if (!person)
+        verdict = prior ? oneOf(prior.outcome, outcomes) : "unknown_answerer";
+      else if (!eligible && (prior || row.answered !== null))
+        verdict = "not_allowed";
+      else if (prior) verdict = oneOf(prior.outcome, outcomes);
       else if (row.answered !== null) verdict = "already_answered";
       else if (row.status === "expired" || integer(row.expires_at) <= at) {
         expire(db, at, id);
         verdict = "expired";
-      } else {
+      } else if (!eligible) verdict = "not_allowed";
+      else {
         const projectId = text(row.project_id);
         const fromPersonId = text(row.from_person_id);
         const work = kind(row) === "work_request";
         const actor = person.personId;
-        if (
-          !allowed(row).includes(actor) ||
-          !sessions.isMember(projectId, actor) ||
-          (work && actor !== fromPersonId)
-        )
-          verdict = "not_allowed";
+        const options = choices(row.choices_json);
+        const digit = typeof selection === "number";
+        const choice = digit
+          ? options[selection - 1]
+          : options.find((option) => option.id === selection);
+        if (!choice) verdict = "invalid_choice";
         else {
-          const options = choices(row.choices_json);
-          const digit = typeof selection === "number";
-          const choice = digit
-            ? options[selection - 1]
-            : options.find((option) => option.id === selection);
-          if (!choice) verdict = "invalid_choice";
-          else {
-            choiceId = choice.id;
-            const { changes } = post.run(
-              id,
-              choiceId,
-              actor,
-              at,
-              digit ? "digit" : "button",
-              eventKey,
-            );
-            verdict = Number(changes) ? "locked" : "already_answered";
-            if (verdict === "locked") {
-              finish.run(id);
-              if (work && choiceId === "approve") {
-                permit.run(newStoreId("permit"), at, id);
-                restore.run(at, id);
-              }
-              const fromSessionId = text(row.from_session_id);
-              after = {
-                askId: id,
-                projectId,
-                fromSessionId,
-                fromPersonId,
-                queuedEdits: queueEdits(db, at, id),
-              };
+          choiceId = choice.id;
+          const { changes } = post.run(
+            id,
+            choiceId,
+            actor,
+            at,
+            digit ? "digit" : "button",
+            eventKey,
+          );
+          verdict = Number(changes) ? "locked" : "already_answered";
+          if (verdict === "locked") {
+            finish.run(id);
+            if (work && choiceId === "approve") {
+              permit.run(newStoreId("permit"), at, id);
+              restore.run(at, id);
             }
+            const fromSessionId = text(row.from_session_id);
+            after = {
+              askId: id,
+              projectId,
+              fromSessionId,
+              fromPersonId,
+              queuedEdits: queueEdits(db, at, id),
+            };
           }
         }
       }
-      record.run(eventKey, id, slackId, choiceId, verdict, at);
+      if (!prior) record.run(eventKey, id, slackId, choiceId, verdict, at);
       return { ...describe(verdict, id), after };
     });
   }

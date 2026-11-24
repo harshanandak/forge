@@ -106,24 +106,6 @@ const workerSource = `
   (async () => {
     const { openHubDb, createPeopleDirectory } = await import(w.entry);
     const { createCoreStore } = await import(w.store);
-    const { createPathProtection } = await import(new URL("./protect.js", w.entry).href);
-    const { spawnSync } = require("node:child_process");
-    const { dirname } = require("node:path");
-    const probe = { root: process.env.SystemRoot ?? null, status: null, stdout: "", stderr: "" };
-    const protection = createPathProtection({
-      execute(executable, args, options) {
-        const result = spawnSync(executable, args, options);
-        probe.status = result.status;
-        probe.stdout = result.stdout?.slice(0, 200) ?? "";
-        probe.stderr = result.stderr?.slice(0, 200) ?? "";
-        probe.error = result.error?.code ?? null;
-        return result;
-      },
-    });
-    const accepted = protection.protectDirectoryChain(dirname(w.path));
-    parentPort.postMessage({
-      probe, accepted, rootPresent: probe.root !== null, successMarker: probe.stdout.trim() === "private",
-    });
     const db = openHubDb(w.path);
     try {
       const people = createPeopleDirectory(w.config.people);
@@ -157,6 +139,7 @@ test(
             new Promise<unknown[]>((resolve, reject) => {
               const worker = new Worker(workerSource, {
                 eval: true,
+                env: { SystemRoot: process.env.SystemRoot },
                 workerData: {
                   path: f.path,
                   config: f.config,
@@ -175,16 +158,6 @@ test(
               });
               workers.push(worker);
               worker.on("message", (message: unknown) => {
-                if (
-                  message &&
-                  typeof message === "object" &&
-                  "probe" in message
-                ) {
-                  console.log(
-                    "A5 parent-chain probe " + JSON.stringify(message),
-                  );
-                  return;
-                }
                 if (message === "ready") {
                   if (++ready === 2) {
                     Atomics.store(gate, 0, 1);
