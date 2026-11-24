@@ -295,11 +295,12 @@ test(
       { kind: "unknown" },
     ] as const) {
       chat.nextWrite = effect;
-      await expect(chat.postAskDm(slackA, card)).rejects.toMatchObject({
-        effect: effect.kind,
-        retryAfterMs:
-          "retryAfterMs" in effect ? effect.retryAfterMs : undefined,
-      });
+      const post = chat.postAskDm(slackA, card);
+      await expect(post).rejects.toHaveProperty("effect", effect.kind);
+      const key = "retryAfterMs";
+      if (key in effect)
+        await expect(post).rejects.toHaveProperty(key, effect[key]);
+      else await expect(post).rejects.not.toHaveProperty(key);
     }
     expect(chat.writes).toHaveLength(1);
     const gate = Promise.withResolvers<void>();
