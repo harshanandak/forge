@@ -72,9 +72,10 @@ function schema(dir: string): DoctorCheck {
     if (!protectPath(path, "file"))
       return row(schemaKey, "action", "The database file is not private.");
     for (const suffix of ["-wal", "-shm", "-journal"]) {
-      const file = stat(path + suffix);
-      if (file === null || (file && (!file.isFile() || file.nlink !== 1n)))
-        return row(schemaKey, "action", "A database sidecar is unsafe.");
+      const file = path + suffix;
+      const present = stat(file);
+      if (present === null || (present && !protectPath(file, "file")))
+        return row(schemaKey, "action", "A sidecar is not private.");
     }
     const sqlite: typeof import("node:sqlite") =
       process.getBuiltinModule("node:sqlite");

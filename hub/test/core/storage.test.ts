@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { readFile, stat } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   inspectStorage,
@@ -71,6 +72,32 @@ test(
     expect(schema).toMatchObject({
       status: "skipped",
       detail: "The database is not initialised.",
+    });
+  },
+  timeout,
+);
+
+test(
+  "Q3: doctor refuses a sidecar with broad permissions",
+  async () => {
+    const { config, path } = await fixture();
+    const sidecar = path + "-journal";
+    await writeFile(sidecar, "", { flag: "wx", mode: 0o600 });
+    if (process.platform === "win32") {
+      const root = process.env.SystemRoot ?? "C:\\Windows";
+      const icacls = join(root, "System32", "icacls.exe");
+      execFileSync(icacls, [sidecar, "/grant", "*S-1-1-0:R"], {
+        stdio: "ignore",
+        timeout,
+        windowsHide: true,
+      });
+    } else {
+      await chmod(sidecar, 0o644);
+    }
+    expect(inspectStorage(config)).toContainEqual({
+      check: "schema_version",
+      status: "action",
+      detail: "A sidecar is not private.",
     });
   },
   timeout,
