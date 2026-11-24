@@ -81,12 +81,11 @@ function assertIdentity(path: string, expected: BigIntStats): void {
 export function createOpenHubDb(
   connect = (path: string, options: DatabaseSyncOptions) =>
     new DatabaseSync(path, options),
-  checkChain = protectDirectoryChain,
 ): OpenHubDb {
   return (path) => {
     const target = resolve(path);
     const parent = dirname(target);
-    if (!checkChain(parent))
+    if (!protectDirectoryChain(parent))
       throw new Error("Hub database parent chain is unsafe");
     if (!protectPath(parent, "dir"))
       throw new Error("Hub database directory is not private");
