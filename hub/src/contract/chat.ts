@@ -158,8 +158,8 @@ export const SUMMARY_LOOKUP_MAX_PAGES = 20;
 
 export class ChatWriteFailure extends Error {
   readonly effect: "refused" | "unknown";
-  readonly retryAfterMs?: number;
-  readonly reason?: ChatFailureReason;
+  declare readonly retryAfterMs?: number;
+  declare readonly reason?: ChatFailureReason;
   constructor(
     effect: "refused" | "unknown",
     retryAfterMs?: number,

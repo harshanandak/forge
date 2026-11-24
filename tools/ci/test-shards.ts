@@ -65,11 +65,11 @@ if (import.meta.main) {
   const { scripts } = JSON.parse(readFileSync("package.json", "utf8")) as {
     scripts: Record<string, string>;
   };
+  const testPaths = /(?:hub\/)?test\/\S+\.test\.ts/g;
   // The integration script names its serial files; one assignment serves both suites.
-  const explicitTestPath = /(?<!\S)(?:hub\/)?test\/\S+\.test\.ts/g;
   const serial = new Set(
     scripts["test:integration"]!.split(" && ").flatMap(
-      (command) => command.match(explicitTestPath) ?? [],
+      (command) => command.match(testPaths) ?? [],
     ),
   );
   const assigned = requireShardFiles(
@@ -91,7 +91,7 @@ if (import.meta.main) {
     }
     const ignore = /--path-ignore-patterns '([^']+)'/.exec(command);
     const glob = ignore ? new Bun.Glob(ignore[1]!) : undefined;
-    const explicit = command.match(explicitTestPath);
+    const explicit = command.match(testPaths);
     const selected = assigned.filter((file) =>
       explicit
         ? explicit.includes(file)

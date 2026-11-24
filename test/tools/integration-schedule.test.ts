@@ -44,11 +44,6 @@ test.each(["test:integration", "test:changed"])(
       expect(groups[1]).toContain("--changed=origin/main");
       expect(serial).toContain("--changed=origin/main");
     }
-    const hubSerial = [
-      "hub/test/scaffold.integration.test.ts",
-      "hub/test/core/protect.integration.test.ts",
-      "hub/test/core/schema.integration.test.ts",
-    ];
     const files = [
       ...(script === "test:integration"
         ? [
@@ -64,10 +59,16 @@ test.each(["test:integration", "test:changed"])(
       ["tools", "lane-run"],
       ["tools", "lane"],
       ["tools", "cli-speed"],
-    ]
-      .map(([folder, name]) => `test/${folder}/${name}.integration.test.ts`)
-      .concat(hubSerial);
-    for (const path of files) {
+    ];
+    const paths = [
+      ...files.map(
+        ([folder, name]) => `test/${folder}/${name}.integration.test.ts`,
+      ),
+      "hub/test/scaffold.integration.test.ts",
+      "hub/test/core/protect.integration.test.ts",
+      "hub/test/core/schema.integration.test.ts",
+    ];
+    for (const path of paths) {
       expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);
       expect(ignore.match(path), `${path} excluded from bulk`).toBe(true);
     }
@@ -77,10 +78,10 @@ test.each(["test:integration", "test:changed"])(
     const serialPaths = serial
       .split(" ")
       .filter((arg) => arg.endsWith(".test.ts"));
-    expect(serialPaths).toHaveLength(files.length);
+    expect(serialPaths).toHaveLength(paths.length);
     const integrationPaths = [
       ...new Bun.Glob("test/**/*.integration.test.ts").scanSync("."),
-      ...hubSerial.flatMap((path) => [...new Bun.Glob(path).scanSync(".")]),
+      ...new Bun.Glob("hub/test/**/*.integration.test.ts").scanSync("."),
     ]
       .map((path) => path.replaceAll("\\", "/"))
       .filter((path) => !path.endsWith("/packed.integration.test.ts"));
