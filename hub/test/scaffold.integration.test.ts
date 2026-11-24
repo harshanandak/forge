@@ -209,7 +209,11 @@ const fields = [
   "optionalDependencies",
   "peerDependencies",
 ] as const;
-type Package = { path: string; metadata: Record<string, unknown> };
+type Package = {
+  path: string;
+  metadata: Record<string, unknown>;
+  notices: string[];
+};
 
 function installedFolder(owner: string, name: string): string | undefined {
   ok(/^(?:@[\w.-]+\/)?[\w-][\w.-]*$/.test(name), "Invalid dependency name");
@@ -263,7 +267,10 @@ function installedClosure(): Map<string, Package> {
             installed.version === record(metadata.dependencies)[name],
             "Direct dependency pin differs from the hub install",
           );
-        closure.set(key, { path, metadata: installed });
+        const notices = readdirSync(path).filter((name) =>
+          /^(?:licen[cs]e|notice|copying)(?:[._-]|$)/i.test(name),
+        );
+        closure.set(key, { path, metadata: installed, notices });
         visit(path, installed);
       }
     }
@@ -314,15 +321,35 @@ function npmManifestPath(): string {
     : resolve(dirname(realpathSync(executable)), "../package.json");
 }
 
-async function packableFiles(npm: string): Promise<string[]> {
+async function packableFiles(
+  npm: string,
+  closure: Map<string, Package>,
+): Promise<string[]> {
   const requireNpm = createRequire(npm);
-  const Arborist = requireNpm("@npmcli/arborist") as new (options: {
-    path: string;
-  }) => { loadActual(): Promise<unknown> };
+  const packageJson = requireNpm("@npmcli/package-json") as {
+    normalize(path: string): Promise<{ content: Record<string, unknown> }>;
+  };
   const packlist = requireNpm("npm-packlist") as (
     tree: unknown,
   ) => Promise<string[]>;
-  return packlist(await new Arborist({ path: hub }).loadActual());
+  const edgesOut = new Map(
+    await Promise.all(
+      [...closure].map(async ([name, { path }]) => {
+        const { content } = await packageJson.normalize(path);
+        const node = { path, package: content, edgesOut: new Map() };
+        return [name, { to: { ...node, target: node } }] as const;
+      }),
+    ),
+  );
+  const { content } = await packageJson.normalize(hub);
+  return (
+    await packlist({
+      path: hub,
+      isProjectRoot: true,
+      package: { ...content, bundleDependencies: [...closure.keys()] },
+      edgesOut,
+    })
+  ).sort();
 }
 
 async function packReport(npm: string): Promise<string[]> {
@@ -396,13 +423,11 @@ function checkInventory(
       "Pack omitted a production package",
     );
     runtimeTargets(installed.metadata, files);
-    for (const name of readdirSync(installed.path).filter((name) =>
-      /^(?:licen[cs]e|notice|copying)(?:[._-]|$)/i.test(name),
-    ))
+    for (const name of installed.notices)
       ok(files.includes(name), "Pack omitted a bundled licence or notice file");
   }
   ok(
-    isDeepStrictEqual(paths.toSorted(), expected.toSorted()),
+    isDeepStrictEqual(paths.toSorted(), expected),
     "Pack inventory differs from the packable installed files",
   );
 }
@@ -497,15 +522,25 @@ test(
 
     const manifestPath = join(hub, "package.json");
     const before = readFileSync(manifestPath);
+    const started = performance.now();
+    const closure = installedClosure();
+    const closureMs = performance.now() - started;
+    let packMs = 0;
+    let packlistMs = 0;
     const [paths, expected] = await Promise.all([
-      (packedPaths ??= packReport(npm)),
-      packableFiles(npm),
+      (packedPaths ??= packReport(npm)).then((files) => {
+        packMs = performance.now() - started - closureMs;
+        return files;
+      }),
+      packableFiles(npm, closure).then((files) => {
+        packlistMs = performance.now() - started - closureMs;
+        return files;
+      }),
     ]);
     ok(
       before.equals(readFileSync(manifestPath)),
       "npm pack changed the hub manifest",
     );
-    const closure = installedClosure();
     checkInventory(paths, expected, closure);
 
     const omitPackage = (owner: string) =>
@@ -535,6 +570,12 @@ test(
       ownFiles.length,
       paths.length - ownFiles.length,
       closure.size,
+    );
+    console.log(
+      "A7 phases: closure %d ms, npm pack %d ms, expected files %d ms.",
+      Math.round(closureMs),
+      Math.round(packMs),
+      Math.round(packlistMs),
     );
   },
   timeout,
