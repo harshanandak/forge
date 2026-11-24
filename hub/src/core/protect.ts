@@ -50,10 +50,27 @@ const windowsHelper = `
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+function Write-ChainRefusal($path, $raw, $clause, $ace) {
+  if (!$request.diagnoseChain) { return }
+  $entry = [ordered]@{
+    component = $path
+    ownerSID = $raw.Owner.Value
+    clause = $clause
+    ace = if ($ace -is [Security.AccessControl.KnownAce]) {
+      [ordered]@{ sid = $ace.SecurityIdentifier.Value; mask = ('0x{0:X8}' -f $ace.AccessMask); flags = [string]$ace.AceFlags }
+    } else { $null }
+  }
+  [Console]::Error.WriteLine('HUB_WINDOWS_CHAIN_REFUSAL ' + (ConvertTo-Json -InputObject $entry -Compress -Depth 3))
+}
 function Assert-PathKind($path, $isDir) {
   $attributes = [IO.File]::GetAttributes($path)
   $directory = [bool]($attributes -band [IO.FileAttributes]::Directory)
-  if ($directory -ne $isDir -or ($attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'kind' }
+  $reparse = $attributes -band [IO.FileAttributes]::ReparsePoint
+  if ($directory -ne $isDir -or $reparse) {
+    $clause = if ($reparse) { 'reparse' } else { 'kind' }
+    Write-ChainRefusal $path $null $clause $null
+    throw 'kind'
+  }
 }
 function Read-Descriptor($path, $isDir) {
   Assert-PathKind $path $isDir
@@ -69,21 +86,26 @@ function Test-DirectoryChain($path) {
       $acl = Read-Descriptor $dir.FullName $true
       $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
     } catch {
+      if ($_.Exception.Message -ne 'kind') { Write-ChainRefusal $dir.FullName $null 'descriptor' $null }
       [Console]::Error.WriteLine("chain_component:$depth")
       return $false
     }
     if ($raw.Owner.Value -notin $trusted -or $null -eq $raw.DiscretionaryAcl) {
+      $clause = if ($raw.Owner.Value -notin $trusted) { 'owner' } else { 'null-dacl' }
+      Write-ChainRefusal $dir.FullName $raw $clause $null
       [Console]::Error.WriteLine("chain_owner_or_dacl:$depth")
       return $false
     }
     foreach ($ace in $raw.DiscretionaryAcl) {
       if ($ace -isnot [Security.AccessControl.QualifiedAce]) {
+        Write-ChainRefusal $dir.FullName $raw 'unknown-ace' $ace
         [Console]::Error.WriteLine("chain_ace:$depth")
         return $false
       }
       if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
           !($ace.AceFlags -band [Security.AccessControl.AceFlags]::InheritOnly) -and
           $ace.SecurityIdentifier.Value -notin $trusted -and ($ace.AccessMask -band $replacement)) {
+        Write-ChainRefusal $dir.FullName $raw 'replacement' $ace
         [Console]::Error.WriteLine("chain_replacement:$depth")
         return $false
       }
@@ -96,10 +118,16 @@ function Test-Private($path, $isDir, $effectiveOnly = $false) {
   $acl = Read-Descriptor $path $isDir
   $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
   $strictDirectory = $isDir -and !$effectiveOnly
-  if ($raw.Owner -ne $sid -or $null -eq $raw.DiscretionaryAcl -or !$raw.DiscretionaryAcl.Count) { return $false }
+  if ($raw.Owner -ne $sid -or $null -eq $raw.DiscretionaryAcl -or !$raw.DiscretionaryAcl.Count) {
+    Write-ChainRefusal $path $raw 'leaf-owner-or-dacl' $null
+    return $false
+  }
   if ($strictDirectory -and (!$acl.AreAccessRulesProtected -or $raw.DiscretionaryAcl.Count -ne 1)) { return $false }
   foreach ($ace in $raw.DiscretionaryAcl) {
-    if ($ace.AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or $ace.SecurityIdentifier -ne $sid) { return $false }
+    if ($ace.AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or $ace.SecurityIdentifier -ne $sid) {
+      Write-ChainRefusal $path $raw 'leaf-owner-only' $ace
+      return $false
+    }
     if ($strictDirectory -and ([int]$ace.AceFlags -ne 3 -or $ace.AccessMask -ne [int][Security.AccessControl.FileSystemRights]::FullControl)) { return $false }
   }
   return $true

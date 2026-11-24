@@ -18,13 +18,14 @@ import { createOpenHubDb } from "../../src/core/db.ts";
 import {
   createPrivateDirectory,
   createPrivateFile,
-  openHubDb,
   protectPath,
 } from "../../src/core/index.ts";
 import { createTestSchema } from "./ddl.ts";
 import { schemaFixture } from "./schema-fixture.ts";
+import { diagnosticChain } from "./windows-chain-diagnostic.ts";
 
 const timeout = 30_000;
+const openHubDb = createOpenHubDb(undefined, diagnosticChain);
 const { temp, track, close, cleanup } = schemaFixture();
 
 async function dbPath(): Promise<string> {
@@ -136,7 +137,7 @@ test.each(["read-only", "read-write"] as const)(
         renameSync(replacement, target);
       }
       return new DatabaseSync(target, options);
-    });
+    }, diagnosticChain);
     expect(() => track(guardedOpen(path))).toThrow(
       "Hub database file identity changed",
     );
