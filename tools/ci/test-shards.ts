@@ -66,9 +66,10 @@ if (import.meta.main) {
     scripts: Record<string, string>;
   };
   // The integration script names its serial files; one assignment serves both suites.
+  const explicitTestPath = /(?<!\S)(?:hub\/)?test\/\S+\.test\.ts/g;
   const serial = new Set(
     scripts["test:integration"]!.split(" && ").flatMap(
-      (command) => command.match(/test\/\S+\.test\.ts/g) ?? [],
+      (command) => command.match(explicitTestPath) ?? [],
     ),
   );
   const assigned = requireShardFiles(
@@ -90,7 +91,7 @@ if (import.meta.main) {
     }
     const ignore = /--path-ignore-patterns '([^']+)'/.exec(command);
     const glob = ignore ? new Bun.Glob(ignore[1]!) : undefined;
-    const explicit = command.match(/test\/\S+\.test\.ts/g);
+    const explicit = command.match(explicitTestPath);
     const selected = assigned.filter((file) =>
       explicit
         ? explicit.includes(file)
