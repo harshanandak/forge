@@ -155,7 +155,7 @@ check("P9 inside cwd, Read Glob and Grep do not need network", async (f) => {
     if (offline) await f.stopServer();
     expect(await f.tool("Read", { file_path: file })).toEqual(silence);
     expect(await f.tool("Glob", { pattern: "**/*.ts" })).toEqual(silence);
-    expect(await f.tool("Grep", { path: "src", pattern: "fixture" })).toEqual(
+    expect(await f.tool("Grep", { path: "src", pattern: "/api/../" })).toEqual(
       silence,
     );
   }
@@ -175,6 +175,7 @@ check(
         ["Glob", { pattern: "../x/*" }],
         ["Glob", { pattern: file }],
         ["Grep", { path: "..", pattern: "fixture" }],
+        ["Grep", { path: ".", pattern: "fixture", glob: "../*" }],
         ["Read", { file_path: join(f.root, "link", "file") }],
         ["Read", { file_path: "missing" }],
       ] as const;

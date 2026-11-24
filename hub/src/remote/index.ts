@@ -1,7 +1,4 @@
-import type {
-  createMcpHandler,
-  McpHttpHandler,
-} from "@modelcontextprotocol/server";
+import type * as Mcp from "@modelcontextprotocol/server";
 import { HOOK_PATHS } from "../contract/hooks.ts";
 import { MCP_PATH } from "../contract/mcp.ts";
 import type { CreateRemoteHandler, RemoteDeps } from "../contract/runtime.ts";
@@ -13,7 +10,7 @@ export { createDoorbell, doorbellWith } from "./doorbell.ts";
 export { runAdminCommand, adminWith } from "./admin.ts";
 
 export interface RemoteServices {
-  readonly makeMcp?: typeof createMcpHandler;
+  readonly makeMcp?: typeof Mcp.createMcpHandler;
   readonly compare?: CompareDigest;
 }
 
@@ -23,7 +20,7 @@ export const createRemoteHandler: CreateRemoteHandler = (deps) =>
 export function remoteWith(deps: RemoteDeps, services: RemoteServices) {
   const { config, core } = deps;
   const auth = authentication(core, services.compare);
-  let sdk: Promise<McpHttpHandler> | undefined;
+  let sdk: Promise<Mcp.McpHttpHandler> | undefined;
   let hooks:
     | Promise<ReturnType<typeof import("./hook-routes.ts").hookHandler>>
     | undefined;

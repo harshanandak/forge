@@ -17,6 +17,8 @@ export function flags<T extends string>(...names: T[]) {
 
 function redact(_key: string, input: unknown) {
   if (typeof input !== "string") return input;
+  if (/-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----/.test(input))
+    return "[redacted]";
   let value = input;
   for (const pattern of SECRET_PATTERNS)
     value = value.replaceAll(new RegExp(pattern, "g"), "[redacted]");

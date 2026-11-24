@@ -65,10 +65,10 @@ check(
         assistant(
           block(" Final"),
           { type: "thinking", text: "ignore" },
-          block(" answer.\n"),
+          block("\u2028answer\u2029done.\n"),
         ),
         { type: "user" },
-      ),
+      ).replace("\n", "\r\n"),
     );
     for (const last_assistant_message of [undefined, 123]) {
       expect(
@@ -78,7 +78,7 @@ check(
           last_assistant_message,
         }),
       ).toEqual(silence);
-      expect(f.seen.at(-1)).toEqual(outgoing("Final answer."));
+      expect(f.seen.at(-1)).toEqual(outgoing("Final\u2028answer\u2029done."));
     }
     expect(f.seen).toHaveLength(3);
   },

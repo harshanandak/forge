@@ -212,9 +212,15 @@ check(
   "L11 redacts all occurrences without changing items or acks",
   async (f) => {
     const original = token + " " + token;
+    const pem = [
+      "-----" + "BEGIN PRIVATE KEY-----",
+      "synthetic-key-material",
+      "-----END PRIVATE KEY-----",
+    ].join("\n");
     const items = [
       { ...item, text: original },
       { ...item, itemId: "itm_b", from: { ...item.from, name: key } },
+      { ...item, itemId: "itm_c", text: pem },
     ];
     const seen: unknown[] = [];
     f.core.cliInbox = (_person, input) => {
@@ -223,12 +229,15 @@ check(
     };
     const result = await f.run(inbox);
     expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
     expect(envelope(result.stdout).result?.items).toMatchObject([
       { text: "[redacted] [redacted]" },
       { from: { name: "[redacted]" } },
+      { text: "[redacted]" },
     ]);
     expect(items[0]?.text).toBe(original);
     expect(items[1]?.from.name).toBe(key);
+    expect(items[2]?.text).toBe(pem);
     expect(seen).toEqual([{ projectId }]);
   },
 );

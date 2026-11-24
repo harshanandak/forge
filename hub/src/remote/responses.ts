@@ -55,8 +55,8 @@ export type Call<C, I, O> = (
 ) => HubResult<O> | Promise<HubResult<O>>;
 
 function pointer(errors: Errors) {
-  const issue =
-    errors?.find(({ keyword }) => keyword === "oneOf") ?? errors?.[0];
+  const direct = errors?.find((e) => !e.schemaPath.startsWith("#/oneOf"));
+  const issue = direct ?? errors?.at(-1);
   if (!issue) return "";
   const params: Record<string, unknown> = issue.params;
   const field = params.missingProperty ?? params.additionalProperty;

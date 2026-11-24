@@ -42,7 +42,7 @@ export function mcpHandler(
   { config, core, log }: RemoteDeps,
   make = createMcpHandler,
 ) {
-  const ajv = new Ajv();
+  const ajv = new Ajv({ allErrors: true });
   const tool = <N extends McpToolName, R>(
     name: N,
     run: Call<Caller, Input<N>, R>,

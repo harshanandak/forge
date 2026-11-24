@@ -27,7 +27,8 @@ function safePattern(value: unknown) {
 }
 async function localRead(tool: string, fields: ObjectValue, cwd: string) {
   if (!HOOK_READ_TOOLS.some((name) => name === tool)) return false;
-  if (!safePattern(fields.pattern) || !safePattern(fields.glob)) return false;
+  if (tool === "Glob" && !safePattern(fields.pattern)) return false;
+  if (tool === "Grep" && !safePattern(fields.glob)) return false;
   const target = (tool === "Read" ? fields.file_path : fields.path) ?? cwd;
   if (typeof target !== "string") return false;
   try {
