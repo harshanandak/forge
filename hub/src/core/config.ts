@@ -3,19 +3,12 @@ import { dirname, resolve } from "node:path";
 import { ID_PATTERN } from "../contract/ids.ts";
 import {
   HubConfigError,
-  type CreatePeopleDirectory,
-  type DoctorCheck,
   type HubConfig,
   type ProjectConfig,
 } from "../contract/runtime.ts";
 
-function notBuilt(): never {
-  throw new Error("not_built");
-}
-
-export const createPeopleDirectory: CreatePeopleDirectory = notBuilt;
-export const inspectStorage: (config: HubConfig) => readonly DoctorCheck[] =
-  notBuilt;
+export { createPeopleDirectory } from "./directory.ts";
+export { inspectStorage } from "./storage.ts";
 
 function refuse(pointer: string, rule: string): never {
   throw new HubConfigError(pointer, rule);
