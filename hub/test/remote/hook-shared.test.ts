@@ -62,7 +62,7 @@ test(
         expect(text.includes("import.meta" + ".main")).toBe(false);
         for (const [, specifier] of text.matchAll(declarations)) {
           expect(specifier).not.toMatch(
-            /(?:^|\/)(?:session-start|pre-tool|stop)\.(?:js|ts)$/,
+            /(?:^|\/)(?:forge-hub|session-start|pre-tool|stop)\.mjs$/,
           );
         }
       }

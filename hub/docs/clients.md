@@ -30,7 +30,7 @@ When the hub's hooks are enabled, install the following hook settings. Replace t
         "hooks": [
           {
             "type": "command",
-            "command": "node \"<absolute path>/dist/hooks/session-start.js\""
+            "command": "node \"<absolute path>/bin/session-start.mjs\""
           }
         ]
       }
@@ -41,7 +41,7 @@ When the hub's hooks are enabled, install the following hook settings. Replace t
         "hooks": [
           {
             "type": "command",
-            "command": "node \"<absolute path>/dist/hooks/pre-tool.js\"",
+            "command": "node \"<absolute path>/bin/pre-tool.mjs\"",
             "onFailure": "block"
           }
         ]
@@ -52,7 +52,7 @@ When the hub's hooks are enabled, install the following hook settings. Replace t
         "hooks": [
           {
             "type": "command",
-            "command": "node \"<absolute path>/dist/hooks/stop.js\""
+            "command": "node \"<absolute path>/bin/stop.mjs\""
           }
         ]
       }

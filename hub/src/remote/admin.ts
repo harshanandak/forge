@@ -19,19 +19,6 @@ function refuse(reason: string, status = 1) {
 const usage = () =>
   refuse("usage: forge-hub token|host create|revoke, inbox, send", 2);
 
-async function pathsFromCore() {
-  const core: Record<string, unknown> = {
-    ...(await import("../core/index.ts")),
-  };
-  const { createPrivateDirectory, createPrivateFile } = core;
-  if (
-    typeof createPrivateDirectory !== "function" ||
-    typeof createPrivateFile !== "function"
-  )
-    return;
-  return { createPrivateDirectory, createPrivateFile } as PrivatePaths;
-}
-
 async function exists(path: string) {
   try {
     await lstat(path);
@@ -64,8 +51,7 @@ async function credential(
   try {
     if ((await exists(path)) || (await inWorktree(parent)))
       return refuse("OUTPUT_UNSAFE");
-    paths ??= await pathsFromCore();
-    if (!paths) return refuse("PRIVATE_OUTPUT_UNAVAILABLE");
+    paths ??= await import("../core/index.ts");
     if (
       !(await exists(parent)) &&
       !(await paths.createPrivateDirectory(parent))

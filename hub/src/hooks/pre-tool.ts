@@ -18,12 +18,8 @@ const unconfirmed = (code: string) =>
   `Forge hub could not confirm this session (${code}). Read tools inside the working directory still work.`;
 
 function safePattern(value: unknown) {
-  if (value === undefined) return true;
-  return (
-    typeof value === "string" &&
-    !win32.isAbsolute(value) &&
-    !value.includes("..")
-  );
+  if (typeof value !== "string") return value === undefined;
+  return !win32.isAbsolute(value) && !value.includes("..");
 }
 async function localRead(tool: string, fields: ObjectValue, cwd: string) {
   if (!HOOK_READ_TOOLS.some((name) => name === tool)) return false;
@@ -40,7 +36,7 @@ async function localRead(tool: string, fields: ObjectValue, cwd: string) {
   }
 }
 
-async function runPreTool() {
+async function decision() {
   const event = await input();
   const fields = object(event?.tool_input);
   const name = serverName();
@@ -61,8 +57,9 @@ async function runPreTool() {
   return value.mode === "reply_only" ? replyOnly : undefined;
 }
 
-const decision = await runPreTool().catch(() => unconfirmed("INVALID_INPUT"));
-if (decision !== undefined) {
-  process.stderr.write(decision + "\n");
-  process.exitCode = 2;
+export async function runPreTool() {
+  const reason = await decision().catch(() => unconfirmed("INVALID_INPUT"));
+  if (reason === undefined) return 0;
+  process.stderr.write(reason + "\n");
+  return 2;
 }

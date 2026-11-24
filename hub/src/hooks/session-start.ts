@@ -4,7 +4,7 @@ const count = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const unavailable = (code: string) => "Forge hub unavailable: " + code;
 
-async function runSessionStart() {
+async function sessionLine() {
   const event = await input();
   const server = serverName();
   if (!event || !server) return unavailable("INVALID_INPUT");
@@ -27,5 +27,9 @@ async function runSessionStart() {
   return `Forge hub session ${sessionId} (${mode}). ${unread} unread, ${unreadFromOthers} not from you. Call ${server} hello with sessionId ${sessionId}, then inbox.`;
 }
 
-const line = await runSessionStart().catch(() => undefined);
-if (line !== undefined) process.stdout.write(line + "\n");
+export async function runSessionStart() {
+  await sessionLine()
+    .then((line) => process.stdout.write(line + "\n"))
+    .catch(() => undefined);
+  return 0;
+}

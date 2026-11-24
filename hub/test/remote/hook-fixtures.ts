@@ -124,7 +124,7 @@ async function fixture() {
   });
   const url = server.url.origin;
   const run = (hook: Hook, input: unknown, env = {}, flags: string[] = []) => {
-    const script = join(hubRoot, "dist", "hooks", hook + ".js");
+    const script = join(hubRoot, "bin", hook + ".mjs");
     return child(
       root,
       [...flags, script],

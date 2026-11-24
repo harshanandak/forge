@@ -20,14 +20,13 @@ export function object(value: unknown): ObjectValue | undefined {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as ObjectValue;
 }
-export async function input(): Promise<
-  (ObjectValue & { session_id: string }) | undefined
-> {
+type HookInput = ObjectValue & { session_id: string };
+export async function input(): Promise<HookInput | undefined> {
   const raw = await text(process.stdin);
   try {
     const event = object(JSON.parse(raw));
-    if (event && isSession(event.session_id))
-      return { ...event, session_id: event.session_id };
+    const session = event?.session_id;
+    if (event && isSession(session)) return { ...event, session_id: session };
   } catch {
     return undefined;
   }
@@ -46,9 +45,8 @@ export function serverName() {
 
 function hubBase(raw: string) {
   const url = URL.parse(raw);
-  if (!url || url.username || url.password || /[?#]/.test(raw))
-    return undefined;
-  if (raw.endsWith("/") || url.pathname.endsWith("/mcp")) return undefined;
+  if (!url || url.username || url.password || /[?#]/.test(raw)) return;
+  if (raw.endsWith("/") || url.pathname.endsWith("/mcp")) return;
   const loopback = /^(127(?:\.\d{1,3}){3}|\[::1\])$/.test(url.hostname);
   if (url.protocol === "https:" || (url.protocol === "http:" && loopback))
     return raw;
@@ -72,20 +70,18 @@ export async function call(
   const key = await hostKey();
   if (!key) return { error: "HOST_KEY_UNAVAILABLE" };
   const stop = route === "stop";
-  const signal = AbortSignal.timeout(
-    stop ? HOOK_STOP_TIMEOUT_MS : HOOK_TIMEOUT_MS,
-  );
-  const headers = {
-    authorization: "Bearer " + key,
-    "content-type": "application/json",
-  };
+  const timeout = stop ? HOOK_STOP_TIMEOUT_MS : HOOK_TIMEOUT_MS;
+  const signal = AbortSignal.timeout(timeout);
   try {
     const response = await fetch(base + HOOK_PATHS[route], {
       method: "POST",
       redirect: "error",
       signal,
       body: JSON.stringify({ host: "claude", hostSessionId, ...fields }),
-      headers,
+      headers: {
+        authorization: "Bearer " + key,
+        "content-type": "application/json",
+      },
     });
     if (stop) {
       await response.body?.cancel();

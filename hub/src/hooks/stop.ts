@@ -28,7 +28,7 @@ async function transcriptText(path: string) {
   return parts.join("");
 }
 
-async function runStop() {
+async function mirrorStop() {
   const event = await input();
   if (!event || event.stop_hook_active !== false) return;
   const path = event.transcript_path;
@@ -40,4 +40,7 @@ async function runStop() {
   if (answer) await call("stop", event.session_id, { text: answer });
 }
 
-await runStop().catch(() => undefined);
+export async function runStop() {
+  await mirrorStop().catch(() => undefined);
+  return 0;
+}
