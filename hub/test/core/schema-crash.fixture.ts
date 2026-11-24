@@ -11,4 +11,7 @@ db.exec(`
   INSERT INTO people (person_id, display_name) VALUES ('per_crash', 'Crash');
   COMMIT;
 `);
-process.exit(0);
+// Hard kill: a normal exit closes the connection, and SQLite then
+// checkpoints and deletes -wal and -shm. SIGKILL runs no exit hooks.
+process.kill(process.pid, "SIGKILL");
+await Bun.sleep(30_000);

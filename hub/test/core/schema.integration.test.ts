@@ -2,7 +2,7 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { strictEqual, throws } from "node:assert/strict";
+import { throws } from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -233,7 +233,8 @@ test(
       { encoding: "utf8", env: {}, timeout: 10_000, windowsHide: true },
     );
     if (child.error) throw child.error;
-    strictEqual(child.status, 0, child.stderr);
+    // The writer dies by SIGKILL, so a clean status 0 would mean it exited normally.
+    expect(child.status).not.toBe(0);
 
     const files = ["hub.sqlite", "hub.sqlite-shm", "hub.sqlite-wal"];
     const directory = dirname(path);
