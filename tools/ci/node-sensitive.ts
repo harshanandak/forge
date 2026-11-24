@@ -203,4 +203,6 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node and npm on the built hub package.",
   "hub/test/node-entry.integration.test.ts":
     "Launches selected Node on the built hub entry.",
+  "hub/test/core/node-sqlite.integration.test.ts":
+    "Launches selected Node on the built hub store to verify SQLite and answer locking.",
 };

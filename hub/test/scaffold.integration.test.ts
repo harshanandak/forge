@@ -182,6 +182,7 @@ const ownFiles = [
   "dist/core/schema.js",
   "dist/core/sessions.js",
   "dist/core/storage.js",
+  "dist/core/store-impl.js",
   "dist/core/store.js",
   "dist/main.js",
   "dist/remote/index.js",
