@@ -44,7 +44,10 @@ test.each(["test:integration", "test:changed"])(
       expect(groups[1]).toContain("--changed=origin/main");
       expect(serial).toContain("--changed=origin/main");
     }
-    const scaffold = "hub/test/scaffold.integration.test.ts";
+    const hubSerial = [
+      "hub/test/scaffold.integration.test.ts",
+      "hub/test/core/protect.integration.test.ts",
+    ];
     const files = [
       ...(script === "test:integration"
         ? [
@@ -60,7 +63,7 @@ test.each(["test:integration", "test:changed"])(
       "test/tools/lane-run.integration.test.ts",
       "test/tools/lane.integration.test.ts",
       "test/tools/cli-speed.integration.test.ts",
-      scaffold,
+      ...hubSerial,
     ];
     for (const path of files) {
       expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);
@@ -75,7 +78,7 @@ test.each(["test:integration", "test:changed"])(
     expect(serialPaths).toHaveLength(files.length);
     const integrationPaths = [
       ...new Bun.Glob("test/**/*.integration.test.ts").scanSync("."),
-      ...new Bun.Glob(scaffold).scanSync("."),
+      ...hubSerial.flatMap((path) => [...new Bun.Glob(path).scanSync(".")]),
     ]
       .map((path) => path.replaceAll("\\", "/"))
       .filter((path) => !path.endsWith("/packed.integration.test.ts"));
