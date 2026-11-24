@@ -2,6 +2,7 @@ import { fail, ok, type Reason, type Result } from "./result.ts";
 
 export type Predicate<T> = (value: unknown, source: string) => value is T;
 const openShape = Symbol();
+const reservedKeys = new Set(["__proto__", "constructor", "prototype"]);
 export type Fields = { [key: string]: Shape; [openShape]?: true };
 export type Shape = Predicate<unknown> | [Shape] | Fields;
 export type Value<S> =
@@ -58,7 +59,7 @@ export function parseStrictJson<S extends Shape>(
           const child = `${where}.${key}`;
           const field =
             fields && Object.hasOwn(fields, key) ? fields[key] : undefined;
-          const forbidden = key === "__proto__" || entries.has(key);
+          const forbidden = reservedKeys.has(key) || entries.has(key);
           const unknown = fields && !fields[openShape] && !field;
           if (forbidden || unknown) invalid(child);
           entries.set(key, read(field, child));
