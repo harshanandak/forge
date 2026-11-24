@@ -65,6 +65,8 @@ test.each(["test:integration", "test:changed"])(
         ([folder, name]) => `test/${folder}/${name}.integration.test.ts`,
       ),
       "hub/test/scaffold.integration.test.ts",
+      "hub/test/core/protect.integration.test.ts",
+      "hub/test/core/schema.integration.test.ts",
     ];
     for (const path of paths) {
       expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);

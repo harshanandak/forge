@@ -5,7 +5,6 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -13,7 +12,6 @@ import {
   statSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import {
   basename,
   dirname,
@@ -27,6 +25,7 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { expect, test } from "bun:test";
 import { SECRET_PATTERNS } from "../src/contract/errors.js";
+import { hubTestTemp } from "./temp.ts";
 
 const timeout = 30_000;
 const hub = realpathSync(resolve(import.meta.dir, ".."));
@@ -52,7 +51,7 @@ function isolatedNode(
   stderr: string,
   env = {},
 ): void {
-  const cwd = mkdtempSync(join(tmpdir(), "forge-hub-cli-"));
+  const cwd = hubTestTemp("forge-hub-cli-");
   try {
     const result = node(args, cwd, env);
     expect(result.status).toBe(exit);
@@ -120,7 +119,7 @@ test(
   "no argument and an unknown command print usage and exit 2",
   () => {
     for (const args of [[bin], [bin, "bogus"]])
-      isolatedNode(args, 2, "", usage);
+      isolatedNode(["--no-experimental-sqlite", ...args], 2, "", usage);
   },
   timeout,
 );
@@ -148,6 +147,7 @@ test(
 const ownFiles = [
   "package.json",
   "LICENSE",
+  "README.md",
   "THIRD_PARTY_NOTICES.md",
   "bin/forge-hub.mjs",
   "manifests/slack-socket.yaml",
@@ -171,7 +171,12 @@ const ownFiles = [
   "dist/contract/ids.js",
   "dist/contract/mcp.js",
   "dist/contract/runtime.js",
+  "dist/core/config.js",
+  "dist/core/db.js",
   "dist/core/index.js",
+  "dist/core/protect.js",
+  "dist/core/schema.js",
+  "dist/core/store.js",
   "dist/main.js",
   "dist/remote/index.js",
   "dist/setup/index.js",

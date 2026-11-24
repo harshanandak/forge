@@ -1,0 +1,281 @@
+/// <reference types="bun" />
+
+import { Database } from "bun:sqlite";
+import { afterEach, expect, test } from "bun:test";
+import {
+  chmodSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import type { HubDb } from "../../src/contract/runtime.ts";
+import { createOpenHubDb } from "../../src/core/db.ts";
+import {
+  createPrivateDirectory,
+  createPrivateFile,
+  openHubDb,
+  protectPath,
+} from "../../src/core/index.ts";
+import { createTestSchema } from "./ddl.ts";
+import { schemaFixture } from "./schema-fixture.ts";
+
+const timeout = 30_000;
+const { temp, track, close, cleanup } = schemaFixture();
+
+async function dbPath(): Promise<string> {
+  const data = join(realpathSync(temp()), "data");
+  expect(await createPrivateDirectory(data)).toBe(true);
+  return join(data, "hub.sqlite");
+}
+
+afterEach(cleanup);
+
+const schemaObjects =
+  "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE type IN ('table', 'index') AND name NOT GLOB 'sqlite_*' ORDER BY type, name";
+
+function normalizedSchema(rows: readonly Record<string, unknown>[]) {
+  return rows.map((row) => ({ ...row }));
+}
+
+function seedPeopleAndProject(db: HubDb): void {
+  db.exec(`
+    INSERT INTO people (person_id, display_name) VALUES ('per_a', 'A'), ('per_b', 'B');
+    INSERT INTO projects (project_id, name, front_person_id) VALUES ('prj_a', 'A', 'per_a');
+  `);
+}
+
+function insertInbox(db: HubDb) {
+  return db.prepare(`
+    INSERT INTO inbox_items (item_id, dedupe_key, owner_person_id, kind, sender_kind,
+      sender_name, not_your_owner, text, received_at, context_from_seq, context_to_seq)
+    VALUES (?, ?, 'per_a', ?, ?, 'sender', ?, 'message', 1, ?, ?)
+  `);
+}
+
+test(
+  "H1: creates the frozen schema and reopens with live, leftover and clean WAL state",
+  async () => {
+    const path = await dbPath();
+    const db = track(openHubDb(path));
+    const oracle = track(new Database(await dbPath()));
+    createTestSchema(oracle);
+    const literal = "CHECK (kind = 'Case Sensitive')";
+    expect(normalizedSchema([{ sql: literal }])[0]?.sql).toBe(literal);
+    const rows = normalizedSchema(db.prepare(schemaObjects).all());
+    expect(rows).toEqual(
+      normalizedSchema(
+        oracle.query<Record<string, unknown>, []>(schemaObjects).all(),
+      ),
+    );
+    expect(rows.filter(({ type }) => type === "table")).toHaveLength(26);
+    const names = new Set(rows.map(({ name }) => name));
+    expect(names.has("conversations_thread_person")).toBe(true);
+    expect(names.has("conversations_thread")).toBe(false);
+    expect(db.prepare("PRAGMA journal_mode").get()).toEqual({
+      journal_mode: "wal",
+    });
+    expect(db.prepare("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
+    expect(db.prepare("PRAGMA foreign_keys").get()).toEqual({
+      foreign_keys: 1,
+    });
+    expect(
+      db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get(),
+    ).toEqual({ value: "1" });
+    db.exec("PRAGMA wal_autocheckpoint=0");
+    seedPeopleAndProject(db);
+    const leftover = await dbPath();
+    for (const suffix of ["", "-wal", "-shm"])
+      writeFileSync(leftover + suffix, readFileSync(path + suffix), {
+        mode: 0o600,
+      });
+    for (const candidate of [path, leftover]) {
+      const reopened = track(openHubDb(candidate));
+      expect(reopened.prepare("SELECT person_id FROM people").get()).toEqual({
+        person_id: "per_a",
+      });
+      close(reopened);
+    }
+    close(db);
+    expect(protectPath(path, "file")).toBe(true);
+    const bytes = readFileSync(path);
+    const reopened = track(openHubDb(path));
+    expect(normalizedSchema(reopened.prepare(schemaObjects).all())).toEqual(
+      rows,
+    );
+    close(reopened);
+    expect(readFileSync(path)).toEqual(bytes);
+  },
+  timeout,
+);
+
+test.each(["read-only", "read-write"] as const)(
+  "Database refuses a replacement at the %s open before writing",
+  async (phase) => {
+    const path = await dbPath();
+    const saved = await dbPath();
+    const replacement = await dbPath();
+    const seed = await createPrivateFile(path);
+    if (seed === null) throw new Error("Expected a private database fixture");
+    await seed.close();
+    const original = track(new Database(path));
+    createTestSchema(original);
+    close(original);
+    const bytes = readFileSync(path);
+    writeFileSync(replacement, "", { mode: 0o600 });
+    const opens: string[] = [];
+    const guardedOpen = createOpenHubDb((target, options) => {
+      const mode = options.readOnly ? "read-only" : "read-write";
+      opens.push(mode);
+      if (mode === phase) {
+        renameSync(target, saved);
+        renameSync(replacement, target);
+      }
+      return new DatabaseSync(target, options);
+    });
+    expect(() => track(guardedOpen(path))).toThrow(
+      "Hub database file identity changed",
+    );
+    expect(opens).toEqual(
+      phase === "read-only" ? ["read-only"] : ["read-only", "read-write"],
+    );
+    expect(readFileSync(saved)).toEqual(bytes);
+    expect(readFileSync(path)).toHaveLength(0);
+  },
+  timeout,
+);
+
+test.skipIf(process.platform === "win32")(
+  "Database refuses a readable database or sidecar before opening SQLite",
+  async () => {
+    const path = await dbPath();
+    close(track(openHubDb(path)));
+    const guardedOpen = createOpenHubDb(() => {
+      throw new Error("SQLite was opened before privacy verification");
+    });
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      const file = path + suffix;
+      if (suffix) writeFileSync(file, "sidecar");
+      chmodSync(file, 0o644);
+      const bytes = readFileSync(file);
+      expect(() => guardedOpen(path)).toThrow(
+        "Hub database file is not private",
+      );
+      expect(readFileSync(file)).toEqual(bytes);
+      chmodSync(file, 0o600);
+    }
+    chmodSync(dirname(path), 0o755);
+    expect(() => guardedOpen(path)).toThrow(
+      "Hub database directory is not private",
+    );
+  },
+  timeout,
+);
+
+test(
+  "H2: enforces CLI and agent trust checks and refuses a newer schema without writing",
+  async () => {
+    const path = await dbPath();
+    const db = track(openHubDb(path));
+    seedPeopleAndProject(db);
+    const insert = insertInbox(db);
+    expect(() =>
+      insert.run("inb_a", "a", "cli_message", "agent", 1, null, null),
+    ).toThrow();
+    expect(() =>
+      insert.run("inb_b", "b", "cli_message", "cli", 0, null, null),
+    ).toThrow();
+    expect(() =>
+      insert.run("inb_c", "c", "agent_message", "agent", 0, null, null),
+    ).toThrow();
+    expect(
+      Number(
+        insert.run("inb_d", "d", "cli_message", "cli", 1, null, null).changes,
+      ),
+    ).toBe(1);
+    db.exec("UPDATE meta SET value = '99' WHERE key = 'schema_version'");
+    close(db);
+    const directory = dirname(path);
+    const files = () =>
+      readdirSync(directory).map((name) => join(directory, name));
+    const before = new Map(files().map((file) => [file, readFileSync(file)]));
+    expect(() => close(track(openHubDb(path)))).toThrow(/schema|version/i);
+    for (const [file, bytes] of before)
+      expect(readFileSync(file)).toEqual(bytes);
+    for (const file of files()) {
+      if (before.has(file)) continue;
+      if (file === path + "-wal") expect(statSync(file).size).toBe(0);
+      else expect(file).toBe(path + "-shm");
+    }
+  },
+  timeout,
+);
+
+test(
+  "refuses a marker-only database",
+  async () => {
+    const path = await dbPath();
+    const marker = track(new Database(path));
+    marker.exec(
+      "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '1')",
+    );
+    close(marker);
+    chmodSync(path, 0o600);
+    expect(() => close(track(openHubDb(path)))).toThrow(
+      "Hub database schema is incomplete",
+    );
+  },
+  timeout,
+);
+
+test(
+  "H3: enforces thread identity, context pairs and per-person conversation uniqueness",
+  async () => {
+    const db = track(openHubDb(await dbPath()));
+    seedPeopleAndProject(db);
+    const thread = db.prepare(`
+    INSERT INTO thread_messages (adapter, chat_thread_id, channel_id, project_id,
+      chat_message_id, kind, person_id, text, created_at)
+    VALUES ('slack', 'thread', 'channel', 'prj_a', ?, ?, ?, ?, 1)
+  `);
+    expect(() => thread.run("ref-a", "outsider", null, "visible")).toThrow();
+    expect(() => thread.run("ref-b", "person", null, "message")).toThrow();
+    expect(() => thread.run("ref-c", "agent", null, "message")).toThrow();
+    expect(
+      Number(thread.run("ref-d", "person", "per_a", "message").changes),
+    ).toBe(1);
+    expect(() => thread.run("ref-d", "person", "per_b", "duplicate")).toThrow();
+    expect(Number(thread.run(null, "system", null, "first").changes)).toBe(1);
+    expect(Number(thread.run(null, "system", null, "second").changes)).toBe(1);
+    expect(
+      db.prepare("SELECT kind, text FROM thread_messages ORDER BY seq").all(),
+    ).toEqual([
+      { kind: "person", text: "message" },
+      { kind: "system", text: "first" },
+      { kind: "system", text: "second" },
+    ]);
+    expect(() =>
+      insertInbox(db).run("inb_a", "a", "cli_message", "cli", 1, 1, null),
+    ).toThrow();
+    const conversation = db.prepare(`
+    INSERT INTO conversations (conversation_id, person_id, adapter, chat_thread_id,
+      channel_id, is_direct, created_by, created_at)
+    VALUES (?, ?, 'slack', 'thread', 'channel', 0, 'slack', 1)
+  `);
+    expect(Number(conversation.run("cnv_a", "per_a").changes)).toBe(1);
+    expect(() => conversation.run("cnv_b", "per_a")).toThrow();
+    expect(Number(conversation.run("cnv_c", "per_b").changes)).toBe(1);
+    expect(
+      db
+        .prepare(
+          "SELECT conversation_id FROM conversations ORDER BY conversation_id",
+        )
+        .all(),
+    ).toEqual([{ conversation_id: "cnv_a" }, { conversation_id: "cnv_c" }]);
+  },
+  timeout,
+);
