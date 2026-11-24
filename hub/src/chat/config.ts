@@ -53,20 +53,20 @@ export function slackAdapterConfig(deps: ChatDeps): SlackAdapterConfig {
       requestInterceptor(request) {
         const data: unknown = request.data;
         if (typeof data !== "string") throw new ChatWriteFailure("refused");
-        const body = new URLSearchParams(data);
-        body.delete("token");
-        const url = decodeURIComponent(
-          (request.baseURL ?? "") + (request.url ?? ""),
-        );
+        const fields = data.split("&");
+        const parts = fields.filter((field) => !field.startsWith("token="));
+        const form = parts.join("&");
+        const body = new URLSearchParams(form);
+        const url = (request.baseURL ?? "") + (request.url ?? "");
         if (
-          url.includes(botToken) ||
+          decodeURIComponent(url).includes(botToken) ||
           [...body].some(
             ([key, value]) =>
               key.includes(botToken) || value.includes(botToken),
           )
         )
           throw new ChatWriteFailure("refused");
-        request.data = body.toString();
+        request.data = form;
         const transforms = [request.transformResponse ?? []].flat();
         request.transformResponse = [validateRetryAfterResponse, ...transforms];
         return request;

@@ -55,6 +55,11 @@ async function requestBody(request: IncomingMessage): Promise<Body> {
     return body;
   }
   const fields = new URLSearchParams(text);
+  if (
+    fields.get("text") === "Agent text" &&
+    !text.split("&").includes("text=Agent%20text")
+  )
+    throw new Error("fixture request changed the serialized text encoding");
   const output: Body = {};
   for (const [key, value] of fields) {
     if (key === "blocks") {
