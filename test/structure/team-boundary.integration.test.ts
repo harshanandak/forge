@@ -48,6 +48,7 @@ for (const name of [
   "globalThis getBuiltinModule",
   "destructured getBuiltinModule",
   "aliased getBuiltinModule",
+  "plain template getBuiltinModule",
 ]) {
   test(`the dependency guard enforces SQLite ownership for ${name}`, () => {
     const path = "src/blocks/load.ts";
@@ -65,6 +66,12 @@ for (const name of [
   "getBuiltinModule substituted template",
   "getBuiltinModule concatenation",
   "getBuiltinModule spread",
+  "getBuiltinModule optional call",
+  "getBuiltinModule bracket access",
+  "getBuiltinModule call forwarding",
+  "getBuiltinModule apply forwarding",
+  "getBuiltinModule assignment alias",
+  "getBuiltinModule multiple destructured properties",
 ]) {
   test(`the team boundary refuses ${name}`, () => {
     const path = "src/blocks/load.ts";
