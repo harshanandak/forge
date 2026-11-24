@@ -107,13 +107,12 @@ export function importsOf(
   for (const call of codeOnly.matchAll(builtinCalls)) {
     const argument = withStrings.slice(call.index + call[0].length);
     const literal =
-      /^\s*("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\$]|\$(?!\{))*`)\s*[,)]/.exec(
+      /^\s*("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')\s*[,)]/.exec(
         argument,
       )?.[1];
-    const specifier =
-      literal === undefined
-        ? undefined
-        : scanners.ts.scan(`require(${literal})`).imports[0]?.path;
+    const specifier = literal?.includes("\\")
+      ? scanners.ts.scan(`import ${literal};`).imports[0]?.path
+      : literal?.slice(1, -1);
     if (specifier === undefined) onNonliteral?.("getBuiltinModule");
     else found.add(specifier);
   }
