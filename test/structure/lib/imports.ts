@@ -62,7 +62,7 @@ export function parsedSource(file: SourceFile): string {
 /** Import specifiers of a code file, including `import type` (erased at run time, but still a leak). */
 export function importsOf(
   file: SourceFile,
-  onNonliteral?: () => void,
+  onNonliteral?: (loader?: "getBuiltinModule") => void,
 ): string[] {
   if (!CODE_FILE.test(file.path)) return [];
   const found = new Set<string>();
@@ -90,6 +90,32 @@ export function importsOf(
     if (codeOnly[match.index] !== match[0][0]) continue;
     if (match[1] === undefined) onNonliteral?.();
     else found.add(match[1]);
+  }
+
+  const builtinLoaders = new Set([
+    String.raw`(?:globalThis\s*\.\s*)?process\s*\.\s*getBuiltinModule`,
+  ]);
+  for (const [, binding = "getBuiltinModule"] of codeOnly.matchAll(
+    /\b(?:const|let|var)\s*\{\s*getBuiltinModule(?:\s*:\s*([\w$]+))?\s*,?\s*\}\s*=\s*(?:globalThis\s*\.\s*)?process\b(?!\s*[.([])/g,
+  )) {
+    builtinLoaders.add(binding.replaceAll("$", "\\$"));
+  }
+  const builtinCalls = new RegExp(
+    String.raw`(?<![\w$.])(?:${[...builtinLoaders].join("|")})\s*\(`,
+    "g",
+  );
+  for (const call of codeOnly.matchAll(builtinCalls)) {
+    const argument = withStrings.slice(call.index + call[0].length);
+    const literal =
+      /^\s*("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\$]|\$(?!\{))*`)\s*[,)]/.exec(
+        argument,
+      )?.[1];
+    const specifier =
+      literal === undefined
+        ? undefined
+        : scanners.ts.scan(`require(${literal})`).imports[0]?.path;
+    if (specifier === undefined) onNonliteral?.("getBuiltinModule");
+    else found.add(specifier);
   }
   return [...found];
 }
@@ -322,8 +348,13 @@ export function findDependencyViolations(
         if (inTeam(posix.join(posix.dirname(file.path), slashPath(match[1]!))))
           reportTeam("triple-slash reference reaches removable team/");
     }
-    for (const specifier of importsOf(file, () => {
-      if (publicCode && !(file.path in TEAM_LOADING_SITES))
+    for (const specifier of importsOf(file, (loader) => {
+      if (!publicCode) return;
+      if (loader === "getBuiltinModule")
+        reportTeam(
+          "getBuiltinModule with a computed name can hide a dependency; use a string literal",
+        );
+      else if (!(file.path in TEAM_LOADING_SITES))
         reportTeam(
           "nonliteral module loading can hide team/; use literal imports and inject providers",
         );
