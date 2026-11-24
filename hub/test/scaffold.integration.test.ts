@@ -120,7 +120,7 @@ test(
   "no argument and an unknown command print usage and exit 2",
   () => {
     for (const args of [[bin], [bin, "bogus"]])
-      isolatedNode(args, 2, "", usage);
+      isolatedNode(["--no-experimental-sqlite", ...args], 2, "", usage);
   },
   timeout,
 );

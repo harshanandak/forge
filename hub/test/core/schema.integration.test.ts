@@ -5,8 +5,10 @@ import { afterEach, expect, test } from "bun:test";
 import {
   chmodSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -70,6 +72,8 @@ test(
     const db = track(openHubDb(path));
     const oracle = track(new Database(await dbPath()));
     createTestSchema(oracle);
+    const literal = "CHECK (kind = 'Case Sensitive')";
+    expect(normalizedSchema([{ sql: literal }])[0]?.sql).toBe(literal);
     const rows = normalizedSchema(db.prepare(schemaObjects).all());
     expect(rows).toEqual(
       normalizedSchema(
@@ -77,12 +81,9 @@ test(
       ),
     );
     expect(rows.filter(({ type }) => type === "table")).toHaveLength(26);
-    expect(
-      rows.some(({ name }) => name === "conversations_thread_person"),
-    ).toBe(true);
-    expect(rows.some(({ name }) => name === "conversations_thread")).toBe(
-      false,
-    );
+    const names = new Set(rows.map(({ name }) => name));
+    expect(names.has("conversations_thread_person")).toBe(true);
+    expect(names.has("conversations_thread")).toBe(false);
     expect(db.prepare("PRAGMA journal_mode").get()).toEqual({
       journal_mode: "wal",
     });
@@ -209,15 +210,33 @@ test(
     ).toBe(1);
     db.exec("UPDATE meta SET value = '99' WHERE key = 'schema_version'");
     close(db);
-    const bytes = readFileSync(path);
-    expect(() => {
-      const reopened = track(openHubDb(path));
-      close(reopened);
-    }).toThrow(/schema|version/i);
-    expect(readFileSync(path)).toEqual(bytes);
+    const directory = dirname(path);
+    const files = () =>
+      readdirSync(directory).map((name) => join(directory, name));
+    const before = new Map(files().map((file) => [file, readFileSync(file)]));
+    expect(() => close(track(openHubDb(path)))).toThrow(/schema|version/i);
+    for (const [file, bytes] of before)
+      expect(readFileSync(file)).toEqual(bytes);
+    for (const file of files()) {
+      if (before.has(file)) continue;
+      if (file === path + "-wal") expect(statSync(file).size).toBe(0);
+      else expect(file).toBe(path + "-shm");
+    }
   },
   timeout,
 );
+
+test("refuses a marker-only database", async () => {
+  const path = await dbPath();
+  const marker = track(new Database(path));
+  marker.exec(
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '1')",
+  );
+  close(marker);
+  expect(() => close(track(openHubDb(path)))).toThrow(
+    "Hub database schema is incomplete",
+  );
+});
 
 test(
   "H3: enforces thread identity, context pairs and per-person conversation uniqueness",

@@ -205,10 +205,16 @@ test.skipIf(!windows)(
   "K11 (Windows): creates and reads back private paths without replacing them",
   async () => {
     const base = temp();
-    await verifyCreation(createPathProtection(), base);
+    const protector = createPathProtection();
+    await verifyCreation(protector, base);
     const dir = join(base, "private-dir");
     verifyWindowsAcl(dir);
     verifyWindowsAcl(join(dir, "private-file"));
+    const missing = join(base, "missing");
+    expect(await protector.createPrivateDirectory(join(missing, "child"))).toBe(
+      false,
+    );
+    expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
   },
   timeout,
 );

@@ -1,10 +1,17 @@
 /// <reference types="bun" />
 
 import { afterEach, expect, test } from "bun:test";
-import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   createPathProtection,
+  UnverifiedDirectoryCreation,
   type ProtectionDeps,
 } from "../../src/core/protect.ts";
 import {
@@ -28,6 +35,59 @@ function fakeMacStat(path: string) {
 const noMacAcl = "drwx------  2 owner group 64 Nov 23 12:00 private\n";
 const macAcl =
   "drwx------+ 2 owner group 64 Nov 23 12:00 private\n 0: user:other allow read\n";
+
+test("distinguishes adjacent large file IDs", () => {
+  let ino = 2n ** 53n;
+  const guard = createPathProtection({
+    platform: "linux",
+    geteuid: () => 123,
+    lstat: fakeMacStat,
+    preciseLstat: (path) =>
+      Object.assign(lstatSync(path, { bigint: true }), {
+        uid: 123n,
+        mode: 0o700n,
+        ino: ino++,
+      }),
+  });
+  expect(guard.protectPath(temp(), "dir")).toBe(false);
+});
+
+test.each(["linux", "win32"] as const)(
+  "%s reports incomplete directory creation",
+  async (platform) => {
+    const guard = createPathProtection({
+      platform,
+      lstat() {
+        throw new Error("stat failed");
+      },
+      execute: () => ({
+        status: 1,
+        stdout: "published_unverified",
+        stderr: "",
+      }),
+    });
+    await expect(
+      guard.createPrivateDirectory(join(temp(), "private")),
+    ).rejects.toBeInstanceOf(UnverifiedDirectoryCreation);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "keeps a replacement if file stat fails",
+  async () => {
+    const path = join(temp(), "private");
+    const guard = createPathProtection({
+      platform: "linux",
+      statFile() {
+        renameSync(path, path + ".original");
+        writeFileSync(path, fileText);
+        throw new Error("stat failed");
+      },
+    });
+    expect(await guard.createPrivateFile(path)).toBeNull();
+    expect(readFileSync(path, "utf8")).toBe(fileText);
+  },
+);
 
 test.each([
   ["group:everyone deny delete", true],

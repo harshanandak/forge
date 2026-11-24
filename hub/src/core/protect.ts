@@ -3,7 +3,7 @@ import {
   type SpawnSyncOptionsWithStringEncoding,
   type SpawnSyncReturns,
 } from "node:child_process";
-import { lstatSync, realpathSync, type Stats } from "node:fs";
+import { lstatSync, realpathSync, type BigIntStats, type Stats } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -30,6 +30,8 @@ export interface PathProtection {
 export interface ProtectionDeps {
   readonly platform: NodeJS.Platform;
   readonly lstat: (path: string) => Stats;
+  readonly preciseLstat: (path: string) => BigIntStats;
+  readonly statFile: (file: FileHandle) => Promise<Stats>;
   readonly geteuid: () => number | undefined;
   readonly now: () => number;
   readonly execute: (
@@ -38,6 +40,8 @@ export interface ProtectionDeps {
     options: SpawnSyncOptionsWithStringEncoding,
   ) => Pick<SpawnSyncReturns<string>, "status" | "stdout" | "stderr" | "error">;
 }
+
+export class UnverifiedDirectoryCreation extends Error {}
 
 const windowsHelper = `
 $ProgressPreference = 'SilentlyContinue'
@@ -145,6 +149,7 @@ export function createPathProtection(
   const {
     platform = process.platform,
     lstat = lstatSync,
+    statFile = (file: FileHandle) => file.stat(),
     geteuid = () => process.geteuid?.(),
     now = Date.now,
     execute = spawnSync,
@@ -351,7 +356,7 @@ export function createPathProtection(
         const end = now() + budget;
         if (!verified(parent, "dir", end)) return null;
         file = await open(target, "wx", mode.file);
-        identity = await file.stat();
+        identity = await statFile(file);
         const current = lstat(target);
         if (!correctKind(current, "file") || !sameObject(identity, current))
           return null;
