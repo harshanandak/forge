@@ -64,22 +64,22 @@ export async function askFixture(
   store.syncDirectory();
   const sessionId = bind(f.db, store);
   const asks = asksOf(store);
+  const shared = { sessionId, projectId: p1, question };
   const choice = (input: Partial<AskInput> = {}) =>
     asks.ask(caller, {
-      sessionId,
-      projectId: p1,
+      ...shared,
       kind: "choice",
       requestedAction: "choice",
       to: [a.personId, b.personId],
-      question,
       choices,
       ...input,
     });
-  const request = (input: Partial<AskInput> = {}) =>
-    choice({
+  const request = (input: Partial<AskInput> = {}, includeIssue = true) =>
+    asks.ask(caller, {
+      ...shared,
       kind: "work_request",
       requestedAction: "work",
-      issueId: "demo-12",
+      ...(includeIssue ? { issueId: "demo-12" } : {}),
       ...input,
     });
   return {

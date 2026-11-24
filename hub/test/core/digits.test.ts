@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
+import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
-import { a, value } from "./fixture.ts";
-import { askFixture, digit, rows, slackA, slackB } from "./fakes.ts";
+import { a, configPeople, value } from "./fixture.ts";
+import { askFixture, asksOf, digit, rows, slackA, slackB } from "./fakes.ts";
 
 const timeout = 30_000;
 const instruction = {
@@ -59,7 +60,9 @@ test(
   async () => {
     const f = await askFixture();
     const { askId } = value(await f.choice({ to: [a.personId] }));
-    expect(f.asks.answerDigit(digit(askId + " 2"))).toMatchObject({
+    const event = digit(askId + " 2");
+    const first = f.asks.answerDigit(event);
+    expect(first).toMatchObject({
       kind: "answered",
       outcome: {
         kind: "locked",
@@ -73,6 +76,23 @@ test(
       expect(f.asks.answerDigit(digit(text))).toEqual({
         kind: "not_a_digit_reply",
       });
+    const withoutRecipient = asksOf(
+      createCoreStore({
+        ...f.deps,
+        people: configPeople(
+          f.config.people.filter((p) => p.personId !== a.personId),
+        ),
+      }),
+    );
+    if (first.kind !== "answered")
+      throw new Error("Expected a recorded digit answer");
+    expect(withoutRecipient.answerDigit(event)).toEqual({
+      kind: "answered",
+      outcome: first.outcome,
+    });
+    expect(
+      withoutRecipient.answerDigit({ ...event, eventKey: "F3-new" }),
+    ).toEqual(instruction);
     expect(rows(f.db, "answer_attempts")).toHaveLength(1);
   },
   timeout,

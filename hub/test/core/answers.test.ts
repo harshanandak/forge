@@ -106,6 +106,24 @@ const workerSource = `
   (async () => {
     const { openHubDb, createPeopleDirectory } = await import(w.entry);
     const { createCoreStore } = await import(w.store);
+    const { createPathProtection } = await import(new URL("./protect.js", w.entry).href);
+    const { spawnSync } = require("node:child_process");
+    const { dirname } = require("node:path");
+    const probe = { root: process.env.SystemRoot ?? null, status: null, stdout: "", stderr: "" };
+    const protection = createPathProtection({
+      execute(executable, args, options) {
+        const result = spawnSync(executable, args, options);
+        probe.status = result.status;
+        probe.stdout = result.stdout?.slice(0, 200) ?? "";
+        probe.stderr = result.stderr?.slice(0, 200) ?? "";
+        probe.error = result.error?.code ?? null;
+        return result;
+      },
+    });
+    const accepted = protection.protectDirectoryChain(dirname(w.path));
+    parentPort.postMessage({
+      probe, accepted, rootPresent: probe.root !== null, successMarker: probe.stdout.trim() === "private",
+    });
     const db = openHubDb(w.path);
     try {
       const people = createPeopleDirectory(w.config.people);
@@ -157,6 +175,16 @@ test(
               });
               workers.push(worker);
               worker.on("message", (message: unknown) => {
+                if (
+                  message &&
+                  typeof message === "object" &&
+                  "probe" in message
+                ) {
+                  console.log(
+                    "A5 parent-chain probe " + JSON.stringify(message),
+                  );
+                  return;
+                }
                 if (message === "ready") {
                   if (++ready === 2) {
                     Atomics.store(gate, 0, 1);
@@ -307,6 +335,10 @@ test(
     ).toBe("This ask has expired.");
     expect(f.asks.pendingEdits(10)).toHaveLength(2);
     f.setTime(1234);
+    const recorded = value(await f.choice());
+    const replay = button(recorded.askId, "before-removal", slackB);
+    f.asks.answerAction(button(recorded.askId, "winner"));
+    expect(f.asks.answerAction(replay).reply.ephemeralText).toBe(winner);
     const cases = [
       [restricted.askId, "other", slackA, "This ask is for Fixture Beta."],
       [restricted.askId, "removed", slackB, "This ask is for Fixture Beta."],
@@ -329,17 +361,30 @@ test(
         f.asks.answerAction(button(id, key, user)).reply.ephemeralText,
       ).toBe(text);
     }
+    for (const event of [
+      replay,
+      button(recorded.askId, "after-removal", slackB),
+    ])
+      expect(f.asks.answerAction(event).reply.ephemeralText).toBe(
+        "This ask is for Fixture Alpha, Fixture Beta.",
+      );
     expect(rows(f.db, "asks").map((x) => x.status)).toEqual([
       "expired",
       "open",
+      "answered",
     ]);
-    expect(rows(f.db, "ask_answers")).toEqual([]);
+    expect(rows(f.db, "ask_answers").map((x) => x.ask_id)).toEqual([
+      recorded.askId,
+    ]);
     expect(rows(f.db, "answer_attempts").map((x) => x.outcome)).toEqual([
       "expired",
+      "locked",
+      "already_answered",
       "not_allowed",
       "not_allowed",
       "unknown_answerer",
       "unknown_ask",
+      "not_allowed",
     ]);
   },
   timeout,

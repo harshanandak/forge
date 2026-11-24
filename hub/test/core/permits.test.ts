@@ -9,12 +9,18 @@ test(
   "P1: an explicit issue request always goes to the owner",
   async () => {
     const f = await askFixture();
-    expect(
-      await f.choice({ kind: "work_request", requestedAction: "work" }),
-    ).toMatchObject({
+    expect(await f.request({}, false)).toMatchObject({
       ok: false,
       error: { code: "WORK_REQUEST_SOURCE_INVALID" },
     });
+    for (const [field, input] of [
+      ["to", { to: [a.personId] }],
+      ["choices", { choices: WORK_REQUEST_CHOICES }],
+    ] as const)
+      expect(await f.request(input)).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_INVALID", pointer: "/" + field },
+      });
     expect(rows(f.db, "asks")).toEqual([]);
     expect(f.chat.calls).toEqual([]);
     const result = value(await f.request());
@@ -52,13 +58,7 @@ test(
     seedItem(f.db, "itm_unrelated", { delivered: unrelated.sessionId });
     seedItem(f.db, "itm_valid", { delivered: child.sessionId });
     const request = (inboxItemId: string, projectId = p1) =>
-      f.choice({
-        sessionId: chain.sessionId,
-        kind: "work_request",
-        requestedAction: "work",
-        inboxItemId,
-        projectId,
-      });
+      f.request({ sessionId: chain.sessionId, inboxItemId, projectId }, false);
     for (const [id, project] of [
       ["itm_own", p1],
       ["itm_pending", p1],
