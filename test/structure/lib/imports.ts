@@ -92,30 +92,41 @@ export function importsOf(
     else found.add(match[1]);
   }
 
-  const builtinLoaders = new Set([
-    String.raw`(?:globalThis\s*\.\s*)?process\s*\.\s*getBuiltinModule`,
-  ]);
-  for (const [, binding = "getBuiltinModule"] of codeOnly.matchAll(
-    /\b(?:const|let|var)\s*\{\s*getBuiltinModule(?:\s*:\s*([\w$]+))?\s*,?\s*\}\s*=\s*(?:globalThis\s*\.\s*)?process\b(?!\s*[.([])/g,
+  const aliases = new Set<string>();
+  const declarations = new Set<number>();
+  for (const match of codeOnly.matchAll(
+    /\b(?:const|let|var)\s*\{\s*(getBuiltinModule(?:\s*:\s*([\w$]+))?)\s*,?\s*\}\s*=\s*(?:globalThis\s*\.\s*)?process\b(?!\s*[.([])/g,
   )) {
-    builtinLoaders.add(binding.replaceAll("$", "\\$"));
+    const [, property = "", binding = "getBuiltinModule"] = match;
+    const index = match.index + match[0].indexOf("getBuiltinModule");
+    declarations.add(index);
+    declarations.add(index + property.length - binding.length);
+    aliases.add(binding.replaceAll("$", "\\$"));
   }
-  const builtinCalls = new RegExp(
-    String.raw`(?<![\w$.])(?:${[...builtinLoaders].join("|")})\s*\(`,
+  const direct = String.raw`(?:globalThis\s*\.\s*)?process\s*\.\s*getBuiltinModule`;
+  const builtinUses = new RegExp(
+    String.raw`(?<![\w$.])(?:${[direct, ...aliases].join("|")})\s*\(|\[\s*(["'\x60])getBuiltinModule\1\s*\]|(?<![\w$])(?:${["getBuiltinModule", ...aliases].join("|")})(?![\w$])`,
     "g",
   );
-  for (const call of codeOnly.matchAll(builtinCalls)) {
-    const argument = withStrings.slice(call.index + call[0].length);
-    const literal =
-      /^\s*("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')\s*[,)]/.exec(
-        argument,
-      )?.[1];
-    const specifier = literal?.includes("\\")
-      ? scanners.ts.scan(`import ${literal};`).imports[0]?.path
-      : literal?.slice(1, -1);
-    if (specifier === undefined) onNonliteral?.("getBuiltinModule");
+  let computedBuiltin = false;
+  for (const { 0: use, index } of withStrings.matchAll(builtinUses)) {
+    if (codeOnly[index] !== use[0] || declarations.has(index)) continue;
+    const argument = use.endsWith("(")
+      ? withStrings.slice(index + use.length)
+      : "";
+    const name =
+      /^\s*("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\$]|\$(?!\{))*`)\s*[,)]/
+        .exec(argument)?.[1]
+        ?.slice(1, -1);
+    const specifier = name?.includes("\\")
+      ? scanners.ts.scan(
+          `import "${name.replace(/\\(?:\r\n|[\s\S])|["\r\n]/g, (part) => (part.startsWith("\\") ? part : JSON.stringify(part).slice(1, -1)))}";`,
+        ).imports[0]?.path
+      : name?.replace(/\r\n?/g, "\n");
+    if (specifier === undefined) computedBuiltin = true;
     else found.add(specifier);
   }
+  if (computedBuiltin) onNonliteral?.("getBuiltinModule");
   return [...found];
 }
 

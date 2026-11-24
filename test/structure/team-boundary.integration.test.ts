@@ -72,6 +72,7 @@ for (const name of [
   "getBuiltinModule apply forwarding",
   "getBuiltinModule assignment alias",
   "getBuiltinModule multiple destructured properties",
+  "getBuiltinModule unrelated function",
 ]) {
   test(`the team boundary refuses ${name}`, () => {
     const path = "src/blocks/load.ts";
@@ -89,7 +90,7 @@ test("the dependency guard allows a literal SQLite load in hub core", () => {
   ).toEqual([]);
 }, 30_000);
 
-test("the team boundary ignores getBuiltinModule examples and unrelated functions", () => {
+test("the team boundary ignores getBuiltinModule in comments and strings", () => {
   const path = "src/blocks/load.ts";
   expect(
     boundary([{ path, text: fixture("getBuiltinModule examples") }]),
