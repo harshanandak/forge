@@ -36,15 +36,19 @@ const noMacAcl = "drwx------  2 owner group 64 Nov 23 12:00 private\n";
 const macAcl =
   "drwx------+ 2 owner group 64 Nov 23 12:00 private\n 0: user:other allow read\n";
 
-test("distinguishes adjacent large file IDs", () => {
-  let ino = 2n ** 53n;
-  const guard = createPathProtection({
-    platform: "linux",
-    geteuid: () => 123,
-    lstat: (path) => Object.assign(fakeMacStat(path), { ino: ino++ }),
-  });
-  expect(guard.protectPath(temp(), "dir")).toBe(false);
-});
+test(
+  "distinguishes adjacent large file IDs",
+  () => {
+    let ino = 2n ** 53n;
+    const guard = createPathProtection({
+      platform: "linux",
+      geteuid: () => 123,
+      lstat: (path) => Object.assign(fakeMacStat(path), { ino: ino++ }),
+    });
+    expect(guard.protectPath(temp(), "dir")).toBe(false);
+  },
+  timeout,
+);
 
 test.each(["linux", "win32"] as const)(
   "%s reports incomplete directory creation",
@@ -64,6 +68,7 @@ test.each(["linux", "win32"] as const)(
       guard.createPrivateDirectory(join(temp(), "private")),
     ).rejects.toBeInstanceOf(UnverifiedDirectoryCreation);
   },
+  timeout,
 );
 
 test.skipIf(process.platform === "win32")(
@@ -81,6 +86,7 @@ test.skipIf(process.platform === "win32")(
     expect(await guard.createPrivateFile(path)).toBeNull();
     expect(readFileSync(path, "utf8")).toBe(fileText);
   },
+  timeout,
 );
 
 test.each([

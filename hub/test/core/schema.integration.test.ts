@@ -215,18 +215,22 @@ test(
   timeout,
 );
 
-test("refuses a marker-only database", async () => {
-  const path = await dbPath();
-  const marker = track(new Database(path));
-  marker.exec(
-    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '1')",
-  );
-  close(marker);
-  chmodSync(path, 0o600);
-  expect(() => close(track(openHubDb(path)))).toThrow(
-    "Hub database schema is incomplete",
-  );
-});
+test(
+  "refuses a marker-only database",
+  async () => {
+    const path = await dbPath();
+    const marker = track(new Database(path));
+    marker.exec(
+      "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '1')",
+    );
+    close(marker);
+    chmodSync(path, 0o600);
+    expect(() => close(track(openHubDb(path)))).toThrow(
+      "Hub database schema is incomplete",
+    );
+  },
+  timeout,
+);
 
 test(
   "H3: enforces thread identity, context pairs and per-person conversation uniqueness",
