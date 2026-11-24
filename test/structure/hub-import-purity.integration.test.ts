@@ -70,6 +70,13 @@ const denied: readonly (readonly [
   ],
   ["freeze", "const value = Object.freeze({});", 1, "CallExpression"],
   ["await", "export {};\nconst value = await compute();", 2, "AwaitExpression"],
+  ["using", "using h = resource;", 1, "VariableStatement"],
+  [
+    "await using",
+    "export {};\nawait using h = resource;",
+    2,
+    "VariableStatement",
+  ],
   [
     "expression statement",
     "const before = 1;\nvoid before;",
@@ -152,6 +159,10 @@ function fixture(name: string, text: string) {
   return { path: `hub/src/fixtures/${name.replaceAll(" ", "-")}.ts`, text };
 }
 
+function scanHubSources(list = listRepoFiles, read = readRepoFiles) {
+  return findHubImportPurityViolations(read(list().filter(isHubSource)));
+}
+
 describe("hub import purity blocks accidental module-scope work and accepts implicit execution by getters, coercion and iterators", () => {
   test("allows inert declarations and expressions", async () => {
     const files = Object.entries(allowed).map(([name, text]) =>
@@ -179,10 +190,44 @@ describe("hub import purity blocks accidental module-scope work and accepts impl
     }
   }, 30_000);
 
+  test("discovers existing and new hub sources and checks their contents", async () => {
+    const nested = "hub/src/chat/state.ts";
+    const future = "hub/src/new-feature/nested/entry.ts";
+    const paths = [
+      "hub/src/main.ts",
+      nested,
+      future,
+      "hub/src/chat/state.test.ts",
+      "hub/src/chat/state.spec.ts",
+      "hub/src/chat/state_test.ts",
+      "hub/src/chat/state_spec.ts",
+      "hub/src/chat/test/support.ts",
+      "hub/src/chat/adapter.js",
+      "hub/build/entry.ts",
+    ];
+    const violations = await scanHubSources(
+      () => paths,
+      (selected) => {
+        expect(selected).toEqual(["hub/src/main.ts", nested, future]);
+        return selected.map((path) => ({
+          path,
+          text:
+            path === future
+              ? "const ready = true;\nconst cache = new Map();"
+              : "export const ready = true;",
+        }));
+      },
+    );
+    expect(format(violations)).toEqual([
+      `[hub-import-purity] ${future}:2 NewExpression at module scope`,
+    ]);
+  }, 30_000);
+
   test("checks the non-test TypeScript tree under hub/src", async () => {
-    const paths = listRepoFiles().filter(isHubSource);
-    expect(paths).toContain("hub/src/main.ts");
-    const files = readRepoFiles(paths);
-    expect(format(await findHubImportPurityViolations(files))).toEqual([]);
+    const violations = await scanHubSources(listRepoFiles, (paths) => {
+      expect(paths).toContain("hub/src/main.ts");
+      return readRepoFiles(paths);
+    });
+    expect(format(violations)).toEqual([]);
   }, 30_000);
 });

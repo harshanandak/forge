@@ -55,8 +55,9 @@ const isAmbient = (node: ast.Statement) =>
 
 function variables(node: ast.Statement) {
   if (!ast.isVariableStatement(node)) return;
-  if (node.declarationList.flags & (NodeFlags.Const | NodeFlags.Let))
-    return node.declarationList.declarations;
+  const { declarations, flags } = node.declarationList;
+  const kind: ast.NodeFlags = flags & NodeFlags.BlockScoped;
+  if (kind === NodeFlags.Const || kind === NodeFlags.Let) return declarations;
 }
 
 function bindingsIn(source: ast.SourceFile): Set<string> {
@@ -166,13 +167,12 @@ function violationsIn(source: ast.SourceFile, file: string): Violation[] {
   for (const statement of source.statements) {
     const problem = statementProblem(statement);
     if (!problem) continue;
-    const start = problem.getStart(source);
-    const { line } = source.getLineAndCharacterOfPosition(start);
+    const { line } = source.getLineAndCharacterOfPosition(problem.getStart());
     result.push({
       rule: "hub-import-purity",
       file,
       line: line + 1,
-      message: `${Kind[problem.kind]} at module scope`,
+      message: `${ast.isVariableStatement(problem) ? "VariableStatement" : Kind[problem.kind]} at module scope`,
     });
   }
   return result;
