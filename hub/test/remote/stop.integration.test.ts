@@ -1,5 +1,6 @@
 import { expect } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { HOOK_STOP_TEXT_MAX } from "../../src/contract/hooks.ts";
 import { key } from "./fixtures.ts";
 import {
@@ -167,9 +168,9 @@ check("T9 and Y1 malformed input and transcript never get sent", async (f) => {
 check(
   "Y4 uncaught input read is closed in PreToolUse and silent elsewhere",
   async (f) => {
-    const path = f.path("preload.mjs");
+    const preload = pathToFileURL(f.path("preload.mjs"));
     await writeFile(
-      path,
+      preload,
       'Object.defineProperty(process, "stdin", { get() { throw new Error("Synthetic stdin failure"); } });',
     );
     for (const [hook, input, expected] of [
@@ -177,7 +178,7 @@ check(
       ["session-start", session, silence],
       ["stop", final("Finish"), silence],
     ] as const)
-      expect(await f.run(hook, input, {}, ["--import", path])).toEqual(
+      expect(await f.run(hook, input, {}, ["--import", preload.href])).toEqual(
         expected,
       );
     expect(f.seen).toEqual([]);
