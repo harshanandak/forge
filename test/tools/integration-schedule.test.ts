@@ -60,8 +60,13 @@ test.each(["test:integration", "test:changed"])(
       ["tools", "lane"],
       ["tools", "cli-speed"],
     ];
-    for (const [folder, name] of files) {
-      const path = `test/${folder}/${name}.integration.test.ts`;
+    const paths = [
+      ...files.map(
+        ([folder, name]) => `test/${folder}/${name}.integration.test.ts`,
+      ),
+      "hub/test/scaffold.integration.test.ts",
+    ];
+    for (const path of paths) {
       expect(serial.split(" ").filter((arg) => arg === path)).toHaveLength(1);
       expect(ignore.match(path), `${path} excluded from bulk`).toBe(true);
     }
@@ -71,9 +76,10 @@ test.each(["test:integration", "test:changed"])(
     const serialPaths = serial
       .split(" ")
       .filter((arg) => arg.endsWith(".test.ts"));
-    expect(serialPaths).toHaveLength(files.length);
+    expect(serialPaths).toHaveLength(paths.length);
     const integrationPaths = [
       ...new Bun.Glob("test/**/*.integration.test.ts").scanSync("."),
+      ...new Bun.Glob("hub/test/**/*.integration.test.ts").scanSync("."),
     ]
       .map((path) => path.replaceAll("\\", "/"))
       .filter((path) => !path.endsWith("/packed.integration.test.ts"));
