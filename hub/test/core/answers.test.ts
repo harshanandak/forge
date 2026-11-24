@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { Worker } from "node:worker_threads";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import { a, b, closeDb, openDb, p1, value } from "./fixture.ts";
@@ -101,87 +102,98 @@ test(
   timeout,
 );
 
-const workerSource = `
-  const { parentPort, workerData: w } = require("node:worker_threads");
-  (async () => {
-    const { openHubDb, createPeopleDirectory } = await import(w.entry);
-    const { createCoreStore } = await import(w.store);
-    const db = openHubDb(w.path);
-    try {
-      const people = createPeopleDirectory(w.config.people);
-      const asks = createCoreStore({ db, config: w.config, people, now: () => 1234,
-        log: { info() {}, warn() {}, error() {} }, chat: {} }).asks;
-      const barrier = new Int32Array(w.gate);
-      parentPort.postMessage("ready");
-      Atomics.wait(barrier, 0, 0, w.timeout);
-      parentPort.postMessage(w.events.map(event => {
-        const result = asks.answerAction(event);
-        return result.after ? "locked" :
-          result.reply.ephemeralText?.startsWith("Already answered by ") ? "already_answered" : result;
-      }));
-    } finally { db.close(); }
-  })().catch(error => { parentPort.postMessage({ error: String(error) }); process.exitCode = 1; });
+const contenderSource = `
+  import { text } from "node:stream/consumers";
+  const { openHubDb, createPeopleDirectory } = await import(fixture.entry);
+  const { createCoreStore } = await import(fixture.store);
+  const db = openHubDb(fixture.path);
+  try {
+    const people = createPeopleDirectory(fixture.config.people);
+    const asks = createCoreStore({ db, config: fixture.config, people, now: () => 1234,
+      log: { info() {}, warn() {}, error() {} }, chat: {} }).asks;
+    console.log("ready");
+    if (await text(process.stdin) !== "go") throw new Error("Missing start signal");
+    const outcomes = fixture.events.map(event => {
+      const result = asks.answerAction(event);
+      return result.after ? "locked" :
+        result.reply.ephemeralText?.startsWith("Already answered by ") ? "already_answered" : result;
+    });
+    console.log(JSON.stringify(outcomes));
+  } finally { db.close(); }
 `;
 
 test(
-  "A5: independent worker connections contend for twenty locks",
+  "A5: independent Node connections contend for twenty locks",
   async () => {
     const f = await askFixture();
     const ids: string[] = [];
     for (let i = 0; i < 20; i++) ids.push(value(await f.choice()).askId);
-    const gate = new Int32Array(new SharedArrayBuffer(4));
-    const workers: Worker[] = [];
-    let ready = 0;
+    const entry = new URL("../../dist/core/index.js", import.meta.url).href;
+    const store = new URL("../../dist/core/store-impl.js", import.meta.url)
+      .href;
+    const contenders = [slackA, slackB].map((user) => {
+      const events = ids.map((id, index) => button(id, user + index, user));
+      const data = { path: f.path, config: f.config, entry, store, events };
+      const program = `const fixture = ${JSON.stringify(data)};\n${contenderSource}`;
+      const child = spawn("node", ["--input-type=module", "--eval", program], {
+        timeout,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const ready = Promise.withResolvers<void>();
+      const lines: string[] = [];
+      const stdout = createInterface({
+        input: child.stdout,
+        crlfDelay: Infinity,
+      });
+      stdout.on("line", (line) => {
+        if (line === "ready") ready.resolve();
+        else lines.push(line);
+      });
+      let stderr = "";
+      let error: Error | undefined;
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+        stderr += chunk;
+      });
+      child.on("error", (cause) => {
+        error = cause;
+      });
+      child.stdin.on("error", (cause) => {
+        error ??= cause;
+      });
+      const done = new Promise<number | null>((resolve) =>
+        child.once("close", resolve),
+      ).then((code): unknown[] => {
+        if (error) throw error;
+        if (code !== 0)
+          throw new Error(stderr || "A5 contender exited: " + code);
+        const result: unknown = JSON.parse(lines.join("\n"));
+        if (!Array.isArray(result))
+          throw new Error("Missing A5 contender outcomes");
+        const outcomes: unknown[] = result;
+        return outcomes;
+      });
+      const started = Promise.race([
+        ready.promise,
+        done.then(() => {
+          throw new Error("A5 contender exited before ready");
+        }),
+      ]);
+      return { child, started, done };
+    });
     try {
-      const answers = await Promise.all(
-        [slackA, slackB].map(
-          (user) =>
-            new Promise<unknown[]>((resolve, reject) => {
-              const worker = new Worker(workerSource, {
-                eval: true,
-                env: { SystemRoot: process.env.SystemRoot },
-                workerData: {
-                  path: f.path,
-                  config: f.config,
-                  gate: gate.buffer,
-                  timeout,
-                  entry: new URL("../../dist/core/index.js", import.meta.url)
-                    .href,
-                  store: new URL(
-                    "../../dist/core/store-impl.js",
-                    import.meta.url,
-                  ).href,
-                  events: ids.map((id, index) =>
-                    button(id, user + index, user),
-                  ),
-                },
-              });
-              workers.push(worker);
-              worker.on("message", (message: unknown) => {
-                if (message === "ready") {
-                  if (++ready === 2) {
-                    Atomics.store(gate, 0, 1);
-                    Atomics.notify(gate, 0, 2);
-                  }
-                } else if (Array.isArray(message)) resolve(message);
-                else reject(new Error(JSON.stringify(message)));
-              });
-              worker.once("error", reject);
-              worker.once("exit", (code) =>
-                reject(new Error("Worker stopped: " + code)),
-              );
-            }),
-        ),
-      );
+      await Promise.all(contenders.map(({ started }) => started));
+      for (const { child } of contenders) child.stdin.end("go");
+      const answers = await Promise.all(contenders.map(({ done }) => done));
       expect(answers.flat().sort()).toEqual([
         ...Array<string>(20).fill("already_answered"),
         ...Array<string>(20).fill("locked"),
       ]);
       expect(rows(f.db, "ask_answers")).toHaveLength(20);
     } finally {
-      Atomics.store(gate, 0, 1);
-      Atomics.notify(gate, 0, 2);
-      await Promise.all(workers.map((worker) => worker.terminate()));
+      for (const { child } of contenders)
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+      await Promise.allSettled(contenders.map(({ done }) => done));
     }
   },
   timeout,
