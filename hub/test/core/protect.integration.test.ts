@@ -61,7 +61,7 @@ $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))
 $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$inherit = if ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) { 3 } else { 0 }
+$inherit = if ([int][IO.File]::GetAttributes($path) -band [int][IO.FileAttributes]::Directory) { 3 } else { 0 }
 $acl = if ($inherit) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) }
 $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
 if ($acl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $owner -or
@@ -275,7 +275,7 @@ $grant = @($rules | Where-Object { $_.IdentityReference -eq $world -and $_.Acces
 $inherited = $request.expected -eq 'inherited'
 if ($grant.Count -ne 1 -or $grant[0].IsInherited -ne $inherited -or
     $acl.AreAccessRulesProtected -eq $inherited -or
-    ($grant[0].FileSystemRights -band $right) -ne $right) { exit 1 }
+    ([int]$grant[0].FileSystemRights -band [int]$right) -ne [int]$right) { exit 1 }
 [Console]::WriteLine([Convert]::ToBase64String($acl.GetSecurityDescriptorBinaryForm()))
 `;
 

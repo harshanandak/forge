@@ -64,8 +64,8 @@ function Write-ChainRefusal($path, $raw, $clause, $ace) {
 }
 function Assert-PathKind($path, $isDir) {
   $attributes = [IO.File]::GetAttributes($path)
-  $directory = [bool]($attributes -band [IO.FileAttributes]::Directory)
-  $reparse = $attributes -band [IO.FileAttributes]::ReparsePoint
+  $directory = [bool]([int]$attributes -band [int][IO.FileAttributes]::Directory)
+  $reparse = [int]$attributes -band [int][IO.FileAttributes]::ReparsePoint
   if ($directory -ne $isDir -or $reparse) {
     $clause = if ($reparse) { 'reparse' } else { 'kind' }
     Write-ChainRefusal $path $null $clause $null
@@ -103,7 +103,7 @@ function Test-DirectoryChain($path) {
         return $false
       }
       if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
-          !($ace.AceFlags -band [Security.AccessControl.AceFlags]::InheritOnly) -and
+          !([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -and
           $ace.SecurityIdentifier.Value -notin $trusted -and ($ace.AccessMask -band $replacement)) {
         Write-ChainRefusal $dir.FullName $raw 'replacement' $ace
         [Console]::Error.WriteLine("chain_replacement:$depth")
