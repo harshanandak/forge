@@ -117,11 +117,20 @@ test("after the owner decides a batch, the review restarts at 0 and sees the res
 });
 
 test("similar proposals are grouped and unrelated ones stand alone", async () => {
-  const { call, queue } = setup();
+  const { call, queue, state } = setup();
   const one = await propose(call, "Write the test first.");
   const other = await propose(call, "Merge only when hosted CI is green.");
-  const two = await propose(call, "write the test first");
-  const three = await propose(call, "Write the test first!");
+  const legacyProposal = state.get("note/000000001")!.value as object;
+  const seed = (number: number, text: string) => {
+    state.put(
+      `note/00000000${number}`,
+      { ...legacyProposal, text },
+      { expectRevision: 0 },
+    );
+    return { id: `device/note-${number}` };
+  };
+  const two = seed(3, "write the test first");
+  const three = seed(4, "Write the test first!");
   const batch = await queue();
   expect(batch.groups.map((group) => group.items.map((i) => i.id))).toEqual([
     [one.id, two.id, three.id],

@@ -445,7 +445,7 @@ test("startup counts applicable scopes without text or ids in JSON or --text; co
   const forgotten = done(
     await harness.call("memory.add", {
       level: "device",
-      text: marker,
+      text: "Revoked release note",
       scope: "general",
     }),
   ) as { id: string };
@@ -589,12 +589,13 @@ for (const [folder, scope] of [
     expect(empty.text.text).toContain("general 0");
     if (scope !== undefined && scope !== "general")
       expect(empty.text.text).toContain(`${scope} 0`);
-    for (const noteScope of ["general", scope, "other-project"]) {
+    const scopes = ["general", scope, "other-project"];
+    for (const [index, noteScope] of scopes.entries()) {
       if (noteScope !== undefined)
         done(
           await harness.call("memory.add", {
             level: "device",
-            text: marker,
+            text: `${marker}${index}`,
             scope: noteScope,
           }),
         );

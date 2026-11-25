@@ -75,6 +75,21 @@ async function setup(count = 3, globals: Record<string, unknown> = {}) {
   };
 }
 
+function seedOtherScope(device: ReturnType<typeof memoryState>, count: number) {
+  const key = "meta/note-counter";
+  const counter = device.get(key);
+  const last = (counter?.value as { last: number } | undefined)?.last ?? 0;
+  const fields = { scope: "beta", tags: [], links: [], previous: [] };
+  const end = last + count;
+  for (let number = last + 1; number <= end; number += 1)
+    device.put(
+      `note/${String(number).padStart(9, "0")}`,
+      { ...fields, text: `other ${number}` },
+      { expectRevision: 0 },
+    );
+  device.put(key, { last: end }, { expectRevision: counter?.revision ?? 0 });
+}
+
 for (const budget of [15_000, 30_000]) {
   test(`scope returns a resumable partial batch before a ${budget} ms invocation expires`, async () => {
     let now = 1_000;
@@ -217,8 +232,7 @@ test("scope resizes a collected group after sparse matches consume page-read bud
       }
     },
   });
-  for (let n = 0; n < 592; n += 1)
-    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  seedOtherScope(device, 592);
   await call("memory.add", { level: "device", scope: "alpha", text: "last" });
   const page = device.listRange.bind(device);
   device.listRange = (...args) => {
@@ -255,15 +269,14 @@ test("scope resizes a collected group after sparse matches consume page-read bud
 
 test("scope reserves buffered writes while scanning a long other-scope tail", async () => {
   let now = 1_000;
-  const { move, call, device, project } = await setup(10, {
+  const { move, device, project } = await setup(10, {
     Date: class extends Date {
       static override now() {
         return now;
       }
     },
   });
-  for (let n = 0; n < 1_000; n += 1)
-    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  seedOtherScope(device, 1_000);
   const page = device.listRange.bind(device);
   let pages = 0;
   device.listRange = (...args) => {
@@ -399,8 +412,7 @@ test("scope budgets each note's reads after sparse scanning reaches a page of ma
       }
     },
   });
-  for (let n = 0; n < 1_998; n += 1)
-    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  seedOtherScope(device, 1_998);
   for (let n = 0; n < 16; n += 1)
     await call("memory.add", {
       level: "device",
@@ -532,8 +544,9 @@ test("scope move docs and generated skill describe bounded completion within the
 
 test("scope batches move 25, then 5, then zero, preserving every record and old-id resolution", async () => {
   const { move, call, device, project } = await setup(30);
+  let index = 0;
   for (const scope of ["beta", "beta", "beta", "general", "general"])
-    await call("memory.add", { level: "device", scope, text: scope });
+    await call("memory.add", { level: "device", scope, text: String(index++) });
   const originals = device.list("note/");
   const first = await move();
   expect(first).toMatchObject({
@@ -961,8 +974,7 @@ test("scope batch recovers all committed copies after a fault before grouped sou
 
 test("scope scan passes pages of tombstones and other scopes and uses stored scope exactly", async () => {
   const { move, call, device } = await setup(0);
-  for (let n = 0; n < 205; n += 1)
-    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  seedOtherScope(device, 205);
   await call("memory.add", { level: "device", scope: "alpha", text: "last" });
   expect(await move({ ...input, limit: 1 })).toMatchObject({
     moved: [{ id: "device/note-206" }],
@@ -1104,6 +1116,7 @@ for (const budget of [0, 999, 1_000, 2_000]) {
       now += 100;
       return page(...args);
     };
+    device.counts.listedRecords = 0;
     if (budget <= 1_000) {
       await expect(
         move({ ...input, limit: 1 }, 1_000 + budget),
@@ -1163,6 +1176,7 @@ for (const step of ["setup", "move", "verify", "page"]) {
         now += 2_000;
       return record;
     };
+    device.counts.listedRecords = 0;
     const result = await move({ ...input, limit: 100 }, 16_001);
     expect(now).toBeLessThan(16_001);
     expect(result.complete).toBe(false);
@@ -1318,8 +1332,7 @@ test("scope documents the large-store scan limit and bounds every call", async (
       }
     },
   });
-  for (let n = 0; n < 800; n += 1)
-    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  seedOtherScope(device, 800);
   await call("memory.add", { level: "device", scope: "alpha", text: "last" });
   const page = device.listRange.bind(device);
   device.listRange = (...args) => {
@@ -1432,8 +1445,7 @@ test("interrupted scope batch resumes the committed copy without duplication", a
 
 test("scope batch scans each page once to find the next match", async () => {
   const { move, call, device } = await setup(1);
-  for (let n = 0; n < 999; n += 1)
-    await call("memory.add", { level: "device", scope: "beta", text: "other" });
+  seedOtherScope(device, 999);
   await call("memory.add", { level: "device", scope: "alpha", text: "last" });
   const pages: Parameters<typeof device.listRange>[0][] = [];
   const listRange = device.listRange.bind(device);

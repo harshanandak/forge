@@ -214,12 +214,16 @@ function toRow(
   };
 }
 
-function measure(command: string, args: readonly string[]): Row {
-  run(args); // warm the file cache once; not counted
+function measure(
+  command: string,
+  args: readonly string[] | ((sample: number) => readonly string[]),
+): Row {
+  const sampleArgs = typeof args === "function" ? args : () => args;
+  run(sampleArgs(0));
   return toRow(
     command,
-    Array.from({ length: runs }, () => {
-      const sample = run(args);
+    Array.from({ length: runs }, (_, index) => {
+      const sample = run(sampleArgs(index + 1));
       if (command === GATE_COMMAND)
         recordSpeedSample(gatedSamples, "current", sample.ms);
       return sample;
@@ -296,11 +300,11 @@ try {
   } else rows.push(measure(GATE_COMMAND, ["issue", "show", issueId]));
   rows.push(measure("issue list", ["issue", "list", "--limit", "50"]));
   rows.push(
-    measure("memory add", [
+    measure("memory add", (sample) => [
       "memory",
       "add",
       "--input",
-      JSON.stringify({ level: "project", text: "bench note" }),
+      JSON.stringify({ level: "project", text: `bench note ${sample}` }),
     ]),
   );
   rows.push(
