@@ -67,11 +67,27 @@ export async function until(check: () => boolean, timeout: number) {
 }
 
 export function refuseNextChatPost(chat: FakeChatPort) {
-  chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
+  const post = chat.postText.bind(chat);
+  let armed = true;
+  chat.postText = (target, text, options) => {
+    if (armed && text.startsWith("Queued for")) {
+      armed = false;
+      chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
+    }
+    return post(target, text, options);
+  };
 }
 
 export function unknownNextChatPost(chat: FakeChatPort) {
-  chat.nextWrite = { kind: "unknown" };
+  const post = chat.postText.bind(chat);
+  let armed = true;
+  chat.postText = (target, text, options) => {
+    if (armed && text.startsWith("Queued for")) {
+      armed = false;
+      chat.nextWrite = { kind: "unknown" };
+    }
+    return post(target, text, options);
+  };
 }
 
 export function failQueueNoticeThreadRecord(db: HubDb) {
