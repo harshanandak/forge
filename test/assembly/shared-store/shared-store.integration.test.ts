@@ -229,7 +229,7 @@ test("the shared project's name stays stable when opened from differently named 
   let projectId: string | undefined;
   for (const call of [fromMain, fromLinked, fromMain]) {
     const added = done(
-      await call("memory.add", { text: "stable-name heron", level: "project" }),
+      await call("memory.add", { text: `heron ${seq}`, level: "project" }),
     ) as {
       id: string;
       note: { origin: { project: { id: string; name: string } } };
