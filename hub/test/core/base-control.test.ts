@@ -20,9 +20,9 @@ test(
       return Promise.resolve();
     };
     await chat.start({
-      onAction: async (event) => {
+      onAction: (event) => {
         events.push(event);
-        return { ephemeralText: "Selected" };
+        return Promise.resolve({ ephemeralText: "Selected" });
       },
       onMessage: record,
       onMessageChange: record,
