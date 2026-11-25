@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, posix } from "node:path";
 import type { DoctorCheck, HubConfig } from "../contract/runtime.ts";
 import { protectPath } from "./protect.ts";
+import { probeHubSchema } from "./schema-probe.ts";
 import { schemaVersion } from "./schema.ts";
 import type { RefuseNetworkPath } from "./store.ts";
 
@@ -67,9 +68,10 @@ function schema(dir: string): DoctorCheck {
   const path = join(dir, "hub.sqlite");
   const bad = "The database schema is incompatible.";
   const incompatible = row(schemaKey, "action", bad);
-  if (stat(path) === undefined) return row(schemaKey, "skipped", uninitialised);
+  const existing = stat(path);
+  if (existing === undefined) return row(schemaKey, "skipped", uninitialised);
   try {
-    if (!protectPath(path, "file"))
+    if (!existing || !protectPath(path, "file"))
       return row(schemaKey, "action", "The database file is not private.");
     for (const suffix of ["-wal", "-shm", "-journal"]) {
       const file = path + suffix;
@@ -80,13 +82,16 @@ function schema(dir: string): DoctorCheck {
     const sqlite: typeof import("node:sqlite") =
       process.getBuiltinModule("node:sqlite");
     if (!sqlite) return row(schemaKey, "action", "SQLite is unavailable.");
-    const db = new sqlite.DatabaseSync(path, { readOnly: true });
-    try {
-      if (schemaVersion(db) !== 1) return incompatible;
-      return row(schemaKey, "ok", "The database schema is compatible.");
-    } finally {
-      db.close();
-    }
+    const version = probeHubSchema(path, existing, (filename) => {
+      const db = new sqlite.DatabaseSync(filename, { readOnly: true });
+      try {
+        return schemaVersion(db);
+      } finally {
+        db.close();
+      }
+    });
+    if (version !== 1) return incompatible;
+    return row(schemaKey, "ok", "The database schema is compatible.");
   } catch {
     return incompatible;
   }
