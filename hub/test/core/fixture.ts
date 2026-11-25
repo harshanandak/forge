@@ -2,13 +2,13 @@ import { afterEach } from "bun:test";
 import { realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { createWindowsPrivateDirectory } from "../../../src/adapters/process/windows-acl.ts";
 import type { HubResult } from "../../src/contract/core.ts";
 import type { HubConfig, HubDb, HubLog } from "../../src/contract/runtime.ts";
 import { openHubDb, createPrivateDirectory } from "../../src/core/index.ts";
 import { createSessionStore } from "../../src/core/sessions.ts";
 import { hubTestTemp } from "../temp.ts";
 import { configFixture } from "./config-fixture.ts";
+import { createWindowsPrivateDirectory } from "./windows-private-directory.ts";
 
 const paths = new Set<string>();
 const handles = new Set<HubDb>();
