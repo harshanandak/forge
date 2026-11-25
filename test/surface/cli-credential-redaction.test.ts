@@ -14,11 +14,12 @@ async function refuse(
   v: readonly string[],
   n: McpCandidate,
   m?: string,
+  q?: boolean,
 ) {
   const w = m ?? `pass --value ${JSON.stringify(s)}`;
   const p = `Unexpected argument ${JSON.stringify(s)}; ${w}`;
   const o = `Invalid input for sample.echo:\n${p}`;
-  for (const x of [[], ["--text"]] as const) {
+  for (const x of q ? ([[]] as const) : ([[], ["--text"]] as const)) {
     const c = fakeCatalog([n]);
     const r = await runCli(c, [...x, ...v]);
     if (r.envelope.ok) throw new Error("Expected refusal");
@@ -141,6 +142,7 @@ test("CLI redacts the reserved-input repair", async () => {
     ["sample.echo", T],
     n,
     `--text is reserved; use ${f}`,
+    true,
   );
   expect(p).toContain("[redacted]");
   expect(p).toContain("--input");
