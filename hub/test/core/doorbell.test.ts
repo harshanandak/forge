@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { ID_PATTERN } from "../../src/contract/ids.ts";
 import { LIMITS } from "../../src/contract/mcp.ts";
-import { baseFixture } from "./base-fixture.ts";
+import { baseFixture, bellFor } from "./base-fixture.ts";
 import { until } from "./base-fakes.ts";
-import { a, p1, value } from "./fixture.ts";
+import { a, b, p1, value } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
 
 const timeout = 30_000;
@@ -67,6 +67,74 @@ test(
     expect(f.rows("conversations")).toHaveLength(1);
     expect(f.rows("inbox_items")).toHaveLength(2);
     expect(f.rings).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB1 targeted stale session notifies despite another live session",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const stale = f.bind(b, "stale", "beta");
+    f.advance(1);
+    f.bind(b, "live", "live-thread");
+    f.db
+      .prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+      .run(f.now() - LIMITS.liveSessionMs - 1, stale.sessionId);
+    await f.emit("b1b-stale", { mentionedSlackUserIds: [slackB] });
+    expect(f.rows("inbox_items", "target_session_id")).toEqual([
+      { target_session_id: stale.sessionId },
+    ]);
+    expect(f.posts()).toEqual([
+      "Queued for Fixture Beta's agent. It is offline and will see this when it reconnects.",
+    ]);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB2 targeted live session produces no notice",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const live = f.bind(b, "live", "beta");
+    await f.emit("b1b-live", { mentionedSlackUserIds: [slackB] });
+    expect(f.rows("inbox_items", "target_session_id")).toEqual([
+      { target_session_id: live.sessionId },
+    ]);
+    expect(f.posts()).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB3 untargeted item with a live session produces no notice",
+  async () => {
+    const f = await baseFixture();
+    f.bind(b, "live", "live-thread");
+    await f.dm("b1b-untargeted", "Help", slackB);
+    expect(f.rows("inbox_items", "target_session_id")).toEqual([
+      { target_session_id: null },
+    ]);
+    expect(f.posts()).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB4 second targeted-stale item within the hour adds no notice",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const stale = f.bind(b, "stale", "beta");
+    f.advance(1);
+    f.bind(b, "live", "live-thread");
+    f.db
+      .prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+      .run(f.now() - LIMITS.liveSessionMs - 1, stale.sessionId);
+    await f.emit("b1b-first", { mentionedSlackUserIds: [slackB] });
+    const afterFirst = f.posts().length;
+    await f.emit("b1b-second", { mentionedSlackUserIds: [slackB] });
+    expect(f.rows("inbox_items")).toHaveLength(2);
+    expect(f.posts()).toHaveLength(afterFirst);
   },
   timeout,
 );
