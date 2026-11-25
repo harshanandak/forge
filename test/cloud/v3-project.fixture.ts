@@ -263,6 +263,37 @@ export function guardFixture(env?: unknown, setup?: SealSetup) {
   };
 }
 
+export function observeRestoreReset(target: ReturnType<typeof guardFixture>) {
+  const { db, values } = target;
+  const catalog = db.query<{ type: string; name: string }, []>(
+    "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name <> 'cloud_v3_restore' ORDER BY type, name",
+  );
+  const state = () => {
+    const schema = catalog.all();
+    const rows = schema
+      .filter(({ type }) => type === "table")
+      .map(({ name }) =>
+        db.query('SELECT * FROM "' + name.replaceAll('"', '""') + '"').values(),
+      );
+    return { schema, rows, kv: structuredClone([...values]) };
+  };
+  const before = state();
+  const effects = target.observeEffects();
+  return () => {
+    expect(
+      db
+        .query("SELECT name FROM sqlite_schema WHERE name='cloud_v3_restore'")
+        .all(),
+    ).toEqual([]);
+    expect(effects()).toEqual({
+      ...noWrites,
+      sqlWriteAttempts: 2,
+      sqlAndKvIntact: false,
+    });
+    expect(state()).toEqual(before);
+  };
+}
+
 type RawReply = { status: number; text: string };
 
 export async function readOnlyReply(

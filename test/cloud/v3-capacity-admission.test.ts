@@ -1913,8 +1913,18 @@ const activationError: ForgeError = {
   message: "The restored history is too large to activate",
   retry: "never",
 };
-const stagedPages = (f: Fixture) =>
-  f.db.query("SELECT * FROM cloud_v3_restore ORDER BY id").all();
+const invalidRestore = wireError(400, {
+  code: "RESTORE_INVALID_ROW",
+  message: "Cloud v3 portable restore could not be verified",
+  retry: "never",
+});
+const tableNames = ({ db }: Fixture) =>
+  db
+    .query<{ name: string }, []>(
+      "SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name",
+    )
+    .all()
+    .map(({ name }) => name);
 
 for (const kind of pageKinds) {
   test.each([-1, 0, 1])(
@@ -1972,26 +1982,27 @@ for (const kind of pageKinds) {
           if (other !== kind)
             expect(expected[other], other).toBeLessThanOrEqual(cap[other]);
 
+        const tables = tableNames(target);
         const upload = portableUpload(target, artifact.backup);
         for (const page of [0, 1])
           expect(await upload(page)).toEqual({
             status: 200,
             body: { ok: true, value: { page, verified: false } },
           });
-        const staged = stagedPages(target);
-        const snapshot = target.snapshot();
+        const { kv } = target.snapshot();
         const effects = target.observeEffects();
         const last = await upload(2);
         if (delta > 0) {
           expect(last).toEqual(wireError(503, activationError));
           expect(exited(last.body)).toBe(1);
+          expect(tableNames(target)).not.toContain("cloud_v3_restore");
           expect(effects()).toMatchObject({
             alarmWrites: 0,
-            sqlAndKvIntact: true,
+            sqlAndKvIntact: false,
           });
           expect(effects().sqlWriteAttempts).toBeGreaterThan(0);
-          expect(stagedPages(target)).toEqual(staged);
-          expect(target.snapshot()).toEqual(snapshot);
+          expect(tableNames(target)).toEqual(tables);
+          expect(target.snapshot().kv).toEqual(kv);
           expect(store.hasV3Root(dbOf(target))).toBe(false);
           expect(
             target.db
@@ -2002,14 +2013,12 @@ for (const kind of pageKinds) {
           ).toEqual([]);
           target.restart();
           const retryEffects = target.observeEffects();
-          expect(await upload(2)).toEqual(last);
-          expect(retryEffects()).toMatchObject({
-            alarmWrites: 0,
-            sqlAndKvIntact: true,
-          });
-          expect(retryEffects().sqlWriteAttempts).toBeGreaterThan(0);
-          expect(stagedPages(target)).toEqual(staged);
-          expect(target.snapshot()).toEqual(snapshot);
+          const retry = await upload(2);
+          expect(retry).toEqual(invalidRestore);
+          expect(exited(retry.body)).toBe(1);
+          expect(retryEffects()).toEqual(noWrites);
+          expect(tableNames(target)).not.toContain("cloud_v3_restore");
+          expect(target.snapshot().kv).toEqual(kv);
         } else {
           expect(last).toEqual({
             status: 200,
@@ -2035,20 +2044,108 @@ test(
   async () => {
     const target = guardFixture();
     using _target = target.db;
+    const tables = tableNames(target);
+    const { kv } = target.snapshot();
     const { backup } = portableArtifact(claimFrames(17));
     const upload = portableUpload(target, backup);
     expect((await upload(0)).status).toBe(200);
     expect((await upload(1)).status).toBe(200);
-    const staged = stagedPages(target);
-    expect(await upload(2)).toEqual(
+    const reply = await upload(2);
+    expect(reply).toEqual(
       wireError(413, {
         code: "RESTORE_TOO_LARGE",
         message: "Too many imported leases for activation",
         retry: "never",
       }),
     );
-    expect(stagedPages(target)).toEqual(staged);
+    expect(exited(reply.body)).toBe(1);
+    expect(tableNames(target)).not.toContain("cloud_v3_restore");
     expect(store.hasV3Root(dbOf(target))).toBe(false);
+    expect(tableNames(target)).toEqual(tables);
+    expect(target.snapshot().kv).toEqual(kv);
+  },
+  timeout,
+);
+
+function transcriptBoundary(activation: string, delta: number) {
+  const wanted = cap.transcript + delta;
+  const activationCost = Buffer.byteLength(activation) + 1;
+  const minimum = portableArtifact([record("")]).usage.transcript;
+  const needsNote = (wanted - activationCost - minimum) % 2 !== 0;
+  const tail = needsNote ? [note()] : [];
+  const overhead = portableArtifact([record(""), ...tail]).usage.transcript;
+  const padding = (wanted - activationCost - overhead) / 2;
+  return portableArtifact([record("x".repeat(padding)), ...tail]);
+}
+
+test.each(["different", "same"] as const)(
+  "v3 restore retries the %s artifact after an over-capacity refusal",
+  async (retry) => {
+    const seed = guardFixture();
+    const target = guardFixture();
+    using _seed = seed.db;
+    using _target = target.db;
+    const ids = [
+      "cf314cbb-07ca-46e8-b45b-fbec8a88e083",
+      "1be06559-e694-4a85-b13e-8ab79702d19a",
+    ] as const;
+    let id = 0;
+    const random = spyOn(crypto, "randomUUID").mockImplementation(
+      () => ids[id++ % ids.length]!,
+    );
+    try {
+      const activation = activateComponent(seed, portableArtifact([])).body;
+      const excess = transcriptBoundary(activation, 1);
+      expect(activatedUsage(excess, activation).transcript).toBe(
+        cap.transcript + 1,
+      );
+      const upload = portableUpload(target, excess.backup);
+      const staged = (page: number) => ({
+        status: 200,
+        body: { ok: true, value: { page, verified: false } },
+      });
+      expect(await upload(0)).toEqual(staged(0));
+      expect(await upload(1)).toEqual(staged(1));
+      id = 0;
+      const refusal = await upload(2);
+      expect(refusal).toEqual(wireError(503, activationError));
+      expect(exited(refusal.body)).toBe(1);
+
+      if (retry === "same") {
+        const effects = target.observeEffects();
+        const finalOnly = await upload(2);
+        expect(finalOnly).toEqual(invalidRestore);
+        expect(exited(finalOnly.body)).toBe(1);
+        expect(effects()).toEqual(noWrites);
+        expect(store.hasV3Root(dbOf(target))).toBe(false);
+        expect(await upload(0)).toEqual(staged(0));
+        expect(await upload(1)).toEqual(staged(1));
+        id = 0;
+        expect(await upload(2)).toEqual(refusal);
+        expect(tableNames(target)).not.toContain("cloud_v3_restore");
+        expect(store.hasV3Root(dbOf(target))).toBe(false);
+      } else {
+        const component = guardFixture();
+        using _component = component.db;
+        const exact = transcriptBoundary(activation, 0);
+        id = 0;
+        const candidate = activateComponent(component, exact).image;
+        expect(candidate.usage.transcript).toBe(cap.transcript);
+        const replace = portableUpload(target, exact.backup);
+        expect(await replace(0)).toEqual(staged(0));
+        expect(await replace(1)).toEqual(staged(1));
+        id = 0;
+        expect(await replace(2)).toEqual({
+          status: 200,
+          body: { ok: true, value: { page: 2, verified: true } },
+        });
+        const { load: _load, ...image } = cold(target);
+        const { load: _candidateLoad, ...expected } = candidate;
+        expect(image).toEqual(expected);
+      }
+    } finally {
+      random.mockRestore();
+    }
   },
   timeout,
 );
