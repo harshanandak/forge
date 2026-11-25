@@ -2826,10 +2826,10 @@ for (const fault of [
         data.publicDigest = digestBytes("[]");
       }
       const upload = await stageRestore(target, data);
-      const staged = target.snapshot();
+      const reset = observeRestoreReset(target);
       expect(await upload(2)).toMatchObject(restoreRefusal);
       await unprovisioned(target);
-      expect(target.snapshot()).toEqual(staged);
+      reset();
     },
     timeout,
   );
@@ -2938,12 +2938,12 @@ async function refusesTampered(
     expect(await honest(2)).toMatchObject(restoreResult(2, true));
     tamper(data, source);
     const upload = await stageRestore(target, data);
-    const staged = target.snapshot();
+    const reset = observeRestoreReset(target);
     const reply = await upload(2);
     expect(reply).toMatchObject(restoreRefusal);
     expect(exited(reply)).toBe(1);
     await unprovisioned(target);
-    expect(target.snapshot()).toEqual(staged);
+    reset();
   });
 }
 
@@ -3956,10 +3956,10 @@ for (const [fault, tamper] of [
       withTyped(async (target, data) => {
         tamper(data);
         const upload = await stageRestore(target, data);
-        const staged = target.snapshot();
+        const reset = observeRestoreReset(target);
         expect(await upload(2)).toMatchObject(restoreRefusal);
         await unprovisioned(target);
-        expect(target.snapshot()).toEqual(staged);
+        reset();
       }),
     timeout,
   );
