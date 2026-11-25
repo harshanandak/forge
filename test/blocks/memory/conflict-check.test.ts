@@ -8,15 +8,12 @@ const older =
 const later =
   "Owner 2026-11-13: use the default service tier for every model and delegate; do not use fast or priority tiers.";
 const original =
-  "Owner 2026-11-21: service tier rule for every model and delegate (Sol, Terra, Codex CLI, delegate_task serviceTier, Claude fast mode). Default tier always. Use a fast, priority or ultrafast tier only when the owner says in the current conversation that there are spare limits to burn, and only for that conversation or the window he names. Never turn it on from an older note.";
-const near =
+  "Owner 2026-11-21: service tier rule for every model and delegate (Sol, Terra, Codex CLI, delegate_task serviceTier, Claude fast mode). Default tier always. Use a fast, priority or ultrafast tier only when the owner says in the current conversation that there are spare limits to burn, and only for that conversation or the window he names. Never turn it on from an older note. Supersedes device/note-518 (always fast, 2026-10-24) and device/note-914 (default tier, 2026-11-13).";
+const followUp =
   "Owner 2026-11-21: service tier rule for every model and delegate (Sol, Terra, Codex CLI, delegate_task serviceTier, Claude fast mode). Default tier always. Use fast, priority or ultrafast only when the owner says in the current conversation there are spare limits to burn, only for that conversation or the window he names. Never turn it on from an older note.";
 
 const topic = (ids: string) =>
   `Notes ${ids} cover the same topic. Pass replaces to retire them, or coexistsWith with a reason to keep both.`;
-const duplicate = (id: string) =>
-  `Note ${id} says the same thing; revise it with id and expectRevision instead.`;
-
 const destination = { level: "device", scope: "general" };
 type Added = { id: string; note: { revision: number } };
 
@@ -36,17 +33,17 @@ function fixture(config: object = {}) {
   return { state, call, add };
 }
 
-test("exact and near duplicates of an ordinary note are refused before any write", async () => {
+test("the full service-tier notes require a reason to coexist", async () => {
   const { add, state } = fixture();
   const { id } = await add(original, { tags: ["fact"] });
   const writes = state.counts.puttedRecords;
-  await expect(add(original)).rejects.toMatchObject({
-    error: { message: duplicate(id) },
+  await expect(add(followUp)).rejects.toMatchObject({
+    error: { message: topic(id) },
   });
-  await expect(
-    add(near, { coexistsWith: [id], reason: "A separate intention" }),
-  ).rejects.toMatchObject({ error: { message: duplicate(id) } });
   expect(state.counts.puttedRecords).toBe(writes);
+  expect(
+    await add(followUp, { coexistsWith: [id], reason: "Keep the dated rule." }),
+  ).toMatchObject({ status: "added" });
 });
 
 test("an agent must name and explain how to handle the same-topic note", async () => {
