@@ -111,20 +111,39 @@ const matches = (
 export const hasV3Restore = (db: SqlDatabase) =>
   db.get(TABLE_PROBE, [STAGE]) !== undefined;
 
+function watch(db: SqlDatabase) {
+  const watched: SqlDatabase & { called: boolean } = {
+    called: false,
+    exec: (...args) => call(() => db.exec(...args)),
+    run: (...args) => call(() => db.run(...args)),
+    get: (...args) => call(() => db.get(...args)),
+    all: (...args) => call(() => db.all(...args)),
+    transaction: (body) => call(() => db.transaction(body)),
+  };
+  function call<T>(run: () => T) {
+    watched.called = true;
+    return run();
+  }
+  return watched;
+}
+
 function verify(
   db: SqlDatabase,
   seal: Seal,
   manifest: VerifiedManifest,
   admit: AdmitLeaseRequest,
   table: string,
+  note?: (error: unknown) => void,
 ) {
+  let sql: ReturnType<typeof watch> | undefined;
   try {
     const pages = storedPages(db, table);
+    sql = watch(db);
     check(pages.size === IDS.length);
     for (const member of manifest.members)
       check(matches(pages.get(member.id), member));
     const portableTranscript = pages.get("transcript:0")!;
-    const image = recoverV3(db, seal, { admit, manifest, portableTranscript });
+    const image = recoverV3(sql, seal, { admit, manifest, portableTranscript });
     const expected = inventory(image, new Map());
     reconcile(pages, expected, portableTranscript);
     check(image.head === manifest.head);
@@ -133,13 +152,15 @@ function verify(
     check(digestProjection(expected) === manifest.publicDigest);
     return { pages, expected, image };
   } catch (error) {
+    let out = error;
     if (
       (error instanceof ForgeFailure && error.error.code === "UNAVAILABLE") ||
       ((error instanceof TypeError || error instanceof RangeError) &&
         !storageFailure(error))
     )
-      check(false);
-    throw error;
+      out = refused();
+    if (sql?.called === false && error instanceof ForgeFailure) note?.(out);
+    throw out;
   }
 }
 
@@ -157,7 +178,8 @@ export function restoreV3Page(
   check(isNat(page) && typeof id === "string" && id === IDS[page]);
   check(Object.keys(input).length === (page === 0 ? 4 : 3));
   const request = digestBytes(text);
-  return db.transaction(() => {
+  let eligible: unknown;
+  const restore = () => {
     rejectOldCommits(db);
     const restored =
       hasV3Root(db) && readV3Root(db, seal).activationDigest !== undefined;
@@ -189,11 +211,20 @@ export function restoreV3Page(
           manifest,
           admit,
           table,
+          restored ? undefined : (error) => (eligible = error),
         );
         checked = pages;
         if (!restored) {
           const projection = roster(pages, expected, image.head);
-          activateV3(db, seal, image, projection, pages, manifest.publicDigest);
+          const sql = watch(db);
+          const { publicDigest } = manifest;
+          try {
+            activateV3(sql, seal, image, projection, pages, publicDigest);
+          } catch (error) {
+            const code = error instanceof ForgeFailure && error.error.code;
+            if (!sql.called && code === "RESTORE_TOO_LARGE") eligible = error;
+            throw error;
+          }
           db.run(`UPDATE ${STAGE} SET body=''`);
         }
       }
@@ -211,10 +242,10 @@ export function restoreV3Page(
           !restored &&
           Object.values(usage).some((bytes) => bytes > PAGE_BYTES)
         )
-          throw fail(
+          throw (eligible = fail(
             "STORAGE_LIMIT_EXCEEDED",
             "The restored history is too large to activate",
-          );
+          ));
       }
     };
     if (prior) {
@@ -241,5 +272,18 @@ export function restoreV3Page(
     ]);
     finish();
     return { page, verified };
-  });
+  };
+  try {
+    return db.transaction(restore);
+  } catch (error) {
+    if (eligible === undefined || error !== eligible) throw error;
+    try {
+      db.transaction(() => {
+        if (!hasV3Root(db)) db.exec("DROP TABLE IF EXISTS " + STAGE);
+      });
+    } catch {
+      throw error;
+    }
+    throw error;
+  }
 }
