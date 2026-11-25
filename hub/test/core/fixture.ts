@@ -2,6 +2,7 @@ import { afterEach } from "bun:test";
 import { realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { createWindowsPrivateDirectory } from "../../../src/adapters/process/windows-acl.ts";
 import type { HubResult } from "../../src/contract/core.ts";
 import type { HubConfig, HubDb, HubLog } from "../../src/contract/runtime.ts";
 import { openHubDb, createPrivateDirectory } from "../../src/core/index.ts";
@@ -39,7 +40,8 @@ export async function fixture(change: Partial<HubConfig> = {}) {
   const root = hubTestTemp("forge-hub-sessions-");
   paths.add(root);
   const dataDir = join(realpathSync(root), "data");
-  if (!(await createPrivateDirectory(dataDir)))
+  if (process.platform === "win32") createWindowsPrivateDirectory(dataDir);
+  else if (!(await createPrivateDirectory(dataDir)))
     throw new Error("Private test directory is unavailable");
   const path = join(dataDir, "hub.sqlite");
   const db = openDb(path);

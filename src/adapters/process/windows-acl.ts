@@ -3,14 +3,26 @@ import type { PrivateFiles } from "../../ports/private-files.ts";
 
 interface Library {
   func(declaration: string): (...args: unknown[]) => unknown;
+  func(
+    convention: string,
+    name: string,
+    result: string,
+    args: readonly unknown[],
+  ): (...args: unknown[]) => unknown;
 }
 interface Native {
   load(name: string): Library;
   decode(value: unknown, type: string, length?: number): unknown;
+  struct(fields: Record<string, string>): unknown;
+  pointer(type: unknown): unknown;
+  sizeof(type: unknown): number;
 }
 
-/** Reuse the process adapter's native Windows dependency; never launch a shell. */
-export function windowsPrivateFiles(): PrivateFiles {
+interface WindowsPrivateFiles extends PrivateFiles {
+  createDirectory(path: string): void;
+}
+
+function loadWindowsPrivateFiles(): WindowsPrivateFiles {
   const require = createRequire(import.meta.url);
   const native = require("koffi") as Native;
   const advapi = native.load("advapi32.dll");
@@ -42,6 +54,15 @@ export function windowsPrivateFiles(): PrivateFiles {
   const set = advapi.func(
     "bool __stdcall SetFileSecurityW(str16 path, uint32_t info, void *descriptor)",
   );
+  const security = native.struct({
+    nLength: "uint32_t",
+    lpSecurityDescriptor: "void *",
+    bInheritHandle: "int",
+  });
+  const create = kernel32.func("__stdcall", "CreateDirectoryW", "int", [
+    "str16",
+    native.pointer(security),
+  ]);
   const free = kernel32.func("void * __stdcall LocalFree(void *memory)");
   const close = kernel32.func("bool __stdcall CloseHandle(void *handle)");
   const current = kernel32.func("void * __stdcall GetCurrentProcess()");
@@ -121,5 +142,30 @@ export function windowsPrivateFiles(): PrivateFiles {
         free(pointer[0]);
       }
     },
+    createDirectory(path) {
+      const pointer: unknown[] = [null];
+      check(fromText(`O:${sid}D:P(A;OICI;FA;;;${sid})`, 1, pointer, null));
+      try {
+        check(
+          create(path, {
+            nLength: native.sizeof(security),
+            lpSecurityDescriptor: pointer[0],
+            bInheritHandle: 0,
+          }),
+        );
+      } finally {
+        free(pointer[0]);
+      }
+    },
   };
+}
+
+export function windowsPrivateFiles(): PrivateFiles {
+  return loadWindowsPrivateFiles();
+}
+
+let directoryFiles: WindowsPrivateFiles | undefined;
+
+export function createWindowsPrivateDirectory(path: string): void {
+  (directoryFiles ??= loadWindowsPrivateFiles()).createDirectory(path);
 }
