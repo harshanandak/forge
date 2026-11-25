@@ -107,12 +107,15 @@ test("E1 imports do not fetch or read a clock", async () => {
 });
 
 test("E2 closed reason set", () => {
-  expect([...reasons].sort()).toEqual([
+  expect<string[]>([...reasons].sort()).toEqual([
     "api_field_invalid",
     "api_rate_limited",
+    "bot_format_unsupported",
+    "bot_identity_mismatch",
     "http_status",
     "json_invalid",
     "network_error",
+    "other_bot_unsupported",
     "pages_incomplete",
   ]);
 });
