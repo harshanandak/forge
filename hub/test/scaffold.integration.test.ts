@@ -187,6 +187,7 @@ const ownFiles = [
   "dist/core/index.js",
   "dist/core/protect.js",
   "dist/core/routing.js",
+  "dist/core/schema-probe.js",
   "dist/core/schema.js",
   "dist/core/send.js",
   "dist/core/sessions.js",

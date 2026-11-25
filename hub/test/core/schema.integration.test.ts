@@ -11,6 +11,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,6 +25,7 @@ import {
   openHubDb,
   protectPath,
 } from "../../src/core/index.ts";
+import { probeHubSchema } from "../../src/core/schema-probe.ts";
 import { createTestSchema } from "./ddl.ts";
 import { schemaFixture } from "./schema-fixture.ts";
 
@@ -37,6 +39,97 @@ async function dbPath(): Promise<string> {
 }
 
 afterEach(cleanup);
+
+test(
+  "keeps SQLite locking when both schema probe timestamps are whole seconds",
+  () => {
+    const path = join(temp(), "hub.sqlite");
+    writeFileSync(path, "fixture", { mode: 0o600 });
+    const before = statSync(path, { bigint: true });
+    before.mtimeNs = 1_000_000_000n;
+    before.ctimeNs = 2_000_000_000n;
+    const version = probeHubSchema(
+      path,
+      before,
+      (filename) => {
+        expect(filename).toBe(path);
+        return 1;
+      },
+      true,
+    );
+    expect(version).toBe(1);
+  },
+  timeout,
+);
+
+function inspectImmutableSchema(inspect: (path: string) => 0 | 1): 0 | 1 {
+  const path = join(temp(), "hub.sqlite");
+  writeFileSync(path, "fixture", { mode: 0o600 });
+  const fractionalTime = new Date("2026-01-01T00:00:00.500Z");
+  utimesSync(path, fractionalTime, fractionalTime);
+  const before = statSync(path, { bigint: true });
+  return probeHubSchema(
+    path,
+    before,
+    (filename) => {
+      const uri = new URL(filename);
+      expect(uri.protocol).toBe("file:");
+      expect(uri.searchParams.get("immutable")).toBe("1");
+      expect(fileURLToPath(uri)).toBe(path);
+      return inspect(path);
+    },
+    true,
+  );
+}
+
+test(
+  "immutable schema probe returns the inspector's version for an unchanged database",
+  () => {
+    expect(inspectImmutableSchema(() => 0)).toBe(0);
+  },
+  timeout,
+);
+
+test(
+  "immutable schema probe refuses a database replaced during inspection",
+  () => {
+    expect(() =>
+      inspectImmutableSchema((path) => {
+        const replacement = join(dirname(path), "replacement.sqlite");
+        writeFileSync(replacement, "fixture", { mode: 0o600 });
+        renameSync(replacement, path);
+        return 1;
+      }),
+    ).toThrow("Hub database changed during schema inspection");
+  },
+  timeout,
+);
+
+test(
+  "immutable schema probe refuses a database resized during inspection",
+  () => {
+    expect(() =>
+      inspectImmutableSchema((path) => {
+        writeFileSync(path, "updated fixture");
+        return 1;
+      }),
+    ).toThrow("Hub database changed during schema inspection");
+  },
+  timeout,
+);
+
+test(
+  "immutable schema probe refuses a WAL sidecar created during inspection",
+  () => {
+    expect(() =>
+      inspectImmutableSchema((path) => {
+        writeFileSync(path + "-wal", "wal fixture", { mode: 0o600 });
+        return 1;
+      }),
+    ).toThrow("Hub database changed during schema inspection");
+  },
+  timeout,
+);
 
 const schemaObjects =
   "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE type IN ('table', 'index') AND name NOT GLOB 'sqlite_*' ORDER BY type, name";

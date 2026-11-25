@@ -195,7 +195,8 @@ test("Heavy jobs wait for Changes and skip Quick", () => {
   assert.deepEqual([...(gate.needs ?? [])].sort(), otherJobs.sort());
 }, 1_000);
 
-test("CI has the exact ready, main-only and nightly matrix rows", () => {
+test("CI pins the exact verification matrices and their event policy", () => {
+  assert.deepEqual(workflow.on.push, { branches: ["main"] });
   assert.deepEqual(
     jobs.verify?.strategy?.matrix,
     {
@@ -235,11 +236,16 @@ test("CI has the exact ready, main-only and nightly matrix rows", () => {
     jobs["verify-node26"]?.if,
     "github.event_name == 'push' || github.event_name == 'schedule'",
   );
-  for (const [id, needs] of [
-    ["verify-main", ["changes", "pack"]],
-    ["speed-windows", "changes"],
+  const pushOnly = "github.event_name == 'push'";
+  for (const [id, needs, predicate] of [
+    [
+      "verify-main",
+      ["changes", "pack"],
+      `${pushOnly} || (github.event_name == 'pull_request' && ${fullScope} && ${outsideQuick})`,
+    ],
+    ["speed-windows", "changes", pushOnly],
   ] as const) {
-    assert.equal(jobs[id]?.if, "github.event_name == 'push'", id);
+    assert.equal(jobs[id]?.if, predicate, id);
     assert.deepEqual(jobs[id]?.needs, needs, id);
     const key = id.toUpperCase().replace("-", "_");
     assert.equal(gateStep.env?.[key], `\${{ needs.${id}.result }}`);
@@ -258,7 +264,8 @@ const fixture = {
   GUARD_CHANGED: "true",
   STARTED: "",
 };
-const readyFull = "CHANGES PR_TITLE STRUCTURE STATIC PACK SPEED VERIFY";
+const readyFull =
+  "CHANGES PR_TITLE STRUCTURE STATIC PACK SPEED VERIFY VERIFY_MAIN";
 const readyDocs = "CHANGES PR_TITLE STRUCTURE STATIC";
 const ready = `${readyFull} COMMENT_GUARD`;
 const draft = { DRAFT: "true", TIER: "quick" };
@@ -364,7 +371,9 @@ for (const [event, passed, env] of expectedJobs) {
   const skipped =
     env.EVENT === "merge_group"
       ? ["PR_TITLE", "SPEED_WINDOWS", "VERIFY_MAIN", "VERIFY_NODE26"]
-      : ["SPEED_WINDOWS", "VERIFY_MAIN"];
+      : event === "ready code PR"
+        ? ["SPEED_WINDOWS"]
+        : ["SPEED_WINDOWS", "VERIFY_MAIN"];
   for (const key of skipped) {
     const name = key.toLowerCase().replace("_", "-");
     test(`${event} CI Gate refuses unexpected success from ${name}`, () => {
