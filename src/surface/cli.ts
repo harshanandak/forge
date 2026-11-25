@@ -1,6 +1,7 @@
 import { cliOperation, type McpCandidate } from "../contract/mcp.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { inputError } from "../contract/input-error.ts";
+import { redactCredentialArgument } from "../contract/credential-shape.ts";
 import {
   flagName,
   propertyFromFlag,
@@ -146,6 +147,7 @@ function mapArguments(
     } else {
       const key = positions[position++];
       if (key === undefined) {
+        const shown = redactCredentialArgument(token);
         const fitting = Object.keys(properties).filter((name) => {
           const property = record(properties[name]);
           return (
@@ -172,8 +174,8 @@ function mapArguments(
                 "--input JSON",
               ].join(", ")}`
             : RESERVED_FLAGS.includes(flagName(suggestion) ?? "")
-              ? `--${flagName(suggestion)} is reserved; use ${renderExample(entry?.op ?? "", { title: "", summary: "", examples: [{ input: { ...result, [suggestion]: token } }] }, schema)}`
-              : `pass --${flagName(suggestion)} ${JSON.stringify(token)}`;
+              ? `--${flagName(suggestion)} is reserved; use ${renderExample(entry?.op ?? "", { title: "", summary: "", examples: [{ input: { ...result, [suggestion]: shown } }] }, schema)}`
+              : `pass --${flagName(suggestion)} ${JSON.stringify(shown)}`;
         throw new ForgeFailure(
           inputError(
             entry?.op ?? "",
@@ -181,10 +183,10 @@ function mapArguments(
               {
                 pointer: `/arguments/${position - 1}`,
                 keyword: "false",
-                message: `Unexpected argument ${JSON.stringify(token)}; ${remedy}`,
+                message: `Unexpected argument ${JSON.stringify(shown)}; ${remedy}`,
                 expected:
                   "declared flags or --input JSON; no positional argument at this position",
-                received: JSON.stringify(token),
+                received: JSON.stringify(shown),
               },
             ],
             entry?.docs,

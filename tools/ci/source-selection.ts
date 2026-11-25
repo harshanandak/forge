@@ -29,7 +29,10 @@ export function nodeReferences(
       const dependency = posix.normalize(
         posix.join(posix.dirname(path), match[1]!),
       );
-      return /^(test|tools)\//.test(dependency) && references(dependency, seen);
+      return (
+        /^(test|tools|hub\/test)\//.test(dependency) &&
+        references(dependency, seen)
+      );
     });
   };
   return files

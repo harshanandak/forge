@@ -50,6 +50,29 @@ const scanners = {
   tsx: new Bun.Transpiler({ loader: "tsx" }),
 };
 
+function hasEscapedBuiltinName(source: string): boolean {
+  const name = "getBuiltinModule";
+  const decodedOffsets: number[] = [];
+  let removed = 0;
+  const decoded = source.replace(
+    /\\u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})/g,
+    (raw, offset: number) => {
+      const digits = raw[2] === "{" ? raw.slice(3, -1) : raw.slice(2);
+      const codePoint = Number.parseInt(digits, 16);
+      if (codePoint > 0x10ffff) return raw;
+      const value = String.fromCodePoint(codePoint);
+      decodedOffsets.push(offset - removed);
+      removed += raw.length - value.length;
+      return value;
+    },
+  );
+  return decodedOffsets.some((offset) =>
+    decoded
+      .slice(Math.max(0, offset - name.length + 1), offset + name.length)
+      .includes(name),
+  );
+}
+
 /** Normalize TypeScript syntax without removing unused value references. */
 export function parsedSource(file: SourceFile): string {
   const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
@@ -62,7 +85,7 @@ export function parsedSource(file: SourceFile): string {
 /** Import specifiers of a code file, including `import type` (erased at run time, but still a leak). */
 export function importsOf(
   file: SourceFile,
-  onNonliteral?: () => void,
+  onNonliteral?: (loader?: "getBuiltinModule") => void,
 ): string[] {
   if (!CODE_FILE.test(file.path)) return [];
   const found = new Set<string>();
@@ -91,6 +114,42 @@ export function importsOf(
     if (match[1] === undefined) onNonliteral?.();
     else found.add(match[1]);
   }
+
+  const aliases = new Set<string>();
+  const declarations = new Set<number>();
+  for (const match of codeOnly.matchAll(
+    /\b(?:const|let|var)\s*\{\s*(getBuiltinModule(?:\s*:\s*([\w$]+))?)\s*,?\s*\}\s*=\s*(?:globalThis\s*\.\s*)?process\b(?!\s*[.([])/g,
+  )) {
+    const [, property = "", binding = "getBuiltinModule"] = match;
+    const index = match.index + match[0].indexOf("getBuiltinModule");
+    declarations.add(index);
+    declarations.add(index + property.length - binding.length);
+    aliases.add(binding.replaceAll("$", "\\$"));
+  }
+  const direct = String.raw`(?:globalThis\s*\.\s*)?process\s*\.\s*getBuiltinModule`;
+  const builtinUses = new RegExp(
+    String.raw`(?<![\w$.])(?:${[direct, ...aliases].join("|")})\s*\(|\[\s*(["'\x60])getBuiltinModule\1\s*\]|(?<![\w$])(?:${["getBuiltinModule", ...aliases].join("|")})(?![\w$])`,
+    "g",
+  );
+  let computedBuiltin = hasEscapedBuiltinName(file.text);
+  for (const { 0: use, index } of withStrings.matchAll(builtinUses)) {
+    if (codeOnly[index] !== use[0] || declarations.has(index)) continue;
+    const argument = use.endsWith("(")
+      ? withStrings.slice(index + use.length)
+      : "";
+    const name =
+      /^\s*("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\$]|\$(?!\{))*`)\s*[,)]/
+        .exec(argument)?.[1]
+        ?.slice(1, -1);
+    const specifier = name?.includes("\\")
+      ? scanners.ts.scan(
+          `import "${name.replace(/\\(?:\r\n|[\s\S])|["\r\n]/g, (part) => (part.startsWith("\\") ? part : JSON.stringify(part).slice(1, -1)))}";`,
+        ).imports[0]?.path
+      : name?.replace(/\r\n?/g, "\n");
+    if (specifier === undefined) computedBuiltin = true;
+    else found.add(specifier);
+  }
+  if (computedBuiltin) onNonliteral?.("getBuiltinModule");
   return [...found];
 }
 
@@ -209,6 +268,11 @@ export function findDependencyViolations(
   ) as PackageJson;
   const cloudPackages = declared(cloud);
   const cloudRuntime = new Set(Object.keys(cloud.dependencies ?? {}));
+  const hub = JSON.parse(
+    files.find((file) => boundaryPath(file.path) === "hub/package.json")
+      ?.text ?? "{}",
+  ) as PackageJson;
+  const hubPackages = declared(hub);
   if ("imports" in cloud)
     violations.push({
       rule: "dependency-boundary",
@@ -242,6 +306,7 @@ export function findDependencyViolations(
     const path = boundaryPath(file.path);
     const here = adapterOf(file.path);
     const inCloud = inFolder(path, "cloud");
+    const inHub = inFolder(path, "hub");
     const inShipped = /^(?:src|bin|cloud\/src)\//.test(path);
     const isTest = isTestFile(file.path);
     const unownedFilesystem =
@@ -316,8 +381,13 @@ export function findDependencyViolations(
         if (inTeam(posix.join(posix.dirname(file.path), slashPath(match[1]!))))
           reportTeam("triple-slash reference reaches removable team/");
     }
-    for (const specifier of importsOf(file, () => {
-      if (publicCode && !(file.path in TEAM_LOADING_SITES))
+    for (const specifier of importsOf(file, (loader) => {
+      if (!publicCode) return;
+      if (loader === "getBuiltinModule")
+        reportTeam(
+          "getBuiltinModule with a computed name can hide a dependency; use a string literal",
+        );
+      else if (!(file.path in TEAM_LOADING_SITES))
         reportTeam(
           "nonliteral module loading can hide team/; use literal imports and inject providers",
         );
@@ -360,6 +430,10 @@ export function findDependencyViolations(
         fail("cloud import aliases are not supported");
         continue;
       }
+      if (inHub && specifier.startsWith("#")) {
+        fail("hub import aliases are not supported");
+        continue;
+      }
 
       if (
         !inCloud &&
@@ -372,6 +446,10 @@ export function findDependencyViolations(
 
       if (specifier.startsWith(".")) {
         const target = targets[0]!;
+        if (inHub && !inFolder(target, "hub")) {
+          fail("hub cannot import outside hub/");
+          continue;
+        }
         if (
           inFolder(path, "cloud/src") &&
           inFolder(target, "cloud") &&
@@ -392,6 +470,10 @@ export function findDependencyViolations(
       if (specifier.startsWith("#")) continue;
 
       if (specifier.startsWith("bun:")) {
+        if (inHub && specifier === "bun:test" && !isTest) {
+          fail("bun:test is only available to hub tests");
+          continue;
+        }
         const allowed =
           here !== undefined ||
           (isTest && specifier === "bun:test") ||
@@ -417,6 +499,11 @@ export function findDependencyViolations(
       }
 
       const name = packageOf(specifier);
+      if (inHub) {
+        if (name === PACKAGE_NAME || !hubPackages.has(name))
+          fail(`"${name}" is not a hub dependency`);
+        continue;
+      }
       if (name === PACKAGE_NAME) continue;
       if (!knownPackages.has(name) && !(inCloud && cloudPackages.has(name))) {
         fail(`"${name}" is not declared in package.json`);

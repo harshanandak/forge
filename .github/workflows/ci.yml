@@ -108,6 +108,8 @@ jobs:
       - run: node tools/checks/no-comments.ts
       - run: bun install --frozen-lockfile --ignore-scripts
         working-directory: cloud
+      - run: bun install --frozen-lockfile --ignore-scripts --linker hoisted
+        working-directory: hub
       - run: bun run test:structure --timings="$CI_TIMINGS" --update-timings 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - name: Select the pinned lint Bun for Quick
         if: needs.changes.outputs.tier == 'quick'
@@ -161,6 +163,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile --ignore-scripts
         working-directory: cloud
+      - run: bun install --frozen-lockfile --ignore-scripts --linker hoisted
+        working-directory: hub
       - run: bun run lint
       - run: bun run fmt --check
 
@@ -374,12 +378,18 @@ jobs:
       - if: matrix.suite != 'pack'
         run: bun install --frozen-lockfile --ignore-scripts
         working-directory: cloud
+      - if: matrix.suite != 'pack'
+        run: bun install --frozen-lockfile --ignore-scripts --linker hoisted
+        working-directory: hub
       - name: Start Windows runner trace
         if: runner.os == 'Windows'
         continue-on-error: true
         run: bun tools/ci/windows-trace.ts start
       - if: matrix.suite != 'pack'
         run: bun run check
+      - name: Build hub
+        if: matrix.suite != 'pack'
+        run: bun run build:hub
       - name: Unit tests
         if: matrix.suite != 'pack'
         run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:unit {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:unit' }} 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"

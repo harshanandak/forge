@@ -43,6 +43,66 @@ const fixture = (name: string): string => {
   return text;
 };
 
+for (const name of [
+  "literal getBuiltinModule",
+  "globalThis getBuiltinModule",
+  "destructured getBuiltinModule",
+  "aliased getBuiltinModule",
+  "plain template getBuiltinModule",
+]) {
+  test(`the dependency guard enforces SQLite ownership for ${name}`, () => {
+    const path = "src/blocks/load.ts";
+    const text = fixture(name);
+    expect(
+      format(findDependencyViolations([{ path, text }], pkg, manifests)),
+    ).toEqual([
+      `[dependency-boundary] ${path} imports "node:sqlite": only src/adapters/store-sqlite/ may use this built-in`,
+    ]);
+  }, 30_000);
+}
+
+for (const name of [
+  "getBuiltinModule variable",
+  "getBuiltinModule substituted template",
+  "getBuiltinModule concatenation",
+  "getBuiltinModule spread",
+  "getBuiltinModule optional call",
+  "getBuiltinModule bracket access",
+  "getBuiltinModule escaped identifier",
+  "getBuiltinModule code point identifier",
+  "getBuiltinModule escaped bracket string",
+  "getBuiltinModule code point bracket string",
+  "parenthesized escaped bracket string",
+  "escaped destructuring key",
+  "getBuiltinModule call forwarding",
+  "getBuiltinModule apply forwarding",
+  "getBuiltinModule assignment alias",
+  "getBuiltinModule multiple destructured properties",
+  "getBuiltinModule unrelated function",
+]) {
+  test(`the team boundary refuses ${name}`, () => {
+    const path = "src/blocks/load.ts";
+    expect(format(boundary([{ path, text: fixture(name) }]))).toEqual([
+      `[team-boundary] ${path} getBuiltinModule with a computed name can hide a dependency; use a string literal`,
+    ]);
+  }, 30_000);
+}
+
+test("the dependency guard allows a literal SQLite load in hub core", () => {
+  const path = "hub/src/core/storage.ts";
+  const text = fixture("literal getBuiltinModule");
+  expect(
+    format(findDependencyViolations([{ path, text }], pkg, manifests)),
+  ).toEqual([]);
+}, 30_000);
+
+test("the team boundary ignores getBuiltinModule in comments and strings", () => {
+  const path = "src/blocks/load.ts";
+  expect(
+    boundary([{ path, text: fixture("getBuiltinModule examples") }]),
+  ).toEqual([]);
+}, 30_000);
+
 const declarations = readJson(
   "test/structure/fixtures/team-declarations.json",
 ) as {

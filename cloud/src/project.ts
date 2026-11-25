@@ -132,6 +132,7 @@ import { authorizeV3Token, issueV3Token, revokeV3Token } from "./v3-tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { requestV3Approval } from "./v3-approvals.ts";
+import { isPromoteRoute, promoteRoute } from "./auth/promote-browser.ts";
 import { archivedCheck, checkpointV3 } from "./v3-checkpoint.ts";
 import { commandV3 } from "./v3-commands.ts";
 import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
@@ -703,6 +704,20 @@ export class Project {
           request,
           url.pathname.split("/")[2]!,
         );
+      if (this.#testV3 && isPromoteRoute(request, url) && this.#hasV3Root()) {
+        const db = writableStore(this.#storage);
+        const seal = this.#seal();
+        return await promoteRoute(
+          db,
+          seal,
+          () => this.#image(db, seal),
+          this.#env,
+          request,
+          url,
+          this.#browser,
+          () => bounded(request, 2048),
+        );
+      }
       if (route === "upgrade" || route === "devices" || route === "restore")
         this.#requireV2();
       if (isStatePath(request)) return await this.#state(request);

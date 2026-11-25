@@ -28,6 +28,21 @@ export function assignShards(
   return shards;
 }
 
+export function discoverSourceFiles(): string[] {
+  return [
+    ...new Bun.Glob("{test,src}/**/*.test.ts").scanSync("."),
+    ...new Bun.Glob("hub/test/**/*.test.ts").scanSync("."),
+  ]
+    .map((file) => file.replaceAll("\\", "/"))
+    .filter((file) => !file.endsWith("/packed.integration.test.ts"));
+}
+
+export function requireShardFiles(files: string[], shard: string): string[] {
+  if (files.length === 0)
+    throw new Error(`No source tests selected for shard ${shard}`);
+  return files;
+}
+
 if (import.meta.main) {
   const [suite, shard, ...options] = process.argv.slice(2);
   const mode = options.includes("--list") ? "--list" : undefined;
@@ -42,9 +57,7 @@ if (import.meta.main) {
   const { files: timings } = JSON.parse(
     readFileSync("test/timings.json", "utf8"),
   ) as { files: Record<string, number> };
-  const files = [...new Bun.Glob("{test,src}/**/*.test.ts").scanSync(".")]
-    .map((file) => file.replaceAll("\\", "/"))
-    .filter((file) => !file.endsWith("/packed.integration.test.ts"));
+  const files = discoverSourceFiles();
   const selectedFiles = selectSourceFiles(
     files,
     options.includes("--node26") ? "26" : "24",
@@ -52,15 +65,17 @@ if (import.meta.main) {
   const { scripts } = JSON.parse(readFileSync("package.json", "utf8")) as {
     scripts: Record<string, string>;
   };
+  const testPaths = /(?:hub\/)?test\/\S+\.test\.ts/g;
   // The integration script names its serial files; one assignment serves both suites.
   const serial = new Set(
     scripts["test:integration"]!.split(" && ").flatMap(
-      (command) => command.match(/test\/\S+\.test\.ts/g) ?? [],
+      (command) => command.match(testPaths) ?? [],
     ),
   );
-  const assigned = assignShards(selectedFiles, timings, count, serial)[
-    index - 1
-  ]!;
+  const assigned = requireShardFiles(
+    assignShards(selectedFiles, timings, count, serial)[index - 1]!,
+    shard!,
+  );
   console.log(
     `Source selection: ${selectedFiles.length}/${files.length} files, shard ${shard}`,
   );
@@ -76,7 +91,7 @@ if (import.meta.main) {
     }
     const ignore = /--path-ignore-patterns '([^']+)'/.exec(command);
     const glob = ignore ? new Bun.Glob(ignore[1]!) : undefined;
-    const explicit = command.match(/test\/\S+\.test\.ts/g);
+    const explicit = command.match(testPaths);
     const selected = assigned.filter((file) =>
       explicit
         ? explicit.includes(file)

@@ -20,5 +20,5 @@
       "forge-workflow/identity": ["./src/ports/identity.ts"]
     }
   },
-  "include": ["bin", "cloud", "src", "team", "test", "tools"]
+  "include": ["bin", "cloud", "hub", "src", "team", "test", "tools"]
 }
