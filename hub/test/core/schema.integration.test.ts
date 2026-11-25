@@ -24,6 +24,7 @@ import {
   openHubDb,
   protectPath,
 } from "../../src/core/index.ts";
+import { probeHubSchema } from "../../src/core/schema-probe.ts";
 import { createTestSchema } from "./ddl.ts";
 import { schemaFixture } from "./schema-fixture.ts";
 
@@ -37,6 +38,28 @@ async function dbPath(): Promise<string> {
 }
 
 afterEach(cleanup);
+
+test(
+  "keeps SQLite locking when both schema probe timestamps are whole seconds",
+  () => {
+    const path = join(temp(), "hub.sqlite");
+    writeFileSync(path, "fixture", { mode: 0o600 });
+    const before = statSync(path, { bigint: true });
+    before.mtimeNs = 1_000_000_000n;
+    before.ctimeNs = 2_000_000_000n;
+    const version = probeHubSchema(
+      path,
+      before,
+      (filename) => {
+        expect(filename).toBe(path);
+        return 1;
+      },
+      true,
+    );
+    expect(version).toBe(1);
+  },
+  timeout,
+);
 
 const schemaObjects =
   "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE type IN ('table', 'index') AND name NOT GLOB 'sqlite_*' ORDER BY type, name";

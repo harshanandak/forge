@@ -1,6 +1,8 @@
 import { lstatSync, type BigIntStats } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const nanosecondsPerSecond = 1_000_000_000n;
+
 function hasSidecar(path: string): boolean {
   return ["-wal", "-shm", "-journal"].some((suffix) =>
     lstatSync(path + suffix, { throwIfNoEntry: false }),
@@ -11,10 +13,12 @@ export function probeHubSchema(
   path: string,
   before: BigIntStats,
   inspect: (filename: string) => 0 | 1,
+  macOSBun = process.platform === "darwin" && Boolean(process.versions.bun),
 ): 0 | 1 {
   if (
-    process.platform !== "darwin" ||
-    !process.versions.bun ||
+    !macOSBun ||
+    (before.mtimeNs % nanosecondsPerSecond === 0n &&
+      before.ctimeNs % nanosecondsPerSecond === 0n) ||
     hasSidecar(path)
   )
     return inspect(path);
