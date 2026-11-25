@@ -409,12 +409,12 @@ test(
   async () => {
     const { call, add } = fixture();
     const first = await add("identical shrike procedure");
-    const second = await add("identical shrike procedure");
-    const third = await add("identical shrike procedure");
+    const second = await add("second shrike procedure");
+    const third = await add("third shrike procedure");
     const input = { query: "shrike", limit: 1 };
     const start = (await call("memory.search", input)) as { next: string };
     expect(start).toMatchObject({ hits: [{ id: third.id }], next: "4:1" });
-    await add("identical shrike procedure", { replaces: [third.id] });
+    await add("current shrike procedure", { replaces: [third.id] });
     const middle = (await call("memory.search", {
       ...input,
       cursor: start.next,

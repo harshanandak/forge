@@ -35,6 +35,12 @@
       },
       "additionalProperties": false
     },
+    "conflictThreshold": {
+      "type": "number",
+      "minimum": 0,
+      "default": 1.8,
+      "description": "BM25 score above which a new note needs a replacement or coexistence link and a one-line reason for a matching note in its level and scope."
+    },
     "levels": {
       "type": "object",
       "description": "The level a new note gets when the caller does not say one. required: refuse and name both levels. nearest: project when the call is inside a project, device otherwise. project or device: always that level. Left out, a level is required.",
