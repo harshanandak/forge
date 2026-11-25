@@ -208,6 +208,50 @@ function checkDecisions(image: V3Image, expected = image) {
   }
 }
 
+function independentIndexes(image: V3Image) {
+  const counts = new Map<string, number>();
+  const byKey = new Map<string, string>();
+  for (const key of image.entries.record.keys()) {
+    const value = image.load("record", key);
+    if (!isObject(value) || value.id !== "work-" + key.slice(1)) continue;
+    const alias = value.prefix ?? "work";
+    if (typeof alias !== "string") continue;
+    counts.set(alias, (counts.get(alias) ?? 0) + 1);
+    byKey.set(key, alias);
+  }
+  return { counts, byKey };
+}
+
+const ordered = <K, V>(map: ReadonlyMap<K, V>) =>
+  [...map.entries()].sort(([left], [right]) =>
+    String(left).localeCompare(String(right)),
+  );
+
+function indexMaps(image: V3Image) {
+  const counts = aliasesOf(image);
+  const byKey = aliasByKeyOf(image);
+  expect(counts).toBeInstanceOf(Map);
+  expect(byKey).toBeInstanceOf(Map);
+  if (!(counts instanceof Map) || !(byKey instanceof Map))
+    throw new Error("Missing v3 alias indexes");
+  return { counts, byKey };
+}
+
+function expectIndexes(image: V3Image, expected = image) {
+  expect(decide(image, "zz-999")).toEqual(refused(prefixError));
+  checkDecisions(image, expected);
+  const independent = independentIndexes(expected);
+  const { counts, byKey } = indexMaps(image);
+  expect(ordered(counts)).toEqual(ordered(independent.counts));
+  expect(ordered(byKey)).toEqual(ordered(independent.byKey));
+  expect([...counts.keys()].every((key) => typeof key === "string")).toBe(true);
+  expect(
+    [...counts.values()].every(
+      (count) => Number.isInteger(count) && count >= 1,
+    ),
+  ).toBe(true);
+}
+
 function caught(call: () => unknown) {
   try {
     call();
@@ -743,6 +787,85 @@ test(
     target.restart();
     expect(await target.send(probe)).toEqual(view);
     checkDecisions(cold(target), expected);
+  },
+  timeout,
+);
+
+test(
+  "Q7 maintains equal count and key maps across fold modes",
+  async () => {
+    const f = guardFixture(env);
+    const target = guardFixture(env);
+    using _db = f.db;
+    using _targetDb = target.db;
+    await provision(f);
+    const warm = cold(f);
+    expect(decide(warm, "zz-999")).toEqual(refused(prefixError));
+    write(f, warm, initial, ...mutations);
+    const cut = await checkpointV3(
+      dbOf(f),
+      f.seal(),
+      f.storage,
+      warm,
+      () => undefined,
+      Project.admitLeaseRequest,
+    );
+    expect(cut.more).toBe(false);
+    const expected = cold(f);
+    const fold = (mode: "archived" | "portable") =>
+      foldTranscript(dbOf(f), transcript(f), mode, Project.admitLeaseRequest);
+    await upload(target, portableOf(f));
+    const activated = cold(target);
+    expect(activated.root.activationDigest).toBeDefined();
+    for (const image of [
+      warm,
+      expected,
+      fold("archived"),
+      fold("portable"),
+      activated,
+    ])
+      expectIndexes(image, expected);
+
+    const refusedFixture = guardFixture(env);
+    using _refusedDb = refusedFixture.db;
+    await provision(refusedFixture);
+    const before = cold(refusedFixture);
+    write(refusedFixture, before, put(item(1, 1, "old")));
+    write(refusedFixture, before, basisFrame("q7"));
+    write(refusedFixture, before, put(item(1, 2, "new")));
+    expectIndexes(before);
+    expectIndexes(cold(refusedFixture), before);
+  },
+  timeout,
+);
+
+test(
+  "Q8 deletes a shared alias count to zero with its last holder",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    const image = cold(f);
+    write(f, image, put(item(1, 1, "old"), item(2, 1, "old")));
+    expectIndexes(image);
+    const expectHolders = (
+      count: number | undefined,
+      deleted: readonly string[],
+    ) => {
+      const { counts, byKey } = indexMaps(image);
+      expect(counts.has("old")).toBe(count !== undefined);
+      if (count !== undefined) expect(counts.get("old")).toBe(count);
+      for (const key of ["r1", "r2"])
+        expect(byKey.has(key)).toBe(!deleted.includes(key));
+      const independent = independentIndexes(image);
+      expect(counts.size).toBe(independent.counts.size);
+      expect(byKey.size).toBe(independent.byKey.size);
+    };
+    expectHolders(2, []);
+    write(f, image, tombstone(1, 2));
+    expectHolders(1, ["r1"]);
+    write(f, image, tombstone(2, 2));
+    expectHolders(undefined, ["r1", "r2"]);
   },
   timeout,
 );
