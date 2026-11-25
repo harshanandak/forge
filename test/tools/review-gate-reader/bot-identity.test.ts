@@ -1,12 +1,12 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import { classifyBotAuthor } from "../../../tools/ci/review-gate-reader/bot-identity.ts";
+import { parseBotMessage } from "../../../tools/ci/review-gate-reader/codex-messages.ts";
 import { ok } from "../../../tools/ci/review-gate-reader/result.ts";
 import {
   codeRabbitLimit,
   codeRabbitRecord,
   codexRecord,
   endpoints,
-  type BotRecord,
-  type Endpoint,
 } from "./bot-fixtures.ts";
 
 setDefaultTimeout(1000);
@@ -16,15 +16,6 @@ const refusal = <R extends string>(reason: R, where: string) => ({
   reason,
   where,
 });
-type BaselineResult =
-  | { ok: true; value: { kind: string; bot?: string } }
-  | { ok: false; reason: string; where: string };
-
-const classifyBotAuthor = (
-  _record: BotRecord,
-  _endpoint: Endpoint,
-): BaselineResult => ok({ kind: "human" });
-const parseBotMessage = classifyBotAuthor;
 const comment = "issue_comments";
 const { performed_via_github_app: _app, ...withoutApp } = codexRecord();
 const { user } = withoutApp;
@@ -108,5 +99,21 @@ test.each(endpoints)("R1 refuses pinned CodeRabbit on %s", (endpoint) => {
     expect(parseBotMessage(codeRabbitRecord(endpoint, body), endpoint)).toEqual(
       refusal("bot_format_unsupported", `${endpoint}/43`),
     );
+  }
+});
+
+test("E1 imports do not fetch or read a clock", async () => {
+  const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response());
+  const clockSpy = spyOn(Date, "now").mockReturnValue(0);
+  const importRoot = "../../../tools/ci/review-gate-reader";
+  try {
+    for (const name of ["bot-identity", "codex-messages"]) {
+      await import(`${importRoot}/${name}.ts?import-hygiene`);
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(0);
+    expect(clockSpy).toHaveBeenCalledTimes(0);
+  } finally {
+    fetchSpy.mockRestore();
+    clockSpy.mockRestore();
   }
 });

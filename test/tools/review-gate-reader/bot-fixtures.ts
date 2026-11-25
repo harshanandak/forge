@@ -1,14 +1,10 @@
+import type {
+  BotRecord,
+  Endpoint,
+} from "../../../tools/ci/review-gate-reader/bot-identity.ts";
+
 export { codeRabbitLimit } from "./fixtures/coderabbit-limit.ts";
 
-export type Endpoint = "issue_comments" | "reviews" | "review_comments";
-export type BotRecord = {
-  id: number;
-  user: { type: string; id: number; login: string };
-  performed_via_github_app?: { id: number; slug: string } | null;
-  body: string;
-  updated_at: string;
-  commit_id?: string;
-};
 export const endpoints = [
   "issue_comments",
   "reviews",
