@@ -126,6 +126,31 @@ test(
 );
 
 test(
+  "X3P a stale child cannot redirect a project item to its parent in another project",
+  async () => {
+    const f = await baseFixture();
+    const sender = f.bind(b);
+    const parent = f.bind();
+    f.bindProject(parent.sessionId, p2);
+    const child = f.unbound({
+      projectId: p1,
+      parentSessionId: parent.sessionId,
+    });
+    f.advance(LIMITS.liveSessionMs + 1);
+    const { itemId } = value(
+      await f.core.send(f.caller(b), {
+        ...draft(sender.sessionId),
+        toPersonId: a.personId,
+        targetSessionId: child.sessionId,
+      }),
+    );
+    expect(f.read(parent.sessionId).items).toEqual([]);
+    f.expectItems(child.sessionId, [{ itemId, projectId: p1 }]);
+  },
+  timeout,
+);
+
+test(
   "X4 removed project members cannot read or acknowledge outstanding items",
   async () => {
     const f = await baseFixture();

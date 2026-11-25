@@ -89,11 +89,10 @@ export const createCoreBase: CreateCoreBase = (ctx, extras) => {
         await bestEffort(ctx, () => postNotice(chat, event, digit.text));
       } else if (digit.kind === "answered") {
         afterCommit(digit.after);
-        const text = digit.ephemeralText;
-        if (text)
-          await bestEffort(ctx, () =>
-            chat.postEphemeral(event, event.slackUserId, text),
-          );
+        const text = digit.ephemeralText ?? "Answer recorded.";
+        await bestEffort(ctx, () =>
+          chat.postEphemeral(event, event.slackUserId, text),
+        );
       } else {
         await route(ctx, event);
       }

@@ -70,7 +70,11 @@ export function insertItem(
     now() - selected.lastSeenAt > LIMITS.liveSessionMs
       ? ctx.store.sessions.session(selected.parentSessionId)
       : undefined;
-  const redirected = parent?.personId === owner.personId ? parent : undefined;
+  const redirected =
+    parent?.personId === owner.personId &&
+    (parent.projectId === undefined || parent.projectId === projectId)
+      ? parent
+      : undefined;
   const session = (redirected ?? selected)?.sessionId;
   const id = ctx.store.newId("item");
   const key = event ? JSON.stringify([event.eventKey, owner.personId]) : id;
@@ -145,8 +149,10 @@ export async function route(
   const notes: string[] = [];
   const queue: Notice[] = [];
   let react = false;
+  const { channelId, chatThreadId, chatMessageId, isDirect, mentionsBot } =
+    event;
+  const ref = { channelId, chatThreadId, chatMessageId };
   const ephemeral = ctx.store.tx(() => {
-    const { chatThreadId, channelId, isDirect, mentionsBot } = event;
     const existing = db
       .prepare(
         `SELECT * FROM conversations WHERE adapter='slack' AND chat_thread_id=?
@@ -224,6 +230,13 @@ export async function route(
         member(p.projectId, sender),
       );
       if (current?.projectId && !member(current.projectId, sender)) return;
+      const pickerKey = "project_picker:" + (current?.conversationId ?? "");
+      if (
+        current &&
+        db.prepare("SELECT value FROM meta WHERE key=?").get(pickerKey)
+          ?.value === event.eventKey
+      )
+        return;
       if (current && !current.projectId) {
         const picker = event.text.trim().toLowerCase();
         const picked = projects.find((p) =>
@@ -236,6 +249,9 @@ export async function route(
             sender.personId,
             projectId,
           )?.sessionId;
+          db.prepare(
+            "INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          ).run(pickerKey, event.eventKey);
           db.prepare(
             "UPDATE conversations SET project_id=? WHERE conversation_id=?",
           ).run(projectId, current.conversationId);
@@ -367,10 +383,10 @@ export async function route(
   });
   if (ephemeral)
     await bestEffort(ctx, () =>
-      chat.postEphemeral(event, event.slackUserId, ephemeral),
+      chat.postEphemeral(ref, event.slackUserId, ephemeral),
     );
   for (const text of notes)
-    await bestEffort(ctx, () => postNotice(chat, event, text));
-  if (react) await bestEffort(ctx, () => chat.react(event, "eyes"));
+    await bestEffort(ctx, () => postNotice(chat, ref, text));
+  if (react) await bestEffort(ctx, () => chat.react(ref, "eyes"));
   for (const notice of queue) await ctx.notify(notice);
 }

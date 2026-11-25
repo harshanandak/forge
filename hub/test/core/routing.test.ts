@@ -39,6 +39,25 @@ test(
 );
 
 test(
+  "R1R retrying a DM project choice does not release or insert another item",
+  async () => {
+    const f = await baseFixture();
+    const { sessionId } = f.bind();
+    f.bindProject(sessionId, p2);
+    await f.dm("first", "Help");
+    await f.dm("picker", p2, undefined, "first");
+    const released = f.rows("inbox_items");
+    expect(released).toMatchObject([{ text: "Help", project_id: p2, held: 0 }]);
+    await f.dm("picker", p2, undefined, "first");
+    expect(f.rows("inbox_items")).toEqual(released);
+    f.advance(1);
+    await f.dm("later", p2, undefined, "first");
+    f.expectItems(sessionId, [{ text: "Help" }, { text: p2 }]);
+  },
+  timeout,
+);
+
+test(
   "R2 nonmembers and non-project channels are refused before storage",
   async () => {
     const f = await baseFixture();
