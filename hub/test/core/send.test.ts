@@ -26,10 +26,12 @@ test(
       await f.core.send(f.caller(), draft(alpha.sessionId)),
     );
     await until(() => f.rings.length > 0, timeout);
+    const ring = f.rings[0]!.ring;
+    expect(ring).toMatch(ID_PATTERN);
     expect(f.rings).toEqual([
       {
         v: 1,
-        ring: expect.stringMatching(ID_PATTERN),
+        ring,
         person: b.personId,
         project: p1,
         items: [itemId],

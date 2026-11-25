@@ -16,14 +16,16 @@ test(
     await f.emit("first");
     await until(() => f.rings.length === 1, timeout);
     const first = f.read(sessionId).items[0]!;
-    const [ring] = f.rings;
+    const ring = f.rings[0]!;
+    expect(ring.ring).toMatch(ID_PATTERN);
+    expect(ring.conversation).toMatch(ID_PATTERN);
     expect(ring).toEqual({
       v: 1,
-      ring: expect.stringMatching(ID_PATTERN),
+      ring: ring.ring,
       person: a.personId,
       project: p1,
       session: sessionId,
-      conversation: expect.stringMatching(ID_PATTERN),
+      conversation: ring.conversation!,
       items: [first.itemId],
       answers: [],
     });
@@ -31,7 +33,7 @@ test(
     const rows = f.rows("doorbell_rings", fields);
     expect(rows).toEqual([
       {
-        ring_id: ring!.ring,
+        ring_id: ring.ring,
         person_id: a.personId,
         project_id: p1,
         session_id: sessionId,
@@ -41,7 +43,7 @@ test(
     f.advance(LIMITS.doorbellDebounceMs - 1);
     await f.emit("inside-debounce", { threadRootMessageId: "first" });
     const itemIds = f.read(sessionId).items.map((item) => item.itemId);
-    value(f.core.inbox(f.caller(), { sessionId, ackItemIds: itemIds }));
+    f.ack(sessionId, itemIds);
     f.advance(LIMITS.doorbellDebounceMs);
     const waiting = f.wait(sessionId, 20_000);
     await f.emit("with-waiter", { threadRootMessageId: "first" });

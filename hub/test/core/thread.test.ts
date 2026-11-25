@@ -93,20 +93,17 @@ test(
     });
     await f.follow("next");
     const inbox = f.read(sessionId).items;
-    expect(inbox.map((item) => item.text)).toEqual(
-      expect.arrayContaining(["root", "next"]),
-    );
+    expect(inbox.map((item) => item.text).sort()).toEqual(["next", "root"]);
     expect(inbox).toHaveLength(2);
+    const context = inbox.find((item) => item.text === "next")?.threadContext;
     expect(
-      inbox.find((item) => item.text === "next")?.threadContext?.entries,
-    ).toContainEqual(
-      expect.objectContaining({
-        from: "a person outside Forge",
-        senderKind: "outsider",
-        text: "",
-        notYourOwner: true,
-      }),
-    );
+      context?.entries.find((entry) => entry.senderKind === "outsider"),
+    ).toMatchObject({
+      from: "a person outside Forge",
+      senderKind: "outsider",
+      text: "",
+      notYourOwner: true,
+    });
     expect(
       f.rows("thread_messages WHERE chat_message_id = 'outside'", "kind,text"),
     ).toEqual([{ kind: "outsider", text: "" }]);

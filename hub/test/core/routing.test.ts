@@ -235,9 +235,12 @@ test(
       chatThreadId: secondThread,
     });
     expect(f.posts()).toEqual([fallbackNotice, fallbackNotice]);
-    expect(f.rows("inbox_items", "owner_person_id,not_your_owner")).toEqual(
-      Array(3).fill({ owner_person_id: a.personId, not_your_owner: 1 }),
-    );
+    const item = { owner_person_id: a.personId, not_your_owner: 1 };
+    expect(f.rows("inbox_items", "owner_person_id,not_your_owner")).toEqual([
+      item,
+      item,
+      item,
+    ]);
   },
   timeout,
 );

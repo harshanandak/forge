@@ -112,12 +112,9 @@ test(
       );
     const before = range();
     const cursor = f.col("conversations", "context_seq");
-    expect(before).toMatchObject([
-      {
-        context_from_seq: expect.any(Number),
-        context_to_seq: expect.any(Number),
-      },
-    ]);
+    expect(before).toHaveLength(1);
+    expect(typeof before[0]?.context_from_seq).toBe("number");
+    expect(typeof before[0]?.context_to_seq).toBe("number");
     expect(f.read(alpha).items).toEqual([{ ...item, redelivered: true }]);
     expect(range()).toEqual(before);
     expect(f.col("conversations", "context_seq")).toEqual(cursor);
@@ -170,13 +167,14 @@ test(
           "mode,mode_reason,untrusted_read_seq",
         );
       const mode = modeRows();
+      const flipped = {
+        mode: "reply_only",
+        mode_reason: "read_untrusted",
+        untrusted_read_seq: 1,
+      };
       expect(mode).toEqual(
         untrusted
-          ? Array(2).fill({
-              mode: "reply_only",
-              mode_reason: "read_untrusted",
-              untrusted_read_seq: 1,
-            })
+          ? [flipped, flipped]
           : [
               { mode: "normal", mode_reason: "start", untrusted_read_seq: 0 },
               {
