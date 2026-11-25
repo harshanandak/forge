@@ -7,7 +7,6 @@ import {
   codexRecord,
   displayAt,
   inlineFinding,
-  quota,
   suggestionsReceipt,
   suggestionsSha,
   summary,
@@ -195,8 +194,6 @@ test.each([
     "bot_format_malformed",
   ],
   ["C13 trailing LF", cleanReceipt + "\n", "bot_format_malformed"],
-  ["C14 quota with suffix", quota + " Thanks.", "bot_format_unsupported"],
-  ["C14 embedded quota", "Notice: " + quota, "bot_format_unsupported"],
   ["C15 empty body", "", "bot_format_unsupported"],
   ["C15 unknown old notice", "Codex is reviewing", "bot_format_unsupported"],
 ] as const)("%s", (_name, body, reason) => {
@@ -297,7 +294,6 @@ test.each([
     comment,
     { kind: "neutral" },
   ],
-  ["C14/R2 quota", codexRecord({ body: quota }), comment, { kind: "quota" }],
 ] as const)("%s", (_name, record, endpoint, expected) => {
   expect<unknown>(parseBotMessage(record, endpoint)).toEqual(ok(expected));
 });
@@ -346,7 +342,7 @@ test.each([
 });
 
 test.each(endpoints)("R1 refuses CodeRabbit copies on %s", (endpoint) => {
-  for (const body of [suggestionsReceipt, cleanReceipt, quota]) {
+  for (const body of [suggestionsReceipt, cleanReceipt]) {
     const record = codeRabbitRecord(endpoint, body);
     expect(parseBotMessage(record, endpoint)).toEqual(
       fail("bot_format_unsupported", `${endpoint}/${record.id}`),

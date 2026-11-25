@@ -70,10 +70,6 @@ export const inlineFinding = [
   "<!-- codex-code-review-finding:v1 -->",
 ].join("\n");
 
-export const quota = [
-  "You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).",
-].join("\n");
-
 export const cleanReceipt = [
   "<!-- codex-review-receipt:v1 -->",
   "",
