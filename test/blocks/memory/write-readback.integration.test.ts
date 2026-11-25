@@ -237,7 +237,7 @@ for (const level of ["device", "project"] as const) {
             "add",
             {
               level,
-              text: "requested",
+              text: `requested ${field}`,
               tags: ["requested"],
               scope: "requested",
               ...(operation === "edit"

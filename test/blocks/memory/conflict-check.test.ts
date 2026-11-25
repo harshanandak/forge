@@ -17,32 +17,22 @@ const topic = (ids: string) =>
 const duplicate = (id: string) =>
   `Note ${id} says the same thing; revise it with id and expectRevision instead.`;
 
+const destination = { level: "device", scope: "general" };
+type Added = { id: string; note: { revision: number } };
+
 function fixture(config: object = {}) {
   const entry = loadEntry("memory");
-  const project = memoryState();
+  const identity = { id: "0123456789abcdef", name: "app" };
+  const project = { identity, projectId: identity.id, state: memoryState() };
   const state = memoryState(undefined, {
     inProject: true,
-    project: () =>
-      Promise.resolve({
-        identity: { id: "0123456789abcdef", name: "app" },
-        projectId: "0123456789abcdef",
-        state: project,
-      }),
+    project: () => Promise.resolve(project),
   });
+  const services = { state, levels: state };
   const call = (op: string, input: object) =>
-    Promise.resolve(
-      entry[op]!({ input, config, services: { state, levels: state } }),
-    );
+    Promise.resolve(entry[op]!({ input, config, services }));
   const add = (text: string, fields: object = {}) =>
-    call("memory.add", {
-      level: "device",
-      scope: "general",
-      text,
-      ...fields,
-    }) as Promise<{
-      id: string;
-      note: { revision: number };
-    }>;
+    call("memory.add", { ...destination, text, ...fields }) as Promise<Added>;
   return { state, call, add };
 }
 

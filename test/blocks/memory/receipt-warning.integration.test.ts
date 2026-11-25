@@ -232,31 +232,20 @@ test("integration: CLI and MCP refuse the same memory topic conflict", async () 
   const h = await openHarness(["memory"]);
   try {
     const options = localCall(h.assembly);
-    const cli = async (text: string) =>
-      (
-        await runCli(
-          h.assembly.catalog,
-          [
-            "memory",
-            "add",
-            "--input",
-            JSON.stringify({ level: "device", scope: "general", text }),
-          ],
-          options,
-        )
-      ).envelope;
+    const fields = { level: "device", scope: "general" };
+    const cli = async (text: string) => {
+      const payload = JSON.stringify({ ...fields, text });
+      const args = ["memory", "add", "--input", payload];
+      return (await runCli(h.assembly.catalog, args, options)).envelope;
+    };
     const first = await cli(
       "falcon orchard release shipment policy team requires approval",
     );
     const { id } = done(first) as { id: string };
     const text = "falcon orchard release shipment policy team requires review";
-    const mcp = await createMcpHandlers(
-      h.assembly.catalog,
-      {},
-      {
-        context: h.deviceOnly(),
-      },
-    ).callTool("memory_add", { level: "device", scope: "general", text });
+    const context = { context: h.deviceOnly() };
+    const handlers = createMcpHandlers(h.assembly.catalog, {}, context);
+    const mcp = await handlers.callTool("memory_add", { ...fields, text });
     const result = await cli(text);
     expect(result).toMatchObject({
       ok: false,

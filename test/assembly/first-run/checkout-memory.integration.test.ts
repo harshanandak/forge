@@ -121,6 +121,7 @@ test("device memory resolves checkout aliases through missing and invalid projec
               scoped.warnings.map((warning) => warning.message).join("\n"),
             ).toContain("project-level memory");
           } else expect(scoped.warnings).toEqual([]);
+          const text = `checkout heron ${count}`;
           const added = done(
             await call(
               count % 2 === 0
@@ -128,9 +129,9 @@ test("device memory resolves checkout aliases through missing and invalid projec
                     "memory",
                     "add",
                     "--input",
-                    '{"text":"checkout heron","level":"device"}',
+                    JSON.stringify({ text, level: "device" }),
                   ]
-                : ["memory", "add", "checkout heron"],
+                : ["memory", "add", text],
             ),
           ) as { id: string; note: { scope?: string } };
           count += 1;

@@ -76,6 +76,7 @@ test("healthy child project uses its own scope and alias for rules and default d
         result: { scope },
         warnings: [],
       });
+      let index = 0;
       for (const noteScope of [
         "general",
         scope,
@@ -88,7 +89,7 @@ test("healthy child project uses its own scope and alias for rules and default d
             "add",
             "--input",
             JSON.stringify({
-              text: "child project heron",
+              text: `child project heron ${index++}`,
               level: "device",
               scope: noteScope,
             }),
