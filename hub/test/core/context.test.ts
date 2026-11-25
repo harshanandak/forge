@@ -4,7 +4,9 @@ import { LIMITS, THREAD_CONTEXT_NOTICE } from "../../src/contract/mcp.ts";
 import {
   baseFixture,
   bellFor,
+  channel,
   seedThread,
+  thread,
   type BaseFixture,
 } from "./base-fixture.ts";
 import { a, b, p1 } from "./fixture.ts";
@@ -187,6 +189,46 @@ test(
       f.expectItems(child.sessionId, [{ redelivered: true }]);
       expect(modeRows()).toEqual(mode);
     }
+  },
+  timeout,
+);
+
+test(
+  "TH6R redelivery keeps an initially omitted member message out after an edit",
+  async () => {
+    const f = await baseFixture();
+    const sessionId = await root(f);
+    const own = ["a".repeat(3_500), "b".repeat(3_500)];
+    append(f, "omitted", "x".repeat(2_000));
+    for (const [index, text] of own.entries())
+      append(f, "owner-" + index, text, a.personId);
+    await f.follow("current");
+    const first = f.read(sessionId);
+    expect(first).toMatchObject({
+      mode: "normal",
+      items: [{ redelivered: false, threadContext: { omitted: 1 } }],
+    });
+    const entries = first.items[0]?.threadContext?.entries;
+    expect(entries?.map((entry) => entry.text)).toEqual(own);
+    const shorter = "x".repeat(500);
+    await f.chat.emitMessageChange({
+      channelId: channel,
+      chatThreadId: thread,
+      chatMessageId: "omitted",
+      kind: "edited",
+      text: shorter,
+      fileNames: [],
+    });
+    expect(
+      f.col("thread_messages WHERE chat_message_id = 'omitted'", "text"),
+    ).toEqual([shorter]);
+    const again = f.read(sessionId);
+    expect(again).toMatchObject({
+      mode: "normal",
+      items: [{ redelivered: true }],
+    });
+    expect(again.items[0]?.threadContext?.entries).toEqual(entries);
+    expect(f.col("sessions", "untrusted_read_seq")).toEqual([0]);
   },
   timeout,
 );

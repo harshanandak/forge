@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { LIMITS } from "../../src/contract/mcp.ts";
+import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
 import { baseFixture, bellFor, seedThread } from "./base-fixture.ts";
 import { a, b, p1, p2 } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
@@ -191,9 +192,13 @@ test(
     const compatible = f.bind();
     f.bindProject(compatible.sessionId);
     await f.follow("after-project-binding");
+    expect(f.sql(pending)[1]).toMatchObject({ target_session_id: null });
     expect(f.read(claimant.sessionId).items).toEqual([]);
     f.expectItems(compatible.sessionId, [
       { text: "after-project-binding", projectId: p1 },
+    ]);
+    expect(f.sql(conversations)).toEqual([
+      { person_id: a.personId, project_id: p1, session_id: claimant.sessionId },
     ]);
   },
   timeout,
@@ -221,6 +226,36 @@ test(
       b,
     );
     expect(f.col("inbox_items", "not_your_owner")).toEqual([0, 0]);
+  },
+  timeout,
+);
+
+test(
+  "R7C a returning asker keeps their conversation after their doorbell is removed",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const beta = f.bind(b, "beta", "beta");
+    await f.emit("root", { slackUserId: slackB });
+    const [first] = f.read(beta.sessionId, b).items;
+    f.ack(beta.sessionId, [first!.itemId], b);
+    const config = {
+      ...f.config,
+      doorbells: f.config.doorbells.filter(
+        (bell) => bell.personId !== b.personId,
+      ),
+    };
+    const restarted = createCoreBase(createCoreContext({ ...f.deps, config }));
+    await f.chat.start(restarted.chatHandlers);
+    await f.follow("returning-asker", { slackUserId: slackB });
+    f.expectItems(
+      beta.sessionId,
+      [{ text: "returning-asker", trust: "owner" }],
+      b,
+    );
+    expect(f.sql(conversations)).toEqual([
+      { person_id: b.personId, project_id: p1, session_id: beta.sessionId },
+    ]);
+    expect(f.posts()).toEqual([]);
   },
   timeout,
 );

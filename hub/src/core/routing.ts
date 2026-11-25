@@ -24,19 +24,21 @@ export function frontSession(
 
 function target(ctx: CoreContext, chat: Conversation): Session | undefined {
   const { sessions } = ctx.store;
-  const current = chat.sessionId ? sessions.session(chat.sessionId) : undefined;
-  if (
-    !current ||
-    (current.projectId !== undefined && current.projectId !== chat.projectId)
-  )
+  if (!chat.sessionId)
     return chat.projectId
       ? frontSession(ctx, chat.personId, chat.projectId)
+      : undefined;
+  const current = sessions.session(chat.sessionId);
+  if (!current) return;
+  const compatible =
+    current.projectId === undefined || current.projectId === chat.projectId
+      ? current
       : undefined;
   if (
     !current.threadId ||
     ctx.deps.now() - current.lastSeenAt <= LIMITS.liveSessionMs
   )
-    return current;
+    return compatible;
   const newer = sessions
     .sessionsByThread(chat.personId, current.threadId)
     .filter(
@@ -45,7 +47,7 @@ function target(ctx: CoreContext, chat: Conversation): Session | undefined {
         (s.projectId === undefined || s.projectId === chat.projectId),
     )
     .toSorted((a, b) => b.createdAt - a.createdAt)[0];
-  if (!newer) return current;
+  if (!newer) return compatible;
   ctx.deps.db
     .prepare("UPDATE conversations SET session_id=? WHERE conversation_id=?")
     .run(newer.sessionId, chat.conversationId);
@@ -316,9 +318,11 @@ export async function route(
       });
       react = recipients.length > 0;
     } else if (mentionsBot) {
-      const owner = equipped(sender)
-        ? sender
-        : people.byPersonId(project.frontPersonId);
+      const owner =
+        existing.some((entry) => entry.personId === sender.personId) ||
+        equipped(sender)
+          ? sender
+          : people.byPersonId(project.frontPersonId);
       if (owner && member(projectId, owner)) recipients = [owner];
     } else {
       const latest = db

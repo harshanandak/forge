@@ -40,14 +40,6 @@ export function deliveryContext(
     return { entries: [] };
   const first = num(range.first);
   const last = num(range.last);
-  if (!delivered) {
-    db.prepare(
-      "UPDATE conversations SET context_seq = max(context_seq, ?) WHERE conversation_id = ?",
-    ).run(last, chat.conversationId);
-    db.prepare(
-      "UPDATE inbox_items SET context_from_seq = ?,context_to_seq = ? WHERE item_id = ?",
-    ).run(first, last, item.itemId);
-  }
   const rows = db
     .prepare(
       `SELECT t.*,p.display_name,count(*) OVER () AS eligible FROM thread_messages t
@@ -78,6 +70,16 @@ export function deliveryContext(
       at: new Date(num(row.created_at)).toISOString(),
       mentionedBot: num(row.mentioned_bot) === 1,
     });
+  }
+  if (!delivered) {
+    const oldest = rows[entries.length - 1];
+    const after = (oldest ? num(oldest.seq) : last) - 1;
+    db.prepare(
+      "UPDATE conversations SET context_seq = max(context_seq, ?) WHERE conversation_id = ?",
+    ).run(last, chat.conversationId);
+    db.prepare(
+      "UPDATE inbox_items SET context_from_seq = ?,context_to_seq = ? WHERE item_id = ?",
+    ).run(after, last, item.itemId);
   }
   const omitted = rows[0] ? num(rows[0].eligible) - entries.length : 0;
   return {

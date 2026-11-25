@@ -137,6 +137,12 @@ test(
           people: configPeople(people),
           config: { ...f.config, people, projects, doorbells: [] },
         });
+        expect(
+          f.col("tokens WHERE revoked_at IS NOT NULL", "token_id"),
+        ).toEqual([tokenId]);
+        expect(
+          f.col("host_keys WHERE revoked_at IS NOT NULL", "person_id"),
+        ).toEqual([a.personId]);
         seedItem(db, "itm_after_removal");
         db.exec("UPDATE inbox_items SET project_id = NULL");
       } else {
