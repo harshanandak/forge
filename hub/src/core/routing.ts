@@ -25,7 +25,10 @@ export function frontSession(
 function target(ctx: CoreContext, chat: Conversation): Session | undefined {
   const { sessions } = ctx.store;
   const current = chat.sessionId ? sessions.session(chat.sessionId) : undefined;
-  if (!current)
+  if (
+    !current ||
+    (current.projectId !== undefined && current.projectId !== chat.projectId)
+  )
     return chat.projectId
       ? frontSession(ctx, chat.personId, chat.projectId)
       : undefined;

@@ -180,6 +180,26 @@ test(
 );
 
 test(
+  "R6P a conversation skips its bound session after it joins another project",
+  async () => {
+    const f = await baseFixture();
+    const claimant = f.bind(a, "claimant", "unconfigured-thread");
+    await f.emit("root");
+    const [first] = f.read(claimant.sessionId).items;
+    f.ack(claimant.sessionId, [first!.itemId]);
+    f.bindProject(claimant.sessionId, p2);
+    const compatible = f.bind();
+    f.bindProject(compatible.sessionId);
+    await f.follow("after-project-binding");
+    expect(f.read(claimant.sessionId).items).toEqual([]);
+    f.expectItems(compatible.sessionId, [
+      { text: "after-project-binding", projectId: p1 },
+    ]);
+  },
+  timeout,
+);
+
+test(
   "R7 one conversation per person in a shared thread with event dedupe",
   async () => {
     const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
