@@ -56,6 +56,7 @@ import {
   expectTypedReply,
   guardFixture,
   noWrites,
+  observeRestoreReset,
   probe,
   readOnlyReply,
   recovered,
@@ -3738,13 +3739,13 @@ test(
         frames[5] = { sequence: 6 };
       });
       const upload = await stageRestore(target, data);
-      const before = target.snapshot();
+      const reset = observeRestoreReset(target);
       expect(await upload(2)).toMatchObject({
         status: 413,
         body: { error: { code: "RESTORE_TOO_LARGE" } },
       });
       await unprovisioned(target);
-      expect(target.snapshot()).toEqual(before);
+      reset();
     }),
   timeout,
 );
@@ -3828,7 +3829,7 @@ test(
     withTyped(async (target, data) => {
       forgeRefusal(data, accent);
       const upload = await stageRestore(target, data);
-      const effects = target.observeEffects();
+      const reset = observeRestoreReset(target);
       expect(await upload(2)).toEqual({
         status: 400,
         body: {
@@ -3840,11 +3841,7 @@ test(
           },
         },
       });
-      expect(effects()).toEqual({
-        sqlWriteAttempts: 1,
-        alarmWrites: 0,
-        sqlAndKvIntact: true,
-      });
+      reset();
       const glyphs = "caf\u00e9 \u{1F600}";
       const source = guardFixture(typedEnv);
       const honest = guardFixture(typedEnv);
@@ -4780,11 +4777,11 @@ test.each([
 
 async function rejectedFinalPage(target: Fixture, data: Portable) {
   const upload = await stageRestore(target, data);
-  const before = target.observeEffects();
+  const reset = observeRestoreReset(target);
   const reply = await upload(2);
   expect(reply).toMatchObject(restoreRefusal);
   expect(exited(reply)).toBe(1);
-  expect(before()).toEqual({ ...noWrites, sqlWriteAttempts: 1 });
+  reset();
   await unprovisioned(target);
 }
 
