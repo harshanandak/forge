@@ -3,6 +3,7 @@ import type { HubCore } from "../contract/core.ts";
 import type { CoreDeps } from "../contract/runtime.ts";
 import { bestEffort, type Notice, notify, postNotice } from "./doorbell.ts";
 import { delivery, refused } from "./inbox.ts";
+import { createReply } from "./reply.ts";
 import { route } from "./routing.ts";
 import { createSend } from "./send.ts";
 import { createCoreStore } from "./store-impl.ts";
@@ -113,10 +114,7 @@ export const createCoreBase: CreateCoreBase = (ctx, extras) => {
       chat && asks
         ? asks.ask(caller, input)
         : Promise.resolve(refused("BLOCK_DISABLED")),
-    reply: () =>
-      chat
-        ? Promise.reject(new Error("not_built"))
-        : Promise.resolve(refused("BLOCK_DISABLED")),
+    reply: createReply(ctx),
     inbox: (caller, input) => delivery(ctx, caller, input),
     wait: createWait(ctx),
     send: createSend(ctx),
