@@ -31,6 +31,35 @@ export const summary = [
   "</details>",
 ].join("\n");
 
+export const suggestionsReceipt = [
+  "<!-- codex-review-receipt:v1 -->",
+  "",
+  "",
+  "### \ud83d\udca1 Codex Review",
+  "",
+  "Here are some automated review suggestions for this pull request.",
+  "",
+  "**Reviewed commit:** `f9276ede4e`",
+  "    ",
+  "",
+  "<details> <summary>\u2139\ufe0f About Codex in GitHub</summary>",
+  "<br/>",
+  "",
+  "[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you",
+  "- Open a pull request for review",
+  "- Mark a draft as ready",
+  '- Comment "@codex review".',
+  "",
+  "If Codex has suggestions, it will comment; otherwise it will react with \ud83d\udc4d.",
+  "",
+  "",
+  "",
+  "",
+  'Codex can also answer questions or update the PR. Try commenting "@codex address that feedback".',
+  "            ",
+  "</details>",
+].join("\n");
+
 export const inlineFinding = [
   "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Use the resolved PR base instead of hard-coding main**",
   "",
@@ -41,8 +70,35 @@ export const inlineFinding = [
   "<!-- codex-code-review-finding:v1 -->",
 ].join("\n");
 
+export const cleanReceipt = [
+  "<!-- codex-review-receipt:v1 -->",
+  "",
+  "Codex Review: Didn't find any major issues. Hooray!",
+  "",
+  "**Reviewed commit:** `54bd87f443`",
+  "",
+  "<details> <summary>\u2139\ufe0f About Codex in GitHub</summary>",
+  "<br/>",
+  "",
+  "[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you",
+  "- Open a pull request for review",
+  "- Mark a draft as ready",
+  '- Comment "@codex review".',
+  "",
+  "If Codex has suggestions, it will comment; otherwise it will react with \ud83d\udc4d.",
+  "",
+  "",
+  "",
+  "",
+  'Codex can also answer questions or update the PR. Try commenting "@codex address that feedback".',
+  "            ",
+  "</details>",
+].join("\n");
+
 export const displayAt = "2026-11-22T05:35:25.653186Z";
 export const summarySha = "b2152f9891bbc2c6892678d5b11131246c77b06a";
+
+export const suggestionsSha = "f9276ede4e" + "0".repeat(30);
 
 export function codexRecord(patch: Partial<BotRecord> = {}): BotRecord {
   return baseCodexRecord({ body: summary, ...patch });
