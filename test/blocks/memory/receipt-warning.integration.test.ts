@@ -250,7 +250,7 @@ test("integration: CLI and MCP refuse the same memory topic conflict", async () 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        message: `Notes ${id} cover the same topic. Pass replaces to retire them, or coexistsWith with a reason to keep both.`,
+        message: `Notes ${id} cover the same topic. Pass replaces to retire them or coexistsWith to keep both. Either option needs a nonblank single-line reason.`,
       },
     });
     expect(mcp).toEqual(result);

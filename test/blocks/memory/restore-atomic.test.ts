@@ -23,6 +23,11 @@ function setup() {
       },
       services,
     }) as Promise<{ added: number; skipped: number; conflicts: string[] }>;
+  const add = (text: string) =>
+    entry["memory.add"]!({
+      input: { text, level: "device", scope: null },
+      services,
+    });
   /** Another writer lands between this restore's scan and its commit. */
   const raceOnce = (change: () => void) => {
     const putMany = state.putMany.bind(state);
@@ -35,8 +40,38 @@ function setup() {
       return putMany(entries, options);
     };
   };
-  return { state, restore, raceOnce };
+  return { state, restore, add, raceOnce };
 }
+
+test("an add rechecks duplicates after a restore fills a lower note number", async () => {
+  const { state, restore, add, raceOnce } = setup();
+  await restore(note(2, "unrelated"));
+  const putMany = state.putMany.bind(state);
+  let restoreWrite: Parameters<typeof putMany>;
+  state.putMany = (...args) => {
+    restoreWrite = args;
+    return [];
+  };
+  await restore(note(1, "restored text"));
+  state.putMany = putMany;
+  raceOnce(() => {
+    putMany(...restoreWrite);
+  });
+  await expect(add("restored text")).rejects.toMatchObject({
+    error: {
+      code: "INPUT_INVALID",
+      message:
+        "Note device/note-1 says the same thing; revise it with id and expectRevision instead.",
+    },
+  });
+  expect(state.get(key(1))?.value).toMatchObject({ text: "restored text" });
+  expect(state.get(key(3))).toBeUndefined();
+  expect(state.get("meta/note-counter")).toMatchObject({
+    revision: 2,
+    value: { last: 2 },
+  });
+}, 30_000);
+
 async function refusedWith(run: () => Promise<unknown>, code: string) {
   try {
     await run();

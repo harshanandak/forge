@@ -551,6 +551,10 @@ function parseRef(
     : { level: "project", project: match[2], number: Number(match[3]) };
 }
 
+function noteNumberIn(source: Source, id: string): number | undefined {
+  return id.startsWith(source.prefix + "/") ? parseRef(id)?.number : undefined;
+}
+
 function deviceSource(state: ExtendedStateClient): Source {
   return {
     level: "device",
@@ -1077,20 +1081,22 @@ function checkNewNote(
         b.score - a.score || b.document.note.number - a.document.note.number,
     )
     .slice(0, CONFLICT_MATCHES)
-    .map(({ document }) => document.note.id);
+    .map(({ document }) => document.note);
+  if (!conflicts.length) return readSet;
+  const acknowledged = new Set(
+    [...(input.replaces ?? []), ...(input.coexistsWith ?? [])].map((id) =>
+      noteNumberIn(source, id),
+    ),
+  );
   const reason = input.reason ?? "";
   if (
-    conflicts.length &&
-    (!reason.trim() ||
-      /[\r\n\u0085\u2028\u2029]/u.test(reason) ||
-      conflicts.some(
-        (id) =>
-          !input.replaces?.includes(id) && !input.coexistsWith?.includes(id),
-      ))
+    !reason.trim() ||
+    /[\r\n\u0085\u2028\u2029]/u.test(reason) ||
+    conflicts.some(({ number }) => !acknowledged.has(number))
   )
     fail(
       "INPUT_INVALID",
-      `Notes ${conflicts.join(", ")} cover the same topic. Pass replaces to retire them, or coexistsWith with a reason to keep both.`,
+      `Notes ${conflicts.map(({ id }) => id).join(", ")} cover the same topic. Pass replaces to retire them or coexistsWith to keep both. Either option needs a nonblank single-line reason.`,
     );
   return readSet;
 }
@@ -2014,8 +2020,8 @@ module.exports = {
       if ((input.replaces?.length ?? 0) > 8)
         fail("INPUT_INVALID", "A note can replace at most eight notes");
       for (const id of input.replaces ?? []) {
-        const n = parseRef(id)?.number;
-        if (!n || n >= number || !id.startsWith(target.prefix + "/"))
+        const n = noteNumberIn(target, id);
+        if (!n || n >= number)
           fail(
             "INPUT_INVALID",
             `Expected an earlier note in this store: ${id}`,
@@ -3322,10 +3328,10 @@ module.exports = {
       }
       const added = adding.length;
       const counter = readCounter(state, NOTE_COUNTER);
-      if (counter.last < highest)
+      if (added > 0 || counter.last < highest)
         entries.push({
           key: NOTE_COUNTER,
-          value: { last: highest },
+          value: { last: Math.max(counter.last, highest) },
           expectRevision: counter.revision,
         });
       if (entries.length > 0) state.putMany(entries, { readSet: read });

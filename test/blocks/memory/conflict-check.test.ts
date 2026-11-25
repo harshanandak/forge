@@ -13,7 +13,7 @@ const followUp =
   "Owner 2026-11-21: service tier rule for every model and delegate (Sol, Terra, Codex CLI, delegate_task serviceTier, Claude fast mode). Default tier always. Use fast, priority or ultrafast only when the owner says in the current conversation there are spare limits to burn, only for that conversation or the window he names. Never turn it on from an older note.";
 
 const topic = (ids: string) =>
-  `Notes ${ids} cover the same topic. Pass replaces to retire them, or coexistsWith with a reason to keep both.`;
+  `Notes ${ids} cover the same topic. Pass replaces to retire them or coexistsWith to keep both. Either option needs a nonblank single-line reason.`;
 const destination = { level: "device", scope: "general" };
 type Added = { id: string; note: { revision: number } };
 
@@ -55,6 +55,11 @@ test("an agent must name and explain how to handle the same-topic note", async (
     { replaces: [id] },
     { coexistsWith: [id], reason: "  " },
     { replaces: [id], reason: "First line\nSecond line" },
+    { replaces: ["device/note-2"], reason: "Other note." },
+    {
+      coexistsWith: ["project/0123456789abcdef/note-01"],
+      reason: "Other store.",
+    },
   ]) {
     await expect(add(later, fields)).rejects.toMatchObject({
       error: { message: topic(id) },
@@ -63,24 +68,24 @@ test("an agent must name and explain how to handle the same-topic note", async (
   expect(state.counts.puttedRecords).toBe(writes);
 });
 
-for (const field of ["replaces", "coexistsWith"] as const) {
-  test(
-    "a reason and " + field + " allow an agent to add a conflicting note",
-    async () => {
-      const { add, call } = fixture();
-      const { id } = await add(older);
-      const next = await add(later, {
-        [field]: [id],
-        reason: "This is the current service tier policy.",
-      });
-      expect(next).toMatchObject({ status: "added", id: "device/note-2" });
-      const shown = await call("memory.show", { id });
-      if (field === "replaces")
-        expect(shown).toMatchObject({ note: { replacedBy: [next.id] } });
-      else expect(shown).not.toHaveProperty("note.replacedBy");
-    },
-  );
-}
+test.each([
+  ["replaces", "device/note-1"],
+  ["coexistsWith", "device/note-1"],
+  ["replaces", "device/note-01"],
+  ["coexistsWith", "device/note-01"],
+])("%s with %s and a reason allows a conflicting note", async (field, ref) => {
+  const { add, call } = fixture();
+  const { id } = await add(older);
+  const next = await add(later, {
+    [field]: [ref],
+    reason: "This is the current service tier policy.",
+  });
+  expect(next).toMatchObject({ status: "added", id: "device/note-2" });
+  const shown = await call("memory.show", { id });
+  if (field === "replaces")
+    expect(shown).toMatchObject({ note: { replacedBy: [next.id] } });
+  else expect(shown).not.toHaveProperty("note.replacedBy");
+});
 
 test("the scan leaves other levels and scopes out, and a revision can keep its own text", async () => {
   const { add } = fixture();
