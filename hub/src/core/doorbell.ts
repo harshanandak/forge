@@ -87,16 +87,22 @@ export async function notify(ctx: CoreContext, request: Notice): Promise<void> {
             conversation?.conversationId ?? null,
           );
     if (previous) return false;
-    if (
-      !configured &&
-      db
-        .prepare(
-          `SELECT 1 FROM sessions WHERE person_id=? AND (project_id IS NULL OR project_id=?)
+    if (!configured) {
+      const live =
+        session !== undefined
+          ? db
+              .prepare(
+                `SELECT 1 FROM sessions WHERE session_id=? AND last_seen_at>=?`,
+              )
+              .get(session, time - LIMITS.liveSessionMs)
+          : db
+              .prepare(
+                `SELECT 1 FROM sessions WHERE person_id=? AND (project_id IS NULL OR project_id=?)
       AND last_seen_at>=?`,
-        )
-        .get(personId, projectId, time - LIMITS.liveSessionMs)
-    )
-      return false;
+              )
+              .get(personId, projectId, time - LIMITS.liveSessionMs);
+      if (live) return false;
+    }
     db.prepare(
       `INSERT INTO doorbell_rings (ring_id,person_id,project_id,session_id,ids_json,sent_at,outcome)
       VALUES (?,?,?,?,?,?,?)`,
