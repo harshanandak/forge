@@ -682,7 +682,10 @@ test.each(
         STATIC: event === "schedule" ? "skipped" : "success",
         PR_TITLE: event === "pull_request" ? "success" : "skipped",
         VERIFY: verify,
-        VERIFY_MAIN: mainOnly,
+        VERIFY_MAIN:
+          event === "push" || (event === "pull_request" && scope === "full")
+            ? "success"
+            : "skipped",
         VERIFY_NODE26: node26,
         GUARD_CHANGED: guardChanged,
         PACK: pack,
