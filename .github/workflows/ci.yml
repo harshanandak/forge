@@ -431,7 +431,7 @@ jobs:
   verify-main:
     name: Verify main (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: [changes, pack]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.scope == 'full' && needs.changes.outputs.tier != 'quick')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -574,7 +574,9 @@ jobs:
           require "speed" "$SPEED" "$heavy"
           require "speed-windows" "$SPEED_WINDOWS" "$main_only"
           require "verify" "$VERIFY" "$heavy"
-          require "verify-main" "$VERIFY_MAIN" "$main_only"
+          verify_main="$main_only"
+          if [ "$EVENT" = "pull_request" ]; then verify_main="$heavy"; fi
+          require "verify-main" "$VERIFY_MAIN" "$verify_main"
           require "verify-node26" "$VERIFY_NODE26" "$node26"
           require "comment-guard" "$COMMENT_GUARD" "$admission"
           [ "$ok" = "1" ]
