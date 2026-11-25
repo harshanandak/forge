@@ -244,9 +244,10 @@ export async function route(
         return;
       if (current && !current.projectId) {
         const picker = event.text.trim().toLowerCase();
-        const picked = projects.find((p) =>
+        const matches = projects.filter((p) =>
           [p.projectId, p.name].some((value) => value.toLowerCase() === picker),
         );
+        const picked = matches.length === 1 ? matches[0] : undefined;
         if (picked) {
           const { projectId } = picked;
           const session = frontSession(
