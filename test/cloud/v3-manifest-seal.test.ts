@@ -285,12 +285,13 @@ test(
     }
     const target = guardFixture(typedEnv);
     using _db = target.db;
+    const tables = tableNames(target);
+    const { kv } = target.snapshot();
     rewriteRefusal(data);
     const upload = signedUpload(target, data);
     expect(await upload(0)).toMatchObject({ status: 200 });
     expect(await upload(1)).toMatchObject({ status: 200 });
-    const staged = target.snapshot();
-    for (const _try of [1, 2]) {
+    for (const attempt of [1, 2]) {
       const effects = target.observeEffects();
       const reply = await upload(2);
       expect(reply).toEqual({
@@ -305,12 +306,14 @@ test(
         },
       });
       expect(exit(reply)).toBe(1);
-      expect(effects()).toEqual({
-        sqlWriteAttempts: 1,
-        alarmWrites: 0,
-        sqlAndKvIntact: true,
-      });
-      expect(target.snapshot()).toEqual(staged);
+      expect(tableNames(target)).not.toContain("cloud_v3_restore");
+      expect(tableNames(target)).toEqual(tables);
+      expect(target.snapshot().kv).toEqual(kv);
+      expect(effects()).toEqual(
+        attempt === 1
+          ? { sqlWriteAttempts: 2, alarmWrites: 0, sqlAndKvIntact: false }
+          : noWrites,
+      );
     }
   },
   timeout,
@@ -572,6 +575,41 @@ test(
     using _db = target.db;
     const send = signedUpload(target, data, source);
     await refused(target, () => send(0));
+  },
+  timeout,
+);
+
+test(
+  "v3 restore keeps staged pages when the signing key is removed before the final page",
+  async () => {
+    const { source, data } = await shared();
+    const previous = source.env.V3_SEAL_KEY as string;
+    const target = guardFixture(typedEnv, { previous });
+    using _db = target.db;
+    const upload = signedUpload(target, data, source);
+    for (const page of [0, 1])
+      expect(await upload(page)).toMatchObject({
+        status: 200,
+        body: { value: { page, verified: false } },
+      });
+    const staged = target.snapshot();
+    delete target.env.V3_SEAL_KEY_PREVIOUS;
+    target.restart();
+    const effects = target.observeEffects();
+    const reply = await upload(2);
+    expect(reply).toMatchObject(restoreRefusal);
+    expect(exitCode(failed((reply.body as { error: ForgeError }).error))).toBe(
+      1,
+    );
+    expect(effects()).toEqual(noWrites);
+    expect(target.snapshot()).toEqual(staged);
+
+    target.env.V3_SEAL_KEY_PREVIOUS = previous;
+    target.restart();
+    expect(await upload(2)).toMatchObject({
+      status: 200,
+      body: { value: { page: 2, verified: true } },
+    });
   },
   timeout,
 );
