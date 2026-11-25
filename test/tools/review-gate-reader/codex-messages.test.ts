@@ -204,6 +204,25 @@ test.each([
   );
 });
 
+test("C6 accepts a fractional display date in the updated_at second", () => {
+  const record = codexRecord({ updated_at: "2026-11-22T05:35:25Z" });
+  expect<unknown>(parseBotMessage(record, comment)).toEqual(
+    ok(expectedSummary),
+  );
+});
+
+test("C6 rejects a display date in the second after updated_at", () => {
+  const record = codexRecord({
+    body: summary.replaceAll(displayAt, "2026-11-22T05:35:26.000000Z"),
+    updated_at: "2026-11-22T05:35:25Z",
+  });
+  expect<unknown>(parseBotMessage(record, comment)).toEqual({
+    ok: false,
+    reason: "bot_state_conflict",
+    where: "issue_comments/42",
+  });
+});
+
 test("C15 refuses inline findings and summaries on the wrong stream", () => {
   expect(
     parseBotMessage(codexRecord({ body: inlineFinding }), "review_comments"),

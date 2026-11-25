@@ -125,11 +125,14 @@ function parseSummary(record: BotRecord, where: string): Result<CodexSummary> {
     !validDate(updatedAt)
   )
     return fail("bot_state_invalid", where);
+  const displayIsLater = record.updated_at.includes(".")
+    ? displayAt > updatedAt
+    : displayAt.slice(0, 19) > updatedAt.slice(0, 19);
   if (
     (!any && unresolved) ||
     displayHead !== commitSha.slice(0, 7) ||
     displayAt !== displayAtText ||
-    displayAt > updatedAt
+    displayIsLater
   )
     return fail("bot_state_conflict", where);
   return ok({
