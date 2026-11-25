@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { ID_PATTERN } from "../../src/contract/ids.ts";
 import { LIMITS } from "../../src/contract/mcp.ts";
 import { baseFixture, bellFor } from "./base-fixture.ts";
-import { until } from "./base-fakes.ts";
+import {
+  failQueueNoticeThreadRecord,
+  refuseNextChatPost,
+  unknownNextChatPost,
+  until,
+} from "./base-fakes.ts";
 import { a, b, p1, value } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
 
@@ -135,6 +140,147 @@ test(
     await f.emit("b1b-second", { mentionedSlackUserIds: [slackB] });
     expect(f.rows("inbox_items")).toHaveLength(2);
     expect(f.posts()).toHaveLength(afterFirst);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB2 refused queue notice releases its claim",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const stale = f.bind(b, "stale", "beta");
+    f.advance(1);
+    f.bind(b, "live", "live-thread");
+    f.db
+      .prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+      .run(f.now() - LIMITS.liveSessionMs - 1, stale.sessionId);
+    refuseNextChatPost(f.chat);
+    await f.emit("b1b-db2-first", { mentionedSlackUserIds: [slackB] });
+    expect(f.posts()).toEqual([]);
+    await f.emit("b1b-db2-second", { mentionedSlackUserIds: [slackB] });
+    expect(
+      f.chat.calls.filter((call) => call.name === "postText"),
+    ).toHaveLength(2);
+    expect(f.posts()).toEqual([
+      "Queued for Fixture Beta's agent. It is offline and will see this when it reconnects.",
+    ]);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB2 uncertain queue post keeps its claim",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const stale = f.bind(b, "stale", "beta");
+    f.advance(1);
+    f.bind(b, "live", "live-thread");
+    f.db
+      .prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+      .run(f.now() - LIMITS.liveSessionMs - 1, stale.sessionId);
+    unknownNextChatPost(f.chat);
+    await f.emit("b1b-db2-unknown-first", {
+      mentionedSlackUserIds: [slackB],
+    });
+    expect(f.posts()).toHaveLength(1);
+    await f.emit("b1b-db2-unknown-second", {
+      mentionedSlackUserIds: [slackB],
+    });
+    expect(f.posts()).toHaveLength(1);
+    expect(
+      f.chat.calls.filter((call) => call.name === "postText"),
+    ).toHaveLength(1);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB2 confirmed post with thread-record failure keeps its claim",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const stale = f.bind(b, "stale", "beta");
+    f.advance(1);
+    f.bind(b, "live", "live-thread");
+    f.db
+      .prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+      .run(f.now() - LIMITS.liveSessionMs - 1, stale.sessionId);
+    failQueueNoticeThreadRecord(f.db);
+    await f.emit("b1b-db2-thread-first", {
+      mentionedSlackUserIds: [slackB],
+    });
+    expect(f.posts()).toHaveLength(1);
+    await f.emit("b1b-db2-thread-second", {
+      mentionedSlackUserIds: [slackB],
+    });
+    expect(f.posts()).toHaveLength(1);
+    expect(
+      f.chat.calls.filter((call) => call.name === "postText"),
+    ).toHaveLength(1);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB2 refused queue notice makes no automatic retry",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const stale = f.bind(b, "stale", "beta");
+    f.advance(1);
+    f.bind(b, "live", "live-thread");
+    f.db
+      .prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+      .run(f.now() - LIMITS.liveSessionMs - 1, stale.sessionId);
+    refuseNextChatPost(f.chat);
+    await f.emit("b1b-db2-noretry", { mentionedSlackUserIds: [slackB] });
+    expect(f.posts()).toEqual([]);
+    expect(
+      f.chat.calls.filter((call) => call.name === "postText"),
+    ).toHaveLength(1);
+  },
+  timeout,
+);
+
+test(
+  "B1B-DB2 queue-notice failures log only the event key",
+  async () => {
+    const setup = async () => {
+      const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+      const stale = f.bind(b, "stale", "beta");
+      f.advance(1);
+      f.bind(b, "live", "live-thread");
+      f.db
+        .prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+        .run(f.now() - LIMITS.liveSessionMs - 1, stale.sessionId);
+      return f;
+    };
+    const check = (logged: unknown[]) => {
+      expect(
+        logged.some(
+          (entry) => Array.isArray(entry) && entry[0] === "chat_notice_failed",
+        ),
+      ).toBe(true);
+      const output = JSON.stringify(logged);
+      expect(output).not.toContain("CHAT_UNAVAILABLE");
+      expect(output).not.toContain("injected queue-notice thread failure");
+    };
+    const refused = await setup();
+    refuseNextChatPost(refused.chat);
+    await refused.emit("b1b-db2-log-refused", {
+      mentionedSlackUserIds: [slackB],
+    });
+    check(refused.logged);
+    const uncertain = await setup();
+    unknownNextChatPost(uncertain.chat);
+    await uncertain.emit("b1b-db2-log-unknown", {
+      mentionedSlackUserIds: [slackB],
+    });
+    check(uncertain.logged);
+    const thread = await setup();
+    failQueueNoticeThreadRecord(thread.db);
+    await thread.emit("b1b-db2-log-thread", {
+      mentionedSlackUserIds: [slackB],
+    });
+    check(thread.logged);
   },
   timeout,
 );
