@@ -48,6 +48,15 @@ export function syncDirectory(db: HubDb, config: HubConfig): void {
     `);
     for (const p of config.people)
       person.run(p.personId, p.displayName, p.slackUserId ?? null);
+    const people = JSON.stringify(
+      config.people.map(({ personId }) => personId),
+    );
+    const revokedAt = Date.now();
+    for (const table of ["tokens", "host_keys"])
+      db.prepare(
+        `UPDATE ${table} SET revoked_at = ? WHERE revoked_at IS NULL
+        AND person_id NOT IN (SELECT value FROM json_each(?))`,
+      ).run(revokedAt, people);
     const project = db.prepare(`
       INSERT INTO projects (project_id, name, purpose, slack_channel_id, summary_channel_id, front_person_id)
       VALUES (?, ?, ?, ?, ?, ?)
