@@ -30,7 +30,8 @@ function acknowledge(ctx: CoreContext, session: Session, input: InboxInput) {
   const answer =
     db.prepare(`SELECT 1 FROM ask_answers x JOIN asks a ON a.ask_id = x.ask_id
     JOIN project_members m ON m.project_id = a.project_id AND m.person_id = a.from_person_id
-    WHERE x.ask_id = ? AND a.from_session_id = ? AND a.from_person_id = ?`);
+    WHERE x.ask_id = ? AND a.from_session_id = ? AND a.from_person_id = ?
+    AND x.delivered_at IS NOT NULL`);
   if (
     items.some((id) => !item.get(id, sessionId, personId)) ||
     answers.some(
