@@ -63,7 +63,10 @@ export function createCredentialStore(deps: Deps): CredentialStore {
   const tokens = credentials("tokens");
   const hosts = credentials("host_keys");
   const current = db.prepare(`
-    SELECT person_id FROM tokens WHERE token_id = ? AND revoked_at IS NULL
+    SELECT person_id, (SELECT value FROM meta WHERE key = 'current_people') AS config_ids,
+      EXISTS (SELECT 1 FROM json_each((SELECT value FROM meta WHERE key = 'current_people'))
+        WHERE value = tokens.person_id) AS current_person
+    FROM tokens WHERE token_id = ? AND revoked_at IS NULL
   `);
   function token(record: ReturnType<typeof tokens.add>) {
     if (!record) return undefined;
@@ -80,8 +83,13 @@ export function createCredentialStore(deps: Deps): CredentialStore {
     revokeToken: tokens.revoke,
     findToken: (hash) => token(tokens.find(hash)),
     isTokenCurrent(id) {
-      const personId = current.get(id)?.person_id;
-      return typeof personId === "string" && hasPerson(personId);
+      const row = current.get(id);
+      return (
+        typeof row?.person_id === "string" &&
+        (row.config_ids === null
+          ? hasPerson(row.person_id)
+          : row.current_person === 1)
+      );
     },
     createHostKey: (...args) => host(hosts.add(...args)),
     revokeHostKey: hosts.revoke,

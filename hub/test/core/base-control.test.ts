@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { ChatWriteFailure } from "../../src/contract/chat.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import { FakeHostBridge } from "../fakes/fake-host.ts";
 import { p1 } from "./fixture.ts";
@@ -15,10 +16,7 @@ test(
     const chat = new FakeChatPort();
     const events: unknown[] = [];
     const hooks: unknown[] = [];
-    const record = (event: unknown) => {
-      events.push(event);
-      return Promise.resolve();
-    };
+    const record = (event: unknown) => Promise.resolve(void events.push(event));
     await chat.start({
       onAction: (event) => {
         events.push(event);
@@ -40,21 +38,26 @@ test(
       "emitMessage",
     ]);
     const target = { kind: "channel", channelId: "C00000001" } as const;
+    const failure = async () => {
+      const result = await chat
+        .postText(target, "fixture")
+        .catch((error: unknown) => error);
+      if (!(result instanceof ChatWriteFailure))
+        throw new Error("Expected ChatWriteFailure");
+      return result;
+    };
     for (const retryAfterMs of [undefined, 500]) {
       chat.nextWrite = {
         kind: "refused",
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       };
-      await expect(chat.postText(target, "refused")).rejects.toMatchObject({
-        effect: "refused",
-        retryAfterMs,
-      });
+      const error = await failure();
+      expect(error.effect).toBe("refused");
+      expect(error.retryAfterMs).toBe(retryAfterMs);
       expect(chat.writes).toEqual([]);
     }
     chat.nextWrite = { kind: "unknown" };
-    await expect(chat.postText(target, "uncertain")).rejects.toMatchObject({
-      effect: "unknown",
-    });
+    expect((await failure()).effect).toBe("unknown");
     expect(chat.writes).toHaveLength(1);
     const gate = Promise.withResolvers<void>();
     chat.nextWrite = { kind: "delay", until: gate.promise };

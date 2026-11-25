@@ -48,6 +48,9 @@ export function syncDirectory(db: HubDb, config: HubConfig): void {
     `);
     for (const p of config.people)
       person.run(p.personId, p.displayName, p.slackUserId ?? null);
+    db.prepare(
+      "INSERT INTO meta VALUES ('current_people', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    ).run(JSON.stringify(config.people.map(({ personId }) => personId)));
     const project = db.prepare(`
       INSERT INTO projects (project_id, name, purpose, slack_channel_id, summary_channel_id, front_person_id)
       VALUES (?, ?, ?, ?, ?, ?)
