@@ -70,6 +70,70 @@ test(
 );
 
 test(
+  "B1B-ACK1 answer acknowledgement requires delivery first",
+  async () => {
+    const prematureFixture = await baseFixture();
+    const prematureSession = prematureFixture.bind();
+    const prematureAsk = await prematureFixture.choice(
+      prematureSession.sessionId,
+    );
+    await prematureFixture.action(prematureAsk.askId, "ack-before-delivery");
+    const premature = prematureFixture.core.inbox(prematureFixture.caller(), {
+      sessionId: prematureSession.sessionId,
+      ackAskIds: [prematureAsk.askId],
+    });
+
+    const mixedFixture = await baseFixture();
+    const mixedSession = mixedFixture.bind();
+    const mixedAsk = await mixedFixture.choice(mixedSession.sessionId);
+    await mixedFixture.action(mixedAsk.askId, "ack-mixed-undelivered");
+    seedItem(mixedFixture.db, "itm_ack_valid", {
+      delivered: mixedSession.sessionId,
+    });
+    const mixed = mixedFixture.core.inbox(mixedFixture.caller(), {
+      sessionId: mixedSession.sessionId,
+      ackItemIds: ["itm_ack_valid"],
+      ackAskIds: [mixedAsk.askId],
+    });
+
+    expect(
+      [premature, mixed].map((result) =>
+        result.ok ? "accepted" : result.error.code,
+      ),
+    ).toEqual(["ACK_INVALID", "ACK_INVALID"]);
+    expect(prematureFixture.col("ask_answers", "acked_at")).toEqual([null]);
+    expect(mixedFixture.col("ask_answers", "acked_at")).toEqual([null]);
+    expect(
+      mixedFixture.col(
+        "inbox_items WHERE item_id = 'itm_ack_valid'",
+        "acked_at",
+      ),
+    ).toEqual([null]);
+
+    const delivered = mixedFixture.read(mixedSession.sessionId);
+    expect(delivered.answers.map((answer) => answer.askId)).toEqual([
+      mixedAsk.askId,
+    ]);
+    expect(mixedFixture.col("ask_answers", "delivered_at")).toEqual([
+      mixedFixture.now(),
+    ]);
+    const ack = value(
+      mixedFixture.core.inbox(mixedFixture.caller(), {
+        sessionId: mixedSession.sessionId,
+        ackItemIds: ["itm_ack_valid"],
+        ackAskIds: [mixedAsk.askId],
+      }),
+    );
+    expect(ack).toMatchObject({ items: [], answers: [] });
+    expect(mixedFixture.read(mixedSession.sessionId)).toMatchObject({
+      items: [],
+      answers: [],
+    });
+  },
+  timeout,
+);
+
+test(
   "J4 assigning an untrusted item flips its child and ancestors only once",
   async () => {
     const f = await baseFixture();
