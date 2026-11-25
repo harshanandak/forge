@@ -6,6 +6,11 @@ export const reasons = [
   "api_field_invalid",
   "pages_incomplete",
   "bot_format_unsupported",
+  "bot_version_unsupported",
+  "bot_format_malformed",
+  "bot_state_invalid",
+  "bot_state_conflict",
+  "bot_head_invalid",
   "bot_identity_mismatch",
   "other_bot_unsupported",
 ] as const;
