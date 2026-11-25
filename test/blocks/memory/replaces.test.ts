@@ -336,7 +336,7 @@ test(
       {
         error: {
           code: "INPUT_INVALID",
-          message: `${twin.id} lacks requested replacements`,
+          message: `Note ${twin.id} says the same thing; revise it with id and expectRevision instead.`,
         },
       },
     );
@@ -346,7 +346,7 @@ test(
 );
 
 test(
-  "an exact owner-note twin covering the requested target returns exists",
+  "an exact owner-note twin covering the requested target is refused",
   async () => {
     const { state, call, add } = fixture();
     const text = "Owner chose the swift procedure";
@@ -361,9 +361,12 @@ test(
       replaces: [first.id, second.id],
     });
     const writes = state.counts.puttedRecords;
-    expect(await add(text, { tags, replaces: [first.id] })).toMatchObject({
-      id: twin.id,
-      status: "exists",
+    await expect(
+      add(text, { tags, replaces: [first.id] }),
+    ).rejects.toMatchObject({
+      error: {
+        message: `Note ${twin.id} says the same thing; revise it with id and expectRevision instead.`,
+      },
     });
     expect(state.counts.puttedRecords).toBe(writes);
   },
@@ -406,12 +409,12 @@ test(
   async () => {
     const { call, add } = fixture();
     const first = await add("identical shrike procedure");
-    const second = await add("identical shrike procedure");
-    const third = await add("identical shrike procedure");
+    const second = await add("second shrike procedure");
+    const third = await add("third shrike procedure");
     const input = { query: "shrike", limit: 1 };
     const start = (await call("memory.search", input)) as { next: string };
     expect(start).toMatchObject({ hits: [{ id: third.id }], next: "4:1" });
-    await add("identical shrike procedure", { replaces: [third.id] });
+    await add("current shrike procedure", { replaces: [third.id] });
     const middle = (await call("memory.search", {
       ...input,
       cursor: start.next,

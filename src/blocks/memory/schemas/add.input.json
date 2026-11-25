@@ -32,6 +32,14 @@
       "description": "On an edit, leave out to keep the stored links, or send [] to clear them."
     },
     "replaces": { "$ref": "defs.json#/$defs/Replaces" },
+    "coexistsWith": {
+      "$ref": "defs.json#/$defs/Links",
+      "description": "IDs of conflicting notes to keep alongside this new note. Supply a one-line reason."
+    },
+    "reason": {
+      "type": "string",
+      "description": "One line explaining why this new note replaces or coexists with matching notes."
+    },
     "id": {
       "$ref": "defs.json#/$defs/NoteRef",
       "description": "Edit this note instead of adding a new one. An edit changes only the fields you send."
