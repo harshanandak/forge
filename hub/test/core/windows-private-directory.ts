@@ -10,7 +10,7 @@ function loadDirectoryCreator() {
   const systemRoot = process.env.SystemRoot ?? "";
   if (!isAbsolute(systemRoot)) throw new Error("SystemRoot must be absolute");
   const system = join(systemRoot, "System32");
-  const kernel = dlopen(join(system, "kernel32.dll"), {
+  const kernel32 = dlopen(join(system, "kernel32.dll"), {
     GetCurrentProcess: { args: [], returns: "u64" },
     CloseHandle: { args: ["u64"], returns: "i32" },
     LocalFree: { args: ["ptr"], returns: "ptr" },
@@ -33,7 +33,7 @@ function loadDirectoryCreator() {
   const tokenOut = Buffer.alloc(8);
   check(
     security.symbols.OpenProcessToken(
-      kernel.symbols.GetCurrentProcess(),
+      kernel32.symbols.GetCurrentProcess(),
       tokenQuery,
       tokenOut,
     ),
@@ -67,10 +67,10 @@ function loadDirectoryCreator() {
     try {
       sid = new CString(sidPointer).toString();
     } finally {
-      kernel.symbols.LocalFree(sidPointer);
+      kernel32.symbols.LocalFree(sidPointer);
     }
   } finally {
-    kernel.symbols.CloseHandle(token);
+    kernel32.symbols.CloseHandle(token);
   }
   const sddl = Buffer.from(`O:${sid}D:P(A;OICI;FA;;;${sid})\0`, "ascii");
   return (path: string): void => {
@@ -90,14 +90,14 @@ function loadDirectoryCreator() {
       securityAttributes.writeUInt32LE(securityAttributes.length);
       securityAttributes.writeBigUInt64LE(descriptor, 8);
       check(
-        kernel.symbols.CreateDirectoryW(
+        kernel32.symbols.CreateDirectoryW(
           Buffer.from(path + "\0", "utf16le"),
           securityAttributes,
         ),
         "CreateDirectoryW",
       );
     } finally {
-      kernel.symbols.LocalFree(descriptor);
+      kernel32.symbols.LocalFree(descriptor);
     }
   };
 }
