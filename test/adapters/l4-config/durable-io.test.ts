@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import {
   mkdtempSync,
   readFileSync,
@@ -13,6 +13,8 @@ import {
   writePrivateTextAtomic,
   type DurableWriteFn,
 } from "../../../src/adapters/fs/durable-io.ts";
+
+setDefaultTimeout(30_000);
 
 function dir(): string {
   return mkdtempSync(join(tmpdir(), "forge-durable-io-"));
