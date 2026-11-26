@@ -11,6 +11,7 @@ import {
   conversation,
   paused,
   recordAgentPost,
+  str,
 } from "./thread.ts";
 
 export function createReply(ctx: CoreContext): HubCore["reply"] {
@@ -89,12 +90,20 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         if (asker !== undefined)
           prefix = name + "'s agent, answering <@" + asker + ">:";
       }
+      const owed = db
+        .prepare(
+          `SELECT item_id FROM reply_owed
+    WHERE conversation_id = ? AND answered = 0`,
+        )
+        .all(existing.conversationId)
+        .map((row) => str(row.item_id));
       return {
         ok: true,
         form: "thread",
         conversation: existing,
         label,
         prefix,
+        owed,
         sessionId: own.value.sessionId,
       } as const;
     });
@@ -194,9 +203,12 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
             person.personId,
             posted,
           );
-        db.prepare(
-          "UPDATE reply_owed SET answered = 1 WHERE conversation_id = ?",
-        ).run(result.conversation.conversationId);
+        if (result.owed.length > 0)
+          db.prepare(
+            "UPDATE reply_owed SET answered = 1 WHERE item_id IN (" +
+              result.owed.map(() => "?").join(",") +
+              ")",
+          ).run(...result.owed);
       });
       return {
         ok: true,
