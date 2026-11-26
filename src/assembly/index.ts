@@ -444,6 +444,58 @@ export async function createAssembly(
   const sharedBuiltins = options.oneShot
     ? new Map<string, CapturedBlock>()
     : undefined;
+  const builtinInstallToken = "<forge install>";
+  function redactBuiltinText(text: string, installRoot: string): string {
+    const forward = installRoot.replaceAll("\\", "/");
+    const backward = installRoot.replaceAll("/", "\\");
+    return text
+      .split(installRoot)
+      .join(builtinInstallToken)
+      .split(forward)
+      .join(builtinInstallToken)
+      .split(backward)
+      .join(builtinInstallToken);
+  }
+  function redactBuiltinError(source: BlockSource, error: unknown): unknown {
+    let installRoot: string;
+    try {
+      installRoot = resolveConfiguredBlock(root, source);
+    } catch {
+      return error;
+    }
+    if (error instanceof ForgeFailure) {
+      const inner = error.error;
+      return new ForgeFailure({
+        ...inner,
+        message: redactBuiltinText(inner.message, installRoot),
+        ...(typeof inner.repair === "string"
+          ? { repair: redactBuiltinText(inner.repair, installRoot) }
+          : {}),
+        ...(inner.suggest === undefined
+          ? {}
+          : {
+              suggest: inner.suggest.map((entry) =>
+                redactBuiltinText(entry, installRoot),
+              ),
+            }),
+      });
+    }
+    if (error instanceof Error) {
+      const Construct = error.constructor as new (message?: string) => Error;
+      const replacement = new Construct(
+        redactBuiltinText(error.message, installRoot),
+      );
+      for (const [key, entry] of Object.entries(error)) {
+        if (key === "message" || key === "stack") continue;
+        (replacement as Record<string, unknown>)[key] =
+          typeof entry === "string"
+            ? redactBuiltinText(entry, installRoot)
+            : entry;
+      }
+      return replacement;
+    }
+    return error;
+  }
   function callScope(
     derived: readonly DetectionObservation[] = [],
     operatorExport = false,
@@ -472,7 +524,10 @@ export async function createAssembly(
             );
             reusable?.set(key, found);
           } catch (error) {
-            found = { failed: error };
+            found = {
+              failed:
+                "builtin" in source ? redactBuiltinError(source, error) : error,
+            };
           }
         }
         captures.set(key, found);
