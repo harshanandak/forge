@@ -577,6 +577,7 @@ test(
       omitPackage("node_modules/chat"),
       omitPackage("node_modules/remark-parse"),
       paths.filter((path) => path !== "node_modules/chat/dist/index.js"),
+      paths.filter((path) => path !== "dist/chat/telegram-wire.js"),
       [...paths, "node_modules/chat/node_modules/unrelated/package.json"],
     ]) {
       ok(
