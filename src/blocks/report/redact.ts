@@ -10,8 +10,10 @@ const EMAIL =
   /(?:"(?:\\.|[^"\\])*"|[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+)@(?:\[[^\]\r\n]+\]|[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*)/gu;
 const ASSIGNMENT =
   /\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
+const FLAG_VALUE =
+  /(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|auth|pat)\s*(?:[:=]|\s)\s*[^\s,;]+/gi;
 const ROOTED_PATH =
-  /(?<![^\s([<{"'=:,;`])(?:~?\/|\.\.?[\\/]|[a-z]:[\\/]|\\\\)(?:(?:[^()[\]"'`<>{}=]|\[[^\]]*\]|\([^)]*\))*[\\/])?[^\s)\]}>"'`<={]*/iu;
+  /(?<![^\s([<{"'=:,;`>|])(?:~?\/|\.\.?[\\/]|[a-z]:[\\/]|\\\\)(?:(?:[^()[\]"'`<>{}=]|\[[^\]]*\]|\([^)]*\))*[\\/])?[^\s)\]}>"'`<={]*/iu;
 const UNROOTED_PATH =
   /(?<![^\s"'`<>{}=])(?:[a-z][a-z\d+.-]*:\/\/|[\p{L}\p{N}][^\s"'`<>{}=:,;]*[\\/])[^\s"'`<>{}=]+/iu;
 const PATH = new RegExp(
@@ -62,6 +64,7 @@ export function redactReport(
   const patterns = [
     CREDENTIAL,
     ASSIGNMENT,
+    FLAG_VALUE,
     AUTHORIZATION,
     BASIC,
     BEARER,
@@ -72,7 +75,12 @@ export function redactReport(
     const literal = normalize(label);
     if (literal.trim())
       patterns.push(
-        new RegExp(literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu"),
+        new RegExp(
+          literal
+            .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+            .replace(/\s+/g, "\\s+"),
+          "giu",
+        ),
       );
   }
   const spans: [start: number, end: number][] = [];
