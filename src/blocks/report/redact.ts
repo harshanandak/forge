@@ -1,53 +1,76 @@
 const MASK = "[redacted]";
-const ADJACENT_MASKS = /(?:\[redacted\]){2,}/g;
 const CREDENTIAL =
   /(?:fct_|gh[psour]_|github_pat_|sk-|xox[baprs]-|AKIA|AIza)[a-z\d_-]+/gi;
 const BEARER = /\bbearer\s+[^\s,;]+/gi;
-const EMAIL =
-  /(?:\[redacted\]|[\p{L}\p{N}._%+'-]+)@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*/gu;
-const ASSIGNMENT =
-  /\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
-const PATH =
-  /(?<![^\s"'`<>{}=])(?:[a-z][a-z\d+.-]*:\/\/|[^\s"'`<>{}=]*[\\/])(?:\S.*|$)/iu;
-const PASTED =
-  /[\r\n\u0085\u2028\u2029]|[{}]|<[!?/a-z][^>]*>|^\s*(?:[A-Z_][A-Z0-9_]*\s*=|(?:import|export|function|const|let|var)\s)/u;
 const QUOTED =
   /"(?:\\(?:.|$)|[^"\\])*(?:"|$)|(?<!\p{L})'(?:\\(?:.|$)|[^'\\])*(?:'|$)|`(?:\\(?:.|$)|[^`\\])*(?:`|$)/gu;
+const EMAIL =
+  /(?:"(?:\\.|[^"\\])*"|[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+)@(?:\[[^\]\r\n]+\]|[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*)/gu;
+const ASSIGNMENT =
+  /\b(?:authorization|password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
+const PATH_START =
+  /(?<![^\s"'`<>{}=])(?:[a-z][a-z\d+.-]*:\/\/|[^\s"'`<>{}=]*[\\/])(?=\S|$)/iu;
+const PATH = new RegExp(
+  QUOTED.source + "|(?<path>" + PATH_START.source + ")",
+  "giu",
+);
+const PASTED =
+  /[\r\n\u0085\u2028\u2029]|[{}]|<[!?/a-z][^>]*>|^\s*(?:[A-Z_][A-Z0-9_]*\s*=|(?:import|export|function|const|let|var)\s)/u;
+const ESCAPE = /%([0-7][a-f\d])|\\(?:u00|x)([0-7][a-f\d])/gi;
+const QUOTED_PART = new RegExp("(" + QUOTED.source + ")", "gu");
+
+function normalize(value: string): string {
+  return value
+    .normalize("NFKC")
+    .split(QUOTED_PART)
+    .map((part, index) => {
+      const delimiter = index % 2 === 0 ? undefined : part[0];
+      return part.replace(
+        ESCAPE,
+        (_match, percent: string | undefined, escape: string | undefined) => {
+          const decoded = String.fromCharCode(
+            Number.parseInt(percent ?? escape ?? "", 16),
+          );
+          return delimiter && (decoded === delimiter || decoded === "\\")
+            ? "\\" + decoded
+            : decoded;
+        },
+      );
+    })
+    .join("")
+    .replace(/\t/g, " ")
+    .replace(/(?![\r\n\u0085])[\p{Cc}\p{Cf}]/gu, "")
+    .normalize("NFKC");
+}
 
 export function redactReport(
   message: string,
   labels: readonly string[],
 ): string {
-  let text = message.normalize("NFKC");
+  if (PASTED.test(message)) return MASK;
+  const text = normalize(message);
   if (PASTED.test(text)) return MASK;
-  for (const label of [...labels].sort((a, b) => b.length - a.length)) {
-    if (label.trim() === "") continue;
-    const literal = label
-      .normalize("NFKC")
-      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    text = text.replace(new RegExp(literal, "giu"), MASK);
+  const patterns = [CREDENTIAL, ASSIGNMENT, BEARER, QUOTED, EMAIL];
+  for (const label of labels) {
+    const literal = normalize(label);
+    if (literal.trim())
+      patterns.push(
+        new RegExp(literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu"),
+      );
   }
-  text = text
-    .replace(QUOTED, MASK)
-    .replace(
-      /%([0-7][a-f\d])|\\(?:u00|x)([0-7][a-f\d])/gi,
-      (_match, percent: string | undefined, escape: string | undefined) =>
-        String.fromCharCode(Number.parseInt(percent ?? escape ?? "", 16)),
-    );
-  if (PASTED.test(text)) return MASK;
-  text = text
-    .replace(/\t/g, " ")
-    .replace(/[\p{Cc}\p{Cf}]/gu, "")
-    .replace(QUOTED, MASK)
-    .replace(ASSIGNMENT, MASK)
-    .replace(BEARER, MASK)
-    .replace(EMAIL, MASK)
-    .replace(CREDENTIAL, MASK);
-  return (
-    text
-      .replace(PATH, MASK)
-      .replace(ADJACENT_MASKS, MASK)
-      .replace(/\s+/gu, " ")
-      .trim() || MASK
-  );
+  const spans: [start: number, end: number][] = [];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern))
+      spans.push([match.index, match.index + match[0].length]);
+  }
+  const path = [...text.matchAll(PATH)].find((match) => match.groups?.path);
+  if (path) spans.push([path.index, text.length]);
+  spans.sort(([left], [right]) => left - right);
+  let result = "";
+  let end = 0;
+  for (const [start, stop] of spans) {
+    if (start > end || end === 0) result += text.slice(end, start) + MASK;
+    end = Math.max(end, stop);
+  }
+  return (result + text.slice(end)).replace(/\s+/gu, " ").trim() || MASK;
 }
