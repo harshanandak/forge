@@ -23,7 +23,10 @@ const npx = [
   join(npmRoot, "../lib/node_modules/npm/bin/npx-cli.js"),
 ].find(existsSync);
 assert.ok(npx, "npx shipped with Node is required");
-const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, ".device") };
+const env = {
+  ...process.env,
+  FORGE_DEVICE_ROOT: join(process.cwd(), "device"),
+};
 function run(executable, args, expected = 0) {
   const result = spawnSync(executable, args, {
     cwd: root,

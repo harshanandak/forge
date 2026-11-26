@@ -35,13 +35,14 @@ function hookPath(command) {
 
 function project(files) {
   const root = realpathSync(mkdtempSync(join(process.cwd(), "delivery-")));
+  const device = `${root}-device`;
   for (const [name, text] of Object.entries(files))
     writeFileSync(join(root, name), text);
   const env = unattendedEnv({
     ...process.env,
-    FORGE_DEVICE_ROOT: join(root, "device"),
+    FORGE_DEVICE_ROOT: device,
   });
-  writeOwnerPolicy(join(root, "device"));
+  writeOwnerPolicy(device);
   for (const name of Object.keys(env))
     if (
       [
@@ -108,7 +109,7 @@ function project(files) {
   }
   const importDelivery = (expected = 0) => cli(importArgs, expected);
   if (Object.keys(files).length === 0)
-    return { root, cli, refused: importDelivery(6) };
+    return { root, device, cli, refused: importDelivery(6) };
   assert.equal(importDelivery().result.template, "harsha/delivery@0.1.2");
   for (const [detect, harness] of [
     [{ CLAUDECODE: "1" }, "claude"],
@@ -156,7 +157,7 @@ function project(files) {
     }),
   ]);
   // No environment config: check's default finds the project's own npm on PATH.
-  return { root, cli };
+  return { root, device, cli };
 }
 
 // An npm project: check runs the project's own test script, never a Bun command.
@@ -219,7 +220,7 @@ const textIssue = spawnSync(process.execPath, [bin, "issue", "--text"], {
   cwd: npm.root,
   env: unattendedEnv({
     ...process.env,
-    FORGE_DEVICE_ROOT: join(npm.root, "device"),
+    FORGE_DEVICE_ROOT: npm.device,
   }),
   encoding: "utf8",
   windowsHide: true,
@@ -289,7 +290,7 @@ const hookEnv = Object.fromEntries(
     /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE)$/i.test(name),
   ),
 );
-hookEnv.FORGE_DEVICE_ROOT = join(npm.root, "device");
+hookEnv.FORGE_DEVICE_ROOT = npm.device;
 for (const id of ["claude", "codex"]) {
   const rendered = npm.cli(["agent", "guard", id]).result;
   const group = rendered.config.hooks.PreToolUse[0];

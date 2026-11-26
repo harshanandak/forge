@@ -21,7 +21,7 @@ assert.equal(process.versions.bun, undefined);
 const root = realpathSync(mkdtempSync(join(process.cwd(), "first-run-")));
 const env = {
   ...process.env,
-  FORGE_DEVICE_ROOT: join(root, ".device"),
+  FORGE_DEVICE_ROOT: `${root}-device`,
   FORGE_SESSION: "first-run",
 };
 const fake = join(root, ".fake");
@@ -89,7 +89,7 @@ writeFileSync(
   }),
 );
 writeFileSync(join(root, "package-lock.json"), '{"lockfileVersion":3}');
-writeFileSync(join(root, ".gitignore"), ".device/\n.fake/\n");
+writeFileSync(join(root, ".gitignore"), ".fake/\n");
 writeFileSync(
   join(root, "test.js"),
   'const { add } = require("./add.js");\nif (add(2, 2) !== 4) { console.error("add(2, 2) is wrong"); process.exit(1); }\n',

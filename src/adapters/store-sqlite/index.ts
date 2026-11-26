@@ -9,6 +9,9 @@ import {
   existsSync,
   statSync,
   fstatSync,
+  fchmodSync,
+  constants,
+  type Stats,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -18,6 +21,7 @@ import {
   adoptPrivateFile,
   copyPrivateFile,
   createPrivateFile,
+  ensurePrivateDirectory,
   makePrivateTempDirectory,
   openStoreFile,
   removeDurable,
@@ -68,6 +72,100 @@ function realStorePath(path: string): string {
     if (parent === path) throw error;
     return join(realStorePath(parent), basename(path));
   }
+}
+
+class DeviceRecordStoreError extends Error {}
+
+function refuseDeviceRecordStore(reason: string): never {
+  throw new DeviceRecordStoreError(`Device record store ${reason}`);
+}
+
+function enforceDeviceMode(path: string, info: Stats, mode: number): void {
+  const uid = process.geteuid?.();
+  if (uid === undefined) return;
+  if (info.uid !== uid)
+    refuseDeviceRecordStore("must be owned by the current user");
+  if ((info.mode & 0o7777) === mode) return;
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const current = fstatSync(fd);
+    if (
+      current.dev !== info.dev ||
+      current.ino !== info.ino ||
+      current.uid !== uid
+    )
+      refuseDeviceRecordStore("changed while checking permissions");
+    fchmodSync(fd, mode);
+    if ((fstatSync(fd).mode & 0o7777) !== mode)
+      refuseDeviceRecordStore("permissions could not be tightened");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function deviceRecordEntry(records: string): Stats | undefined {
+  const file = lstatSync(records, { throwIfNoEntry: false });
+  if (file?.isSymbolicLink())
+    refuseDeviceRecordStore("cannot be a symbolic link");
+  if (file && (!file.isFile() || file.nlink !== 1))
+    refuseDeviceRecordStore("must be a regular file with one link");
+  return file;
+}
+
+function deviceRecordPath(path: string, readOnly: boolean): string | undefined {
+  const root = realStorePath(dirname(path));
+  for (let directory = root; ; directory = dirname(directory)) {
+    if (lstatSync(join(directory, ".git"), { throwIfNoEntry: false }))
+      refuseDeviceRecordStore("is inside a Git work tree");
+    if (directory === dirname(directory)) break;
+  }
+  const records = join(root, basename(path));
+  const existing = deviceRecordEntry(records);
+  if (readOnly && !existing) return;
+  if (!readOnly) ensurePrivateDirectory(root);
+  const directory = lstatSync(root);
+  if (!directory.isDirectory())
+    refuseDeviceRecordStore("root must be a directory");
+  enforceDeviceMode(root, directory, 0o700);
+  const file = deviceRecordEntry(records);
+  if (file) enforceDeviceMode(records, file, 0o600);
+  if (!readOnly || file) return records;
+}
+
+export async function openDeviceRecordStore(
+  path: string,
+  readOnly: boolean,
+  getSecurity: () => PrivateFileGuard | undefined,
+): Promise<Awaited<ReturnType<StorePort["open"]>> | undefined> {
+  let records: string | undefined;
+  try {
+    records = deviceRecordPath(path, readOnly);
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: {
+        kind: "unavailable",
+        reason:
+          error instanceof DeviceRecordStoreError
+            ? error.message
+            : "Device record store could not be secured",
+        remedy: "Use a private local device directory outside Git work trees",
+      },
+    };
+  }
+  if (records === undefined) return;
+  const security = getSecurity();
+  return createSqliteStore(
+    dirname(records),
+    security ? { security } : {},
+    true,
+  ).open({
+    path: records,
+    readOnly,
+  });
 }
 
 export class StoreRestoringError extends Error {
@@ -171,6 +269,7 @@ export interface RestoreHooks {
 export function createSqliteStore(
   basePath: string,
   hooks: RestoreHooks = {},
+  deviceRecords = false,
 ): StorePort {
   if (!isAbsolute(basePath)) throw new Error("Store base must be absolute");
   if (hooks.security)
@@ -181,7 +280,7 @@ export function createSqliteStore(
       let pinned: number | undefined;
       try {
         const path =
-          options.path === ":memory:"
+          deviceRecords || options.path === ":memory:"
             ? options.path
             : realStorePath(resolve(basePath, options.path));
         assertFilesystem(
@@ -210,16 +309,26 @@ export function createSqliteStore(
             throw new StoreRestoringError();
         };
         assertUnfenced();
+        const statStore = deviceRecords ? lstatSync : statSync;
         const expectedIdentity =
-          path === ":memory:" || !existsSync(path)
+          path === ":memory:"
             ? undefined
-            : statSync(path, { bigint: true });
+            : deviceRecords
+              ? lstatSync(path, { bigint: true, throwIfNoEntry: false })
+              : existsSync(path)
+                ? statSync(path, { bigint: true })
+                : undefined;
         assertSingleLink(path, expectedIdentity);
         hooks.step?.("identity-checked");
         // Keep the opened inode pinned across SQLite's open; reject either side
         // of a pathname replacement rather than adopting its newer identity.
         if (path !== ":memory:")
-          pinned = openStoreFile(path, options.readOnly, hooks.fs);
+          pinned = openStoreFile(
+            path,
+            options.readOnly,
+            hooks.fs,
+            deviceRecords,
+          );
         hooks.step?.("opening");
         let connect: (path: string, readOnly: boolean) => Binding;
         if ("Bun" in globalThis) {
@@ -241,12 +350,12 @@ export function createSqliteStore(
               create: !readOnly,
               safeIntegers: true,
             });
-          binding = connect(path, options.readOnly);
         } else {
           const { DatabaseSync } = await import("node:sqlite");
           connect = (name, readOnly) => new DatabaseSync(name, { readOnly });
-          binding = connect(path, options.readOnly);
         }
+        if (deviceRecords) deviceRecordEntry(path);
+        binding = connect(path, options.readOnly);
         let db = binding;
         hooks.step?.("connected");
         let identity =
@@ -254,7 +363,7 @@ export function createSqliteStore(
             ? undefined
             : fstatSync(pinned, { bigint: true });
         const current =
-          path === ":memory:" ? undefined : statSync(path, { bigint: true });
+          path === ":memory:" ? undefined : statStore(path, { bigint: true });
         assertUnfenced();
         assertSingleLink(path, identity);
         assertSingleLink(path, current);

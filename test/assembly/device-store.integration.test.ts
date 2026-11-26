@@ -28,6 +28,11 @@ const add = [
 ];
 const search = ["memory", "search", "--input", '{"query":"private"}'];
 const posix = process.platform !== "win32";
+const canChangeOwner =
+  process.platform === "linux" &&
+  (process.geteuid?.() === 0 ||
+    process.env.GITHUB_ACTIONS === "true" ||
+    spawnSync("sudo", ["-n", "true"], { timeout: 10_000 }).status === 0);
 
 function fixture() {
   const work = mkdtempSync(join(tmpdir(), "forge-device-store-"));
@@ -105,7 +110,7 @@ for (const { entry, loose, privateMode } of [
     },
   );
 
-test.skipIf(process.platform !== "linux")(
+test.skipIf(!canChangeOwner)(
   "a foreign-owned device record file is refused without changing its mode",
   () => {
     const f = fixture();
