@@ -10,10 +10,17 @@ const EMAIL =
   /(?:"(?:\\.|[^"\\])*"|[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+)@(?:\[[^\]\r\n]+\]|[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*)/gu;
 const ASSIGNMENT =
   /\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
-const PATH_START =
-  /(?<![^\s"'`<>{}=])(?:[a-z][a-z\d+.-]*:\/\/|[^\s"'`<>{}=]*[\\/])(?=\S|$)/iu;
+const ROOTED_PATH =
+  /(?<![^\s([<{"'=:,;`])(?:~?\/|\.\.?[\\/]|[a-z]:[\\/]|\\\\)(?:(?:[^()[\]"'`<>{}=]|\[[^\]]*\]|\([^)]*\))*[\\/])?[^\s)\]}>"'`<={]*/iu;
+const UNROOTED_PATH =
+  /(?<![^\s"'`<>{}=])(?:[a-z][a-z\d+.-]*:\/\/|[\p{L}\p{N}][^\s"'`<>{}=:,;]*[\\/])[^\s"'`<>{}=]+/iu;
 const PATH = new RegExp(
-  QUOTED.source + "|(?<path>" + PATH_START.source + ")",
+  QUOTED.source +
+    "|(?<path>" +
+    ROOTED_PATH.source +
+    "|" +
+    UNROOTED_PATH.source +
+    ")",
   "giu",
 );
 const PASTED =
@@ -73,8 +80,10 @@ export function redactReport(
     for (const match of text.matchAll(pattern))
       spans.push([match.index, match.index + match[0].length]);
   }
-  const path = [...text.matchAll(PATH)].find((match) => match.groups?.path);
-  if (path) spans.push([path.index, text.length]);
+  for (const match of text.matchAll(PATH)) {
+    if (match.groups?.path)
+      spans.push([match.index, match.index + match[0].length]);
+  }
   spans.sort(([left], [right]) => left - right);
   let result = "";
   let end = 0;

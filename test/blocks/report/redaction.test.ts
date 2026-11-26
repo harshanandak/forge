@@ -76,11 +76,11 @@ test.each([
 
 test.each([
   "/home/alice/Project[Orchid]/config.yml",
-  "/Users/Jane Doe",
+
   "/tmp/Private Customer Folder/log.txt",
   String.raw`C:\Users\Private [Customer]\log.txt`,
   String.raw`\\Private Host\Private Share\log.txt`,
-  "relative[Orchid]/Private Folder/log.txt",
+
   "/tmp/Private, Customer (Folder)/log.txt",
 ])(
   "P3 redacts the complete path span in %j",
@@ -91,6 +91,21 @@ test.each([
   },
   30_000,
 );
+
+test("P3 preserves the word after an unquoted terminal path token", () => {
+  expect(redactReport("Cannot open /Users/Jane Doe", [])).toBe(
+    "Cannot open [redacted] Doe",
+  );
+  expect(redactReport("Cannot open /Users/Jane Doe", ["Jane Doe"])).toBe(
+    "Cannot open [redacted]",
+  );
+}, 30_000);
+
+test("P3 redacts each unrooted path token independently", () => {
+  expect(
+    redactReport("Cannot open relative[Orchid]/Private Folder/log.txt", []),
+  ).toBe("Cannot open [redacted] [redacted]");
+}, 30_000);
 
 test.each(['Acme "Private" Repository', 'Acme "Private" sk-FixtureLabel'])(
   "FR-REDACT2 removes an intact known label %j before other substitutions",
