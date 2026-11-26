@@ -511,3 +511,59 @@ test(
   },
   timeout,
 );
+
+test(
+  "OW1.reply reply refuses a conversation in a channel the project left",
+  async () => {
+    const f = await baseFixture({
+      bells: [bellFor(b.personId, "beta")],
+    });
+    f.bind();
+    const beta = f.bind(b);
+    await f.emit("root", { slackUserId: slackB });
+    const conversationId = f.read(beta.sessionId, b).items[0]!.conversationId!;
+    const posted = value(
+      await f.core.reply(f.caller(b), {
+        sessionId: beta.sessionId,
+        conversationId,
+        text: "Current channel reply",
+      }),
+    );
+    expect(posted.conversationId).toBe(conversationId);
+    expect(f.writes("postText")).toHaveLength(1);
+    const projects = f.config.projects.map((project) =>
+      project.projectId === p1
+        ? { ...project, slackChannelId: "C00000009" }
+        : project,
+    );
+    const moved = createCoreBase(
+      createCoreContext({
+        ...f.deps,
+        config: { ...f.config, projects },
+        people: configPeople(f.config.people),
+      }),
+    );
+    const items = f.rows("inbox_items");
+    const agents = f.rows("thread_messages WHERE kind = 'agent'");
+    const owed = f.rows("reply_owed");
+    const writes = f.chat.writes.length;
+    expect(
+      refusal(
+        await moved.reply(f.caller(b), {
+          sessionId: beta.sessionId,
+          conversationId,
+          text: "Stale channel reply",
+        }),
+      ),
+    ).toMatchObject({
+      code: "INPUT_INVALID",
+      pointer: "/conversationId",
+      retry: "never",
+    });
+    expect(f.rows("inbox_items")).toEqual(items);
+    expect(f.rows("thread_messages WHERE kind = 'agent'")).toEqual(agents);
+    expect(f.rows("reply_owed")).toEqual(owed);
+    expect(f.chat.writes).toHaveLength(writes);
+  },
+  timeout,
+);
