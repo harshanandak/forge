@@ -77,12 +77,38 @@ export function removeDurable(path: string): void {
  * Writes a private file by atomic replace: a new 0600 file is renamed over the old one, so a
  * broader mode on the old file is never inherited.
  */
-export function writePrivateTextAtomic(path: string, text: string): void {
+export type DurableWriteFn = (
+  fd: number,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+) => number;
+
+export function writeAllSync(
+  fd: number,
+  buffer: Buffer,
+  write: DurableWriteFn = (target, chunk, offset, length) =>
+    writeSync(target, chunk, offset, length),
+): void {
+  let written = 0;
+  while (written < buffer.length) {
+    const progress = write(fd, buffer, written, buffer.length - written);
+    if (progress <= 0) throw new Error("Private file write made no progress");
+    written += progress;
+  }
+}
+
+export function writePrivateTextAtomic(
+  path: string,
+  text: string,
+  write: DurableWriteFn = (target, chunk, offset, length) =>
+    writeSync(target, chunk, offset, length),
+): void {
   const temporary = `${path}.${randomUUID()}.tmp`;
   const fd = createPrivateFile(temporary, false);
   try {
     try {
-      writeSync(fd, text);
+      writeAllSync(fd, Buffer.from(text), write);
       fsyncSync(fd);
     } finally {
       closeSync(fd);
