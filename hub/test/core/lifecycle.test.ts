@@ -181,7 +181,7 @@ test(
         closed = true;
       });
       timers.advance(closeMs - 1);
-      await Promise.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
       expect(closed).toBe(false);
       timers.advance(1);
       await until(() => closed, 2_000);
@@ -205,7 +205,7 @@ test(
       const closing = early.worker.close().then(() => {
         settled = true;
       });
-      await Promise.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
       expect(settled).toBe(false);
       lastEdit.release();
       await until(() => settled, 2_000);
