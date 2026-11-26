@@ -46,7 +46,7 @@ export function tap(
   messageId: number,
   data = "fa1:0",
   callbackId = "callback-" + updateId,
-): Update {
+) {
   return {
     update_id: updateId,
     callback_query: {
@@ -106,6 +106,7 @@ export function fakeTelegram(token = fixtureTelegramToken) {
         signal.throwIfAborted();
         const offset = body.offset === undefined ? 0 : decimalId(body.offset);
         const ready = stream.filter((update) => update.update_id >= offset);
+        stream.splice(0, stream.length, ...ready);
         if (ready.length) return telegramOk(ready);
         await changed.promise;
       }

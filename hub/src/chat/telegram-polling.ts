@@ -15,6 +15,7 @@ type Handle = (
 
 let activeBots: Set<number> | undefined;
 const maxBackoffMs = 30_000;
+const maxServerWaitMs = 86_400_000;
 const sleepUntil: TelegramSleep = (ms, signal) =>
   delay(ms, undefined, { signal, ref: false });
 
@@ -62,7 +63,7 @@ export function createTelegramPolling(
           error instanceof ChatWriteFailure ? error.retryAfterMs : undefined;
         log.warn("telegram_poll_retry");
         await sleep(
-          Math.min(maxBackoffMs, Math.max(backoffMs, wait ?? 0)),
+          Math.max(backoffMs, Math.min(maxServerWaitMs, wait ?? 0)),
           signal,
         );
         backoffMs = Math.min(maxBackoffMs, backoffMs * 2);

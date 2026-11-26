@@ -44,10 +44,11 @@ function messageRef(value: unknown) {
   return { chatId: chat.id, messageId: message.message_id, isDirect };
 }
 
-function message(value: unknown) {
+function message(value: unknown, allowInaccessible = false) {
   const ref = messageRef(value);
   const data = record(value);
-  if (!ref || !data || !telegramId(data.date)) return;
+  if (!ref || !data) return;
+  if (!telegramId(data.date) && !(allowInaccessible && data.date === 0)) return;
   const reply = messageRef(data.reply_to_message);
   return {
     ...ref,
@@ -78,7 +79,7 @@ function updates(value: unknown) {
         id: string(query?.id),
         data: string(query?.data),
         sender: author(query?.from),
-        message: message(query?.message),
+        message: message(query?.message, true),
       },
       message: message(data?.message),
       edited: message(data?.edited_message),

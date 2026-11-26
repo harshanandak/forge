@@ -157,6 +157,49 @@ function editedIds(h: Awaited<ReturnType<typeof askHarness>>) {
 }
 
 test(
+  "T2-SEC1 an inaccessible callback message still requires the exact delivery",
+  async () => {
+    const h = await askHarness();
+    const id = await h.createAsk({
+      kind: "work_request",
+      requestedAction: "work",
+      issueId: "demo-12",
+    });
+    const original = h.messageId(id);
+    function inaccessible(updateId: number, messageId: number) {
+      const event = tap(updateId, telegramA, telegramA, messageId);
+      const { chat, message_id } = event.callback_query.message;
+      return {
+        ...event,
+        callback_query: {
+          ...event.callback_query,
+          message: { chat, message_id, date: 0 },
+        },
+      };
+    }
+    await startTelegram(h.port, answering(h));
+    try {
+      h.fake.push(inaccessible(1, original + 100));
+      await h.fake.handled(1);
+      expect(rows(h.db, "ask_answers")).toEqual([]);
+      expect(rows(h.db, "permits")).toEqual([]);
+      const notices = h.fake.only("answerCallbackQuery");
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.text).toMatch(/\S/);
+      h.fake.push(inaccessible(2, original));
+      await h.fake.handled(2);
+      expect(rows(h.db, "ask_answers")).toMatchObject([
+        { ask_id: id, choice_id: "approve", source: "button" },
+      ]);
+      expect(rows(h.db, "permits")).toMatchObject([{ request_ask_id: id }]);
+    } finally {
+      await h.port.stop();
+    }
+  },
+  telegramTimeout,
+);
+
+test(
   "T2-ASK1 a tap locks one answer and clears the original two keyboards",
   async () => {
     const h = await askHarness();
