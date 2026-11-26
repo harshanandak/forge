@@ -7,6 +7,7 @@ import {
 } from "../contract/chat.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import type { ChatDeps } from "../contract/runtime.ts";
+import { createSqliteChatState } from "./state.ts";
 import {
   askCallbackPrefix,
   renderTelegramAskCard,
@@ -35,7 +36,6 @@ const unsupported = () =>
   Promise.reject(
     new ChatWriteFailure("refused", undefined, "restricted_action"),
   );
-const threadLimit = 4_096;
 
 function decimal(value: string, signed = false): number {
   const id = Number(value);
@@ -46,6 +46,10 @@ function decimal(value: string, signed = false): number {
 
 function threadKey(chatId: number, kind: "root" | "topic", id: number): string {
   return `telegram:${chatId}:${kind}:${id}`;
+}
+
+function replyKey(chatId: number, messageId: number): string {
+  return `telegram:reply:${chatId}:${messageId}`;
 }
 
 function target(thread: string) {
@@ -61,7 +65,7 @@ function target(thread: string) {
 }
 
 export function createTelegramChatPort(
-  { secret, log }: Pick<ChatDeps, "secret" | "log">,
+  { db, secret, log }: Pick<ChatDeps, "db" | "secret" | "log">,
   options: TelegramOptions = {},
 ): ChatPort {
   let token: string | undefined;
@@ -72,19 +76,14 @@ export function createTelegramChatPort(
   }
   if (!token) throw new ChatWriteFailure("refused");
   const api = createTelegramApi(token, options.fetch ?? fetch);
-  const threads = new Map<string, string>();
+  const threads = createSqliteChatState(db);
 
-  function makeRef(
-    chatId: number,
-    messageId: number,
-    threadId: string,
-  ): ChatMessageRef {
-    const key = `${chatId}:${messageId}`;
-    threads.delete(key);
-    threads.set(key, threadId);
-    const oldest = threads.keys().next().value;
-    if (threads.size > threadLimit && oldest !== undefined)
-      threads.delete(oldest);
+  async function makeRef(chatId: number, messageId: number, threadId: string) {
+    if (chatId < 0 && threadId !== threadKey(chatId, "root", messageId)) {
+      await threads.set(replyKey(chatId, messageId), threadId).catch(() => {
+        throw new ChatWriteFailure("unknown");
+      });
+    }
     return {
       channelId: String(chatId),
       chatMessageId: String(messageId),
@@ -92,11 +91,14 @@ export function createTelegramChatPort(
     };
   }
 
-  function inboundRef({ chatId, messageId, replyTo, topic }: TelegramMessage) {
-    const root = replyTo ?? messageId;
+  async function inboundRef(message: TelegramMessage) {
+    const { chatId, messageId, replyTo, topic } = message;
+    const parent = replyTo ?? messageId;
     const thread = topic
       ? threadKey(chatId, "topic", topic)
-      : (threads.get(`${chatId}:${root}`) ?? threadKey(chatId, "root", root));
+      : ((chatId < 0
+          ? await threads.get<string>(replyKey(chatId, parent))
+          : null) ?? threadKey(chatId, "root", parent));
     return makeRef(chatId, messageId, thread);
   }
 
@@ -121,7 +123,7 @@ export function createTelegramChatPort(
           chatIdentity: { adapter: "telegram", userId: String(sender.id) },
           actionId: ASK_ACTION_PREFIX,
           value,
-          message: inboundRef(tapped),
+          message: await inboundRef(tapped),
         });
         text = reply.ephemeralText ?? "";
       }
@@ -142,18 +144,20 @@ export function createTelegramChatPort(
     }
     if (edited) {
       await handlers.onMessageChange({
-        ...inboundRef(edited),
+        ...(await inboundRef(edited)),
         kind: "edited",
         text: edited.text,
         fileNames: edited.fileName ? [edited.fileName] : [],
       });
       return;
     }
-    const sender = message?.sender;
-    if (!message || !sender) return;
+    if (!message) return;
+    const ref = await inboundRef(message);
+    const sender = message.sender;
+    if (!sender) return;
     const mentions = message.text.toLowerCase().match(/(?<!\w)@[a-z0-9_]+/g);
     await handlers.onMessage({
-      ...inboundRef(message),
+      ...ref,
       eventKey: "telegram:update:" + update.id,
       chatIdentity: { adapter: "telegram", userId: String(sender.id) },
       slackUserId: "",

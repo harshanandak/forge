@@ -60,8 +60,9 @@ async function askHarness() {
       projectId: p1,
       kind: "choice",
       requestedAction: "choice",
-      to: [a.personId, b.personId],
-      choices,
+      ...(input.kind === "work_request"
+        ? {}
+        : { to: [a.personId, b.personId], choices }),
       question,
       ...input,
     });
@@ -128,7 +129,6 @@ async function askHarness() {
           kind: "work_request",
           requestedAction: "work",
           issueId: "demo-12",
-          to: [a.personId],
           question,
         }),
       ).askId;

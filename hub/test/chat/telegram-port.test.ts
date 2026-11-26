@@ -10,6 +10,7 @@ import {
   type ChatMessageEvent,
 } from "../../src/contract/chat.ts";
 import { LIMITS } from "../../src/contract/mcp.ts";
+import { closeDb, fixture, openDb } from "../core/fixture.ts";
 import {
   fixtureTelegramToken,
   telegramA,
@@ -58,6 +59,55 @@ test(
     expect(fake.only("sendMessage").map(({ text }) => text)).not.toContain(
       "Private fixture",
     );
+  },
+  telegramTimeout,
+);
+
+test(
+  "T2-GRP1 a reply to a group reply keeps its original root after reopening the hub database",
+  async () => {
+    const { db, path } = await fixture();
+    const first = telegramFixture(undefined, {}, db);
+    const messages: ChatMessageEvent[] = [];
+    const handlers: typeof idleHandlers = {
+      ...idleHandlers,
+      onMessage(event) {
+        messages.push(event);
+        return Promise.resolve();
+      },
+    };
+    const root = telegramMessage(telegramGroup, 100);
+    const reply = telegramMessage(telegramGroup, 101, {
+      reply_to_message: root,
+    });
+    await startTelegram(first.port, handlers);
+    try {
+      first.fake.push(
+        { update_id: 50, message: root },
+        { update_id: 51, message: reply },
+      );
+      await first.fake.handled(51);
+    } finally {
+      await first.port.stop();
+    }
+    closeDb(db);
+
+    const restarted = telegramFixture(undefined, {}, openDb(path));
+    await startTelegram(restarted.port, handlers);
+    try {
+      restarted.fake.push({
+        update_id: 52,
+        message: telegramMessage(telegramGroup, 102, {
+          reply_to_message: { ...reply, reply_to_message: undefined },
+        }),
+      });
+      await restarted.fake.handled(52);
+      expect(messages.map(({ chatThreadId }) => chatThreadId)).toEqual(
+        Array.from({ length: 3 }, () => `telegram:${telegramGroup}:root:100`),
+      );
+    } finally {
+      await restarted.port.stop();
+    }
   },
   telegramTimeout,
 );
