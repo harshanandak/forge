@@ -101,3 +101,95 @@ test.each(['Acme "Private" Repository', 'Acme "Private" sk-FixtureLabel'])(
   },
   30_000,
 );
+
+test.each([
+  ["Authorization: Bearer OpaqueFixture", "Bearer"],
+  ["Authorization: Bearer OpaqueFixture", "Authorization"],
+  ["Rejected Authorization: Bearer OpaqueFixture", "Authorization: Bearer"],
+  ["Cannot use token=OpaqueFixture", "token"],
+  ["Cannot use password=OpaqueFixture", "password"],
+  ['Cannot use password="Alpha\\"OpaqueFixture"', "password"],
+  ["Cannot use Bearer OpaqueFixture", "Opaque"],
+  ["Failed ghs_AcmePrivateTail", "Acme"],
+  ["Delivery failed for alice@acme.test", "Acme"],
+  ["Cannot use Bearer Opaque%46ixture", "Bearer"],
+])(
+  "protects the entire sensitive value when a label overlaps %j",
+  (message, label) => {
+    expect(redactReport(message, [label])).not.toMatch(
+      /Opaque|Fixture|PrivateTail|alice@|\.test/,
+    );
+  },
+  30_000,
+);
+
+test.each(["Secret%50roject", "Secret\u200bProject"])(
+  "redacts the known label revealed by normalization in %j",
+  (encoded) => {
+    expect(redactReport(`Add a tooltip in ${encoded}`, ["SecretProject"])).toBe(
+      "Add a tooltip in [redacted]",
+    );
+  },
+  30_000,
+);
+
+test.each([
+  ["Cannot open /tmp/Acme/PrivateTail", "Acme"],
+  ["Cannot open Acme /tmp/PrivateTail", "Acme /tmp"],
+  ['Cannot open "Acme PrivateTail"', "Acme"],
+  [
+    'Cannot open Acme "PrivateTail" Repository',
+    'Acme "PrivateTail" Repository',
+  ],
+  ["Delivery failed for alice@acme.test", "alice@acme"],
+  [
+    "Delivery failed for alice@acme.test repository",
+    "alice@acme.test repository",
+  ],
+])(
+  "merges a known label with an overlapping sensitive span in %j",
+  (message, label) => {
+    expect(redactReport(message, [label])).not.toMatch(
+      /Acme|PrivateTail|alice|\.test|Repository/i,
+    );
+  },
+  30_000,
+);
+
+test.each([
+  'Cannot use password="Private Tail"',
+  'Cannot use "password=PrivateTail"',
+  'Cannot use Bearer "Private Tail"',
+  'Cannot use "Bearer PrivateTail"',
+  'Cannot email "private"@example.test',
+  'Cannot email "private@example.test"',
+  'Cannot open "/tmp/Private Tail"',
+  'Cannot open /tmp/"Private Tail"',
+  "Cannot open /tmp/private@example.test",
+  "Cannot open private@example.test/file",
+  "Cannot use token=/tmp/PrivateTail",
+  "Cannot open /tmp/token=PrivateTail",
+  "Cannot use Bearer private@example.test",
+  "Cannot email private@example.test then Bearer PrivateTail",
+])(
+  "merges independently detected sensitive spans in %j",
+  (message) => {
+    expect(redactReport(message, [])).not.toMatch(/private|example\.test/i);
+  },
+  30_000,
+);
+
+test.each([
+  "o'brien.x!y#z@example.test",
+  "prefix!tag#name&other+mail@example.test",
+  '"quoted local"@example.test',
+  String.raw`"quoted \"local\""@example.test`,
+])(
+  "masks the entire email local part and domain in %j",
+  (email) => {
+    expect(redactReport(`Cannot email ${email} today`, [])).toBe(
+      "Cannot email [redacted] today",
+    );
+  },
+  30_000,
+);
