@@ -74,6 +74,42 @@ test(
 );
 
 test(
+  "B1B-OWED1 reply marks only obligations that existed before the post",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const first = f.read(alpha.sessionId).items[0]!;
+    f.ack(alpha.sessionId, [first.itemId]);
+    const conv = first.conversationId;
+    if (!conv) throw new Error("Expected a Slack conversation ID");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.chat.nextWrite = { kind: "delay", until: gate };
+    const pending = f.core.reply(f.caller(), {
+      sessionId: alpha.sessionId,
+      conversationId: conv,
+      text: "Done",
+    });
+    await f.follow("late");
+    const late = f.read(alpha.sessionId).items[0]!;
+    f.ack(alpha.sessionId, [late.itemId]);
+    release();
+    value(await pending);
+    expect(
+      f.rows(
+        "reply_owed WHERE conversation_id = ? ORDER BY rowid",
+        "answered",
+        conv,
+      ),
+    ).toEqual([{ answered: 1 }, { answered: 0 }]);
+  },
+  timeout,
+);
+
+test(
   "B1B-OWED1 project form leaves other conversations' rows unchanged",
   async () => {
     const f = await baseFixture();
