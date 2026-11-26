@@ -259,7 +259,8 @@ export function createSessionStore(deps: Deps): SessionStore {
         const active =
           existing?.value ?? create(insertUnbound, current, input.host, fields);
         if (existing) touch.run(now(), projectId ?? null, active.sessionId);
-        const { unread, unreadFromOthers } = unreadCounts(active);
+        const refreshed = session(active.sessionId) ?? active;
+        const { unread, unreadFromOthers } = unreadCounts(refreshed);
         return ok({
           sessionId: active.sessionId,
           person: { personId, name: current.displayName },

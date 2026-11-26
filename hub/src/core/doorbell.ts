@@ -1,4 +1,8 @@
-import type { ChatMessageRef, ChatPort } from "../contract/chat.ts";
+import {
+  ChatWriteFailure,
+  type ChatMessageRef,
+  type ChatPort,
+} from "../contract/chat.ts";
 import type { Conversation, Person } from "../contract/domain.ts";
 import type { DoorbellPayload } from "../contract/hooks.ts";
 import { ID_PATTERN } from "../contract/ids.ts";
@@ -87,16 +91,22 @@ export async function notify(ctx: CoreContext, request: Notice): Promise<void> {
             conversation?.conversationId ?? null,
           );
     if (previous) return false;
-    if (
-      !configured &&
-      db
-        .prepare(
-          `SELECT 1 FROM sessions WHERE person_id=? AND (project_id IS NULL OR project_id=?)
+    if (!configured) {
+      const live =
+        session !== undefined
+          ? db
+              .prepare(
+                `SELECT 1 FROM sessions WHERE session_id=? AND last_seen_at>=?`,
+              )
+              .get(session, time - LIMITS.liveSessionMs)
+          : db
+              .prepare(
+                `SELECT 1 FROM sessions WHERE person_id=? AND (project_id IS NULL OR project_id=?)
       AND last_seen_at>=?`,
-        )
-        .get(personId, projectId, time - LIMITS.liveSessionMs)
-    )
-      return false;
+              )
+              .get(personId, projectId, time - LIMITS.liveSessionMs);
+      if (live) return false;
+    }
     db.prepare(
       `INSERT INTO doorbell_rings (ring_id,person_id,project_id,session_id,ids_json,sent_at,outcome)
       VALUES (?,?,?,?,?,?,?)`,
@@ -138,7 +148,7 @@ export async function notify(ctx: CoreContext, request: Notice): Promise<void> {
       person.displayName +
       "'s agent." +
       (stale ? " It is offline and will see this when it reconnects." : "");
-    await bestEffort(ctx, async () => {
+    try {
       const ref = await postNotice(chat, conversation, text);
       if (!conversation.isDirect)
         ctx.store.tx(() =>
@@ -154,6 +164,13 @@ export async function notify(ctx: CoreContext, request: Notice): Promise<void> {
             text,
           ),
         );
-    });
+    } catch (error) {
+      if (error instanceof ChatWriteFailure && error.effect === "refused") {
+        ctx.store.tx(() =>
+          db.prepare("DELETE FROM doorbell_rings WHERE ring_id=?").run(ring),
+        );
+      }
+      ctx.deps.log.warn("chat_notice_failed");
+    }
   }
 }

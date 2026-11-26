@@ -216,6 +216,28 @@ export async function route(
           ...(item.session === undefined ? {} : { session: item.session }),
         });
     };
+    const bindAndRelease = (current: Conversation, projectId: string) => {
+      const session = frontSession(ctx, sender.personId, projectId)?.sessionId;
+      db.prepare(
+        "UPDATE conversations SET project_id=? WHERE conversation_id=?",
+      ).run(projectId, current.conversationId);
+      const released = db
+        .prepare(
+          `UPDATE inbox_items SET held=0,project_id=?,target_session_id=?
+        WHERE held=1 AND conversation_id=? RETURNING item_id`,
+        )
+        .all(projectId, session ?? null, current.conversationId);
+      const bound = { ...current, projectId };
+      queue.push({
+        person: sender,
+        projectId,
+        conversation: bound,
+        items: released.map((row) => str(row.item_id)),
+        answers: [],
+        ...(session === undefined ? {} : { session }),
+      });
+      return bound;
+    };
     if (isDirect) {
       if (named[0]) {
         const label = named[0].displayName;
@@ -244,43 +266,27 @@ export async function route(
         return;
       if (current && !current.projectId) {
         const picker = event.text.trim().toLowerCase();
-        const picked = projects.find((p) =>
+        const matches = projects.filter((p) =>
           [p.projectId, p.name].some((value) => value.toLowerCase() === picker),
         );
+        const picked = matches.length === 1 ? matches[0] : undefined;
         if (picked) {
           const { projectId } = picked;
-          const session = frontSession(
-            ctx,
-            sender.personId,
-            projectId,
-          )?.sessionId;
           db.prepare(
             "INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
           ).run(pickerKey, event.eventKey);
-          db.prepare(
-            "UPDATE conversations SET project_id=? WHERE conversation_id=?",
-          ).run(projectId, current.conversationId);
-          const released = db
-            .prepare(
-              `UPDATE inbox_items SET held=0,project_id=?,target_session_id=?
-            WHERE held=1 AND conversation_id=? RETURNING item_id`,
-            )
-            .all(projectId, session ?? null, current.conversationId);
-          queue.push({
-            person: sender,
-            projectId,
-            conversation: { ...current, projectId },
-            items: released.map((row) => str(row.item_id)),
-            answers: [],
-            ...(session === undefined ? {} : { session }),
-          });
+          bindAndRelease(current, projectId);
           return;
         }
       }
       const chosen =
         current?.projectId ??
         (projects.length === 1 ? projects[0]?.projectId : undefined);
-      deliver(sender, chosen, current);
+      const thread =
+        current && !current.projectId && chosen !== undefined
+          ? bindAndRelease(current, chosen)
+          : current;
+      deliver(sender, chosen, thread);
       if (!chosen && !current)
         notes.push(
           [

@@ -3,8 +3,10 @@ import type {
   DoorbellPayload,
   DoorbellPort,
 } from "../../src/contract/hooks.ts";
+import type { HubDb } from "../../src/contract/runtime.ts";
 import { expect } from "bun:test";
 import type { CoreBase } from "../../src/core/core.ts";
+import type { FakeChatPort } from "../fakes/fake-chat.ts";
 
 export function doorbellFake(configured: boolean) {
   const rings: DoorbellPayload[] = [];
@@ -62,4 +64,36 @@ export async function until(check: () => boolean, timeout: number) {
   const end = performance.now() + timeout;
   while (!check() && performance.now() < end) await Bun.sleep(5);
   expect(check()).toBe(true);
+}
+
+export function refuseNextChatPost(chat: FakeChatPort) {
+  const post = chat.postText.bind(chat);
+  let armed = true;
+  chat.postText = (target, text, options) => {
+    if (armed && text.startsWith("Queued for")) {
+      armed = false;
+      chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
+    }
+    return post(target, text, options);
+  };
+}
+
+export function unknownNextChatPost(chat: FakeChatPort) {
+  const post = chat.postText.bind(chat);
+  let armed = true;
+  chat.postText = (target, text, options) => {
+    if (armed && text.startsWith("Queued for")) {
+      armed = false;
+      chat.nextWrite = { kind: "unknown" };
+    }
+    return post(target, text, options);
+  };
+}
+
+export function failQueueNoticeThreadRecord(db: HubDb) {
+  db.exec(
+    "CREATE TRIGGER fail_queue_notice_thread BEFORE INSERT ON thread_messages " +
+      "WHEN NEW.kind = 'system' AND NEW.text LIKE 'Queued for%' " +
+      "BEGIN SELECT RAISE(ABORT, 'injected queue-notice thread failure'); END",
+  );
 }

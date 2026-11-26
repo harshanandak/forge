@@ -105,6 +105,36 @@ export function recordThread(
   );
 }
 
+export function recordAgentPost(
+  ctx: CoreContext,
+  ref: ChatMessageRef,
+  conversation: Conversation,
+  sessionId: string,
+  personId: string,
+  text: string,
+) {
+  if (conversation.isDirect || conversation.projectId === undefined)
+    return false;
+  return (
+    ctx.deps.db
+      .prepare(
+        `INSERT INTO thread_messages
+    (adapter,chat_thread_id,channel_id,project_id,chat_message_id,kind,text,person_id,session_id,created_at)
+    VALUES ('slack',?,?,?,?,'agent',?,?,?,?) ON CONFLICT DO NOTHING`,
+      )
+      .run(
+        conversation.chatThreadId,
+        conversation.channelId,
+        conversation.projectId,
+        ref.chatMessageId,
+        text,
+        personId,
+        sessionId,
+        ctx.deps.now(),
+      ).changes !== 0
+  );
+}
+
 export function paused(db: HubDb, thread: string): boolean {
   const rows = db
     .prepare(

@@ -9,7 +9,7 @@ import {
   thread,
   type BaseFixture,
 } from "./base-fixture.ts";
-import { a, b, p1 } from "./fixture.ts";
+import { a, b, p1, value } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
 
 const timeout = 30_000;
@@ -283,6 +283,87 @@ test(
         "chat_message_id",
       ),
     ).toEqual(["queued", "paused"]);
+  },
+  timeout,
+);
+
+test(
+  "B1B-CTX1 own agent posts are excluded and cause no flip",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const first = f.read(alpha.sessionId).items[0]!;
+    f.ack(alpha.sessionId, [first.itemId]);
+    const conv = first.conversationId;
+    if (!conv) throw new Error("Expected a Slack conversation ID");
+    value(
+      await f.core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        conversationId: conv,
+        text: "Agent answer",
+      }),
+    );
+    await f.follow("owner-next", { mentionsBot: false });
+    const read = f.read(alpha.sessionId);
+    expect(read.items).toHaveLength(1);
+    expect(read.items[0]?.threadContext?.entries).toEqual([]);
+    expect(read.mode).toBe("normal");
+    expect(f.col("sessions", "untrusted_read_seq")).toEqual([0]);
+  },
+  timeout,
+);
+
+test(
+  "B1B-CTX1 another agent's post is untrusted and flips once with no redelivery bump",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const alpha = f.bind();
+    const beta = f.bind(b, "beta", "beta");
+    await f.emit("root");
+    await f.emit("beta-mention", {
+      slackUserId: slackB,
+      threadRootMessageId: "root",
+    });
+    const alphaFirst = f.read(alpha.sessionId).items[0]!;
+    f.ack(alpha.sessionId, [alphaFirst.itemId]);
+    const betaFirst = f.read(beta.sessionId, b).items[0]!;
+    f.ack(beta.sessionId, [betaFirst.itemId], b);
+    const betaConv = betaFirst.conversationId;
+    if (!betaConv) throw new Error("Expected a Slack conversation ID");
+    value(
+      await f.core.reply(f.caller(b), {
+        sessionId: beta.sessionId,
+        conversationId: betaConv,
+        text: "Beta agent answer",
+      }),
+    );
+    await f.emit("a-second", { threadRootMessageId: "root" });
+    const read = f.read(alpha.sessionId);
+    expect(read.items).toHaveLength(1);
+    const entries = read.items[0]?.threadContext?.entries ?? [];
+    expect(entries.map((entry) => entry.senderKind)).toContain("agent");
+    const agent = entries.find((entry) => entry.senderKind === "agent");
+    expect(agent).toMatchObject({
+      from: "Fixture Beta's agent",
+      notYourOwner: true,
+    });
+    expect(read.mode).toBe("reply_only");
+    expect(
+      f.col(
+        "sessions WHERE session_id = ?",
+        "untrusted_read_seq",
+        alpha.sessionId,
+      ),
+    ).toEqual([1]);
+    f.expectItems(alpha.sessionId, [{ redelivered: true }]);
+    expect(
+      f.col(
+        "sessions WHERE session_id = ?",
+        "untrusted_read_seq",
+        alpha.sessionId,
+      ),
+    ).toEqual([1]);
   },
   timeout,
 );
