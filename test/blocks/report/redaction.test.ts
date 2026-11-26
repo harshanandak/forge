@@ -288,3 +288,49 @@ test.each([
   },
   30_000,
 );
+
+test("forge-1979 redacts secret-named flag values separated by whitespace", () => {
+  for (const flag of ["--token", "-t", "--api-key", "--password"]) {
+    expect(redactReport(`Deploy ${flag} OpaqueFixtureValue now`, [])).toBe(
+      "Deploy [redacted] now",
+    );
+  }
+}, 30_000);
+
+test("forge-1979 leaves non-secret flags untouched", () => {
+  expect(redactReport("Run --verbose value now", [])).toBe(
+    "Run --verbose value now",
+  );
+}, 30_000);
+
+test.each([
+  [
+    "Command failed: build>/var/lib/PrivateFixture/output.log",
+    "Command failed: build>[redacted]",
+  ],
+  ["Command failed 2>/tmp/x", "Command failed 2>[redacted]"],
+  [String.raw`Log >>C:\Users\Jane\out.txt`, "Log >>[redacted]"],
+  ["Read <input/path", "Read <[redacted]"],
+])(
+  "forge-1979 redacts paths after redirections in %j",
+  (message, expected) => {
+    expect(redactReport(message, [])).toBe(expected);
+  },
+  30_000,
+);
+
+test("forge-1979 leaves prose comparisons untouched", () => {
+  expect(redactReport("a > b", [])).toBe("a > b");
+}, 30_000);
+
+test("forge-1979 matches labels across doubled whitespace", () => {
+  expect(redactReport("Cannot open Jane  Doe settings", ["Jane Doe"])).toBe(
+    "Cannot open [redacted] settings",
+  );
+}, 30_000);
+
+test("forge-1979 leaves similar non-label prose untouched", () => {
+  expect(redactReport("Jane and Doe met", ["Jane Doe"])).toBe(
+    "Jane and Doe met",
+  );
+}, 30_000);
