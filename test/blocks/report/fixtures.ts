@@ -18,6 +18,10 @@ export async function withReportAssembly(
     assembly: Awaited<ReturnType<typeof createAssembly>>,
     options: ReturnType<typeof localCall>,
   ) => Promise<void>,
+  config: object | string | false = {
+    schemaVersion: "forge.config/1",
+    blocks: { report: { source: { builtin: "forge/report" } } },
+  },
 ) {
   const root = mkdtempSync(join(tmpdir(), "forge-report-"));
   const deviceRoot = join(root, "device");
@@ -31,14 +35,13 @@ export async function withReportAssembly(
       await stageReport(path, staged);
       capture.mockImplementation((file) => open(file === path ? staged : file));
     }
-    mkdirSync(join(root, ".forge"));
-    writeFileSync(
-      join(root, ".forge/config.yaml"),
-      JSON.stringify({
-        schemaVersion: "forge.config/1",
-        blocks: { report: { source: { builtin: "forge/report" } } },
-      }),
-    );
+    if (config !== false) {
+      mkdirSync(join(root, ".forge"));
+      writeFileSync(
+        join(root, ".forge/config.yaml"),
+        typeof config === "string" ? config : JSON.stringify(config),
+      );
+    }
     const assembly = await createAssembly({
       root,
       deviceRoot,
