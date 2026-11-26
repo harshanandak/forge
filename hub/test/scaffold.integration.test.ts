@@ -186,6 +186,7 @@ const ownFiles = [
   "dist/core/inbox.js",
   "dist/core/index.js",
   "dist/core/protect.js",
+  "dist/core/reply.js",
   "dist/core/routing.js",
   "dist/core/schema.js",
   "dist/core/send.js",
