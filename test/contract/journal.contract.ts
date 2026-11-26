@@ -93,18 +93,21 @@ function recordOf(byteTarget: number, unicode: boolean, marker = "a"): string {
   return record;
 }
 
+function protectDirectories(...paths: string[]): void {
+  if (process.platform === "win32") {
+    const native = windowsPrivateFiles();
+    for (const path of paths)
+      native.protect(path, `D:P(A;OICI;FA;;;${native.sid})`);
+  } else {
+    for (const path of paths) chmodSync(path, 0o700);
+  }
+}
+
 function prepareDirectory(root: string): string {
   const logs = join(root, "logs");
   const directory = join(logs, "memory");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  if (process.platform === "win32") {
-    const native = windowsPrivateFiles();
-    for (const path of [logs, directory])
-      native.protect(path, `D:P(A;OICI;FA;;;${native.sid})`);
-  } else {
-    chmodSync(logs, 0o700);
-    chmodSync(directory, 0o700);
-  }
+  protectDirectories(logs, directory);
   return directory;
 }
 
@@ -354,8 +357,10 @@ export function journalContract(
       mkdirSync(outside);
       const preserved = join(outside, "journal.jsonl");
       writeFileSync(preserved, `{"preserved":true}\n`);
-      mkdirSync(join(root, "logs"));
-      symlinkSync(outside, join(root, "logs", "memory"), "junction");
+      const logs = join(root, "logs");
+      mkdirSync(logs, { mode: 0o700 });
+      protectDirectories(logs);
+      symlinkSync(outside, join(logs, "memory"), "junction");
       const journal = create({ root, instance: "memory" });
       expect(() => journal.read()).toThrow(/INPUT_INVALID/);
       expect(() => journal.append(`{"n":1}`, policy)).toThrow(/INPUT_INVALID/);
