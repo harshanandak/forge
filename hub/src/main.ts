@@ -187,9 +187,10 @@ async function readStdin(open: MainServices["stdin"]): Promise<string> {
   let reader: ReadableStreamDefaultReader<unknown> | undefined;
   let size = 0;
   try {
-    reader = open().getReader();
+    const opened = open().getReader();
+    reader = opened;
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await opened.read();
       if (done) return new TextDecoder().decode(bytes.subarray(0, size));
       if (!(value instanceof Uint8Array)) throw new EntryFailure("stdin");
       if (value.byteLength > LIMITS.bodyBytes - size)
