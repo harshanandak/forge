@@ -14,7 +14,12 @@ import {
   protectPath,
 } from "./protect.ts";
 import { probeHubSchema } from "./schema-probe.ts";
-import { migrate, schemaVersion } from "./schema.ts";
+import {
+  CURRENT_SCHEMA_VERSION,
+  migrate,
+  readSchemaVersion,
+  schemaVersion,
+} from "./schema.ts";
 
 function handle(raw: DatabaseSync): HubDb {
   let active = false;
@@ -117,7 +122,7 @@ export function createOpenHubDb(
     try {
       assertIdentity(target, expected);
       db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
-      if (schemaVersion(db) === 0) migrate(db);
+      if (readSchemaVersion(db) < CURRENT_SCHEMA_VERSION) migrate(db);
       const wal = db.prepare("PRAGMA journal_mode=WAL").get();
       if (wal?.journal_mode !== "wal")
         throw new Error("Hub database requires WAL mode");

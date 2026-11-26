@@ -1,6 +1,10 @@
 import { CHAT_STATE_DDL } from "../contract/chat-state.ts";
 import type { HubDb } from "../contract/runtime.ts";
 
+export const CURRENT_SCHEMA_VERSION = 2;
+const adapterColumn =
+  "adapter text not null default 'slack' check (adapter in ('slack','telegram'))";
+
 const schema = `
 create table meta (key text primary key not null, value text not null);
 
@@ -74,11 +78,11 @@ create table conversations (
   project_id text references projects(project_id),
   person_id text not null references people(person_id),
   session_id text references sessions(session_id),
-  adapter text not null check (adapter = 'slack'),
+  adapter text not null check (adapter in ('slack','telegram')),
   chat_thread_id text not null,
   channel_id text not null,
   is_direct integer not null,
-  created_by text not null check (created_by in ('slack','agent')),
+  created_by text not null check (created_by in ('slack','telegram','agent')),
   context_seq integer not null default 0,
   created_at integer not null
 );
@@ -117,7 +121,7 @@ create index inbox_delivered on inbox_items(delivered_to_session_id, acked_at);
 
 create table thread_messages (
   seq integer primary key autoincrement,
-  adapter text not null check (adapter = 'slack'),
+  adapter text not null check (adapter in ('slack','telegram')),
   chat_thread_id text not null,
   channel_id text not null,
   project_id text not null references projects(project_id),
@@ -174,6 +178,7 @@ create table ask_deliveries (
   channel_id text,
   delivered_at integer,
   edited_at integer,
+  ${adapterColumn},
   primary key (ask_id, person_id),
   check ((delivery_state = 'delivered') = (chat_message_id is not null and chat_thread_id is not null and channel_id is not null and delivered_at is not null))
 );
@@ -191,12 +196,14 @@ create table ask_answers (
 create unique index ask_answers_lock on ask_answers(ask_id);
 
 create table answer_attempts (
-  event_key text primary key not null,
+  event_key text not null,
   ask_id text not null,
   slack_user_id text not null,
   choice_id text not null,
   outcome text not null check (outcome in ('locked','already_answered','expired','not_allowed','invalid_choice','unknown_ask','unknown_answerer')),
-  at integer not null
+  at integer not null,
+  ${adapterColumn},
+  primary key (adapter, event_key)
 );
 
 create table permits (
@@ -269,7 +276,7 @@ create table doorbell_rings (
 );
 `;
 
-export function schemaVersion(db: Pick<HubDb, "prepare">): 0 | 1 {
+export function readSchemaVersion(db: Pick<HubDb, "prepare">): 0 | 1 | 2 {
   const objects = db
     .prepare(
       "SELECT type || ':' || name AS key FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
@@ -282,20 +289,96 @@ export function schemaVersion(db: Pick<HubDb, "prepare">): 0 | 1 {
   const value: unknown = db
     .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
     .get()?.value;
-  if (value !== "1") throw new Error("Unsupported hub database schema version");
+  if (value !== "1" && value !== String(CURRENT_SCHEMA_VERSION))
+    throw new Error("Unsupported hub database schema version");
   const objectPattern = /^create (?:unique )?(table|index) (\w+)\b/gm;
   for (const ddl of [schema, ...CHAT_STATE_DDL])
     for (const [, type, name] of ddl.matchAll(objectPattern))
       if (!present.has(`${type}:${name}`))
         throw new Error("Hub database schema is incomplete");
-  return 1;
+  return value === "1" ? 1 : CURRENT_SCHEMA_VERSION;
+}
+
+export function schemaVersion(db: Pick<HubDb, "prepare">): 0 | 1 {
+  return readSchemaVersion(db) === 0 ? 0 : 1;
+}
+
+function rebuild(
+  db: HubDb,
+  table: string,
+  columns?: string,
+  beforeDrop = "",
+): void {
+  const replacement = table + "_v2";
+  const statements = schema.trim().split(/;\s*\n/);
+  const prefix = "create table " + table + " (";
+  const definition = statements.find((sql) => sql.startsWith(prefix));
+  if (!definition) throw new Error("Missing hub migration table definition");
+  const indexes = statements.filter(
+    (sql) =>
+      /^create (?:unique )?index /.test(sql) &&
+      sql.includes(" on " + table + "("),
+  );
+  const selection = columns === undefined ? "*" : "rowid, " + columns;
+  const target = columns === undefined ? "" : ` (${selection})`;
+  db.exec(`
+    create table ${replacement} (${definition.slice(prefix.length)};
+    INSERT INTO ${replacement}${target} SELECT ${selection} FROM ${table};
+    ${beforeDrop}
+    DROP TABLE ${table};
+    ALTER TABLE ${replacement} RENAME TO ${table};
+    ${indexes.join(";\n")};
+  `);
+}
+
+function upgradeV1(db: HubDb): void {
+  rebuild(
+    db,
+    "conversations",
+    "conversation_id, project_id, person_id, session_id, adapter, chat_thread_id, channel_id, is_direct, created_by, context_seq, created_at",
+  );
+  rebuild(
+    db,
+    "thread_messages",
+    undefined,
+    `
+    DELETE FROM sqlite_sequence WHERE name = 'thread_messages_v2';
+    UPDATE sqlite_sequence SET name = 'thread_messages_v2' WHERE name = 'thread_messages';
+  `,
+  );
+  rebuild(
+    db,
+    "answer_attempts",
+    "event_key, ask_id, slack_user_id, choice_id, outcome, at",
+  );
+  db.exec("ALTER TABLE ask_deliveries ADD COLUMN " + adapterColumn);
+  if (db.prepare("PRAGMA foreign_key_check").get())
+    throw new Error("Hub database has invalid foreign keys");
+  db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(
+    String(CURRENT_SCHEMA_VERSION),
+  );
 }
 
 export function migrate(db: HubDb): void {
-  db.transaction(() => {
-    if (schemaVersion(db) === 1) return;
-    db.exec(schema);
-    for (const ddl of CHAT_STATE_DDL) db.exec(ddl);
-    db.exec("INSERT INTO meta (key, value) VALUES ('schema_version', '1')");
-  });
+  const foreignKeys: unknown = db
+    .prepare("PRAGMA foreign_keys")
+    .get()?.foreign_keys;
+  if (foreignKeys === 1) db.exec("PRAGMA foreign_keys=OFF");
+  try {
+    db.transaction(() => {
+      const version = readSchemaVersion(db);
+      if (version === CURRENT_SCHEMA_VERSION) return;
+      if (version === 1) {
+        upgradeV1(db);
+        return;
+      }
+      db.exec(schema);
+      for (const ddl of CHAT_STATE_DDL) db.exec(ddl);
+      db.prepare(
+        "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
+      ).run(String(CURRENT_SCHEMA_VERSION));
+    });
+  } finally {
+    if (foreignKeys === 1) db.exec("PRAGMA foreign_keys=ON");
+  }
 }

@@ -141,3 +141,13 @@ test(
   },
   timeout,
 );
+
+test(
+  "T1A-CAP1 a polling port satisfies the shared chat contract",
+  async () => {
+    const port = new FakeChatPort(team, { mode: "polling" });
+    expect(port.capabilities.mode).toBe("polling");
+    await checkChatPort(port);
+  },
+  timeout,
+);

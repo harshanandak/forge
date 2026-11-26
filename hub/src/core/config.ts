@@ -6,6 +6,7 @@ import {
   type HubConfig,
   type ProjectConfig,
 } from "../contract/runtime.ts";
+import { isTelegramId } from "./directory.ts";
 
 export { createPeopleDirectory } from "./directory.ts";
 export { inspectStorage } from "./storage.ts";
@@ -39,6 +40,13 @@ function string(value: unknown, at: string): string {
 
 function optional(value: unknown, at: string, required = false) {
   return value === undefined && !required ? undefined : string(value, at);
+}
+
+function telegramId(value: unknown, at: string, signed = false) {
+  if (value === undefined) return;
+  if (!isTelegramId(value, signed))
+    refuse(at, "Expected a safe decimal Telegram ID as text.");
+  return value;
 }
 
 function boolean(value: unknown, at: string): boolean {
@@ -179,7 +187,7 @@ export function loadConfig(path: string): HubConfig {
   const root = object(
     input,
     "",
-    "listen publicBaseUrl basePath allowedHosts allowedOrigins dataDir slack mcp hooks cli people projects doorbells",
+    "listen publicBaseUrl basePath allowedHosts allowedOrigins dataDir chat slack mcp hooks cli people projects doorbells",
   );
   const listen = object(root.listen, "/listen", "host port");
   const port = listen.port;
@@ -196,7 +204,16 @@ export function loadConfig(path: string): HubConfig {
   if (allowedHosts.length === 0)
     refuse("/allowedHosts", "Expected at least one allowed host.");
   const allowedOrigins = items(root.allowedOrigins, "/allowedOrigins", origin);
-  const slack = object(root.slack, "/slack", "mode buttons teamId");
+  const adapter =
+    root.chat === undefined
+      ? "slack"
+      : object(root.chat, "/chat", "adapter").adapter;
+  if (adapter !== "off" && adapter !== "slack" && adapter !== "telegram")
+    refuse("/chat/adapter", "Expected off, slack or telegram.");
+  const slack =
+    root.slack === undefined && adapter !== "slack"
+      ? { mode: "off", buttons: false }
+      : object(root.slack, "/slack", "mode buttons teamId");
   const mode = slack.mode;
   if (mode !== "off" && mode !== "socket" && mode !== "webhook")
     refuse("/slack/mode", "Expected off, socket or webhook.");
@@ -207,6 +224,8 @@ export function loadConfig(path: string): HubConfig {
     (teamId !== undefined && !/^T[A-Z0-9]{6,20}$/.test(teamId))
   )
     refuse("/slack/teamId", "Expected a Slack workspace ID.");
+  if (adapter !== "slack" && mode !== "off")
+    refuse("/chat/adapter", "Slack mode conflicts with the selected adapter.");
   const publicBaseUrl =
     root.publicBaseUrl === undefined
       ? undefined
@@ -215,8 +234,13 @@ export function loadConfig(path: string): HubConfig {
     refuse("/publicBaseUrl", "Slack webhooks require a public origin.");
   const personIds = new Map<string, string>();
   const slackIds = new Map<string, string>();
+  const telegramIds = new Map<string, string>();
   const people = items(root.people, "/people", (value, at) => {
-    const row = object(value, at, "personId displayName slackUserId");
+    const row = object(
+      value,
+      at,
+      "personId displayName slackUserId telegramUserId",
+    );
     const personId = id(row.personId, at + "/personId", "per");
     unique(personIds, personId, at + "/personId");
     const slackUserId = optional(
@@ -226,8 +250,15 @@ export function loadConfig(path: string): HubConfig {
     );
     if (slackUserId !== undefined)
       unique(slackIds, slackUserId, at + "/slackUserId");
+    const telegramUserId = telegramId(
+      row.telegramUserId,
+      at + "/telegramUserId",
+    );
+    if (telegramUserId !== undefined)
+      unique(telegramIds, telegramUserId, at + "/telegramUserId");
     return {
       personId,
+      ...(telegramUserId === undefined ? {} : { telegramUserId }),
       displayName: string(row.displayName, at + "/displayName"),
       ...(slackUserId === undefined ? {} : { slackUserId }),
     };
@@ -238,7 +269,7 @@ export function loadConfig(path: string): HubConfig {
     const row = object(
       value,
       at,
-      "projectId name purpose slackChannelId summaryChannelId summaryMessage frontPersonId memberIds",
+      "projectId name purpose slackChannelId telegramChatId summaryChannelId summaryMessage frontPersonId memberIds",
     );
     const projectId = id(row.projectId, at + "/projectId", "prj");
     unique(projectIds, projectId, at + "/projectId");
@@ -261,6 +292,11 @@ export function loadConfig(path: string): HubConfig {
       row.slackChannelId,
       at + "/slackChannelId",
       mode !== "off",
+    );
+    const telegramChatId = telegramId(
+      row.telegramChatId,
+      at + "/telegramChatId",
+      true,
     );
     const explicitSummary = optional(
       row.summaryChannelId,
@@ -292,6 +328,7 @@ export function loadConfig(path: string): HubConfig {
       memberIds,
       ...(purpose === undefined ? {} : { purpose }),
       ...(slackChannelId === undefined ? {} : { slackChannelId }),
+      ...(telegramChatId === undefined ? {} : { telegramChatId }),
       ...(summaryChannelId === undefined ? {} : { summaryChannelId }),
       ...(summaryMessage === undefined ? {} : { summaryMessage }),
     };
@@ -333,6 +370,7 @@ export function loadConfig(path: string): HubConfig {
     allowedHosts,
     allowedOrigins,
     dataDir,
+    chat: { adapter },
     slack: { mode, buttons, ...(teamId === undefined ? {} : { teamId }) },
     mcp: readSwitch(root.mcp, "/mcp"),
     hooks: readSwitch(root.hooks, "/hooks"),

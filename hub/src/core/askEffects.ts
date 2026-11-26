@@ -1,4 +1,8 @@
-import type { AskCardState, AskCardView } from "../contract/chat.ts";
+import type {
+  AskCardState,
+  AskCardView,
+  ChatAdapter,
+} from "../contract/chat.ts";
 import type { AskAnswer, AskChoice } from "../contract/domain.ts";
 import type { HubDb, SqlRow } from "../contract/runtime.ts";
 import type { AskStore, StoreDeps } from "./store.ts";
@@ -99,7 +103,11 @@ type Effects = Omit<
   "ask" | "answerAction" | "answerDigit" | "answerRows" | "findApprovedPermit"
 >;
 
-export function createAskEffects({ db, now }: StoreDeps): Effects {
+export function createAskEffects({
+  db,
+  now,
+  adapter,
+}: StoreDeps & { adapter: ChatAdapter }): Effects {
   const pending = db.prepare(`
     SELECT a.*, d.person_id, d.chat_thread_id, d.chat_message_id, d.channel_id, e.attempts,
       x.choice_id, x.answered_by_person_id, x.source, x.answered_at,
@@ -112,7 +120,7 @@ export function createAskEffects({ db, now }: StoreDeps): Effects {
     LEFT JOIN ask_answers AS x ON x.ask_id = a.ask_id
     LEFT JOIN people AS p ON p.person_id = x.answered_by_person_id
     WHERE e.status = 'pending' AND e.next_attempt_at <= ? AND d.delivery_state = 'delivered'
-      AND a.status IN ('answered','expired')
+      AND d.adapter = ? AND a.status IN ('answered','expired')
     ORDER BY e.next_attempt_at, e.ask_id, e.person_id LIMIT ?
   `);
   const transition = db.prepare(`
@@ -128,7 +136,7 @@ export function createAskEffects({ db, now }: StoreDeps): Effects {
   );
   return {
     pendingEdits(limit) {
-      return pending.all(now(), limit).map((row) => {
+      return pending.all(now(), adapter, limit).map((row) => {
         const answer = row.status === "answered" ? readAnswer(row) : undefined;
         const state: AskCardState = answer
           ? {

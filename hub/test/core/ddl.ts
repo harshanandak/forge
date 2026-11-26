@@ -269,9 +269,30 @@ create table doorbell_rings (
 );
 `;
 
-export function createTestSchema(db: Pick<HubDb, "exec">): void {
+const hubDdlV2 = hubDdl
+  .replaceAll("adapter = 'slack'", "adapter in ('slack','telegram')")
+  .replace(
+    "created_by in ('slack','agent')",
+    "created_by in ('slack','telegram','agent')",
+  )
+  .replace(
+    "  edited_at integer,\n  primary key (ask_id, person_id),",
+    "  edited_at integer,\n  adapter text not null default 'slack' check (adapter in ('slack','telegram')),\n  primary key (ask_id, person_id),",
+  )
+  .replace("event_key text primary key not null", "event_key text not null")
+  .replace(
+    "  at integer not null\n);",
+    "  at integer not null,\n  adapter text not null default 'slack' check (adapter in ('slack','telegram')),\n  primary key (adapter, event_key)\n);",
+  );
+
+export function createTestSchema(
+  db: Pick<HubDb, "exec">,
+  version: 1 | 2 = 1,
+): void {
   db.exec("PRAGMA foreign_keys=ON");
-  db.exec(hubDdl);
+  db.exec(version === 1 ? hubDdl : hubDdlV2);
   for (const sql of CHAT_STATE_DDL) db.exec(sql);
-  db.exec("INSERT INTO meta (key, value) VALUES ('schema_version', '1')");
+  db.exec(
+    `INSERT INTO meta (key, value) VALUES ('schema_version', '${version}')`,
+  );
 }

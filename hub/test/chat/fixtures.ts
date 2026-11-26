@@ -305,6 +305,7 @@ export async function slackFixture(options: Options = {}, start = false) {
     people: {
       all: () => [],
       byPersonId: () => undefined,
+      byChatUserId: () => undefined,
       bySlackUserId: () => undefined,
     },
     db,

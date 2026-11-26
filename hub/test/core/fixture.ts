@@ -2,6 +2,7 @@ import { afterEach } from "bun:test";
 import { realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { PeopleDirectory } from "../../src/contract/domain.ts";
 import type { HubResult } from "../../src/contract/core.ts";
 import type { HubConfig, HubDb, HubLog } from "../../src/contract/runtime.ts";
 import { openHubDb, createPrivateDirectory } from "../../src/core/index.ts";
@@ -102,10 +103,16 @@ export function value<T>(result: HubResult<T>): T {
   return result.value;
 }
 
-export function configPeople(people: HubConfig["people"]) {
+export function configPeople(people: HubConfig["people"]): PeopleDirectory {
   return {
     all: () => people,
     byPersonId: (id: string) => people.find((person) => person.personId === id),
+    byChatUserId: (adapter, id) =>
+      people.find(
+        (person) =>
+          (adapter === "slack" ? person.slackUserId : person.telegramUserId) ===
+          id,
+      ),
     bySlackUserId: (id: string) =>
       people.find((person) => person.slackUserId === id),
   };

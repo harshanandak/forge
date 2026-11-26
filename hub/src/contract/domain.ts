@@ -1,4 +1,4 @@
-import type { ChatMessageRef } from "./chat.ts";
+import type { ChatAdapter, ChatMessageRef } from "./chat.ts";
 
 export type HostKind = "claude" | "codex" | "opencode" | "t3" | "other";
 export type HookSessionSource = "startup" | "resume" | "clear" | "compact";
@@ -14,11 +14,13 @@ export interface Person {
   readonly personId: string;
   readonly displayName: string;
   readonly slackUserId?: string;
+  readonly telegramUserId?: string;
 }
 
 export interface PeopleDirectory {
   all(): readonly Person[];
   byPersonId(personId: string): Person | undefined;
+  byChatUserId(adapter: ChatAdapter, userId: string): Person | undefined;
   bySlackUserId(slackUserId: string): Person | undefined;
 }
 
@@ -27,6 +29,7 @@ export interface Project {
   readonly name: string;
   readonly purpose?: string;
   readonly slackChannelId?: string;
+  readonly telegramChatId?: string;
   readonly summaryChannelId?: string;
   readonly summaryMessage?: ChatMessageRef;
   readonly frontPersonId: string;
@@ -56,11 +59,11 @@ export interface Conversation {
   readonly projectId?: string;
   readonly personId: string;
   readonly sessionId?: string;
-  readonly adapter: "slack";
+  readonly adapter: ChatAdapter;
   readonly chatThreadId: string;
   readonly channelId: string;
   readonly isDirect: boolean;
-  readonly createdBy: "slack" | "agent";
+  readonly createdBy: ChatAdapter | "agent";
   readonly createdAt: number;
 }
 

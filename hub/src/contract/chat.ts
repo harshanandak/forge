@@ -1,5 +1,7 @@
 import type { AskChoice, AskKind, Summary } from "./domain.ts";
 
+export type ChatAdapter = "slack" | "telegram";
+
 export interface ChatCapabilities {
   readonly buttons: boolean;
   readonly editMessage: boolean;
@@ -7,7 +9,7 @@ export interface ChatCapabilities {
   readonly reactions: boolean;
   readonly threads: boolean;
   readonly longAnswers: boolean;
-  readonly mode: "webhook" | "socket";
+  readonly mode: "webhook" | "socket" | "polling";
 }
 
 export interface ChatMessageRef {
@@ -38,9 +40,15 @@ export interface AskCardView {
   readonly state: AskCardState;
 }
 
+export interface ChatIdentity {
+  readonly adapter: ChatAdapter;
+  readonly userId: string;
+}
+
 export interface ChatActionEvent {
   readonly eventKey: string;
   readonly slackUserId: string;
+  readonly chatIdentity?: ChatIdentity;
   readonly actionId: string;
   readonly value: string;
   readonly message: ChatMessageRef;
@@ -53,6 +61,7 @@ export interface ChatActionReply {
 export interface ChatMessageEvent {
   readonly eventKey: string;
   readonly slackUserId: string;
+  readonly chatIdentity?: ChatIdentity;
   readonly userName: string;
   readonly isBot: boolean;
   readonly text: string;
@@ -114,7 +123,7 @@ export interface ChatPort {
   start(handlers: ChatInboundHandlers): Promise<void>;
   stop(): Promise<void>;
   handleWebhook(request: Request): Promise<Response>;
-  postAskDm(slackUserId: string, card: AskCardView): Promise<ChatMessageRef>;
+  postAskDm(userId: string, card: AskCardView): Promise<ChatMessageRef>;
   editAskDm(ref: ChatMessageRef, card: AskCardView): Promise<void>;
   postText(
     target: ChatPostTarget,
@@ -123,7 +132,7 @@ export interface ChatPort {
   ): Promise<ChatMessageRef>;
   postEphemeral(
     ref: ChatMessageRef,
-    slackUserId: string,
+    userId: string,
     text: string,
   ): Promise<void>;
   postSummary(
