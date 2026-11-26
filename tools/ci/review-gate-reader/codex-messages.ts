@@ -7,6 +7,7 @@ import { fail, ok, type Result } from "./result.ts";
 import { bool, parseStrictJson, str } from "./strict-json.ts";
 
 const summaryMarker = "<!-- codex-pull-request-review-summary -->";
+const receiptMarker = "<!-- codex-review-receipt:v1 -->";
 const malformedSummaryOpening =
   /^[ \t]*<!--[ \t]*codex-pull-request-review-summary[ \t]*-->/i;
 const summaryBody = (state: string, displayRow: string) =>
@@ -40,10 +41,48 @@ const summaryBody = (state: string, displayRow: string) =>
     "</details>",
   ].join("\n");
 
+const suggestionsHead = [
+  receiptMarker,
+  "",
+  "",
+  "### \ud83d\udca1 Codex Review",
+  "",
+  "Here are some automated review suggestions for this pull request.",
+  "",
+].join("\n");
+const cleanHead = [
+  receiptMarker,
+  "",
+  "Codex Review: Didn't find any major issues. Hooray!",
+  "",
+].join("\n");
+const commitLabel = "**Reviewed commit:** `";
+const suggestionsSuffix = "\n    ";
+const receiptFooter = [
+  "",
+  "<details> <summary>\u2139\ufe0f About Codex in GitHub</summary>",
+  "<br/>",
+  "",
+  "[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you",
+  "- Open a pull request for review",
+  "- Mark a draft as ready",
+  '- Comment "@codex review".',
+  "",
+  "If Codex has suggestions, it will comment; otherwise it will react with \ud83d\udc4d.",
+  "",
+  "",
+  "",
+  "",
+  'Codex can also answer questions or update the PR. Try commenting "@codex address that feedback".',
+  "            ",
+  "</details>",
+].join("\n");
+
 const stateLine = /^<!-- codex-review-state:v(\d+) (.*) -->$/;
 const displayLine =
   /^\| \ud83d\udcdd \*\*Code Review\*\* \| \u2705 \*\*Completed\*\* <relative-time datetime="([^"]*)">([^<]*)<\/relative-time> \| `([0-9a-f]{7})` \| (New commits|PR opened|Manual request) \|$/;
 const sha40 = /^[0-9a-f]{40}$/;
+const sha10 = /^[0-9a-f]{10}$/;
 const utc6 = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
 const isNull = (value: unknown): value is null => value === null;
 const nullableText = (value: unknown): value is string | null =>
@@ -74,6 +113,9 @@ type CodexSummary = {
   displayAt: string;
   trigger: string;
 };
+
+type CodexMessage =
+  CodexSummary | { kind: "neutral" } | { kind: "receipt"; sha10: string };
 
 function validDate(value: string): boolean {
   if (!utc6.test(value)) return false;
@@ -146,23 +188,56 @@ function parseSummary(record: BotRecord, where: string): Result<CodexSummary> {
   });
 }
 
+function parseReceipt(
+  record: BotRecord,
+  endpoint: Endpoint,
+  where: string,
+): Result<CodexMessage> {
+  const { body } = record;
+  const suggestions = body.startsWith(suggestionsHead);
+  if (
+    endpoint === "review_comments" ||
+    (suggestions && endpoint !== "reviews") ||
+    (body.startsWith(cleanHead) && endpoint !== "issue_comments")
+  )
+    return fail("bot_format_unsupported", where);
+  const head = endpoint === "reviews" ? suggestionsHead : cleanHead;
+  const prefix = `${head}\n${commitLabel}`;
+  const suffix = `\u0060${endpoint === "reviews" ? suggestionsSuffix : ""}\n${receiptFooter}`;
+  if (!body.startsWith(prefix) || !body.endsWith(suffix))
+    return fail("bot_format_malformed", where);
+  const headSlot = body.slice(prefix.length, -suffix.length);
+  if (/[\r\n`]/.test(headSlot)) return fail("bot_format_malformed", where);
+  if (!sha10.test(headSlot)) return fail("bot_head_invalid", where);
+  if (endpoint === "issue_comments") return ok({ kind: "neutral" });
+  if (
+    !record.commit_id ||
+    !sha40.test(record.commit_id) ||
+    !record.commit_id.startsWith(headSlot)
+  )
+    return fail("bot_head_invalid", where);
+  return ok({ kind: "receipt", sha10: headSlot });
+}
+
 export function parseCodexMessage(
   record: BotRecord,
   endpoint: Endpoint,
-): Result<CodexSummary> {
+): Result<CodexMessage> {
   const { body } = record;
   const where = `${endpoint}/${record.id}`;
   if (body.startsWith(summaryMarker) && endpoint === "issue_comments")
     return parseSummary(record, where);
   if (endpoint === "issue_comments" && malformedSummaryOpening.test(body))
     return fail("bot_format_malformed", where);
+  if (body.startsWith(receiptMarker))
+    return parseReceipt(record, endpoint, where);
   return fail("bot_format_unsupported", where);
 }
 
 export function parseBotMessage(
   record: BotRecord,
   endpoint: Endpoint,
-): Result<CodexSummary | { kind: "human" }> {
+): Result<CodexMessage | { kind: "human" }> {
   const author = classifyBotAuthor(record, endpoint);
   if (!author.ok) return author;
   if (author.value.kind === "human") return ok(author.value);

@@ -13,7 +13,14 @@ import {
   usageOf,
 } from "./v3-usage.fixture.ts";
 import { readLaneControl } from "../../src/blocks/work/lane-control.ts";
-import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { failed } from "../../cloud/src/issue-commands.ts";
 import { domain, Project } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -49,6 +56,7 @@ import {
   expectTypedReply,
   guardFixture,
   noWrites,
+  observeRestoreReset,
   probe,
   readOnlyReply,
   recovered,
@@ -2061,6 +2069,19 @@ const restoreRefusal = {
   status: 400,
   body: { ok: false, error: { code: "RESTORE_INVALID_ROW" } },
 };
+const fullRestoreRefusal = {
+  ...restoreRefusal,
+  body: {
+    ok: false,
+    error: {
+      ...restoreRefusal.body.error,
+      message: "Cloud v3 portable restore could not be verified",
+      retry: "never",
+    },
+  },
+};
+const restoreExit = (reply: { body: unknown }) =>
+  exitCode(failed((reply.body as { error: ForgeError }).error));
 const unprovisioned = async (target: Fixture) => {
   expect(await target.send("status")).toMatchObject({
     status: 200,
@@ -2267,10 +2288,11 @@ for (const [fault, tamper] of [
     `v3 restore refuses ${fault}`,
     () =>
       withPortable(async (target, data) => {
+        const tables = tableNames(target);
+        const { kv } = target.snapshot();
         tamper(data);
         const upload = portableUpload(target, data);
         const replies = [await upload(0), await upload(1)];
-        const staged = target.snapshot();
         replies.push(await upload(2));
         await unprovisioned(target);
         expect(replies).toMatchObject([
@@ -2278,11 +2300,300 @@ for (const [fault, tamper] of [
           restoreResult(1),
           restoreRefusal,
         ]);
-        expect(target.snapshot()).toEqual(staged);
+        expect(tableNames(target)).not.toContain("cloud_v3_restore");
+        expect(tableNames(target)).toEqual(tables);
+        expect(target.snapshot().kv).toEqual(kv);
       }),
     timeout,
   );
 }
+
+test(
+  "v3 restore clears staging when verification refuses the final page",
+  () =>
+    withPortable(async (target, data) => {
+      const tables = tableNames(target);
+      const { kv } = target.snapshot();
+      data.recordFloor = 2;
+      const upload = await stageRestore(target, data);
+      const reply = await upload(2);
+      expect(reply).toMatchObject(restoreRefusal);
+      expect(restoreExit(reply)).toBe(1);
+      expect(tableNames(target)).not.toContain("cloud_v3_restore");
+      await unprovisioned(target);
+      expect(tableNames(target)).not.toContain("cloud_v3_pages");
+      expect(tableNames(target)).toEqual(tables);
+      expect(target.snapshot().kv).toEqual(kv);
+      expect(kv).toEqual([]);
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore accepts a different artifact after verification refuses the final page",
+  () =>
+    withPortable(async (target, data) => {
+      const clean = guardFixture();
+      using _clean = clean.db;
+      const original = structuredClone(data);
+      data.recordFloor = 2;
+      const rejected = await stageRestore(target, data);
+      expect(await rejected(2)).toMatchObject(restoreRefusal);
+
+      const ids = [
+        "cf314cbb-07ca-46e8-b45b-fbec8a88e083",
+        "1be06559-e694-4a85-b13e-8ab79702d19a",
+      ] as const;
+      let id = 0;
+      const random = spyOn(crypto, "randomUUID").mockImplementation(
+        () => ids[id++ % ids.length]!,
+      );
+      try {
+        const upload = portableUpload(target, original);
+        expect(await upload(0)).toMatchObject(restoreResult(0));
+        expect(await upload(1)).toMatchObject(restoreResult(1));
+        id = 0;
+        expect(await upload(2)).toMatchObject(restoreResult(2, true));
+        expect(await target.send("status")).toMatchObject(stopped);
+
+        const baseline = await stageRestore(clean, original);
+        id = 0;
+        expect(await baseline(2)).toMatchObject(restoreResult(2, true));
+        const state = (f: Fixture) => {
+          const { load: _load, ...image } = recovered(
+            writableStore(f.storage),
+            f.seal(),
+          );
+          return image;
+        };
+        expect(state(target)).toEqual(state(clean));
+      } finally {
+        random.mockRestore();
+      }
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore keeps staged pages when other requests are refused before verification",
+  () =>
+    withPortable(async (target, data) => {
+      const other = structuredClone(data);
+      editHistory(other, (frames) => {
+        frames[5] = { sequence: 6, private: {} };
+      });
+      expect(digestBytes(other.pages[2]!.body)).not.toBe(
+        digestBytes(data.pages[2]!.body),
+      );
+      const upload = await stageRestore(target, data);
+      const stray = portableUpload(target, other);
+      const staged = target.snapshot();
+      for (const send of [
+        () => stray(0),
+        () => upload(2, { id: "transcript:0", body: "[]" }),
+        () => stray(2),
+      ]) {
+        const effects = target.observeEffects();
+        const reply = await send();
+        expect(reply).toMatchObject(restoreRefusal);
+        expect(restoreExit(reply)).toBe(1);
+        expect(effects()).toEqual(noWrites);
+        expect(target.snapshot()).toEqual(staged);
+      }
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+    }),
+  timeout,
+);
+
+test.each(["before commit", "after commit"] as const)(
+  "v3 restore keeps the original refusal if resetting staging fails %s",
+  (phase) =>
+    withPortable(async (target, data) => {
+      const tables = tableNames(target);
+      data.recordFloor = 2;
+      const upload = await stageRestore(target, data);
+      const staged = target.snapshot();
+      const effects = target.observeEffects();
+      const transact = target.storage.transactionSync.bind(target.storage);
+      let resets = 0;
+      const interruptReset = () => {
+        if (tableNames(target).includes("cloud_v3_restore")) return;
+        resets++;
+        throw new Error("Injected restore reset failure");
+      };
+      target.storage.transactionSync = (body) => {
+        const result = transact(() => {
+          const value = body();
+          if (phase === "before commit") interruptReset();
+          return value;
+        });
+        if (phase === "after commit") interruptReset();
+        return result;
+      };
+      let reply;
+      try {
+        reply = await upload(2);
+      } finally {
+        target.storage.transactionSync = transact;
+      }
+      expect(reply).toEqual(fullRestoreRefusal);
+      expect(resets).toBe(1);
+      expect(restoreExit(reply)).toBe(1);
+      if (phase === "before commit") {
+        expect(target.snapshot()).toEqual(staged);
+        const retry = await upload(2);
+        expect(retry).toEqual(reply);
+        expect(restoreExit(retry)).toBe(1);
+      }
+      expect(tableNames(target)).not.toContain("cloud_v3_restore");
+      expect(tableNames(target)).toEqual(tables);
+      expect(target.snapshot().kv).toEqual(staged.kv);
+      expect(effects().alarmWrites).toBe(0);
+    }),
+  timeout,
+);
+
+test(
+  "v3 provision accepts a fresh target after a refused restore resets staging",
+  () =>
+    withPortable(async (target, data) => {
+      const { kv } = target.snapshot();
+      data.recordFloor = 2;
+      const upload = await stageRestore(target, data);
+      const reply = await upload(2);
+      expect(reply).toMatchObject(restoreRefusal);
+      expect(restoreExit(reply)).toBe(1);
+      expect(target.snapshot().kv).toEqual(kv);
+
+      expect(await target.send(probe, {})).toMatchObject({
+        status: 200,
+        body: { ok: true, value: { generation: 0, coveredHead: 0 } },
+      });
+      expect(tableNames(target)).toEqual([
+        "cloud_v3_commits",
+        "cloud_v3_pages",
+        "cloud_v3_root",
+      ]);
+      expect(commits(target)).toEqual([]);
+      expect(pages(target)).toEqual([
+        { id: "directory:0", body: "[]" },
+        { id: "transcript:0", body: "[]" },
+      ]);
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore keeps staging if the verification read fails",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = await stageRestore(target, data);
+      const staged = target.snapshot();
+      const execute = target.storage.sql.exec.bind(target.storage.sql);
+      let faulted = false;
+      target.storage.sql.exec = (statement, ...bindings) => {
+        if (
+          !faulted &&
+          statement.startsWith(
+            "SELECT id, CASE WHEN length(CAST(body AS BLOB))",
+          ) &&
+          statement.includes("FROM cloud_v3_restore")
+        ) {
+          faulted = true;
+          throw new ForgeFailure({
+            code: "UNAVAILABLE",
+            message: "Injected staged read failure",
+            retry: "never",
+          });
+        }
+        return execute(statement, ...bindings);
+      };
+      try {
+        const reply = await upload(2);
+        expect(reply).toEqual(fullRestoreRefusal);
+        expect(restoreExit(reply)).toBe(1);
+      } finally {
+        target.storage.sql.exec = execute;
+      }
+      expect(faulted).toBe(true);
+      expect(target.snapshot()).toEqual(staged);
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+    }),
+  timeout,
+);
+
+test.each(["CREATE TABLE cloud_v3_root", "INSERT INTO cloud_v3_commits"])(
+  "v3 restore keeps staging if activation storage refuses %s",
+  (prefix) =>
+    withPortable(async (target, data) => {
+      const upload = await stageRestore(target, data);
+      const staged = target.snapshot();
+      const execute = target.storage.sql.exec.bind(target.storage.sql);
+      const failure = new ForgeFailure({
+        code: "STORAGE_LIMIT_EXCEEDED",
+        message: "Injected activation storage refusal",
+        retry: "never",
+      });
+      let faulted = false;
+      target.storage.sql.exec = (statement, ...bindings) => {
+        if (!faulted && statement.startsWith(prefix)) {
+          faulted = true;
+          throw failure;
+        }
+        return execute(statement, ...bindings);
+      };
+      try {
+        expect(await upload(2)).toEqual({
+          status: 503,
+          body: { ok: false, error: failure.error },
+        });
+      } finally {
+        target.storage.sql.exec = execute;
+      }
+      expect(faulted).toBe(true);
+      expect(target.snapshot()).toEqual(staged);
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore keeps staging if the transaction replaces the verification refusal",
+  () =>
+    withPortable(async (target, data) => {
+      const tables = [...tableNames(target), "cloud_v3_restore"];
+      data.recordFloor = 2;
+      const upload = await stageRestore(target, data);
+      const staged = target.snapshot();
+      const effects = target.observeEffects();
+      const transact = target.storage.transactionSync.bind(target.storage);
+      let replacement: ForgeFailure | undefined;
+      target.storage.transactionSync = (body) => {
+        try {
+          return transact(body);
+        } catch (error) {
+          if (!(error instanceof ForgeFailure)) throw error;
+          replacement = new ForgeFailure(error.error);
+          throw replacement;
+        }
+      };
+      try {
+        const reply = await upload(2);
+        expect(replacement).toBeInstanceOf(ForgeFailure);
+        expect(reply).toMatchObject(restoreRefusal);
+        expect(reply).toEqual({
+          status: 400,
+          body: { ok: false, error: replacement!.error },
+        });
+      } finally {
+        target.storage.transactionSync = transact;
+      }
+      expect(target.snapshot()).toEqual(staged);
+      expect(tableNames(target)).toEqual(tables);
+      expect(effects()).toEqual({ ...noWrites, sqlWriteAttempts: 1 });
+    }),
+  timeout,
+);
 
 test(
   "v3 restore refuses bad pins, repeated members, skipped pages and extras",
@@ -2515,10 +2826,10 @@ for (const fault of [
         data.publicDigest = digestBytes("[]");
       }
       const upload = await stageRestore(target, data);
-      const staged = target.snapshot();
+      const reset = observeRestoreReset(target);
       expect(await upload(2)).toMatchObject(restoreRefusal);
       await unprovisioned(target);
-      expect(target.snapshot()).toEqual(staged);
+      reset();
     },
     timeout,
   );
@@ -2627,12 +2938,12 @@ async function refusesTampered(
     expect(await honest(2)).toMatchObject(restoreResult(2, true));
     tamper(data, source);
     const upload = await stageRestore(target, data);
-    const staged = target.snapshot();
+    const reset = observeRestoreReset(target);
     const reply = await upload(2);
     expect(reply).toMatchObject(restoreRefusal);
     expect(exited(reply)).toBe(1);
     await unprovisioned(target);
-    expect(target.snapshot()).toEqual(staged);
+    reset();
   });
 }
 
@@ -3428,13 +3739,13 @@ test(
         frames[5] = { sequence: 6 };
       });
       const upload = await stageRestore(target, data);
-      const before = target.snapshot();
+      const reset = observeRestoreReset(target);
       expect(await upload(2)).toMatchObject({
         status: 413,
         body: { error: { code: "RESTORE_TOO_LARGE" } },
       });
       await unprovisioned(target);
-      expect(target.snapshot()).toEqual(before);
+      reset();
     }),
   timeout,
 );
@@ -3518,7 +3829,7 @@ test(
     withTyped(async (target, data) => {
       forgeRefusal(data, accent);
       const upload = await stageRestore(target, data);
-      const effects = target.observeEffects();
+      const reset = observeRestoreReset(target);
       expect(await upload(2)).toEqual({
         status: 400,
         body: {
@@ -3530,11 +3841,7 @@ test(
           },
         },
       });
-      expect(effects()).toEqual({
-        sqlWriteAttempts: 1,
-        alarmWrites: 0,
-        sqlAndKvIntact: true,
-      });
+      reset();
       const glyphs = "caf\u00e9 \u{1F600}";
       const source = guardFixture(typedEnv);
       const honest = guardFixture(typedEnv);
@@ -3649,10 +3956,10 @@ for (const [fault, tamper] of [
       withTyped(async (target, data) => {
         tamper(data);
         const upload = await stageRestore(target, data);
-        const staged = target.snapshot();
+        const reset = observeRestoreReset(target);
         expect(await upload(2)).toMatchObject(restoreRefusal);
         await unprovisioned(target);
-        expect(target.snapshot()).toEqual(staged);
+        reset();
       }),
     timeout,
   );
@@ -4470,11 +4777,11 @@ test.each([
 
 async function rejectedFinalPage(target: Fixture, data: Portable) {
   const upload = await stageRestore(target, data);
-  const before = target.observeEffects();
+  const reset = observeRestoreReset(target);
   const reply = await upload(2);
   expect(reply).toMatchObject(restoreRefusal);
   expect(exited(reply)).toBe(1);
-  expect(before()).toEqual({ ...noWrites, sqlWriteAttempts: 1 });
+  reset();
   await unprovisioned(target);
 }
 

@@ -22,6 +22,7 @@ import {
 import {
   guardFixture,
   noWrites,
+  observeRestoreReset,
   probe,
   recovered as recoverOrdinary,
   trustedManifest,
@@ -648,9 +649,9 @@ async function refused(data: Backup) {
   const target = open();
   using _target = target.db;
   const finish = await stage(target, data);
-  const staged = target.snapshot();
+  const reset = observeRestoreReset(target);
   expect(await finish()).toMatchObject(refusal);
-  expect(target.snapshot()).toEqual(staged);
+  reset();
   expect(await target.send("status")).toMatchObject({
     body: { value: { initialized: false } },
   });

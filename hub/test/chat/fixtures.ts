@@ -98,7 +98,7 @@ const blockedDb: Runtime.HubDb = {
   close: blockDb,
 };
 
-function testDb(path: string, initialize: boolean): Runtime.HubDb {
+export function testDb(path: string, initialize: boolean): Runtime.HubDb {
   const database = new Database(path);
   if (initialize) for (const sql of CHAT_STATE_DDL) database.exec(sql);
   return {
@@ -305,6 +305,7 @@ export async function slackFixture(options: Options = {}, start = false) {
     people: {
       all: () => [],
       byPersonId: () => undefined,
+      byChatUserId: () => undefined,
       bySlackUserId: () => undefined,
     },
     db,

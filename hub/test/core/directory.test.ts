@@ -56,3 +56,27 @@ test(
   },
   timeout,
 );
+
+test(
+  "T1A-DIR1 resolves exact provider and user pairs without crossing providers",
+  () => {
+    const alpha = { ...people[0], telegramUserId: "123456" };
+    const directory = createPeopleDirectory([alpha, people[1]]);
+    expect(directory.byChatUserId("telegram", "123456")).toEqual(alpha);
+    expect(directory.byChatUserId("slack", alpha.slackUserId)).toBe(
+      directory.bySlackUserId(alpha.slackUserId),
+    );
+    expect(directory.byChatUserId("slack", "123456")).toBeUndefined();
+    expect(
+      directory.byChatUserId("telegram", alpha.slackUserId),
+    ).toBeUndefined();
+    expect(directory.byChatUserId("telegram", "0123456")).toBeUndefined();
+    expect(() =>
+      createPeopleDirectory([
+        alpha,
+        { ...people[1], telegramUserId: "123456" },
+      ]),
+    ).toThrow("telegramUserId");
+  },
+  timeout,
+);

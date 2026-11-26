@@ -214,7 +214,10 @@ test(
     await source.add("wren obsolete");
     for (let number = 2; number <= 50; number += 1)
       await source.add(`filler ${number}`);
-    await source.add("wren current", { replaces: [oldId] });
+    await source.add("wren current", {
+      replaces: [oldId],
+      reason: "The current wren guidance supersedes the obsolete instructions.",
+    });
     const fields = { level: "device" };
     const first = (await source.call("memory.export", fields)) as RestorePage;
     const second = (await source.call("memory.export", {

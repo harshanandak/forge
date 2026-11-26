@@ -12,6 +12,7 @@ const bin = fileURLToPath(new URL("../bin/forge-hub.mjs", import.meta.url));
 function expectEntry(args: string[], status: number, stderr: string): void {
   const result = spawnSync("node", [bin, ...args], {
     encoding: "utf8",
+    env: { ...process.env, FORGE_HUB_CONFIG: "" },
     windowsHide: true,
     timeout,
   });
@@ -36,7 +37,7 @@ test(
 );
 
 test(
-  "the built launcher sends known commands to their unavailable factories",
+  "the built launcher reports missing configuration before opening command resources",
   () => {
     for (const args of [
       ["serve"],
@@ -46,7 +47,7 @@ test(
       ["send"],
       ["summary", "post", "--project", "prj_demo"],
     ])
-      expectEntry(args, 1, "not_built\n");
+      expectEntry(args, 1, "could not load hub configuration\n");
     expectEntry(["summary", "wrong"], 2, "usage: forge-hub <command>\n");
   },
   timeout,

@@ -96,15 +96,28 @@ function decided<T>(codes: readonly string[], run: () => T): T | Refused {
   }
 }
 
+export function recordAlias(key: string, value: unknown): string | undefined {
+  if (!isObject(value) || value.id !== `work-${key.slice(1)}`) return undefined;
+  const prefix = value.prefix ?? "work";
+  return typeof prefix === "string" ? prefix : undefined;
+}
+
+function buildAliases(image: V3Image) {
+  const aliases = new Map<string, number>();
+  const aliasByKey = new Map<string, string>();
+  for (const key of image.entries.record.keys()) {
+    const alias = recordAlias(key, image.load("record", key));
+    if (alias === undefined) continue;
+    aliases.set(alias, (aliases.get(alias) ?? 0) + 1);
+    aliasByKey.set(key, alias);
+  }
+  image.aliases = aliases;
+  image.aliasByKey = aliasByKey;
+  return aliases;
+}
+
 const minted = (image: V3Image) => (alias: string) =>
-  [...image.entries.record.keys()].some((key) => {
-    const value = image.load("record", key);
-    return (
-      isObject(value) &&
-      value.id === `work-${key.slice(1)}` &&
-      (value.prefix ?? "work") === alias
-    );
-  });
+  ((image.aliases ?? buildAliases(image)).get(alias) ?? 0) > 0;
 
 export function updateDecision(
   image: V3Image,

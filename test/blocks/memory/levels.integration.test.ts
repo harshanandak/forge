@@ -438,8 +438,9 @@ test("integration: project notes, own and pulled, come back fenced as untrusted 
 
 test("integration: a search cursor walks every level together and refuses a different set of levels", async () => {
   for (let index = 0; index < 4; index += 1) {
-    await add(alpha, `quail walk device ${index}`, "device");
-    await add(alpha, `quail walk project ${index}`, "project");
+    const scope = `cursor-fixture-${index}`;
+    await add(alpha, `quail walk device ${index}`, "device", scope);
+    await add(alpha, `quail walk project ${index}`, "project", scope);
   }
   const seen: string[] = [];
   let cursor: string | undefined;

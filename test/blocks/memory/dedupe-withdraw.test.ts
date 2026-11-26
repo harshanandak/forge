@@ -51,6 +51,11 @@ function setup() {
   return { call, rules };
 }
 type Call = ReturnType<typeof setup>["call"];
+const duplicate = (id: string) => ({
+  error: {
+    message: `Note ${id} says the same thing; revise it with id and expectRevision instead.`,
+  },
+});
 const propose = (call: Call, text: string, extra: object = {}) =>
   call("memory.add", { level: "device", text, tags: ["rule"], ...extra });
 async function accept(call: Call, ids: string[]) {
@@ -67,16 +72,15 @@ const TEN = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
 // Eighteen distinct words; swapping one leaves 17 shared of 19 in the union: just under it.
 const EIGHTEEN = Array.from({ length: 18 }, (_, i) => `word${i + 1}x`);
 
-test("five adds of the same owner rule make one proposal and four notices naming it", async () => {
+test("five adds of the same owner rule make one proposal and four duplicate refusals", async () => {
   const { call, rules } = setup();
   const text = "Reviewers approve direction, never implementation details.";
   const first = await propose(call, text);
   expect(first.status).toBe("added");
   for (let i = 0; i < 4; i += 1) {
-    const again = await propose(call, text);
-    expect(again.status).toBe("exists");
-    expect(again.id).toBe(first.id);
-    expect(again.notice).toContain(`already proposed as ${first.id}`);
+    await expect(propose(call, text)).rejects.toMatchObject(
+      duplicate(first.id),
+    );
   }
   expect((await rules()).receipt.proposed?.count).toBe(1);
   // No number was spent on the refused adds.
@@ -93,15 +97,15 @@ test("a clearly different rule still creates its own proposal", async () => {
   expect((await rules()).receipt.proposed?.count).toBe(2);
 });
 
-test("case and spacing never make a second proposal, but punctuation does", async () => {
+test("case, spacing and punctuation variants are refused on add", async () => {
   const { call } = setup();
   const first = await propose(call, "Write the test first.");
-  const again = await propose(call, "  WRITE    the   test first.  ");
-  expect(again).toMatchObject({ status: "exists", id: first.id });
-  // Only trimming, whitespace and case are folded: a different mark is a separate proposal.
-  const marked = await propose(call, "Write the test, first!!");
-  expect(marked.status).toBe("added");
-  expect(marked.similarTo).toEqual([first.id]);
+  await expect(
+    propose(call, "  WRITE    the   test first.  "),
+  ).rejects.toMatchObject(duplicate(first.id));
+  await expect(propose(call, "Write the test, first!!")).rejects.toMatchObject(
+    duplicate(first.id),
+  );
 });
 
 const OPPOSITE_PAIRS = [
@@ -110,8 +114,17 @@ const OPPOSITE_PAIRS = [
   ["Don't merge on red", "Do merge on red"],
 ] as const;
 
-test("texts that differ in a sign, symbol or word are separate proposals on add", async () => {
-  for (const [one, two] of OPPOSITE_PAIRS) {
+test("the word-overlap check refuses sign-only differences on add", async () => {
+  for (const [one, two] of OPPOSITE_PAIRS.slice(0, 2)) {
+    const { call } = setup();
+    const first = await propose(call, one);
+    await accept(call, [first.id]);
+    await expect(propose(call, two)).rejects.toMatchObject(duplicate(first.id));
+  }
+});
+
+test("a proposal below the overlap and topic thresholds is kept", async () => {
+  for (const [one, two] of OPPOSITE_PAIRS.slice(2)) {
     const { call, rules } = setup();
     const first = await propose(call, one);
     await accept(call, [first.id]);
@@ -157,73 +170,61 @@ test("texts that differ in a sign, symbol or word are separate proposals on edit
   }
 });
 
-test("an active rule is reported as already active", async () => {
+test("an exact copy of an active rule is refused", async () => {
   const { call } = setup();
   const first = await propose(call, "Write the test first.");
   await accept(call, [first.id]);
-  const again = await propose(call, "write the test first.");
-  expect(again.status).toBe("exists");
-  expect(again.id).toBe(first.id);
-  expect(again.notice).toContain("already active");
+  await expect(propose(call, "write the test first.")).rejects.toMatchObject(
+    duplicate(first.id),
+  );
 });
 
-test("close wording is kept as its own proposal with a similarTo hint, at the 0.9 boundary", async () => {
+test("add refuses at the 0.9 overlap boundary and keeps wording below it with a reason", async () => {
   const { call, rules } = setup();
   const base = await propose(call, TEN);
   expect(base.similarTo).toBeUndefined();
-  // 9 of 10 words shared: exactly 0.9. Not suppressed; the hint names the close note.
   const minusOne = TEN.split(" ").slice(0, 9).join(" ");
-  const close = await propose(call, minusOne);
-  expect(close.status).toBe("added");
-  expect(close.id).not.toBe(base.id);
-  expect(close.similarTo).toEqual([base.id]);
-  expect(close.notice).toContain(
-    "similar to the notes in similarTo; withdraw this one if it says the same thing",
+  await expect(propose(call, minusOne)).rejects.toMatchObject(
+    duplicate(base.id),
   );
-  // 8 of 10 words shared: 0.8, and 8 of 9 against the note above: no hint.
   const minusTwo = TEN.split(" ").slice(0, 8).join(" ");
-  expect((await propose(call, minusTwo)).similarTo).toBeUndefined();
+  const reason = "Both spellings are needed for this fixture";
+  expect(
+    (await propose(call, minusTwo, { coexistsWith: [base.id], reason }))
+      .similarTo,
+  ).toBeUndefined();
 
   const long = await propose(call, EIGHTEEN.join(" "));
   const swapped = [...EIGHTEEN.slice(0, 17), "newword"].join(" ");
-  // 17 of 19 words in the union: 0.894, just under the threshold: no hint.
-  const under = await propose(call, swapped);
+  const under = await propose(call, swapped, {
+    coexistsWith: [long.id],
+    reason,
+  });
   expect(under.status).toBe("added");
   expect(under.similarTo).toBeUndefined();
-  // 17 of 18 in the union: 0.944, over it: still added, with a hint naming both notes.
-  const dropped = await propose(call, EIGHTEEN.slice(0, 17).join(" "));
-  expect(dropped.status).toBe("added");
-  expect(dropped.similarTo).toEqual([long.id, under.id]);
-  // Every one of them waits for the owner.
-  expect((await rules()).receipt.proposed?.count).toBe(6);
+  await expect(
+    propose(call, EIGHTEEN.slice(0, 17).join(" ")),
+  ).rejects.toMatchObject(duplicate(long.id));
+  expect((await rules()).receipt.proposed?.count).toBe(4);
 });
 
-test("the same words in another order are a different rule and reach the owner", async () => {
+test("the same words in another order are refused on add", async () => {
   const { call, rules } = setup();
   const first = await propose(
     call,
     "Always encrypt backups; never delete originals.",
   );
   await accept(call, [first.id]);
-  const opposite = await propose(
-    call,
-    "Always delete originals; never encrypt backups.",
-  );
-  expect(opposite.status).toBe("added");
-  expect(opposite.id).not.toBe(first.id);
-  expect(opposite.note.status).toBe("proposed");
-  expect(opposite.similarTo).toEqual([first.id]);
-  expect(opposite.notice).toContain(
-    "similar to the notes in similarTo; withdraw this one if it says the same thing",
-  );
-  expect(opposite.notice!.length).toBeLessThanOrEqual(600);
+  await expect(
+    propose(call, "Always delete originals; never encrypt backups."),
+  ).rejects.toMatchObject(duplicate(first.id));
   const served = await rules();
   expect(served.text.text).toContain("Always encrypt backups");
   expect(served.text.text).not.toContain("Always delete originals");
-  expect(served.receipt.proposed?.count).toBe(1);
+  expect(served.receipt.proposed).toBeUndefined();
 });
 
-test("only owner-tagged notes in the same scope are compared", async () => {
+test("all tags are checked within each scope", async () => {
   const { call } = setup();
   expect(
     (await propose(call, "Write the test first.", { scope: "one" })).status,
@@ -233,8 +234,11 @@ test("only owner-tagged notes in the same scope are compared", async () => {
   ).toBe("added");
   const plain = (text: string) =>
     call("memory.add", { level: "device", text, tags: ["fact"] });
-  expect((await plain("Write the test first.")).status).toBe("added");
-  expect((await plain("Write the test first.")).status).toBe("added");
+  const first = await plain("Write the test first.");
+  expect(first.status).toBe("added");
+  await expect(plain("Write the test first.")).rejects.toMatchObject(
+    duplicate(first.id),
+  );
 });
 
 test("an edit that would repeat another owner note is not proposed", async () => {
@@ -243,7 +247,7 @@ test("an edit that would repeat another owner note is not proposed", async () =>
   await accept(call, [rule.id]);
   const plain = await call("memory.add", {
     level: "device",
-    text: "write the test first.",
+    text: "Read the release checklist.",
     tags: ["fact"],
   });
   const edited = await call("memory.add", {
@@ -318,7 +322,7 @@ test("a scope-only edit of a pending rule never makes a second proposal of anoth
 test("every notice stays inside the add output limit in the worst case", async () => {
   // The longest custom owner tag, project ids with 9-digit numbers, and two similar notes.
   const tag = "a".repeat(40);
-  const config = { approval: { ownerTags: [tag] } };
+  const config = { approval: { ownerTags: [tag] }, conflictThreshold: 100 };
   const entry = loadEntry("memory");
   const device = memoryState();
   const store = memoryState();
@@ -342,11 +346,13 @@ test("every notice stays inside the add output limit in the worst case", async (
     entry["memory.add"]!({ input, config, services }) as Promise<Reply>;
   const valid = blockSchema("memory", "add.output.json");
   const add = (text: string) => call({ level: "project", text, tags: [tag] });
-  await add(TEN);
-  await add(`${TEN}.`);
-  await add(`${TEN}!`);
-  const added = await add(`${TEN}?`);
-  expect(added.similarTo).toHaveLength(2);
+  const words = TEN.split(" ");
+  const omit = (index: number) => words.filter((_, i) => i !== index).join(" ");
+  await add(omit(0));
+  await add(omit(1));
+  await add(omit(2));
+  const added = await add("Audit the permissions.");
+  expect(added.similarTo).toBeUndefined();
   expect(added.id).toBe("project/0123456789abcdef/note-100000003");
   expect(added.notice!.length).toBeLessThanOrEqual(600);
   expect(valid(JSON.parse(JSON.stringify(added)))).toEqual([]);
@@ -370,9 +376,9 @@ test("every notice stays inside the add output limit in the worst case", async (
   expect(valid(JSON.parse(JSON.stringify(again)))).toEqual([]);
 
   // An exact repeat names one id and nothing else.
-  const repeat = await add(TEN);
-  expect(repeat.status).toBe("exists");
-  expect(valid(JSON.parse(JSON.stringify(repeat)))).toEqual([]);
+  await expect(add(omit(0))).rejects.toMatchObject(
+    duplicate("project/0123456789abcdef/note-100000000"),
+  );
 });
 
 test("an edit to close wording is kept and names the close note", async () => {

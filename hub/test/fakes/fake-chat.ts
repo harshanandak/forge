@@ -16,6 +16,7 @@ import {
   type SummaryLookup,
 } from "../../src/contract/chat.ts";
 import type { Summary } from "../../src/contract/domain.ts";
+import { isTelegramId } from "../../src/core/directory.ts";
 
 type CallName =
   | keyof Omit<ChatPort, "capabilities">
@@ -156,11 +157,11 @@ export class FakeChatPort implements ChatPort {
     return this.handlers().onMessageChange(event);
   }
 
-  postAskDm(slackUserId: string, card: AskCardView): Promise<ChatMessageRef> {
+  postAskDm(userId: string, card: AskCardView): Promise<ChatMessageRef> {
     this.askCards.push(card);
-    return this.write("postAskDm", [slackUserId, card], () =>
-      this.ref("dm-" + slackUserId),
-    );
+    const slackChannelId = "dm-" + userId;
+    const channelId = isTelegramId(userId) ? userId : slackChannelId;
+    return this.write("postAskDm", [userId, card], () => this.ref(channelId));
   }
 
   editAskDm(ref: ChatMessageRef, card: AskCardView): Promise<void> {

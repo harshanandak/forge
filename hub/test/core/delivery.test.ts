@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
+import { configFixture } from "./config-fixture.ts";
 import {
   a,
   b,
@@ -322,6 +323,51 @@ test(
       "emitAction",
       ...Array<"postAskDm">(4).fill("postAskDm"),
     ]);
+  },
+  timeout,
+);
+
+test.each([
+  ["slack", "telegram"],
+  ["telegram", "slack"],
+] as const)(
+  "Ask edits queued for %s stay hidden from %s after reopening",
+  async (original, selected) => {
+    const configFor = (adapter: typeof original) => ({
+      chat: { adapter },
+      slack:
+        adapter === "slack"
+          ? { mode: "socket" as const, buttons: true, teamId: "T012ABC9XYZ" }
+          : { mode: "off" as const, buttons: false },
+    });
+    const f = await askFixture(new FakeChatPort(), {
+      ...configFor(original),
+      people: configFixture().people.map((person, index) => ({
+        ...person,
+        telegramUserId: String(index + 1),
+      })),
+    });
+    const { askId, expiresAt } = value(await f.choice({ to: [a.personId] }));
+    f.setTime(Date.parse(expiresAt) + 1);
+    expect(f.asks.sweepExpiry()).toBe(1);
+    expect(f.asks.pendingEdits(1)).toMatchObject([{ askId }]);
+
+    closeDb(f.db);
+    const db = openDb(f.path);
+    const switched = asksOf(
+      createCoreStore({
+        ...f.deps,
+        db,
+        config: { ...f.config, ...configFor(selected) },
+      }),
+    );
+    expect(switched.pendingEdits(1)).toEqual([]);
+
+    db.prepare("DELETE FROM ask_edit_effects WHERE ask_id = ?").run(askId);
+    switched.reconcileEdits();
+    expect(switched.pendingEdits(1)).toEqual([]);
+    const restored = asksOf(createCoreStore({ ...f.deps, db }));
+    expect(restored.pendingEdits(1)).toMatchObject([{ askId }]);
   },
   timeout,
 );

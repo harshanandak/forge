@@ -1,13 +1,21 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import {
+  ASK_ACTION_PREFIX,
+  type ChatActionEvent,
+} from "../../src/contract/chat.ts";
+import { createPeopleDirectory } from "../../src/core/directory.ts";
 import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
-import { a, b, closeDb, openDb, p1, value } from "./fixture.ts";
+import { configFixture } from "./config-fixture.ts";
+import { a, b, caller, closeDb, openDb, p1, value } from "./fixture.ts";
 import {
   askFixture,
   asksOf,
   button,
+  choices,
+  question,
   digit,
   rows,
   slackA,
@@ -17,6 +25,79 @@ import {
 const timeout = 30_000;
 const winner =
   "Already answered by Fixture Alpha at 00:00 UTC: Choose the first option.";
+
+test(
+  "T2-SEC1 Telegram actions resolve exactly one original delivery for the numeric sender",
+  async () => {
+    const config = configFixture();
+    const chat = new FakeChatPort();
+    const f = await askFixture(chat, {
+      chat: { adapter: "telegram" },
+      slack: { mode: "off", buttons: false },
+      people: config.people.map((person, i) => ({
+        ...person,
+        telegramUserId: String(i + 1),
+      })),
+    });
+    const first = value(await f.choice({ to: [a.personId] })).askId;
+    const second = value(await f.choice({ to: [a.personId] })).askId;
+    const channelId = "1";
+    const ref = {
+      channelId,
+      chatThreadId: "fixture-thread",
+      chatMessageId: "301",
+    };
+    const setMessage = (askId: string, messageId: string) =>
+      f.db
+        .prepare(
+          "UPDATE ask_deliveries SET chat_message_id = ? WHERE ask_id = ?",
+        )
+        .run(messageId, askId);
+    setMessage(first, ref.chatMessageId);
+    setMessage(second, ref.chatMessageId);
+    function tap(eventKey: string, message = ref): ChatActionEvent {
+      return {
+        eventKey,
+        slackUserId: "",
+        chatIdentity: { adapter: "telegram", userId: channelId },
+        actionId: ASK_ACTION_PREFIX,
+        value: "0",
+        message,
+      };
+    }
+    const missing = f.asks.answerAction(
+      tap("missing-tap", { ...ref, chatMessageId: "302" }),
+    );
+    const ambiguous = f.asks.answerAction(tap("ambiguous-tap"));
+    for (const result of [missing, ambiguous]) {
+      expect(result.after).toBeUndefined();
+      expect(result.reply.ephemeralText ?? "").toMatch(/\S/);
+    }
+    for (const table of ["answer_attempts", "ask_answers", "permits"] as const)
+      expect(rows(f.db, table)).toEqual([]);
+    setMessage(second, "302");
+    const locked = f.asks.answerAction(tap("unique-tap"));
+    expect(locked.after?.askId).toBe(first);
+    expect(rows(f.db, "ask_answers")).toMatchObject([
+      { ask_id: first, choice_id: "first", source: "button" },
+    ]);
+  },
+  timeout,
+);
+
+test(
+  "T2-ANS1 Slack actions still resolve the explicit ask and choice",
+  async () => {
+    const f = await askFixture();
+    const id = value(await f.choice()).askId;
+    const event = button(id, "slack-control", slackA, "second");
+    expect(f.asks.answerAction(event).after?.askId).toBe(id);
+    expect(rows(f.db, "ask_answers")).toMatchObject([
+      { ask_id: id, choice_id: "second", source: "button" },
+    ]);
+  },
+  timeout,
+);
 
 test(
   "A1: two clickers lock once and queue both edits",
@@ -371,6 +452,73 @@ test(
       "unknown_ask",
       "not_allowed",
     ]);
+  },
+  timeout,
+);
+
+test(
+  "T1A-ASK uses the selected provider for delivery and locks only a matching provider's answer",
+  async () => {
+    const f = await askFixture();
+    const people = f.config.people.map((person, i) => ({
+      ...person,
+      telegramUserId: String(i + 1),
+    }));
+    const chat = new FakeChatPort();
+    const telegram = asksOf(
+      createCoreStore({
+        ...f.deps,
+        config: {
+          ...f.config,
+          people,
+          chat: { adapter: "telegram" },
+          slack: { mode: "off", buttons: false },
+        },
+        people: createPeopleDirectory(people),
+        chat,
+      }),
+    );
+    const slackId = value(await f.choice({ to: [a.personId] })).askId;
+    const askId = value(
+      await telegram.ask(caller, {
+        sessionId: f.sessionId,
+        projectId: p1,
+        kind: "choice",
+        requestedAction: "choice",
+        question,
+        choices,
+        to: [a.personId],
+      }),
+    ).askId;
+    expect(chat.calls.find(({ name }) => name === "postAskDm")?.args[0]).toBe(
+      "1",
+    );
+    const telegramButton = (value: string, userId = "1") => ({
+      ...button(value, "provider-event"),
+      chatIdentity: { adapter: "telegram" as const, userId },
+    });
+    expect(
+      telegram.answerAction({
+        ...telegramButton(slackId),
+        eventKey: "wrong-ask",
+      }).after,
+    ).toBeUndefined();
+    expect(
+      f.asks.answerAction(button(askId, "provider-event")).after,
+    ).toBeUndefined();
+    expect(
+      telegram.answerAction(button(askId, "provider-event")).after,
+    ).toBeUndefined();
+    expect(telegram.answerAction(telegramButton(askId)).after?.askId).toBe(
+      askId,
+    );
+    expect(
+      telegram.answerAction({
+        ...telegramButton(askId),
+        eventKey: "second-telegram-event",
+      }).reply.ephemeralText,
+    ).toBe(winner);
+    expect(rows(f.db, "ask_answers")).toHaveLength(1);
   },
   timeout,
 );

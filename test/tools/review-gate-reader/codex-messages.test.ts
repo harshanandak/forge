@@ -1,11 +1,14 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { parseBotMessage } from "../../../tools/ci/review-gate-reader/codex-messages.ts";
-import { ok } from "../../../tools/ci/review-gate-reader/result.ts";
+import { fail, ok } from "../../../tools/ci/review-gate-reader/result.ts";
 import { codeRabbitRecord, endpoints } from "./bot-fixtures.ts";
 import {
+  cleanReceipt,
   codexRecord,
   displayAt,
   inlineFinding,
+  suggestionsReceipt,
+  suggestionsSha,
   summary,
   summarySha,
 } from "./codex-fixtures.ts";
@@ -175,6 +178,22 @@ test.each([
     summary.replace('"commit_sha":null', `"commit_sha":"${summarySha}"`),
     "bot_format_unsupported",
   ],
+  [
+    "C13 uppercase SHA10",
+    cleanReceipt.replace("54bd87f443", "54BD87F443"),
+    "bot_head_invalid",
+  ],
+  [
+    "C13 short SHA10",
+    cleanReceipt.replace("54bd87f443", "54bd87f44"),
+    "bot_head_invalid",
+  ],
+  [
+    "C13 changed receipt footer",
+    cleanReceipt.replace("</details>", "</DETAILS>"),
+    "bot_format_malformed",
+  ],
+  ["C13 trailing LF", cleanReceipt + "\n", "bot_format_malformed"],
   ["C15 empty body", "", "bot_format_unsupported"],
   ["C15 unknown old notice", "Codex is reviewing", "bot_format_unsupported"],
 ] as const)("%s", (_name, body, reason) => {
@@ -255,4 +274,78 @@ test("I9 a human copying the exact Codex summary stays human", () => {
   expect<unknown>(parseBotMessage(codexRecord({ user }), comment)).toEqual(
     ok({ kind: "human" }),
   );
+});
+
+const suggestions = codexRecord({
+  body: suggestionsReceipt,
+  commit_id: suggestionsSha,
+});
+
+test.each([
+  [
+    "C10/R2 suggestions receipt",
+    suggestions,
+    "reviews",
+    { kind: "receipt", sha10: "f9276ede4e" },
+  ],
+  [
+    "C12/R2 clean receipt",
+    codexRecord({ body: cleanReceipt }),
+    comment,
+    { kind: "neutral" },
+  ],
+] as const)("%s", (_name, record, endpoint, expected) => {
+  expect<unknown>(parseBotMessage(record, endpoint)).toEqual(ok(expected));
+});
+
+test.each([
+  [
+    "C11 suggestions receipt on another head",
+    { ...suggestions, commit_id: "0".repeat(40) },
+    "reviews",
+    "bot_head_invalid",
+  ],
+  [
+    "C11 suggestions receipt with an abbreviated commit_id",
+    { ...suggestions, commit_id: "f9276ede4e" },
+    "reviews",
+    "bot_head_invalid",
+  ],
+  [
+    "C11 suggestions receipt on issue comments",
+    suggestions,
+    comment,
+    "bot_format_unsupported",
+  ],
+  [
+    "C11 suggestions receipt on review comments",
+    suggestions,
+    "review_comments",
+    "bot_format_unsupported",
+  ],
+  [
+    "C12 clean receipt on reviews",
+    codexRecord({ body: cleanReceipt }),
+    "reviews",
+    "bot_format_unsupported",
+  ],
+  [
+    "C13 changed suggestions padding",
+    { ...suggestions, body: suggestionsReceipt.replace("\n    \n", "\n   \n") },
+    "reviews",
+    "bot_format_malformed",
+  ],
+] as const)("%s", (_name, record, endpoint, reason) => {
+  expect(parseBotMessage(record, endpoint)).toEqual(
+    fail(reason, `${endpoint}/${record.id}`),
+  );
+});
+
+test.each(endpoints)("R1 refuses CodeRabbit copies on %s", (endpoint) => {
+  for (const body of [suggestionsReceipt, cleanReceipt]) {
+    const record = codeRabbitRecord(endpoint, body);
+    expect(parseBotMessage(record, endpoint)).toEqual(
+      fail("bot_format_unsupported", `${endpoint}/${record.id}`),
+    );
+  }
 });

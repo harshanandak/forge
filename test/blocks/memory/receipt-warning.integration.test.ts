@@ -15,7 +15,13 @@ import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
-import { done, memoryTimings, ownerApproval, stageBlock } from "./lib.ts";
+import {
+  done,
+  memoryTimings,
+  openHarness,
+  ownerApproval,
+  stageBlock,
+} from "./lib.ts";
 import { approvalReply } from "../../fixtures/owner-approval.mjs";
 
 async function warningReceipt(tamper = false, large = false) {
@@ -221,3 +227,34 @@ test(
   () => memoryTimings(() => warningReceipt(false, true)),
   30_000,
 );
+
+test("integration: CLI and MCP refuse the same memory topic conflict", async () => {
+  const h = await openHarness(["memory"]);
+  try {
+    const options = localCall(h.assembly);
+    const fields = { level: "device", scope: "general" };
+    const cli = async (text: string) => {
+      const payload = JSON.stringify({ ...fields, text });
+      const args = ["memory", "add", "--input", payload];
+      return (await runCli(h.assembly.catalog, args, options)).envelope;
+    };
+    const first = await cli(
+      "falcon orchard release shipment policy team requires approval",
+    );
+    const { id } = done(first) as { id: string };
+    const text = "falcon orchard release shipment policy team requires review";
+    const context = { context: h.deviceOnly() };
+    const handlers = createMcpHandlers(h.assembly.catalog, {}, context);
+    const mcp = await handlers.callTool("memory_add", { ...fields, text });
+    const result = await cli(text);
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        message: `Notes ${id} cover the same topic. Pass replaces to retire them or coexistsWith to keep both. Either option needs a nonblank single-line reason.`,
+      },
+    });
+    expect(mcp).toEqual(result);
+  } finally {
+    await h.close();
+  }
+}, 30_000);

@@ -51,7 +51,7 @@ import {
   resultMatches,
   verifyRecordFrame,
 } from "./v3-record-transitions.ts";
-import { refusalOf } from "./v3-refusals.ts";
+import { recordAlias, refusalOf } from "./v3-refusals.ts";
 import { TABLE_PROBE } from "./store.ts";
 import {
   BOUNDED_MAC,
@@ -218,6 +218,8 @@ export interface V3Image {
     readonly pages: readonly Page[];
   };
   readonly entries: Readonly<Record<Collection, Map<string, Slot>>>;
+  aliases?: Map<string, number>;
+  aliasByKey?: Map<string, string>;
   readonly usage: Usage;
   fold?: {
     context: "portable" | "rooted";
@@ -1454,6 +1456,27 @@ function apply(
   for (const [collection, key, slot] of writes) {
     if (slot === undefined) image.entries[collection].delete(key);
     else image.entries[collection].set(key, slot);
+    if (collection !== "record") continue;
+    const counts = image.aliases;
+    const byKey = image.aliasByKey;
+    if (!counts || !byKey) continue;
+    if (slot === undefined || (!("value" in slot) && !("deleted" in slot))) {
+      delete image.aliases;
+      delete image.aliasByKey;
+      continue;
+    }
+    const old = byKey.get(key);
+    if (old !== undefined) {
+      const count = counts.get(old)! - 1;
+      if (count) counts.set(old, count);
+      else counts.delete(old);
+    }
+    const alias = "value" in slot ? recordAlias(key, slot.value) : undefined;
+    if (alias === undefined) byKey.delete(key);
+    else {
+      byKey.set(key, alias);
+      counts.set(alias, (counts.get(alias) ?? 0) + 1);
+    }
   }
   image.head = sequence;
   image.eventWatermark += frame.events.length;

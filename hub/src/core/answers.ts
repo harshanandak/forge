@@ -1,4 +1,8 @@
-import { ASK_ACTION_PREFIX, type ChatMessageEvent } from "../contract/chat.ts";
+import {
+  ASK_ACTION_PREFIX,
+  type ChatAdapter,
+  type ChatMessageEvent,
+} from "../contract/chat.ts";
 import type { AnswerOutcome } from "../contract/domain.ts";
 import {
   allowed,
@@ -12,6 +16,7 @@ import {
   text,
 } from "./askEffects.ts";
 import { newStoreId } from "./credentials.ts";
+import { isTelegramId } from "./directory.ts";
 import type {
   AnswerAfter,
   AskStore,
@@ -41,11 +46,12 @@ type Answers = Pick<
 >;
 
 export function createAnswers(
-  { db, people, now }: StoreDeps,
+  { db, people, now, adapter }: StoreDeps & { adapter: ChatAdapter },
   sessions: SessionStore,
 ): Answers {
   const ask = db.prepare(`
     SELECT a.*, x.ask_id AS answered FROM asks AS a LEFT JOIN ask_answers AS x ON x.ask_id = a.ask_id WHERE a.ask_id = ?
+      AND EXISTS (SELECT 1 FROM ask_deliveries d WHERE d.ask_id = a.ask_id AND d.adapter = ?)
   `);
   const winner = db.prepare(`
     SELECT x.*, a.choices_json, p.display_name FROM ask_answers AS x
@@ -57,17 +63,17 @@ export function createAnswers(
     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(ask_id) DO NOTHING
   `);
   const retry = db.prepare(
-    "SELECT ask_id, outcome, slack_user_id FROM answer_attempts WHERE event_key = ?",
+    "SELECT ask_id, outcome, slack_user_id FROM answer_attempts WHERE adapter = ? AND event_key = ?",
   );
   const record = db.prepare(`
-    INSERT INTO answer_attempts (event_key, ask_id, slack_user_id, choice_id, outcome, at) VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO answer_attempts (adapter, event_key, ask_id, slack_user_id, choice_id, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   const byThread = db.prepare(`
-    SELECT ask_id FROM ask_deliveries WHERE person_id = ? AND channel_id = ?
+    SELECT ask_id FROM ask_deliveries WHERE adapter = ? AND person_id = ? AND channel_id = ?
       AND chat_message_id = ? AND delivery_state = 'delivered' LIMIT 2
   `);
   const byId = db.prepare(`
-    SELECT ask_id FROM ask_deliveries WHERE person_id = ? AND ask_id = ?
+    SELECT ask_id FROM ask_deliveries WHERE adapter = ? AND person_id = ? AND ask_id = ?
       AND delivery_state IN ('posting','unknown','delivered')
   `);
   const permit = db.prepare(`
@@ -126,32 +132,54 @@ export function createAnswers(
     return { outcome: { kind: verdict }, reply: { ephemeralText } };
   }
 
+  function userId(identity: unknown, legacyId: unknown): string | undefined {
+    if (identity === undefined)
+      return adapter === "slack" && typeof legacyId === "string"
+        ? legacyId
+        : undefined;
+    if (
+      typeof identity !== "object" ||
+      identity === null ||
+      !("adapter" in identity) ||
+      identity.adapter !== adapter ||
+      !("userId" in identity)
+    )
+      return;
+    const id = identity.userId;
+    if (adapter === "telegram") return isTelegramId(id) ? id : undefined;
+    return typeof id === "string" ? id : undefined;
+  }
+
   function answer(
     eventKey: string,
-    slackId: string,
+    chatUserId: string,
     selection: string | number,
     explicit?: string,
-    digitEvent?: ChatMessageEvent,
+    ref?: Pick<ChatMessageEvent, "channelId" | "threadRootMessageId"> & {
+      tap?: true;
+    },
   ) {
     return db.transaction(() => {
-      const prior = retry.get(eventKey);
-      if (prior && prior.slack_user_id !== slackId) return;
-      const person = people.bySlackUserId(slackId);
+      const prior = retry.get(adapter, eventKey);
+      if (prior && prior.slack_user_id !== chatUserId) return;
+      const person = people.byChatUserId(adapter, chatUserId);
       let id = prior ? text(prior.ask_id) : explicit;
-      if (!prior && digitEvent) {
+      if (ref && (!prior || ref.tap)) {
         if (!person) return;
         const refs = explicit
-          ? byId.all(person.personId, explicit)
+          ? byId.all(adapter, person.personId, explicit)
           : byThread.all(
+              adapter,
               person.personId,
-              digitEvent.channelId,
-              digitEvent.threadRootMessageId ?? null,
+              ref.channelId,
+              ref.threadRootMessageId ?? null,
             );
         if (refs.length !== 1 || !refs[0]) return;
         id = text(refs[0].ask_id);
+        if (prior && prior.ask_id !== id) return;
       }
       if (id === undefined) return;
-      const row = ask.get(id);
+      const row = ask.get(id, adapter);
       const actor = person?.personId;
       const eligible =
         row &&
@@ -182,7 +210,7 @@ export function createAnswers(
         const options = choices(row.choices_json);
         const digit = typeof selection === "number";
         const choice = digit
-          ? options[selection - 1]
+          ? options[selection - (ref?.tap ? 0 : 1)]
           : options.find((option) => option.id === selection);
         if (!choice) verdict = "invalid_choice";
         else {
@@ -192,7 +220,7 @@ export function createAnswers(
             choiceId,
             actor,
             at,
-            digit ? "digit" : "button",
+            digit && !ref?.tap ? "digit" : "button",
             eventKey,
           );
           verdict = Number(changes) ? "locked" : "already_answered";
@@ -213,23 +241,40 @@ export function createAnswers(
           }
         }
       }
-      if (!prior) record.run(eventKey, id, slackId, choiceId, verdict, at);
+      if (!prior)
+        record.run(adapter, eventKey, id, chatUserId, choiceId, verdict, at);
       return { ...describe(verdict, id), after };
     });
   }
 
   return {
-    answerAction({ actionId, eventKey, slackUserId, value }) {
+    answerAction(event) {
+      const { actionId, eventKey, chatIdentity, slackUserId, value } = event;
       if (!actionId.startsWith(ASK_ACTION_PREFIX)) return { reply: {} };
+      const id = userId(chatIdentity, slackUserId);
+      const tap = adapter === "telegram" && actionId === ASK_ACTION_PREFIX;
+      const refuse = (ephemeralText: string) => ({
+        reply: tap ? { ephemeralText } : {},
+      });
+      if (id === undefined) return refuse(refusals.unknown_answerer);
+      if (tap && !/^[0-9]$/.test(value)) return refuse(refusals.invalid_choice);
       const result = answer(
         eventKey,
-        slackUserId,
-        actionId.slice(ASK_ACTION_PREFIX.length),
-        value,
+        id,
+        tap ? Number(value) : actionId.slice(ASK_ACTION_PREFIX.length),
+        tap ? undefined : value,
+        tap
+          ? {
+              channelId: event.message.channelId,
+              threadRootMessageId: event.message.chatMessageId,
+              tap: true,
+            }
+          : undefined,
       );
-      return result?.after
+      if (!result) return refuse(refusals.unknown_ask);
+      return result.after
         ? { reply: result.reply, after: result.after }
-        : { reply: result?.reply ?? {} };
+        : { reply: result.reply };
     },
     answerDigit(event) {
       const match = /^(?:(ask_[A-Za-z0-9_-]{1,64})[ \t]+)?([0-9])$/.exec(
@@ -237,9 +282,11 @@ export function createAnswers(
       );
       if (!match || !event.isDirect || event.isBot)
         return { kind: "not_a_digit_reply" };
+      const id = userId(event.chatIdentity, event.slackUserId);
+      if (id === undefined) return { kind: "instruction", text: instruction };
       const result = answer(
         event.eventKey,
-        event.slackUserId,
+        id,
         Number(match[2]),
         match[1],
         event,
