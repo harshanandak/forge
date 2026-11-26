@@ -1,0 +1,16 @@
+{
+  "operations": {
+    "report.create": {
+      "title": "File a field report",
+      "summary": "Record a Forge bug, wrong result, suggestion, or missing capability in one line. Leave out credentials, project names, paths, and file contents.",
+      "examples": [
+        {
+          "input": {
+            "kind": "suggest",
+            "message": "Show the next action in the result"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/report",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "docs": "docs.json",
+  "operations": {
+    "report.create": {
+      "input": "schemas/create.input.json",
+      "output": "schemas/create.output.json",
+      "context": "device",
+      "timeoutMs": 15000,
+      "effects": ["report:write"],
+      "args": ["message"],
+      "idempotent": false,
+      "destructive": false,
+      "callers": ["agent", "human"],
+      "stability": "stable"
+    }
+  }
+}
