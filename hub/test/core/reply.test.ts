@@ -127,6 +127,46 @@ test(
 );
 
 test(
+  "OW1.reply reply refuses a conversation in a project the owner left",
+  async () => {
+    const { f, alpha, conv } = await replyFixture();
+    const before = f.rows("inbox_items");
+    const writes = f.chat.writes.length;
+    const removed = createCoreBase(
+      createCoreContext({
+        ...f.deps,
+        config: {
+          ...f.config,
+          projects: f.config.projects.map((project) =>
+            project.projectId === p1
+              ? {
+                  ...project,
+                  memberIds: project.memberIds.filter(
+                    (id) => id !== a.personId,
+                  ),
+                }
+              : project,
+          ),
+        },
+        people: configPeople(f.config.people),
+      }),
+    );
+    expect(
+      refusal(
+        await removed.reply(f.caller(), {
+          sessionId: alpha.sessionId,
+          conversationId: conv!,
+          text: "Hello thread",
+        }),
+      ),
+    ).toMatchObject({ code: "CONVERSATION_NOT_YOURS", retry: "never" });
+    expect(f.rows("inbox_items")).toEqual(before);
+    expect(f.chat.writes).toHaveLength(writes);
+  },
+  timeout,
+);
+
+test(
   "B1B-REPLY1 reply posts once per call in reply-only and normal sessions",
   async () => {
     const { f, alpha, beta, conv, betaConv } = await replyFixture();
