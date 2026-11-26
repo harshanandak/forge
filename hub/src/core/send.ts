@@ -46,7 +46,13 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
         if (!chat) return refused("CONVERSATION_UNKNOWN");
         if (chat.personId !== person.personId)
           return refused("CONVERSATION_NOT_YOURS");
-        if (!chat.isDirect && chat.projectId !== projectId)
+        const currentChannel = config.projects.find(
+          (entry) => entry.projectId === projectId,
+        )?.slackChannelId;
+        if (
+          !chat.isDirect &&
+          (chat.projectId !== projectId || chat.channelId !== currentChannel)
+        )
           return refused("INPUT_INVALID", "/conversationId");
         if (paused(db, chat.chatThreadId))
           return refused("CONVERSATION_PAUSED");

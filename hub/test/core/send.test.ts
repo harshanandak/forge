@@ -330,6 +330,54 @@ test(
 );
 
 test(
+  "SD1 visible send refuses a conversation in a channel the project left",
+  async () => {
+    const f = await baseFixture({
+      ring: true,
+      bells: [bellFor(b.personId, "beta")],
+    });
+    f.bind();
+    const beta = f.bind(b);
+    await f.emit("root", { slackUserId: slackB });
+    const conversationId = f.read(beta.sessionId, b).items[0]!.conversationId!;
+    const send = (core: typeof f.core) =>
+      core.send(f.caller(b), {
+        sessionId: beta.sessionId,
+        projectId: p1,
+        toPersonId: a.personId,
+        conversationId,
+        text: "Stale channel note",
+      });
+    expect(value(await send(f.core)).threadPost).toBe("posted");
+    await until(() => f.rings.length > 0, timeout);
+    const projects = f.config.projects.map((project) => {
+      if (project.projectId === p1)
+        return { ...project, slackChannelId: "C00000009" };
+      return { ...project, slackChannelId: "C00000001" };
+    });
+    const moved = createCoreBase(
+      createCoreContext({
+        ...f.deps,
+        config: { ...f.config, projects },
+        people: configPeople(f.config.people),
+      }),
+    );
+    const items = f.rows("inbox_items");
+    const writes = f.chat.writes.length;
+    const rings = f.rings.length;
+    expect(refusal(await send(moved))).toMatchObject({
+      code: "INPUT_INVALID",
+      pointer: "/conversationId",
+      retry: "never",
+    });
+    expect(f.rows("inbox_items")).toEqual(items);
+    expect(f.chat.writes).toHaveLength(writes);
+    expect(f.rings).toHaveLength(rings);
+  },
+  timeout,
+);
+
+test(
   "SD1 visible send with chat off stores the item and reports failed",
   async () => {
     const f = await baseFixture();
