@@ -6,6 +6,7 @@ import type { ChatPort } from "./contract/chat.ts";
 import type { DoorbellPort } from "./contract/hooks.ts";
 import { ID_PREFIX } from "./contract/ids.ts";
 import type {
+  ChatDeps,
   HubConfig,
   HubDb,
   HubLog,
@@ -34,6 +35,39 @@ const noDoorbell: DoorbellPort = {
 function notBuilt(): never {
   throw new Error("not_built");
 }
+
+export interface MainServices {
+  readonly versions: { readonly node?: unknown; readonly bun?: unknown };
+  readonly stdout: (text: string) => void;
+  readonly stderr: (text: string) => void;
+  readonly stdin: () => ReadableStream<unknown>;
+  readonly loadConfig: typeof loadConfig;
+  readonly inspectStorage: typeof inspectStorage;
+  readonly protectPath: typeof protectPath;
+  readonly runSetupCommand: typeof runSetupCommand;
+  readonly runAdminCommand: typeof runAdminCommand;
+  readonly loadCore: () => Promise<
+    Pick<
+      typeof import("./core/index.ts"),
+      "createHubCore" | "nullTracker" | "openHubDb"
+    >
+  >;
+  readonly createChatPort: (deps: ChatDeps) => Promise<ChatPort>;
+  readonly createDoorbell: typeof createDoorbell;
+  readonly createRemoteHandler: typeof createRemoteHandler;
+}
+
+export const mainWithServices: (
+  argv: unknown,
+  env: Readonly<Record<string, unknown>>,
+  services: MainServices,
+) => Promise<number> = notBuilt;
+
+export const runService: (
+  config: HubConfig,
+  secret: ReadSecret,
+  services: MainServices,
+) => Promise<number> = notBuilt;
 
 const noDb: HubDb = {
   exec: notBuilt,
