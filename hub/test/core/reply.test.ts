@@ -3,7 +3,13 @@ import { SUMMARY_KEY_MARKER } from "../../src/contract/chat.ts";
 import type { HubErrorCode } from "../../src/contract/errors.ts";
 import { LIMITS, type ReplyInput } from "../../src/contract/mcp.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
-import { baseFixture, bellFor, seedThread, thread } from "./base-fixture.ts";
+import {
+  baseFixture,
+  bellFor,
+  channel,
+  seedThread,
+  thread,
+} from "./base-fixture.ts";
 import { refusal } from "./base-fakes.ts";
 import { a, b, configPeople, p1, value } from "./fixture.ts";
 import { slackA, slackB } from "./fakes.ts";
@@ -309,6 +315,99 @@ test(
       refusal(await say(a, alpha.sessionId, conv!, "Hello again")).code,
     ).toBe("CHAT_UNAVAILABLE");
     expect(agents()).toHaveLength(1);
+  },
+  timeout,
+);
+
+test(
+  "R6.reply projectId form posts a new top-level thread and binds the conversation",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    const input = {
+      sessionId: alpha.sessionId,
+      projectId: p1,
+      text: "Hello channel",
+    };
+    const out = value(await f.core.reply(f.caller(), input));
+    expect(f.writes("postText")).toHaveLength(1);
+    expect(f.writes("postText")[0]!.args).toEqual([
+      { kind: "channel", channelId: channel },
+      "Fixture Alpha's agent: Hello channel",
+      { agentLabel: "Forge (Fixture Alpha's agent)" },
+    ]);
+    const convs = f.rows("conversations");
+    expect(convs).toHaveLength(1);
+    expect(convs[0]).toMatchObject({
+      conversation_id: out.conversationId,
+      person_id: a.personId,
+      project_id: p1,
+      session_id: alpha.sessionId,
+      chat_message_id: out.chatMessageId,
+    });
+    const agents = f.rows("thread_messages WHERE kind = 'agent'");
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({
+      chat_message_id: out.chatMessageId,
+      person_id: a.personId,
+      session_id: alpha.sessionId,
+    });
+  },
+  timeout,
+);
+
+test(
+  "B1B-REPLY2 projectId form refusals",
+  async () => {
+    const { f, alpha, beta, gamma } = await replyFixture();
+    const before = f.rows("conversations").length;
+    const hi = (sessionId: string, projectId: string) => ({
+      sessionId,
+      projectId,
+      text: "Hi",
+    });
+    for (const [person, sessionId, projectId, code] of [
+      [b, beta.sessionId, p1, "REPLY_ONLY"],
+      [a, alpha.sessionId, "prj_missing", "PROJECT_UNKNOWN"],
+      [c, gamma.sessionId, p1, "NOT_PROJECT_MEMBER"],
+    ] as const)
+      expect(
+        refusal(await f.core.reply(f.caller(person), hi(sessionId, projectId)))
+          .code,
+      ).toBe(code);
+    expect(f.posts()).toEqual([]);
+    expect(f.rows("conversations")).toHaveLength(before);
+  },
+  timeout,
+);
+
+test(
+  "B1B-REPLY2 failed project posts create nothing and never retry",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    const input = {
+      sessionId: alpha.sessionId,
+      projectId: p1,
+      text: "Hello channel",
+    };
+    const attempts = () =>
+      f.chat.calls.filter((call) => call.name === "postText").length;
+    f.chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
+    expect(refusal(await f.core.reply(f.caller(), input))).toMatchObject({
+      code: "CHAT_UNAVAILABLE",
+      retry: "safe",
+    });
+    expect(attempts()).toBe(1);
+    expect(f.rows("conversations")).toEqual([]);
+    f.chat.nextWrite = { kind: "unknown" };
+    const error = refusal(await f.core.reply(f.caller(), input));
+    expect(error).toMatchObject({
+      code: "CHAT_UNAVAILABLE",
+      retry: "reconcile_first",
+    });
+    expect(attempts()).toBe(2);
+    expect(f.rows("conversations")).toEqual([]);
   },
   timeout,
 );
