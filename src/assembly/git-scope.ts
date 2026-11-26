@@ -1,5 +1,5 @@
 import { nodeConfigFiles, resolveIn } from "../adapters/fs/index.ts";
-import { relative, join, sep, isAbsolute } from "node:path";
+import { relative, sep, isAbsolute } from "node:path";
 import { cloudBinding } from "./cloud-binding.ts";
 import { LocalState } from "./state.ts";
 import {
@@ -17,7 +17,7 @@ export async function deviceGitScope(
   home?: string,
   explicit?: GitScope,
 ): Promise<GitScope | null> {
-  const device = new LocalState(join(deviceRoot, "records.sqlite"));
+  const device = LocalState.deviceRecords(deviceRoot);
   try {
     const binding = cloudBinding(root, home);
     if (binding.kind !== "bound") return reopenGitScope(root, explicit);

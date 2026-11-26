@@ -1,6 +1,7 @@
 import {
   realpathSync,
   lstatSync,
+  mkdirSync,
   readFileSync,
   readSync,
   openSync,
@@ -9,6 +10,10 @@ import {
   existsSync,
   statSync,
   fstatSync,
+  fchmodSync,
+  constants,
+  type BigIntStats,
+  type Stats,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -18,12 +23,14 @@ import {
   adoptPrivateFile,
   copyPrivateFile,
   createPrivateFile,
+  ensurePrivateDirectory,
   makePrivateTempDirectory,
   openStoreFile,
   removeDurable,
   renameDurable,
   writePrivateFile,
   securedFileOps,
+  syncParentDirectory,
   type DirectorySyncPort,
 } from "./file-ops.ts";
 import type { StateImageStore } from "../../core/state/index.ts";
@@ -67,6 +74,134 @@ function realStorePath(path: string): string {
     const parent = dirname(path);
     if (parent === path) throw error;
     return join(realStorePath(parent), basename(path));
+  }
+}
+
+const deviceRecordOpenFailure = "Device record store could not be opened";
+
+function enforceDeviceMode(path: string, info: Stats, mode: number): void {
+  const uid = process.geteuid?.();
+  if (uid === undefined) return;
+  if (info.uid !== uid) throw new Error(deviceRecordOpenFailure);
+  if ((info.mode & 0o7777) === mode) return;
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const current = fstatSync(fd);
+    if (
+      current.dev !== info.dev ||
+      current.ino !== info.ino ||
+      current.uid !== uid
+    )
+      throw new Error(deviceRecordOpenFailure);
+    fchmodSync(fd, mode);
+    if ((fstatSync(fd).mode & 0o7777) !== mode)
+      throw new Error(deviceRecordOpenFailure);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function deviceRecordEntry(records: string): Stats | undefined {
+  const file = lstatSync(records, { throwIfNoEntry: false });
+  if (file && (!file.isFile() || file.nlink !== 1))
+    throw new Error(deviceRecordOpenFailure);
+  return file;
+}
+
+function deviceRecordPath(path: string, readOnly: boolean): string | undefined {
+  const root = realStorePath(dirname(path));
+  const directories = [root];
+  for (let directory = root; dirname(directory) !== directory;) {
+    directory = dirname(directory);
+    directories.push(directory);
+  }
+  const posixUid = process.geteuid?.();
+  for (const directory of directories.reverse()) {
+    if (posixUid !== undefined) {
+      let entry = lstatSync(directory, { throwIfNoEntry: false });
+      if (!entry && !readOnly) {
+        try {
+          mkdirSync(directory, { mode: 0o700 });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        }
+        entry = lstatSync(directory);
+      }
+      if (
+        entry &&
+        (!entry.isDirectory() ||
+          (entry.uid !== 0 && entry.uid !== posixUid) ||
+          (directory !== root &&
+            (entry.mode & 0o022) !== 0 &&
+            (entry.mode & 0o1000) === 0))
+      )
+        throw new Error(deviceRecordOpenFailure);
+    }
+    if (lstatSync(join(directory, ".git"), { throwIfNoEntry: false }))
+      throw new Error(deviceRecordOpenFailure);
+    if (posixUid !== undefined && !readOnly && dirname(directory) !== directory)
+      syncParentDirectory(directory);
+  }
+  const records = join(root, basename(path));
+  const existing = deviceRecordEntry(records);
+  if (readOnly && !existing) return;
+  if (!readOnly && posixUid === undefined) ensurePrivateDirectory(root);
+  const directory = lstatSync(root);
+  if (!directory.isDirectory()) throw new Error(deviceRecordOpenFailure);
+  enforceDeviceMode(root, directory, 0o700);
+  if (lstatSync(join(root, ".git"), { throwIfNoEntry: false }))
+    throw new Error(deviceRecordOpenFailure);
+  const file = deviceRecordEntry(records);
+  if (file) enforceDeviceMode(records, file, 0o600);
+  if (!readOnly || file) return records;
+}
+
+function assertDeviceRecordIdentity(
+  path: string,
+  file: BigIntStats | undefined,
+): void {
+  const directory = lstatSync(dirname(path), { bigint: true });
+  const uid = process.geteuid?.();
+  if (
+    !directory.isDirectory() ||
+    (file && (!file.isFile() || file.nlink !== 1n)) ||
+    (uid !== undefined &&
+      (directory.uid !== BigInt(uid) ||
+        (directory.mode & 0o7777n) !== 0o700n ||
+        (file &&
+          (file.uid !== BigInt(uid) || (file.mode & 0o7777n) !== 0o600n))))
+  )
+    throw new Error(deviceRecordOpenFailure);
+}
+
+export async function openDeviceRecordStore(
+  path: string,
+  readOnly: boolean,
+  getSecurity: () => PrivateFileGuard | undefined,
+): Promise<Awaited<ReturnType<StorePort["open"]>> | undefined> {
+  const failure = {
+    ok: false,
+    unavailable: {
+      kind: "unavailable",
+      reason: deviceRecordOpenFailure,
+      remedy: "Use a private local device directory outside Git work trees",
+    },
+  } as const;
+  try {
+    const records = deviceRecordPath(path, readOnly);
+    if (records === undefined) return;
+    const security = getSecurity();
+    const result = await createSqliteStore(
+      dirname(records),
+      security ? { security } : {},
+      true,
+    ).open({ path: records, readOnly });
+    return result.ok ? result : failure;
+  } catch {
+    return failure;
   }
 }
 
@@ -171,6 +306,7 @@ export interface RestoreHooks {
 export function createSqliteStore(
   basePath: string,
   hooks: RestoreHooks = {},
+  deviceRecords = false,
 ): StorePort {
   if (!isAbsolute(basePath)) throw new Error("Store base must be absolute");
   if (hooks.security)
@@ -181,7 +317,7 @@ export function createSqliteStore(
       let pinned: number | undefined;
       try {
         const path =
-          options.path === ":memory:"
+          deviceRecords || options.path === ":memory:"
             ? options.path
             : realStorePath(resolve(basePath, options.path));
         assertFilesystem(
@@ -201,7 +337,11 @@ export function createSqliteStore(
               .map((root) => realStorePath(resolve(basePath, root))),
           },
           (message) => {
-            process.stderr.write(message);
+            process.stderr.write(
+              deviceRecords
+                ? "Device record store filesystem warning; use a private local device directory\n"
+                : message,
+            );
           },
         );
         const fencePath = `${path}.restore-lock`;
@@ -210,16 +350,27 @@ export function createSqliteStore(
             throw new StoreRestoringError();
         };
         assertUnfenced();
+        const statStore = deviceRecords ? lstatSync : statSync;
         const expectedIdentity =
-          path === ":memory:" || !existsSync(path)
+          path === ":memory:"
             ? undefined
-            : statSync(path, { bigint: true });
-        assertSingleLink(path, expectedIdentity);
+            : deviceRecords
+              ? lstatSync(path, { bigint: true, throwIfNoEntry: false })
+              : existsSync(path)
+                ? statSync(path, { bigint: true })
+                : undefined;
+        if (deviceRecords) assertDeviceRecordIdentity(path, expectedIdentity);
+        else assertSingleLink(path, expectedIdentity);
         hooks.step?.("identity-checked");
         // Keep the opened inode pinned across SQLite's open; reject either side
         // of a pathname replacement rather than adopting its newer identity.
         if (path !== ":memory:")
-          pinned = openStoreFile(path, options.readOnly, hooks.fs);
+          pinned = openStoreFile(
+            path,
+            options.readOnly,
+            hooks.fs,
+            deviceRecords,
+          );
         hooks.step?.("opening");
         let connect: (path: string, readOnly: boolean) => Binding;
         if ("Bun" in globalThis) {
@@ -241,12 +392,13 @@ export function createSqliteStore(
               create: !readOnly,
               safeIntegers: true,
             });
-          binding = connect(path, options.readOnly);
         } else {
           const { DatabaseSync } = await import("node:sqlite");
           connect = (name, readOnly) => new DatabaseSync(name, { readOnly });
-          binding = connect(path, options.readOnly);
         }
+        if (deviceRecords)
+          assertDeviceRecordIdentity(path, lstatSync(path, { bigint: true }));
+        binding = connect(path, options.readOnly);
         let db = binding;
         hooks.step?.("connected");
         let identity =
@@ -254,8 +406,9 @@ export function createSqliteStore(
             ? undefined
             : fstatSync(pinned, { bigint: true });
         const current =
-          path === ":memory:" ? undefined : statSync(path, { bigint: true });
+          path === ":memory:" ? undefined : statStore(path, { bigint: true });
         assertUnfenced();
+        if (deviceRecords) assertDeviceRecordIdentity(path, current);
         assertSingleLink(path, identity);
         assertSingleLink(path, current);
         if (

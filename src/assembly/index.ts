@@ -313,7 +313,7 @@ export async function createAssembly(
   const stateRoot = await projectStateRoot(root, options.providers);
   const scopeRoot = await checkoutScopeRoot(root, options.providers);
   const manifestRoot = projectManifestRoot(root);
-  const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
+  const deviceState = LocalState.deviceRecords(deviceRoot);
   const env = options.providers?.env ?? process.env;
   const home = env.HOME ?? env.USERPROFILE;
   const projectState = new LocalState(

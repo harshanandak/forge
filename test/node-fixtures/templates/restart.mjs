@@ -40,7 +40,7 @@ if (process.argv[2] === "--gh") {
     ),
   );
   env.PATH = [fake, process.env.PATH ?? process.env.Path ?? ""].join(delimiter);
-  env.FORGE_DEVICE_ROOT = join(root, ".device");
+  env.FORGE_DEVICE_ROOT = `${root}-device`;
   if (phase) env.FORGE_SESSION = phase;
 
   function run(executable, args, expected = 0, timeout = 60_000) {
@@ -114,7 +114,7 @@ if (process.argv[2] === "--gh") {
       }),
     );
     writeFileSync(join(root, "package-lock.json"), '{"lockfileVersion":3}');
-    writeFileSync(join(root, ".gitignore"), ".device/\n.fake/\nfixture.json\n");
+    writeFileSync(join(root, ".gitignore"), ".fake/\nfixture.json\n");
     writeFileSync(
       join(root, "test.js"),
       'const { add } = require("./add.js");\nif (add(2, 2) !== 4) process.exit(1);\n',

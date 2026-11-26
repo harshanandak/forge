@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
@@ -60,10 +60,16 @@ test("the packed delivery workflow recovers its checkpoint in a new session", ()
     const node = Bun.which("node");
     if (!node) throw new Error("Node runtime required");
     const installed = join(packedConsumer(), "node_modules/forge-workflow");
+    const project = join(work, "project");
+    mkdirSync(project);
     const output = run(
       node,
-      [join(root, "test/node-fixtures/templates/restart.mjs"), installed, work],
-      work,
+      [
+        join(root, "test/node-fixtures/templates/restart.mjs"),
+        installed,
+        project,
+      ],
+      project,
       390_000,
     ).trim();
     expect(output).toBe(

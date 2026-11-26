@@ -63,6 +63,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for config fallback coverage.",
   "test/assembly/deleted-store.integration.test.ts":
     "Launches selected Node for deleted store coverage.",
+  "test/assembly/device-store.integration.test.ts":
+    "Launches selected Node for device record permission and path checks.",
   "test/assembly/first-run/stateless.integration.test.ts":
     "Launches selected Node for stateless coverage.",
   "test/assembly/l7-prereqs/leased.integration.test.ts":

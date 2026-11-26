@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  constants,
   closeSync,
   fsyncSync,
   linkSync,
@@ -152,15 +153,24 @@ export function openStoreFile(
   path: string,
   readOnly: boolean,
   fs?: DirectorySyncPort,
+  noFollow = false,
 ): number {
+  const flags =
+    noFollow && constants.O_NOFOLLOW
+      ? (readOnly ? constants.O_RDONLY : constants.O_RDWR) |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK
+      : readOnly
+        ? "r"
+        : "r+";
   if (readOnly) {
     fs?.security?.file(path);
-    return openSync(path, "r");
+    return openSync(path, flags);
   }
   fs?.security?.directory(dirname(path));
   try {
     fs?.security?.file(path);
-    return openSync(path, "r+");
+    return openSync(path, flags);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -168,7 +178,7 @@ export function openStoreFile(
     return createPrivateFile(path, "wx", fs);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    return openSync(path, "r+");
+    return openSync(path, flags);
   }
 }
 

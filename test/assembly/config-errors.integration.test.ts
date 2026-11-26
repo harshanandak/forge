@@ -662,9 +662,10 @@ test("unknown commands retain exit 3 unless configuration hides a declared opera
 }, 110_000);
 
 test("built CLI reports the actual config error and recovers after repair", () => {
-  const root = mkdtempSync(join(tmpdir(), "forge-config-errors-cli-"));
+  const sandbox = mkdtempSync(join(tmpdir(), "forge-config-errors-cli-"));
+  const root = join(sandbox, "project");
   const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
-  mkdirSync(join(root, ".forge"));
+  mkdirSync(join(root, ".forge"), { recursive: true });
   const budget = spawnBudget(110_000);
   budget.run("git init", "git", ["init", "--quiet"], { cwd: root }, 0);
   const file = join(root, ".forge/config.yaml");
@@ -675,7 +676,7 @@ test("built CLI reports the actual config error and recovers after repair", () =
       [bin, ...args],
       {
         cwd: root,
-        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(sandbox, "device") },
       },
       code,
     );
@@ -745,7 +746,7 @@ test("built CLI reports the actual config error and recovers after repair", () =
       if (name === "yaml") expect(called.error.message).toContain("blocks: [");
       const text = spawnSync("node", [bin, "check", "list", "--text"], {
         cwd: root,
-        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(sandbox, "device") },
         encoding: "utf8",
         windowsHide: true,
         timeout: 30_000,
@@ -803,7 +804,7 @@ test("built CLI reports the actual config error and recovers after repair", () =
       result: { commands: [] },
     });
   } finally {
-    removeQuietly(root);
+    removeQuietly(sandbox);
   }
 }, 110_000);
 

@@ -5,7 +5,8 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 test("local reads never load the MCP transport or its schema compiler", () => {
-  const root = mkdtempSync(join(tmpdir(), "forge-read-modules-"));
+  const sandbox = mkdtempSync(join(tmpdir(), "forge-read-modules-"));
+  const root = join(sandbox, "project");
   const node = Bun.which("node");
   if (!node) throw new Error("Node runtime required");
   const guard = `import {registerHooks} from 'node:module';
@@ -14,7 +15,7 @@ test("local reads never load the MCP transport or its schema compiler", () => {
         throw new Error('Read loaded MCP: ' + url);
       return next(url, context);
     }});`;
-  mkdirSync(join(root, ".forge"));
+  mkdirSync(join(root, ".forge"), { recursive: true });
   writeFileSync(
     join(root, ".forge/config.yaml"),
     "blocks:\n  work: {}\n  check:\n    config:\n      commands:\n        probe: node --version\n",
@@ -43,7 +44,7 @@ test("local reads never load the MCP transport or its schema compiler", () => {
         ],
         {
           cwd: root,
-          env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+          env: { ...process.env, FORGE_DEVICE_ROOT: join(sandbox, "device") },
           encoding: "utf8",
           timeout: 15_000,
           windowsHide: true,
@@ -54,6 +55,6 @@ test("local reads never load the MCP transport or its schema compiler", () => {
       expect(result.status, result.stdout).toBe(0);
     }
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(sandbox, { recursive: true, force: true });
   }
 }, 60_000);
