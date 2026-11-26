@@ -95,10 +95,40 @@ test("I6 lease", async () => {
   other.facts.caller.session = "different-session";
   const missing = inspectFixture();
   missing.facts.lane = undefined;
+  const otherDevice = inspectFixture();
+  otherDevice.facts.caller.device = "different-device";
+  const otherActor = inspectFixture();
+  const actorLane = otherActor.facts.lane;
+  if (!actorLane?.lease) throw new Error("Expected a fixture lease");
+  const holder = {
+    actor: "different-actor",
+    session: otherActor.facts.caller.session,
+  };
+  otherActor.facts.lane = {
+    ...actorLane,
+    lease: { ...actorLane.lease, holder },
+  };
+  const moved = inspectFixture();
+  const lane = moved.facts.lane;
+  if (!lane) throw new Error("Expected a fixture lane");
+  let laneReads = 0;
+  const movingLane = {
+    ...moved,
+    reads: {
+      ...moved.reads,
+      lane: () =>
+        Promise.resolve(
+          laneReads++ === 0 ? lane : { ...lane, branch: "feat/moved" },
+        ),
+    },
+  };
   for (const [f, field, code] of [
     [expired, "lease", "LEASE_EXPIRED"],
     [other, "lease", "LEASE_NOT_HELD"],
     [missing, "issue", "LANE_NOT_FOUND"],
+    [otherDevice, "lease", "LEASE_NOT_HELD"],
+    [otherActor, "lease", "LEASE_NOT_HELD"],
+    [movingLane, "branch", "CONTEXT_MISMATCH"],
   ] as const)
     expect(await inspectUnchanged(f)).toMatchObject(refusal(field, code));
 });
