@@ -1,0 +1,16 @@
+export type ReportKind = "bug" | "wrong" | "suggest" | "missing";
+
+export const FINGERPRINT_VERSION = "fp1";
+
+export function reportFingerprint(
+  sha256: (value: string) => string,
+  dimensions: readonly [op: string, code: string, kind: ReportKind],
+  redacted: string,
+): string {
+  const normalized = redacted
+    .replace(/\b[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}\b/gi, "[redacted]")
+    .replace(/\b[a-z][\w-]*-\d+\b/gi, "[redacted]")
+    .replace(/\p{Nd}+(?:[.,]\p{Nd}+)*/gu, "[redacted]");
+  const tuple = [FINGERPRINT_VERSION, ...dimensions, normalized];
+  return `${FINGERPRINT_VERSION}:${sha256(JSON.stringify(tuple))}`;
+}
