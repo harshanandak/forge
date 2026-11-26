@@ -155,25 +155,28 @@ export function createAnswers(
     chatUserId: string,
     selection: string | number,
     explicit?: string,
-    digitEvent?: ChatMessageEvent,
+    ref?: Pick<ChatMessageEvent, "channelId" | "threadRootMessageId"> & {
+      tap?: true;
+    },
   ) {
     return db.transaction(() => {
       const prior = retry.get(adapter, eventKey);
       if (prior && prior.slack_user_id !== chatUserId) return;
       const person = people.byChatUserId(adapter, chatUserId);
       let id = prior ? text(prior.ask_id) : explicit;
-      if (!prior && digitEvent) {
+      if (ref && (!prior || ref.tap)) {
         if (!person) return;
         const refs = explicit
           ? byId.all(adapter, person.personId, explicit)
           : byThread.all(
               adapter,
               person.personId,
-              digitEvent.channelId,
-              digitEvent.threadRootMessageId ?? null,
+              ref.channelId,
+              ref.threadRootMessageId ?? null,
             );
         if (refs.length !== 1 || !refs[0]) return;
         id = text(refs[0].ask_id);
+        if (prior && prior.ask_id !== id) return;
       }
       if (id === undefined) return;
       const row = ask.get(id, adapter);
@@ -207,7 +210,7 @@ export function createAnswers(
         const options = choices(row.choices_json);
         const digit = typeof selection === "number";
         const choice = digit
-          ? options[selection - 1]
+          ? options[selection - (ref?.tap ? 0 : 1)]
           : options.find((option) => option.id === selection);
         if (!choice) verdict = "invalid_choice";
         else {
@@ -217,7 +220,7 @@ export function createAnswers(
             choiceId,
             actor,
             at,
-            digit ? "digit" : "button",
+            digit && !ref?.tap ? "digit" : "button",
             eventKey,
           );
           verdict = Number(changes) ? "locked" : "already_answered";
@@ -245,19 +248,33 @@ export function createAnswers(
   }
 
   return {
-    answerAction({ actionId, eventKey, chatIdentity, slackUserId, value }) {
+    answerAction(event) {
+      const { actionId, eventKey, chatIdentity, slackUserId, value } = event;
       if (!actionId.startsWith(ASK_ACTION_PREFIX)) return { reply: {} };
       const id = userId(chatIdentity, slackUserId);
-      if (id === undefined) return { reply: {} };
+      const tap = adapter === "telegram" && actionId === ASK_ACTION_PREFIX;
+      const refuse = (ephemeralText: string) => ({
+        reply: tap ? { ephemeralText } : {},
+      });
+      if (id === undefined) return refuse(refusals.unknown_answerer);
+      if (tap && !/^[0-9]$/.test(value)) return refuse(refusals.invalid_choice);
       const result = answer(
         eventKey,
         id,
-        actionId.slice(ASK_ACTION_PREFIX.length),
-        value,
+        tap ? Number(value) : actionId.slice(ASK_ACTION_PREFIX.length),
+        tap ? undefined : value,
+        tap
+          ? {
+              channelId: event.message.channelId,
+              threadRootMessageId: event.message.chatMessageId,
+              tap: true,
+            }
+          : undefined,
       );
-      return result?.after
+      if (!result) return refuse(refusals.unknown_ask);
+      return result.after
         ? { reply: result.reply, after: result.after }
-        : { reply: result?.reply ?? {} };
+        : { reply: result.reply };
     },
     answerDigit(event) {
       const match = /^(?:(ask_[A-Za-z0-9_-]{1,64})[ \t]+)?([0-9])$/.exec(
