@@ -11,9 +11,6 @@ export function reportFingerprint(
     .replace(/\b[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}\b/gi, "[redacted]")
     .replace(/\b[a-z][\w-]*-\d+\b/gi, "[redacted]")
     .replace(/\p{Nd}+(?:[.,]\p{Nd}+)*/gu, "[redacted]");
-  return (
-    FINGERPRINT_VERSION +
-    ":" +
-    sha256(JSON.stringify([FINGERPRINT_VERSION, ...dimensions, normalized]))
-  );
+  const tuple = [FINGERPRINT_VERSION, ...dimensions, normalized];
+  return `${FINGERPRINT_VERSION}:${sha256(JSON.stringify(tuple))}`;
 }

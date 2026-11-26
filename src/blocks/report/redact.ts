@@ -1,4 +1,5 @@
 const MASK = "[redacted]";
+const ADJACENT_MASKS = /(?:\[redacted\]){2,}/g;
 const CREDENTIAL =
   /(?:fct_|ghp_|github_pat_|sk-|xox[baprs]-|AKIA|AIza)[a-z\d_-]+/gi;
 const ASSIGNMENT =
@@ -22,17 +23,15 @@ export function redactReport(
     );
   if (PASTED.test(text)) return MASK;
   text = text.replace(/\t/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "");
-  text = text
-    .replace(ASSIGNMENT, MASK)
-    .replace(QUOTED, MASK)
-    .replace(PATH, MASK)
-    .replace(CREDENTIAL, MASK);
-  for (const label of labels) {
+  text = text.replace(ASSIGNMENT, MASK).replace(CREDENTIAL, MASK);
+  for (const label of [...labels].sort((a, b) => b.length - a.length)) {
     if (label.trim() === "") continue;
     const literal = label
       .normalize("NFKC")
       .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     text = text.replace(new RegExp(literal, "giu"), MASK);
   }
+  text = text.replace(QUOTED, MASK).replace(PATH, MASK);
+  text = text.replace(ADJACENT_MASKS, MASK);
   return text.replace(/\s+/gu, " ").trim() || MASK;
 }

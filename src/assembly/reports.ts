@@ -22,11 +22,14 @@ export function reportHost(
   paths: readonly string[],
   mcp: boolean,
 ): ReportHost {
+  const labels = paths.map((path) => basename(path));
+  try {
+    labels.push(readProjectManifest(checkout)?.name ?? "");
+  } catch {
+    labels.push("");
+  }
   return {
-    labels: [
-      ...paths.map((path) => basename(path)),
-      readProjectManifest(checkout)?.name ?? "",
-    ],
+    labels,
     context: {
       forgeVersion: version,
       os: process.platform,
