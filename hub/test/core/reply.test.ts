@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { SUMMARY_KEY_MARKER } from "../../src/contract/chat.ts";
 import type { HubErrorCode } from "../../src/contract/errors.ts";
-import { LIMITS, type ReplyInput } from "../../src/contract/mcp.ts";
+import {
+  LIMITS,
+  LONG_ANSWER_SEPARATOR,
+  type ReplyInput,
+} from "../../src/contract/mcp.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
 import {
   baseFixture,
@@ -410,6 +414,61 @@ test(
     });
     expect(attempts()).toBe(2);
     expect(f.rows("conversations")).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "SA4 secret after the separator or past 1,200 refuses the whole answer",
+  async () => {
+    const secret = ["gh", "p_", "a".repeat(36)].join("");
+    for (const text of [
+      "Short summary\n" + LONG_ANSWER_SEPARATOR + "\n" + secret,
+      "ok ".repeat(400) + secret,
+    ]) {
+      const f = await baseFixture();
+      const alpha = f.bind();
+      await f.emit("root");
+      const first = f.read(alpha.sessionId).items[0]!;
+      f.ack(alpha.sessionId, [first.itemId]);
+      const conv = first.conversationId;
+      if (!conv) throw new Error("Expected a Slack conversation ID");
+      const error = refusal(
+        await f.core.reply(f.caller(), {
+          sessionId: alpha.sessionId,
+          conversationId: conv,
+          text,
+        }),
+      );
+      expect(error.code).toBe("SECRET_IN_TEXT");
+      expect(f.writes("createLongAnswer")).toEqual([]);
+      expect(f.posts()).toEqual([]);
+      expect(JSON.stringify(f.logged)).not.toContain(secret);
+      expect(JSON.stringify(error)).not.toContain(secret);
+    }
+  },
+  timeout,
+);
+
+test(
+  "SA4 secret in a project-form answer creates no conversation, post or canvas",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    const secret = ["gh", "p_", "a".repeat(36)].join("");
+    const before = f.rows("conversations").length;
+    const error = refusal(
+      await f.core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        projectId: p1,
+        text: "Short summary\n" + LONG_ANSWER_SEPARATOR + "\n" + secret,
+      }),
+    );
+    expect(error.code).toBe("SECRET_IN_TEXT");
+    expect(f.rows("conversations")).toHaveLength(before);
+    expect(f.writes("createLongAnswer")).toEqual([]);
+    expect(f.posts()).toEqual([]);
+    expect(JSON.stringify(f.logged)).not.toContain(secret);
   },
   timeout,
 );
