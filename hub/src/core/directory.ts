@@ -29,6 +29,8 @@ export const createPeopleDirectory: CreatePeopleDirectory = (entries) => {
   return {
     all: () => [...byPerson.values()],
     byPersonId: (id) => byPerson.get(id),
+    byChatUserId: (adapter, id) =>
+      adapter === "slack" ? bySlack.get(id) : undefined,
     bySlackUserId: (id) => bySlack.get(id),
   };
 };

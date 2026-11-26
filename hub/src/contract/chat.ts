@@ -1,5 +1,7 @@
 import type { AskChoice, AskKind, Summary } from "./domain.ts";
 
+export type ChatAdapter = "slack" | "telegram";
+
 export interface ChatCapabilities {
   readonly buttons: boolean;
   readonly editMessage: boolean;
@@ -7,7 +9,7 @@ export interface ChatCapabilities {
   readonly reactions: boolean;
   readonly threads: boolean;
   readonly longAnswers: boolean;
-  readonly mode: "webhook" | "socket";
+  readonly mode: "webhook" | "socket" | "polling";
 }
 
 export interface ChatMessageRef {
