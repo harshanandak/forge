@@ -3,16 +3,20 @@ const CREDENTIAL =
   /(?:fct_|gh[psour]_|github_pat_|sk-|xox[baprs]-|AKIA|AIza)[a-z\d_-]+/gi;
 const AUTHORIZATION = /\b(?:proxy-)?authorization\s*[:=]\s*\S.*$/gi;
 const BASIC = /\bbasic\s+[a-z\d+/]+={0,2}(?=\s|[.,;)\]}]|$)/gi;
-const BEARER =
-  /\bbearer\s+[^\s,;]+(?:[,;]+(?!-)(?![^\s,;]*(?:\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]|(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|auth|pat)(?=\s|[:=])|\bbearer\s))(?!bearer\s)[^\s,;]+)*/gi;
+const KEYS =
+  "password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key";
+const FLAG_KEYS = `${KEYS}|auth|pat`;
+const ASSIGN_HEAD = `\\b(?:${KEYS})\\s*[:=]\\s*`;
+const FLAG_HEAD = `(?<![\\w-])--?(?:${FLAG_KEYS})(?:\\s*[:=]\\s*|\\s+)`;
+const BEARER_HEAD = "\\bbearer\\s+";
+const CONTINUATION = `(?:[,;]+(?!-)(?![^\\s,;]*(?:${ASSIGN_HEAD}|${FLAG_HEAD}|${BEARER_HEAD})[^\\s,;])[^\\s,;]+)*`;
+const BEARER = new RegExp(`${BEARER_HEAD}[^\\s,;]+${CONTINUATION}`, "gi");
 const QUOTED =
   /"(?:\\(?:.|$)|[^"\\])*(?:"|$)|(?<!\p{L})'(?:\\(?:.|$)|[^'\\])*(?:'|$)|`(?:\\(?:.|$)|[^`\\])*(?:`|$)/gu;
 const EMAIL =
   /(?:"(?:\\.|[^"\\])*"|[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+)@(?:\[[^\]\r\n]+\]|[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*)/gu;
-const ASSIGNMENT =
-  /\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+(?:[,;]+(?!-)(?![^\s,;]*(?:\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]|(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|auth|pat)(?=\s|[:=])|\bbearer\s))(?!bearer\s)[^\s,;]+)*/gi;
-const FLAG_VALUE =
-  /(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|auth|pat)\s*(?:[:=]|\s)\s*[^\s,;]+(?:[,;]+(?!-)(?![^\s,;]*(?:\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]|(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|auth|pat)(?=\s|[:=])|\bbearer\s))(?!bearer\s)[^\s,;]+)*/gi;
+const ASSIGNMENT = new RegExp(`${ASSIGN_HEAD}[^\\s,;]+${CONTINUATION}`, "gi");
+const FLAG_VALUE = new RegExp(`${FLAG_HEAD}[^\\s,;]+${CONTINUATION}`, "gi");
 const ROOTED_PATH =
   /(?<![^\s([<{"'=:,;`>|])(?:~?\/|\.\.?[\\/]|[a-z]:[\\/]|\\\\)(?:(?:[^()[\]"'`<>{}=]|\[[^\]]*\]|\([^)]*\))*[\\/])?[^\s)\]}>"'`<={]*/iu;
 const UNROOTED_PATH =

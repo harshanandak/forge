@@ -433,4 +433,10 @@ test("forge-1996 keeps redacting a secret tail after a flag-shaped word followed
   expect(redactReport("token=a,--pat=b", [])).toBe("[redacted],[redacted]");
   expect(redactReport("token=abc,--verbose", [])).toBe("[redacted],--verbose");
   expect(redactReport("password=Alpha,PrivateTail=", [])).toBe("[redacted]");
+  expect(redactReport("token=a,x.-pat=,PrivateTail", [])).toBe("[redacted]");
+  expect(redactReport("BEARER a;x.--AUTH:;PrivateTail", [])).toBe("[redacted]");
+  expect(redactReport("--TOKEN a,x.-PAT=,PrivateTail", [])).toBe("[redacted]");
+  expect(redactReport("token=a,x.password=,Tail", [])).toBe("[redacted]");
+  expect(redactReport("token=a,bearer ,Tail", [])).toBe("[redacted] ,Tail");
+  expect(redactReport("--pat         ", [])).toBe("--pat");
 }, 30_000);
