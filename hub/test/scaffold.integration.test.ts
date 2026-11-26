@@ -181,6 +181,7 @@ const ownFiles = [
   "dist/core/db.js",
   "dist/core/directory.js",
   "dist/core/doorbell.js",
+  "dist/core/effects.js",
   "dist/core/errors.js",
   "dist/core/guards.js",
   "dist/core/inbox.js",
