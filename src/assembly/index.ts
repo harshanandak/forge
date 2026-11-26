@@ -73,6 +73,14 @@ import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { record } from "../surface/dispatch.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
+import {
+  isReportFiling,
+  privateReportResult,
+  REPORT_ACTOR,
+  REPORT_OP,
+  REPORT_SOURCE,
+  reportHost,
+} from "./reports.ts";
 import { version } from "../version.ts";
 import { missingOperationHint } from "./stale-build.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
@@ -839,6 +847,7 @@ export async function createAssembly(
     deviceMemory = false,
     invalidMemoryConfig = false,
     configuredShow?: ShowResult,
+    includeReport = false,
   ): {
     show: ShowResult;
     document: ConfigDocument;
@@ -911,14 +920,29 @@ export async function createAssembly(
       version,
     );
     const nounOwners = new Map<string, string[]>();
+    let reportOccupied =
+      Object.hasOwn(document.blocks, "report") ||
+      Object.values(document.blocks).some(
+        ({ source }) =>
+          "builtin" in source && source.builtin === REPORT_SOURCE.builtin,
+      );
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
         const block = call.captured(instance.source);
-        for (const op of Object.keys(block.manifest.operations)) {
+        for (const [op, declaration] of Object.entries(
+          block.manifest.operations,
+        )) {
           const noun = parseOperationName(op)?.noun;
           if (noun === undefined) continue;
           const exposed = instance.rename?.[noun] ?? noun;
+          const alias =
+            exposed === noun
+              ? parseOperationName(declaration.cli ?? "")?.noun
+              : undefined;
+          reportOccupied ||= [exposed, alias].some(
+            (name) => name === "report" || name?.startsWith("report-"),
+          );
           const names = nounOwners.get(exposed) ?? [];
           if (!names.includes(name))
             nounOwners.set(exposed, [...names, name].sort());
@@ -927,6 +951,11 @@ export async function createAssembly(
         // The registration loop reports capture failures through its existing path.
       }
     }
+    if (includeReport && !reportOccupied)
+      document = {
+        ...document,
+        blocks: { ...document.blocks, report: { source: REPORT_SOURCE } },
+      };
     if (
       call.operatorExport &&
       call.inProject &&
@@ -999,7 +1028,7 @@ export async function createAssembly(
             (value) => block.problems(block.manifest.configSchema!, value),
           ).problems.length > 0
         )
-          return snapshot(call, true, true);
+          return snapshot(call, true, true, undefined, includeReport);
         const prepared = ready(block, instance, name, call);
         const { docs } = prepared;
         document = {
@@ -1083,7 +1112,9 @@ export async function createAssembly(
       candidates: candidates.filter(
         (entry) =>
           executable.has(entry.op) &&
-          (!fallback || DEVICE_MEMORY_OPS.has(entry.op)),
+          (!fallback ||
+            DEVICE_MEMORY_OPS.has(entry.op) ||
+            isReportFiling(entry)),
       ),
       unavailable,
       problems: [
@@ -1168,7 +1199,23 @@ export async function createAssembly(
     unavailable: () => snapshot(callScope()).unavailable,
     diagnose(op) {
       if (parseOperationName(op) === undefined) return undefined;
-      const current = snapshot(callScope());
+      const canonicalReport = op === REPORT_OP;
+      const current = snapshot(
+        callScope(),
+        !mcp && canonicalReport,
+        false,
+        undefined,
+        canonicalReport,
+      );
+      const report = current.unavailable.find(
+        ({ name, source }) =>
+          "builtin" in source &&
+          source.builtin === REPORT_SOURCE.builtin &&
+          op ===
+            `${current.document.blocks[name]?.rename?.report ?? "report"}.create`,
+      );
+      if (report && !current.candidates.some((entry) => entry.op === op))
+        return report.error;
       if (
         configOperationNames.has(op) ||
         [grantCandidate, ...discoveryOperations, ...current.candidates].some(
@@ -1255,9 +1302,11 @@ export async function createAssembly(
         return [
           ...configCandidates(),
           grantCandidate,
-          ...snapshot(call, false, false, mcpConfig(call)).candidates,
+          ...snapshot(call, false, false, mcpConfig(call), true).candidates,
         ];
-      const candidates = [...snapshot(call, true).candidates];
+      const candidates = [
+        ...snapshot(call, true, false, undefined, true).candidates,
+      ];
       if (
         call.warnings.some(
           (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
@@ -1281,6 +1330,24 @@ export async function createAssembly(
         !mcp && deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived, request.op === "store.export");
       try {
+        if (request.op.endsWith(".create")) {
+          const report = snapshot(
+            call,
+            !mcp && request.op === REPORT_OP,
+            false,
+            mcp ? mcpConfig(call) : undefined,
+            true,
+          );
+          if (
+            isReportFiling(
+              report.candidates.find((entry) => entry.op === request.op),
+            )
+          )
+            return privateReportResult(
+              request.op,
+              await direct.invoke(call, request, mcp, deviceMemory, report),
+            );
+        }
         const preview =
           request.op === "config.show"
             ? configCandidates().find((entry) => entry.op === request.op)
@@ -1426,6 +1493,7 @@ export async function createAssembly(
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
       mcp: boolean,
       deviceMemory: boolean,
+      report?: ReturnType<typeof snapshot>,
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
         const checked = validateInvocationRequest(request);
@@ -1900,7 +1968,7 @@ export async function createAssembly(
           mcp
             ? snapshot(call, false, false, mcpConfig(call))
             : snapshot(call, deviceMemory);
-        let current = load();
+        let current = report ?? load();
         const target = current.candidates.find(
           (candidate) => candidate.op === request.op,
         );
@@ -1933,6 +2001,7 @@ export async function createAssembly(
             current.catalog.resolve(request.op).operation.declaration,
             request.op,
           );
+        const filing = isReportFiling(target);
         const ownContext = (context: BoundContext) => {
           if (
             (context.variant === "project" || context.variant === "leased") &&
@@ -2283,16 +2352,28 @@ export async function createAssembly(
                 const client = createStateClient({
                   owner,
                   namespace,
-                  context,
+                  context:
+                    filing && context.variant === "device"
+                      ? { ...context, actor: REPORT_ACTOR }
+                      : context,
                   write: scope.effects.includes(`${noun}:write`),
-                  requestId: request.requestId,
+                  requestId: filing
+                    ? providers.crypto(scope).randomUUID()
+                    : request.requestId,
                 });
-                clients[binding.slot] = interfaceSatisfies(
-                  "forge.state@2.0.0",
-                  binding.interface,
-                )
-                  ? createLocalAsyncStateClient(client)
-                  : client;
+                clients[binding.slot] = filing
+                  ? {
+                      ...client,
+                      host: reportHost(
+                        manifestRoot,
+                        scopeRoot === undefined ? undefined : manifestRoot,
+                        home,
+                        mcp,
+                      ),
+                    }
+                  : interfaceSatisfies("forge.state@2.0.0", binding.interface)
+                    ? createLocalAsyncStateClient(client)
+                    : client;
                 if (
                   namespace === "forge/work" &&
                   current.catalog.resolve(scope.op).operation.declaredOp ===
@@ -2415,6 +2496,7 @@ export async function createAssembly(
               },
             };
         }
+        if (filing) return runtime.invoke(request);
         if (!routed) {
           const cloud = await fromCloud(runtime);
           if (cloud) return cloud;
