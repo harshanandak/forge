@@ -3,15 +3,15 @@ const CREDENTIAL =
   /(?:fct_|gh[psour]_|github_pat_|sk-|xox[baprs]-|AKIA|AIza)[a-z\d_-]+/gi;
 const AUTHORIZATION = /\b(?:proxy-)?authorization\s*[:=]\s*\S.*$/gi;
 const BASIC = /\bbasic\s+[a-z\d+/]+={0,2}(?=\s|[.,;)\]}]|$)/gi;
-const BEARER = /\bbearer\s+[^\s,;]+/gi;
+const BEARER = /\bbearer\s+[^\s,;]+(?:[,;](?!-)[^\s,;]+)*/gi;
 const QUOTED =
   /"(?:\\(?:.|$)|[^"\\])*(?:"|$)|(?<!\p{L})'(?:\\(?:.|$)|[^'\\])*(?:'|$)|`(?:\\(?:.|$)|[^`\\])*(?:`|$)/gu;
 const EMAIL =
   /(?:"(?:\\.|[^"\\])*"|[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+)@(?:\[[^\]\r\n]+\]|[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*)/gu;
 const ASSIGNMENT =
-  /\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
+  /\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+(?:[,;](?!-)[^\s,;]+)*/gi;
 const FLAG_VALUE =
-  /(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|auth|pat)\s*(?:[:=]|\s)\s*[^\s,;]+/gi;
+  /(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|auth|pat)\s*(?:[:=]|\s)\s*[^\s,;]+(?:[,;](?!-)[^\s,;]+)*/gi;
 const ROOTED_PATH =
   /(?<![^\s([<{"'=:,;`>|])(?:~?\/|\.\.?[\\/]|[a-z]:[\\/]|\\\\)(?:(?:[^()[\]"'`<>{}=]|\[[^\]]*\]|\([^)]*\))*[\\/])?[^\s)\]}>"'`<={]*/iu;
 const UNROOTED_PATH =
