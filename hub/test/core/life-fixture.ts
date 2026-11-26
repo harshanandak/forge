@@ -45,7 +45,6 @@ export async function lifeFixture() {
     chat.provisionSummary(ref.channelId, publicationKey, ref);
 
     async function answerChoice(to: readonly string[] = [a.personId]) {
-      seedHost(db);
       const bridge = new FakeHostBridge(fakeHostCore(core), host);
       const { sessionId } = bridge.start("bound-effects", "startup");
       const { askId } = value(
@@ -122,5 +121,7 @@ export async function lifeFixture() {
     };
   }
 
-  return attach(f.db);
+  const initial = await attach(f.db);
+  seedHost(f.db);
+  return initial;
 }
