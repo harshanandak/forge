@@ -103,3 +103,15 @@ test("FR-REDACT4 replaces pasted file material, removes controls, and bounds the
     );
   });
 }, 30_000);
+
+test("FR-REDACT2 removes both halves of a checkout label containing spaces", async () => {
+  await withReportRuntime(async ({ file, records, history }) => {
+    const receipt = await file({
+      message: "Cannot open /workspace/Secret Repository/src/output.txt",
+    });
+    expect(receipt).toMatchObject({ ok: true });
+    expect(
+      JSON.stringify([receipt, [...records.values()], history]),
+    ).not.toMatch(/Secret|Repository|workspace|output\.txt/);
+  });
+}, 30_000);

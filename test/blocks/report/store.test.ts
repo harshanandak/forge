@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as providers from "../../../src/assembly/providers.ts";
 import { LocalState } from "../../../src/assembly/state.ts";
@@ -129,4 +129,19 @@ test("FR-CREATE1 files without a project and with broken project YAML", async ()
       );
     }, config);
   }
+}, 30_000);
+
+test("FR-CREATE1 files when optional project identity is malformed", async () => {
+  await withReportAssembly(async (assembly, options) => {
+    const file = join(assembly.root, ".forge", "project.json");
+    for (const manifest of ["{broken", '{"schema":1,"id":"invalid"}']) {
+      writeFileSync(file, manifest);
+      const cli = await runCli(
+        assembly.catalog,
+        ["report", "create", "Show a short confirmation"],
+        options,
+      );
+      expect(cli.envelope).toMatchObject({ ok: true });
+    }
+  });
 }, 30_000);
