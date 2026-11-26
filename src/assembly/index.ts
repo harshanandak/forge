@@ -485,13 +485,15 @@ export async function createAssembly(
       const replacement = new Construct(
         redactBuiltinText(error.message, installRoot),
       );
+      const fields: Record<string, unknown> = {};
       for (const [key, entry] of Object.entries(error)) {
         if (key === "message" || key === "stack") continue;
-        (replacement as Record<string, unknown>)[key] =
+        fields[key] =
           typeof entry === "string"
             ? redactBuiltinText(entry, installRoot)
             : entry;
       }
+      Object.assign(replacement, fields);
       return replacement;
     }
     return error;
