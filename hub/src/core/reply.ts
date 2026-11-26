@@ -2,6 +2,7 @@ import { ChatWriteFailure } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import type { HubError } from "../contract/errors.ts";
 import { LIMITS } from "../contract/mcp.ts";
+import { splitAnswer } from "./answer.ts";
 import type { CoreContext } from "./core.ts";
 import { fail } from "./errors.ts";
 import { refused } from "./inbox.ts";
@@ -47,9 +48,10 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
           ok: true,
           form: "channel",
           projectId: project.projectId,
+          projectName: project.name,
           channelId,
           label,
-          postedText: name + "'s agent: " + text,
+          prefix: name + "'s agent:",
           sessionId: own.value.sessionId,
         } as const;
       }
@@ -92,16 +94,35 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         form: "thread",
         conversation: existing,
         label,
-        postedText: prefix + " " + text,
+        prefix,
         sessionId: own.value.sessionId,
       } as const;
     });
     if (!result.ok) return result;
+    const parts = splitAnswer(text);
+    const channelId =
+      result.form === "channel"
+        ? result.channelId
+        : result.conversation.channelId;
+    const projectName =
+      result.form === "channel"
+        ? result.projectName
+        : (config.projects.find(
+            (entry) => entry.projectId === result.conversation.projectId,
+          )?.name ?? result.conversation.channelId);
+    let body = text;
+    if (parts.long) {
+      const title =
+        projectName + ": " + (parts.short.split("\n")[0] ?? parts.short);
+      const link = await chat.createLongAnswer(channelId, title, text);
+      body = parts.short + "\nFull answer: " + link;
+    }
+    const posted = result.prefix + " " + body;
     try {
       if (result.form === "channel") {
         const ref = await chat.postText(
           { kind: "channel", channelId: result.channelId },
-          result.postedText,
+          posted,
           { agentLabel: result.label },
         );
         const created = ctx.store.tx(() => {
@@ -129,7 +150,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
             next,
             result.sessionId,
             person.personId,
-            result.postedText,
+            posted,
           );
           db.prepare(
             "UPDATE reply_owed SET answered = 1 WHERE conversation_id = ?",
@@ -147,7 +168,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       }
       const ref = await chat.postText(
         { kind: "thread", chatThreadId: result.conversation.chatThreadId },
-        result.postedText,
+        posted,
         { agentLabel: result.label },
       );
       ctx.store.tx(() => {
@@ -158,7 +179,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
             result.conversation,
             result.sessionId,
             person.personId,
-            result.postedText,
+            posted,
           );
         db.prepare(
           "UPDATE reply_owed SET answered = 1 WHERE conversation_id = ?",
