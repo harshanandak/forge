@@ -27,3 +27,4 @@ try {
 }
 
 export const createSlackChatPort = undefined;
+export const createTelegramChatPort = undefined;

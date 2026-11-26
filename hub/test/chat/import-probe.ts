@@ -35,7 +35,11 @@ const resources = process.getActiveResourcesInfo().toSorted();
 const loaded = process.argv[2]
   ? await import("./import-side-effect.fixture.ts")
   : await import("../../src/chat/index.ts");
-deepStrictEqual(Object.keys(loaded), ["createSlackChatPort"], "public exports");
+deepStrictEqual(
+  Object.keys(loaded),
+  ["createSlackChatPort", "createTelegramChatPort"],
+  "public exports",
+);
 deepStrictEqual(env.reads, [], "Slack environment reads");
 deepStrictEqual(effects, [], "import-time listeners and timers");
 deepStrictEqual(fake.calls, [], "Slack API calls");
