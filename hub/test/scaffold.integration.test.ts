@@ -162,6 +162,10 @@ const ownFiles = [
   "dist/chat/slack.js",
   "dist/chat/state.js",
   "dist/chat/summary.js",
+  "dist/chat/telegram-cards.js",
+  "dist/chat/telegram-polling.js",
+  "dist/chat/telegram-wire.js",
+  "dist/chat/telegram.js",
   "dist/contract/chat-state.js",
   "dist/contract/chat.js",
   "dist/contract/core.js",
@@ -573,6 +577,7 @@ test(
       omitPackage("node_modules/chat"),
       omitPackage("node_modules/remark-parse"),
       paths.filter((path) => path !== "node_modules/chat/dist/index.js"),
+      paths.filter((path) => path !== "dist/chat/telegram-wire.js"),
       [...paths, "node_modules/chat/node_modules/unrelated/package.json"],
     ]) {
       ok(
