@@ -88,6 +88,14 @@ function argumentType(schema: unknown): unknown {
   );
 }
 
+function parseInputJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error("Expected valid JSON.");
+  }
+}
+
 function argumentValue(raw: string, schema: unknown): unknown {
   const type = argumentType(schema);
   if (type === "string" || type === undefined) return raw;
@@ -97,7 +105,7 @@ function argumentValue(raw: string, schema: unknown): unknown {
       throw new Error("Expected a boolean.");
     return value === "true";
   }
-  const value: unknown = JSON.parse(raw);
+  const value = parseInputJson(raw);
   if (type === "integer" && !Number.isInteger(value))
     throw new Error("Expected an integer.");
   if (type === "number" && typeof value !== "number")
@@ -130,7 +138,9 @@ function mapArguments(
       const [flag = "", inline] = token.slice(2).split(/=(.*)/s);
       const key = propertyFromFlag(flag) ?? "";
       if (!Object.hasOwn(properties, key))
-        throw new Error(`Unknown argument --${flag}.`);
+        throw new Error(
+          "Unknown argument. Use --help to see accepted arguments.",
+        );
       if (Object.hasOwn(result, key))
         throw new Error(`Duplicate argument ${key}.`);
       const type = argumentType(properties[key]);
@@ -361,7 +371,7 @@ export async function runCli(
     if (rawInput !== undefined) {
       if (tokens.length !== 0)
         throw new Error("Do not mix --input with operation arguments.");
-      input = JSON.parse(rawInput);
+      input = parseInputJson(rawInput);
     } else {
       const properties = inputPropertyNames(
         entry?.argumentSchema ?? entry?.inputSchema,

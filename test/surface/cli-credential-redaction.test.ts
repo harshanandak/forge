@@ -158,3 +158,43 @@ test("Login session validation retains its policy", () => {
   expect(isLoginSession("")).toBe(false);
   expect(isLoginSession(undefined)).toBe(false);
 }, 30_000);
+
+const sentinel = "ghp_synthetic_fixture";
+
+for (const [name, args, message] of [
+  [
+    "unknown flag",
+    [`--token ${sentinel}`],
+    "Unknown argument. Use --help to see accepted arguments.",
+  ],
+  ["malformed --input", ["--input", sentinel], "Expected valid JSON."],
+  [
+    "malformed typed value",
+    ["message", "--count", sentinel],
+    "Expected valid JSON.",
+  ],
+] as const) {
+  test(`CLI rejects ${name} without quoting input`, async () => {
+    for (const mode of [[], ["--text"]]) {
+      const catalog = fakeCatalog();
+      const reply = await runCli(catalog, ["sample.echo", ...mode, ...args]);
+      expect(reply.exitCode).toBe(6);
+      expect(reply.envelope.ok).toBe(false);
+      expect(reply.stdout.includes(sentinel)).toBe(false);
+      expect(reply.envelope).toMatchObject({
+        error: { code: "INPUT_INVALID", message },
+      });
+      expect(catalog.calls).toEqual([]);
+    }
+  }, 30_000);
+}
+
+test("CLI passes leading flags literally after the separator", async () => {
+  const catalog = fakeCatalog();
+  const value = `--token ${sentinel}`;
+  for (const literal of [value, "--help"]) {
+    const reply = await runCli(catalog, ["sample.echo", "--", literal]);
+    expect(reply.exitCode).toBe(0);
+    expect(catalog.calls.at(-1)?.input).toEqual({ value: literal });
+  }
+}, 30_000);
