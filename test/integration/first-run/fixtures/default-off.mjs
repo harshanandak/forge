@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -163,12 +163,9 @@ for (const ecosystem of ["pnpm", "python", "npm"]) {
     ),
   );
   const catalog = cli(["catalog", "list"]);
-  assert.ok(catalog.length > 0);
-  assert.ok(
-    catalog.every(
-      (entry) =>
-        entry.blockId === undefined || entry.blockId === "forge/memory",
-    ),
+  assert.deepEqual(
+    new Set(catalog.map(({ blockId }) => blockId)),
+    new Set([undefined, "forge/memory", "forge/report"]),
   );
   const preview = cli([
     "config",

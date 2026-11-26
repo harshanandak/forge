@@ -88,14 +88,6 @@ function argumentType(schema: unknown): unknown {
   );
 }
 
-function parseInputJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error("Expected valid JSON.");
-  }
-}
-
 function argumentValue(raw: string, schema: unknown): unknown {
   const type = argumentType(schema);
   if (type === "string" || type === undefined) return raw;
@@ -105,7 +97,7 @@ function argumentValue(raw: string, schema: unknown): unknown {
       throw new Error("Expected a boolean.");
     return value === "true";
   }
-  const value = parseInputJson(raw);
+  const value: unknown = JSON.parse(raw);
   if (type === "integer" && !Number.isInteger(value))
     throw new Error("Expected an integer.");
   if (type === "number" && typeof value !== "number")
@@ -371,7 +363,7 @@ export async function runCli(
     if (rawInput !== undefined) {
       if (tokens.length !== 0)
         throw new Error("Do not mix --input with operation arguments.");
-      input = parseInputJson(rawInput);
+      input = JSON.parse(rawInput);
     } else {
       const properties = inputPropertyNames(
         entry?.argumentSchema ?? entry?.inputSchema,
@@ -404,6 +396,8 @@ export async function runCli(
         { ok: false, status: "FAIL", error: error.error, warnings: [] },
         text,
       );
+    if (error instanceof SyntaxError)
+      return respond(failure("INPUT_INVALID", "Expected valid JSON."), text);
     return respond(
       failure(
         "INPUT_INVALID",
