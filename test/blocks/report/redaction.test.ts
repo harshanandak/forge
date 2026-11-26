@@ -414,4 +414,13 @@ test("forge-1994 keeps redacting a secret tail that contains = or :", () => {
     "[redacted],, and more",
   );
   expect(redactReport("token=abc,--verbose", [])).toBe("[redacted],--verbose");
+  expect(redactReport("password=Alpha,db.password= PrivateTail", [])).toBe(
+    "[redacted],db.[redacted]",
+  );
+  expect(redactReport("--token Alpha,x=--password PrivateTail", [])).toBe(
+    "[redacted],x=[redacted]",
+  );
+  expect(redactReport("Bearer Alpha;prefix=Bearer PrivateTail", [])).toBe(
+    "[redacted];prefix=[redacted]",
+  );
 }, 30_000);
