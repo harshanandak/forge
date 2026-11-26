@@ -181,6 +181,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node to verify paired built-CLI memory measurements.",
   "test/tools/lane-run.integration.test.ts":
     "Launches selected Node for lane run coverage.",
+  "test/tools/lane-step.integration.test.ts":
+    "Prepares a recorded lane through the built Forge CLI on selected Node.",
   "test/tools/lane.integration.test.ts":
     "Launches selected Node for lane coverage.",
   "test/tools/pack-smoke/bounded.integration.test.ts":
