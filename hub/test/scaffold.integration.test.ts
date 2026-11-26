@@ -175,6 +175,7 @@ const ownFiles = [
   "dist/contract/ids.js",
   "dist/contract/mcp.js",
   "dist/contract/runtime.js",
+  "dist/core/answer.js",
   "dist/core/answers.js",
   "dist/core/askEffects.js",
   "dist/core/asks.js",
