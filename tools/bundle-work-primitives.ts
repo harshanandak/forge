@@ -42,6 +42,11 @@ if (import.meta.main) {
       specifier: "./record-primitives",
     },
     {
+      block: "report",
+      module: "blocks/report/store.ts",
+      specifier: "./store",
+    },
+    {
       block: "accounts",
       module: "contract/display-text.ts",
       specifier: "../../contract/display-text",
