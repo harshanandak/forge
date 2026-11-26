@@ -398,3 +398,20 @@ test("forge-1992 r2 keeps adjacent secret assignments detected", () => {
   );
   expect(redactReport("token=a,,PrivateTail", [])).toBe("[redacted]");
 }, 30_000);
+
+test("forge-1994 keeps redacting a secret tail that contains = or :", () => {
+  expect(redactReport("password=Alpha,PrivateTail=", [])).toBe("[redacted]");
+  expect(redactReport("--password Alpha,PrivateTail=", [])).toBe("[redacted]");
+  expect(redactReport("Bearer Alpha;PrivateTail=", [])).toBe("[redacted]");
+  expect(redactReport("token=a,user=bob", [])).toBe("[redacted]");
+  expect(redactReport("password=Alpha,password= PrivateTail", [])).toBe(
+    "[redacted],[redacted]",
+  );
+  expect(redactReport("Bearer Alpha;Bearer PrivateTail", [])).toBe(
+    "[redacted];[redacted]",
+  );
+  expect(redactReport("token=abc,, and more", [])).toBe(
+    "[redacted],, and more",
+  );
+  expect(redactReport("token=abc,--verbose", [])).toBe("[redacted],--verbose");
+}, 30_000);
