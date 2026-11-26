@@ -1,12 +1,16 @@
+import type { Caller } from "../../src/contract/core.ts";
+import type { Person } from "../../src/contract/domain.ts";
 import type { HubDb, SqlValue } from "../../src/contract/runtime.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
 import { createEffectWorker } from "../../src/core/effects.ts";
 import { nullTracker } from "../../src/core/index.ts";
+import { createReport } from "../../src/core/report.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import { FakeHostBridge } from "../fakes/fake-host.ts";
 import { doorbellFake, fakeHostCore } from "./base-fakes.ts";
 import {
   a,
+  b,
   caller,
   closeDb,
   configPeople,
@@ -27,9 +31,8 @@ export async function lifeFixture() {
   const publicationKey = "fixture-summary";
   let time = 1_700_000_000_000;
 
-  async function attach(db: HubDb) {
-    const chat = new FakeChatPort(f.config.slack.teamId);
-    const ctx = createCoreContext({
+  function context(db: HubDb, chat: FakeChatPort) {
+    return createCoreContext({
       config: f.config,
       db,
       chat,
@@ -39,31 +42,56 @@ export async function lifeFixture() {
       log: f.log,
       now: () => time,
     });
+  }
+
+  async function attach(db: HubDb) {
+    const chat = new FakeChatPort(f.config.slack.teamId);
+    const ctx = context(db, chat);
     const core = createCoreBase(ctx);
     const worker = createEffectWorker(ctx);
     await chat.start(core.chatHandlers);
     chat.provisionSummary(ref.channelId, publicationKey, ref);
 
-    async function answerChoice(to: readonly string[] = [a.personId]) {
-      const bridge = new FakeHostBridge(fakeHostCore(core), host);
-      const { sessionId } = bridge.start("bound-effects", "startup");
+    function bind(person: Person = a, name = "bound-effects") {
+      const owner =
+        person.personId === a.personId ? caller : { person, tokenId: "tok_b" };
+      const bridge = new FakeHostBridge(fakeHostCore(core), {
+        person,
+        hostInstanceId:
+          person.personId === a.personId ? host.hostInstanceId : "hst_b",
+      });
+      return { ...bridge.start(name, "startup"), owner };
+    }
+
+    async function workRequest(
+      owner: Caller,
+      sessionId: string,
+      issueId: string,
+    ) {
       const { askId } = value(
-        await core.ask(caller, {
+        await core.ask(owner, {
           sessionId,
           projectId: p1,
-          kind: "choice",
-          requestedAction: "choice",
-          to,
+          kind: "work_request",
+          requestedAction: "work",
+          issueId,
           question,
-          choices,
+          expiresInMinutes: 1,
         }),
       );
-      const action = button(askId, "answer-" + askId);
+      return askId;
+    }
+
+    async function answer(owner: Caller, askId: string, choice: string) {
+      const personId = owner.person.personId;
+      const userId = ctx.deps.people.byPersonId(personId)?.slackUserId;
+      if (!userId) throw new Error("The fixture needs a chat identity");
+      const action = button(askId, "answer-" + askId, userId, choice);
       const delivery = db
         .prepare(
           "SELECT channel_id, chat_thread_id, chat_message_id FROM ask_deliveries WHERE ask_id = ? AND person_id = ?",
         )
-        .get(askId, a.personId);
+        .get(askId, personId);
       const { channel_id, chat_thread_id, chat_message_id } = delivery ?? {};
       if (
         typeof channel_id !== "string" ||
@@ -79,6 +107,26 @@ export async function lifeFixture() {
           chatMessageId: chat_message_id,
         },
       });
+    }
+
+    async function answerChoice(
+      to: readonly string[] = [a.personId],
+      issueId?: string,
+    ) {
+      const { sessionId } = bind();
+      const { askId } = value(
+        await core.ask(caller, {
+          sessionId,
+          projectId: p1,
+          kind: "choice",
+          requestedAction: "choice",
+          to,
+          question,
+          choices,
+          ...(issueId === undefined ? {} : { issueId }),
+        }),
+      );
+      await answer(caller, askId, "first");
       return askId;
     }
 
@@ -103,7 +151,11 @@ export async function lifeFixture() {
     return {
       chat,
       worker,
+      bind,
+      workRequest,
+      answer,
       answerChoice,
+      report: createReport(ctx, worker),
       queueSummary,
       rows: (sql: string, ...args: SqlValue[]) => db.prepare(sql).all(...args),
       now: () => time,
@@ -118,10 +170,16 @@ export async function lifeFixture() {
         return attach(openDb(f.path));
       },
       openPeer: () => openDb(f.path),
+      peerReport: () => createReport(context(openDb(f.path), chat), worker),
     };
   }
 
   const initial = await attach(f.db);
   seedHost(f.db);
+  f.db
+    .prepare(
+      "INSERT INTO host_keys (host_instance_id,person_id,label,key_hash,created_at) VALUES ('hst_b',?,'fixture','hash_hst_b',1)",
+    )
+    .run(b.personId);
   return initial;
 }
