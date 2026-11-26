@@ -182,15 +182,21 @@ async function postSummary(
   }
 }
 
+function openReader(open: MainServices["stdin"]) {
+  try {
+    return open().getReader();
+  } catch {
+    throw new EntryFailure("stdin");
+  }
+}
+
 async function readStdin(open: MainServices["stdin"]): Promise<string> {
   const bytes = new Uint8Array(LIMITS.bodyBytes);
-  let reader: ReadableStreamDefaultReader<unknown> | undefined;
+  const reader = openReader(open);
   let size = 0;
   try {
-    const opened = open().getReader();
-    reader = opened;
     for (;;) {
-      const { done, value } = await opened.read();
+      const { done, value } = await reader.read();
       if (done) return new TextDecoder().decode(bytes.subarray(0, size));
       if (!(value instanceof Uint8Array)) throw new EntryFailure("stdin");
       if (value.byteLength > LIMITS.bodyBytes - size)
@@ -199,12 +205,12 @@ async function readStdin(open: MainServices["stdin"]): Promise<string> {
       size += value.byteLength;
     }
   } catch (error) {
-    void reader?.cancel().catch(ignore);
+    void reader.cancel().catch(ignore);
     if (error instanceof EntryFailure && error.kind === "stdinLimit")
       throw error;
     throw new EntryFailure("stdin");
   } finally {
-    reader?.releaseLock();
+    reader.releaseLock();
   }
 }
 
