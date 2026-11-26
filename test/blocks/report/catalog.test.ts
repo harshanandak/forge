@@ -20,6 +20,7 @@ test("FR-CREATE1 and FR-NET1 expose one admitted device filing contract on CLI a
         args: ["message"],
         callers: ["agent", "human"],
         idempotent: false,
+        stability: "experimental",
       },
     });
     const help = await runCli(
@@ -33,7 +34,11 @@ test("FR-CREATE1 and FR-NET1 expose one admitted device filing contract on CLI a
         operations: [expect.objectContaining({ op: "report.create" })],
       },
     });
-    const mcp = createMcpHandlers(assembly.catalog, {}, options);
+    const mcp = createMcpHandlers(
+      assembly.catalog,
+      { expose: ["report"] },
+      options,
+    );
     const tool = mcp.listTools().find((tool) => tool.name === "report_create");
     expect(tool).toMatchObject({
       annotations: {
@@ -44,7 +49,10 @@ test("FR-CREATE1 and FR-NET1 expose one admitted device filing contract on CLI a
       inputSchema: { additionalProperties: false },
     });
     expect(tool?.outputSchema).toBeDefined();
-    const readOnly = createMcpHandlers(assembly.catalog, { readOnly: true });
+    const readOnly = createMcpHandlers(assembly.catalog, {
+      expose: ["report"],
+      readOnly: true,
+    });
     expect(readOnly.listTools().map((tool) => tool.name)).not.toContain(
       "report_create",
     );
@@ -70,7 +78,11 @@ test("FR-CREATE2 accepts four kinds and declares bug as the default", async () =
 
 test("FR-CREATE3 refuses malformed inputs before creating the device store", async () => {
   await withReportAssembly(async (assembly, options) => {
-    const mcp = createMcpHandlers(assembly.catalog, {}, options);
+    const mcp = createMcpHandlers(
+      assembly.catalog,
+      { expose: ["report"] },
+      options,
+    );
     for (const input of [
       {},
       { message: "" },

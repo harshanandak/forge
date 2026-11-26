@@ -6,6 +6,10 @@
   "profile": "trusted-action/v2",
   "entry": "entry.cjs",
   "docs": "docs.json",
+  "requires": [
+    { "slot": "state", "interface": "forge.state@1" },
+    { "slot": "crypto", "interface": "forge.crypto@1" }
+  ],
   "operations": {
     "report.create": {
       "input": "schemas/create.input.json",
@@ -17,7 +21,7 @@
       "idempotent": false,
       "destructive": false,
       "callers": ["agent", "human"],
-      "stability": "stable"
+      "stability": "experimental"
     }
   }
 }
