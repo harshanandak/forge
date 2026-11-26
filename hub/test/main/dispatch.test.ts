@@ -1,4 +1,5 @@
 import { expect, mock, test } from "bun:test";
+import { ok } from "node:assert/strict";
 import { LIMITS } from "../../src/contract/mcp.ts";
 import type { MainServices } from "../../src/main.ts";
 import { mainFixture, stdinFixture, timeout } from "./main-fixture.ts";
@@ -30,11 +31,15 @@ for (const argv of [
       const f = adminFixture({ runAdminCommand });
       expect(await f.run(argv)).toBe(17);
       expect(runAdminCommand).toHaveBeenCalledTimes(1);
-      expect(runAdminCommand).toHaveBeenCalledWith(argv, {
+      const call = runAdminCommand.mock.calls[0];
+      ok(call);
+      const [actualArgv, { readStdin, ...adminDeps }] = call;
+      expect(actualArgv).toEqual(argv);
+      expect(typeof readStdin).toBe("function");
+      expect(adminDeps).toEqual({
         config: f.config,
         core: f.core,
         protectPath: f.services.protectPath,
-        readStdin: expect.any(Function),
       });
       expect(f.openHubDb).toHaveBeenCalledTimes(1);
       expect(f.createHubCore).toHaveBeenCalledTimes(1);

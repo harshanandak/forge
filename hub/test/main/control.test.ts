@@ -1,4 +1,5 @@
 import { expect, mock, spyOn, test } from "bun:test";
+import { ok } from "node:assert/strict";
 import * as http from "node:http";
 import { main } from "../../src/main.ts";
 import type { MainServices } from "../../src/main.ts";
@@ -62,10 +63,16 @@ test(
     });
     try {
       const url = new URL("../../src/main.ts?import-purity", import.meta.url);
-      const loaded: typeof import("../../src/main.ts") = await import(url.href);
-      expect(typeof loaded.main).toBe("function");
-      expect(typeof loaded.mainWithServices).toBe("function");
-      expect(typeof loaded.runService).toBe("function");
+      const loaded: unknown = await import(url.href);
+      ok(typeof loaded === "object" && loaded !== null);
+      expect("main" in loaded && typeof loaded.main === "function").toBe(true);
+      expect(
+        "mainWithServices" in loaded &&
+          typeof loaded.mainWithServices === "function",
+      ).toBe(true);
+      expect(
+        "runService" in loaded && typeof loaded.runService === "function",
+      ).toBe(true);
       expect(on).not.toHaveBeenCalled();
       expect(exit).not.toHaveBeenCalled();
       expect(createServer).not.toHaveBeenCalled();
