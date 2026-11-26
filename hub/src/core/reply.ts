@@ -111,6 +111,16 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         !sessions.isMember(existing.projectId, person.personId)
       )
         return refused("CONVERSATION_NOT_YOURS");
+      if (!existing.isDirect) {
+        const currentChannel = config.projects.find(
+          (entry) => entry.projectId === existing.projectId,
+        )?.slackChannelId;
+        if (
+          existing.projectId === undefined ||
+          existing.channelId !== currentChannel
+        )
+          return refused("INPUT_INVALID", "/conversationId");
+      }
       if (paused(db, existing.chatThreadId))
         return refused("CONVERSATION_PAUSED");
       if (!text.length || text.length > LIMITS.replyText)
