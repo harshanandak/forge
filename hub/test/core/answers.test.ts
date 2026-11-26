@@ -1,13 +1,16 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { createPeopleDirectory } from "../../src/core/directory.ts";
 import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
-import { a, b, closeDb, openDb, p1, value } from "./fixture.ts";
+import { a, b, caller, closeDb, openDb, p1, value } from "./fixture.ts";
 import {
   askFixture,
   asksOf,
   button,
+  choices,
+  question,
   digit,
   rows,
   slackA,
@@ -371,6 +374,73 @@ test(
       "unknown_ask",
       "not_allowed",
     ]);
+  },
+  timeout,
+);
+
+test(
+  "T1A-ASK uses the selected provider for delivery and locks only a matching provider's answer",
+  async () => {
+    const f = await askFixture();
+    const people = f.config.people.map((person, i) => ({
+      ...person,
+      telegramUserId: String(i + 1),
+    }));
+    const chat = new FakeChatPort();
+    const telegram = asksOf(
+      createCoreStore({
+        ...f.deps,
+        config: {
+          ...f.config,
+          people,
+          chat: { adapter: "telegram" },
+          slack: { mode: "off", buttons: false },
+        },
+        people: createPeopleDirectory(people),
+        chat,
+      }),
+    );
+    const slackId = value(await f.choice({ to: [a.personId] })).askId;
+    const askId = value(
+      await telegram.ask(caller, {
+        sessionId: f.sessionId,
+        projectId: p1,
+        kind: "choice",
+        requestedAction: "choice",
+        question,
+        choices,
+        to: [a.personId],
+      }),
+    ).askId;
+    expect(chat.calls.find(({ name }) => name === "postAskDm")?.args[0]).toBe(
+      "1",
+    );
+    const telegramButton = (value: string, userId = "1") => ({
+      ...button(value, "provider-event"),
+      chatIdentity: { adapter: "telegram" as const, userId },
+    });
+    expect(
+      telegram.answerAction({
+        ...telegramButton(slackId),
+        eventKey: "wrong-ask",
+      }).after,
+    ).toBeUndefined();
+    expect(
+      f.asks.answerAction(button(askId, "provider-event")).after,
+    ).toBeUndefined();
+    expect(
+      telegram.answerAction(button(askId, "provider-event")).after,
+    ).toBeUndefined();
+    expect(telegram.answerAction(telegramButton(askId)).after?.askId).toBe(
+      askId,
+    );
+    expect(
+      telegram.answerAction({
+        ...telegramButton(askId),
+        eventKey: "second-telegram-event",
+      }).reply.ephemeralText,
+    ).toBe(winner);
+    expect(rows(f.db, "ask_answers")).toHaveLength(1);
   },
   timeout,
 );

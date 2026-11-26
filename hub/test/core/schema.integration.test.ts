@@ -159,7 +159,7 @@ test(
     const path = await dbPath();
     const db = track(openHubDb(path));
     const oracle = track(new Database(await dbPath()));
-    createTestSchema(oracle);
+    createTestSchema(oracle, 2);
     const literal = "CHECK (kind = 'Case Sensitive')";
     expect(normalizedSchema([{ sql: literal }])[0]?.sql).toBe(literal);
     const rows = normalizedSchema(db.prepare(schemaObjects).all());
@@ -181,7 +181,7 @@ test(
     });
     expect(
       db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get(),
-    ).toEqual({ value: "1" });
+    ).toEqual({ value: "2" });
     db.exec("PRAGMA wal_autocheckpoint=0");
     seedPeopleAndProject(db);
     const leftover = await dbPath();
@@ -407,6 +407,139 @@ test(
         )
         .all(),
     ).toEqual([{ conversation_id: "cnv_a" }, { conversation_id: "cnv_c" }]);
+  },
+  timeout,
+);
+
+function seedSlackConversation(db: Pick<HubDb, "exec">) {
+  db.exec(`
+    INSERT INTO people (person_id, display_name, slack_user_id) VALUES ('per_a', 'A', 'U00000001');
+    INSERT INTO projects (project_id, name, front_person_id) VALUES ('prj_a', 'A', 'per_a');
+    INSERT INTO sessions (session_id, person_id, host, mode, mode_reason, mode_changed_at, created_at, last_seen_at)
+    VALUES ('ses_a', 'per_a', 'claude', 'normal', 'start', 1, 1, 1);
+    INSERT INTO conversations VALUES ('conv_a', 'prj_a', 'per_a', 'ses_a', 'slack', 'thread', 'channel', 0, 'slack', 4, 1);
+    INSERT INTO inbox_items (item_id, dedupe_key, owner_person_id, conversation_id, project_id, kind, sender_kind,
+      sender_name, not_your_owner, text, received_at)
+    VALUES ('item_a','dedupe','per_a','conv_a','prj_a','chat_message','person','A',0,'Hello',2);
+    INSERT INTO reply_owed VALUES ('item_a', 'ses_a', 'conv_a', 0, 2);
+    INSERT INTO thread_messages (seq, adapter, chat_thread_id, channel_id, project_id, kind, text, created_at)
+    VALUES (4,'slack','thread','channel','prj_a','system','Hello',2),
+      (9,'slack','thread','channel','prj_a','system','Removed fixture',2);
+    DELETE FROM thread_messages WHERE seq = 9;
+    INSERT INTO asks VALUES ('ask_a','prj_a','choice','choice','ses_a','per_a',0,'Question','[]','["per_a"]',
+      NULL,'item_a','answered',1,10);
+    INSERT INTO ask_deliveries (ask_id,person_id,delivery_state,chat_thread_id,chat_message_id,channel_id,delivered_at)
+    VALUES ('ask_a','per_a','delivered','thread','message','channel',2);
+    INSERT INTO ask_answers VALUES ('ask_a','first','per_a',3,'button','event',NULL,NULL);
+    INSERT INTO answer_attempts (event_key,ask_id,slack_user_id,choice_id,outcome,at)
+    VALUES ('event','ask_a','U00000001','first','locked',3);
+  `);
+}
+
+function insertConversation(
+  db: Pick<HubDb, "prepare">,
+  adapter: string,
+  source: string,
+) {
+  return db
+    .prepare(
+      `
+    INSERT INTO conversations VALUES ('conv_' || ?, 'prj_a', 'per_a', 'ses_a', ?, 'thread', 'channel', 0, ?, 4, 1)
+  `,
+    )
+    .run(adapter, adapter, source);
+}
+
+test(
+  "T1A-MIG1 fresh chat tables allow Slack and Telegram and reject foreign adapters",
+  async () => {
+    const db = track(openHubDb(await dbPath()));
+    seedSlackConversation(db);
+    expect(insertConversation(db, "telegram", "telegram").changes).toBe(1);
+    expect(() => insertConversation(db, "other", "agent")).toThrow("CHECK");
+    const post = db.prepare(`
+      INSERT INTO thread_messages (adapter, chat_thread_id, channel_id, project_id, kind, text, created_at)
+      VALUES (?, 'thread', 'channel', 'prj_a', 'system', 'Hello', 2)
+    `);
+    expect(post.run("telegram").changes).toBe(1);
+    expect(() => post.run("other")).toThrow("CHECK");
+  },
+  timeout,
+);
+
+test.each([false, true])(
+  "T1A-MIG2 upgrades a seeded Slack database atomically (injected failure: %s)",
+  async (fail) => {
+    const path = await dbPath();
+    const file = await createPrivateFile(path);
+    if (!file) throw new Error("Expected a private database fixture");
+    await file.close();
+    const original = track(new DatabaseSync(path));
+    createTestSchema(original);
+    seedSlackConversation(original);
+    const tables = original
+      .prepare(
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name <> 'meta' ORDER BY name",
+      )
+      .all();
+    const queries = tables.map(({ name }) => {
+      if (typeof name !== "string" || !/^\w+$/.test(name))
+        throw new Error("Unexpected fixture table name");
+      const columns = original
+        .prepare(`PRAGMA table_info(${name})`)
+        .all()
+        .map((row) => row.name)
+        .join(", ");
+      return `SELECT rowid, ${columns} FROM ${name} ORDER BY rowid`;
+    });
+    const snapshot = (db: Pick<HubDb, "prepare">) =>
+      queries.map((sql) => db.prepare(sql).all());
+    const before = snapshot(original);
+    if (fail)
+      original.exec(`
+        CREATE TRIGGER stop_upgrade BEFORE UPDATE ON meta WHEN old.key = 'schema_version'
+        BEGIN SELECT RAISE(ABORT, 'version update fault'); END
+      `);
+    close(original);
+
+    if (fail)
+      expect(() => track(openHubDb(path))).toThrow("version update fault");
+    const db = fail
+      ? track(new DatabaseSync(path, { readOnly: true }))
+      : track(openHubDb(path));
+    expect(snapshot(db)).toEqual(before);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get(),
+    ).toEqual({ value: fail ? "1" : "2" });
+    if (fail) {
+      expect(
+        db
+          .prepare("SELECT sql FROM sqlite_schema WHERE name = 'conversations'")
+          .get()?.sql,
+      ).toContain("adapter = 'slack'");
+      expect(
+        db
+          .prepare("PRAGMA table_info(ask_deliveries)")
+          .all()
+          .map(({ name }) => name),
+      ).not.toContain("adapter");
+    } else {
+      expect(insertConversation(db, "telegram", "telegram").changes).toBe(1);
+      expect(db.prepare("PRAGMA foreign_keys").get()).toEqual({
+        foreign_keys: 1,
+      });
+      expect(
+        db
+          .prepare(
+            `
+        INSERT INTO thread_messages (adapter, chat_thread_id, channel_id, project_id, kind, text, created_at)
+        VALUES ('telegram','thread','channel','prj_a','system','Hello',2)
+      `,
+          )
+          .run().lastInsertRowid,
+      ).toBe(10);
+    }
   },
   timeout,
 );
