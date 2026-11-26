@@ -27,7 +27,7 @@ export interface AgentPostInput {
 }
 
 export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
-  if (!ctx.chat) throw new Error("Chat is unavailable");
+  if (!ctx.chat) throw new ChatWriteFailure("refused");
   const parts = splitAnswer(input.text);
   let body = input.text;
   if (parts.long) {

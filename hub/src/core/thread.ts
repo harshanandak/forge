@@ -184,8 +184,7 @@ export async function postLoopPause(
       start !== undefined &&
       ctx.deps.db
         .prepare(
-          `SELECT 1 FROM thread_messages WHERE adapter = 'slack'
-        AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq >= ? LIMIT 1`,
+          `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq >= ? LIMIT 1`,
         )
         .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, start) === undefined
     );

@@ -286,3 +286,57 @@ test(
   },
   timeout,
 );
+
+test(
+  "SD1 visible send refuses a conversation from another project",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+    expect(
+      refusal(
+        await f.core.send(f.caller(), {
+          sessionId: alpha.sessionId,
+          projectId: p2,
+          toPersonId: c.personId,
+          conversationId,
+          text: "Cross-project note",
+        }),
+      ),
+    ).toMatchObject({ code: "INPUT_INVALID", pointer: "/conversationId" });
+    expect(f.rows("inbox_items WHERE kind = 'agent_message'")).toEqual([]);
+    expect(f.writes("postText")).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "SD1 visible send with chat off stores the item and reports failed",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+    const off = createCoreBase(
+      createCoreContext({
+        ...f.deps,
+        config: { ...f.config, slack: { ...f.config.slack, mode: "off" } },
+        people: configPeople(f.config.people),
+      }),
+    );
+    const sent = value(
+      await off.send(f.caller(), {
+        ...draft(alpha.sessionId),
+        conversationId,
+        text: "Offline visible note",
+      }),
+    );
+    expect(sent.threadPost).toBe("failed");
+    expect(f.writes("postText")).toEqual([]);
+    expect(
+      f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
+    ).toHaveLength(1);
+  },
+  timeout,
+);
