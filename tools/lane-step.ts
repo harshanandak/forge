@@ -131,11 +131,9 @@ async function localReads(): Promise<InspectReads> {
     const data = await git(path, "rev-parse", ...args);
     const [top, common, extra] = data.trimEnd().split(/\r?\n/);
     if (!top || !common || extra !== undefined)
-      throw new Error("Invalid Git location");
-    return [
-      fs.realpathSync.native(top),
-      fs.realpathSync.native(common),
-    ] as const;
+      throw new Error("Bad Git paths");
+    const realpath = fs.realpathSync.native;
+    return [realpath(top), realpath(common)] as const;
   }
   const [root, shared] = await locate(cwd);
   const main = dirname(shared);
@@ -173,12 +171,15 @@ async function localReads(): Promise<InspectReads> {
         .filter((key) => filter.test(key))
         .flatMap(disableFilter);
       const revision = ["rev-parse", "--verify", "HEAD^{commit}"];
+      const symbolic = ["rev-parse", "--symbolic-full-name", "HEAD"];
       const head = await git(path, ...revision);
-      const ref = await git(path, "rev-parse", "--symbolic-full-name", "HEAD");
+      const ref = await git(path, ...symbolic);
       const flags = ["status", "--porcelain", "-uall", "--ignore-submodules"];
       const status = await git(path, ...disabled, ...flags);
-      if (head !== (await git(path, ...revision)))
-        throw new Error("HEAD moved while reading workspace status");
+      const finalHead = await git(path, ...revision);
+      const finalRef = await git(path, ...symbolic);
+      if (head !== finalHead || ref !== finalRef)
+        throw new Error("HEAD or branch moved while reading workspace status");
       const branch = ref.startsWith("refs/heads/")
         ? ref.slice(11).trimEnd()
         : "";
@@ -199,7 +200,6 @@ async function localReads(): Promise<InspectReads> {
 function disableFilter(key: string) {
   return ["-c", `${key}=${key.endsWith(".required") ? "false" : ""}`];
 }
-
 function readBrief(path: string): Uint8Array {
   const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
   const file = fs.openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
