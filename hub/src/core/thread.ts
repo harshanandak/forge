@@ -163,8 +163,7 @@ export async function enterThread(
 ): Promise<() => void> {
   const gates = ctx.threadGates;
   const previous = gates.get(thread) ?? Promise.resolve();
-  let release!: () => void;
-  const entered = new Promise<void>((resolve) => (release = resolve));
+  const { promise: entered, resolve: release } = Promise.withResolvers<void>();
   const queued = previous.then(() => entered);
   gates.set(thread, queued);
   await previous;
