@@ -5,6 +5,34 @@ export interface SplitAnswer {
   readonly long: boolean;
 }
 
+export const SECTION_BUDGET = 3000;
+const SECTION_CUT_MARKER = "[...]";
+
+function escapedWidth(text: string): number {
+  let total = 0;
+  for (let index = 0; index < text.length; index++) {
+    const ch = text.charAt(index);
+    total += ch === "&" ? 5 : ch === "<" || ch === ">" ? 4 : 1;
+  }
+  return total;
+}
+
+export function fitSection(head: string, body: string): string {
+  if (escapedWidth(head + body) <= SECTION_BUDGET) return head + body;
+  let allowance =
+    SECTION_BUDGET - escapedWidth(head) - SECTION_CUT_MARKER.length;
+  if (allowance < 0) allowance = 0;
+  let width = 0;
+  let start = body.length;
+  while (start > 0) {
+    const ch = body.charAt(start - 1);
+    width += ch === "&" ? 5 : ch === "<" || ch === ">" ? 4 : 1;
+    if (width > allowance) break;
+    start -= 1;
+  }
+  return head + SECTION_CUT_MARKER + body.slice(start);
+}
+
 function cutToLimit(text: string): string {
   if (text.length <= LIMITS.shortAnswer) return text;
   const head = text.slice(0, LIMITS.shortAnswer);

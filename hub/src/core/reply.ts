@@ -2,7 +2,7 @@ import { ChatWriteFailure } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import type { HubError } from "../contract/errors.ts";
 import { LIMITS } from "../contract/mcp.ts";
-import { splitAnswer } from "./answer.ts";
+import { fitSection, splitAnswer } from "./answer.ts";
 import type { CoreContext } from "./core.ts";
 import { fail } from "./errors.ts";
 import { refused } from "./inbox.ts";
@@ -140,7 +140,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
           } else throw error;
         }
       }
-      const posted = result.prefix + " " + body;
+      const posted = fitSection(result.prefix + " ", body);
       if (result.form === "channel") {
         const ref = await chat.postText(
           { kind: "channel", channelId: result.channelId },
@@ -153,7 +153,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
             .prepare(
               `INSERT INTO conversations
     (conversation_id,project_id,person_id,session_id,adapter,chat_thread_id,channel_id,is_direct,created_by,created_at)
-    VALUES (?,?,?,?,'slack',?,?,0,'agent',?) RETURNING *`,
+    VALUES (?,?,?,?,'slack',?,?,0,'agent',?) ON CONFLICT(adapter, chat_thread_id, person_id) DO NOTHING RETURNING *`,
             )
             .get(
               id,
@@ -164,8 +164,32 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
               ref.channelId,
               ctx.deps.now(),
             );
-          if (!row) throw new Error("Conversation insert returned no row");
-          const next = conversation(row);
+          if (row) {
+            const next = conversation(row);
+            recordAgentPost(
+              ctx,
+              ref,
+              next,
+              result.sessionId,
+              person.personId,
+              posted,
+            );
+            db.prepare(
+              "UPDATE reply_owed SET answered = 1 WHERE conversation_id = ?",
+            ).run(next.conversationId);
+            return next;
+          }
+          db.prepare(
+            "UPDATE conversations SET session_id = ? WHERE adapter = 'slack' AND chat_thread_id = ? AND person_id = ? AND session_id IS NULL",
+          ).run(result.sessionId, ref.chatThreadId, person.personId);
+          const found = db
+            .prepare(
+              `SELECT * FROM conversations WHERE adapter = 'slack' AND chat_thread_id = ? AND person_id = ?`,
+            )
+            .get(ref.chatThreadId, person.personId);
+          if (!found)
+            throw new Error("Adopted conversation missing after conflict");
+          const next = conversation(found);
           recordAgentPost(
             ctx,
             ref,
@@ -174,9 +198,6 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
             person.personId,
             posted,
           );
-          db.prepare(
-            "UPDATE reply_owed SET answered = 1 WHERE conversation_id = ?",
-          ).run(next.conversationId);
           return next;
         });
         return {
