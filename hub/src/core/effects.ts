@@ -6,11 +6,19 @@ import { integer, oneOf, text } from "./askEffects.ts";
 import type { CoreContext } from "./core.ts";
 
 export interface EffectWorker {
+  start(): Promise<void>;
+  close(): Promise<void>;
   drain(): Promise<void>;
   waitForSummary(
     projectId: string,
     revision: number,
   ): Promise<ReportOutput["summary"]>;
+}
+
+export type EffectSchedule = (run: () => void, delayMs: number) => () => void;
+
+function lifecycleNotBuilt(): Promise<void> {
+  return Promise.reject(new Error("not_built"));
 }
 
 const backoffMs = [1_000, 5_000, 30_000, 120_000];
@@ -37,13 +45,14 @@ type SummaryEdit = {
 
 type SummaryStatus = ReportOutput["summary"];
 
-export function createEffectWorker({
-  chat,
-  deps: { config, db, now },
-  store: { asks, tx },
-}: CoreContext): EffectWorker {
+export function createEffectWorker(
+  { chat, deps: { config, db, now }, store: { asks, tx } }: CoreContext,
+  _schedule?: EffectSchedule,
+): EffectWorker {
   if (!chat || !asks)
     return {
+      start: lifecycleNotBuilt,
+      close: lifecycleNotBuilt,
       drain: () => Promise.resolve(),
       waitForSummary: () => Promise.resolve("queued"),
     };
@@ -240,6 +249,8 @@ export function createEffectWorker({
   }
 
   return {
+    start: lifecycleNotBuilt,
+    close: lifecycleNotBuilt,
     drain() {
       drainRequested = true;
       draining ??= Promise.resolve().then(drainRequestedWork);
