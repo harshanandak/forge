@@ -193,3 +193,30 @@ test.each([
   },
   30_000,
 );
+
+test.each([
+  "Authorization: Basic dXNlcjpwYXNz",
+  "authorization = Bearer FixtureAccessToken",
+  'Proxy-Authorization: Digest username="FixtureUser", response=FixtureDigest',
+  "pRoXy-AuThOrIzAtIoN=Token FixtureAccessToken",
+  "Authorization: Negotiate FixtureTicket==",
+  'Authorization=Custom-Scheme FixtureKey first=FixtureOne, next="FixtureTwo"',
+])(
+  "masks the complete authorization value in %j",
+  (header) => {
+    expect(redactReport(`Request failed with ${header}`, [])).toBe(
+      "Request failed with [redacted]",
+    );
+  },
+  30_000,
+);
+
+test.each(["Basic dXNlcjpwYXNz", "bAsIc Zm9vOmI=", "Bearer FixtureToken"])(
+  "masks a bare credential pair in %j",
+  (credentials) => {
+    expect(redactReport(`Rejected ${credentials} today`, [])).toBe(
+      "Rejected [redacted] today",
+    );
+  },
+  30_000,
+);
