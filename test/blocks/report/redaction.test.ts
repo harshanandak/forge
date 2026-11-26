@@ -290,7 +290,7 @@ test.each([
 );
 
 test("forge-1979 redacts secret-named flag values separated by whitespace", () => {
-  for (const flag of ["--token", "-t", "--api-key", "--password"]) {
+  for (const flag of ["--token", "--api-key", "--password"]) {
     expect(redactReport(`Deploy ${flag} OpaqueFixtureValue now`, [])).toBe(
       "Deploy [redacted] now",
     );
@@ -334,3 +334,35 @@ test("forge-1979 leaves similar non-label prose untouched", () => {
     "Jane and Doe met",
   );
 }, 30_000);
+
+test.each([
+  ["Open |/var/lib/PrivateFixture/output.log", "Open |[redacted]"],
+  [String.raw`Open |C:\PrivateFixture\out.log`, "Open |[redacted]"],
+  [String.raw`Open |\\PrivateFixture\share\out.log`, "Open |[redacted]"],
+])(
+  "forge-1979 r2 redacts rooted paths after pipes in %j",
+  (message, expected) => {
+    expect(redactReport(message, [])).toBe(expected);
+  },
+  30_000,
+);
+
+test("forge-1979 r2 leaves short tag flags untouched", () => {
+  expect(redactReport("Run build -t web now", [])).toBe("Run build -t web now");
+  expect(redactReport("Deploy -t OpaqueFixtureValue now", [])).toBe(
+    "Deploy -t OpaqueFixtureValue now",
+  );
+}, 30_000);
+
+test.each([
+  ["Deploy --auth OpaqueFixtureValue now", "Deploy [redacted] now"],
+  ["Deploy --pat OpaqueFixtureValue now", "Deploy [redacted] now"],
+  ["Deploy --auth=OpaqueFixtureValue now", "Deploy [redacted] now"],
+  ["Deploy --pat=OpaqueFixtureValue now", "Deploy [redacted] now"],
+])(
+  "forge-1979 r2 redacts auth and pat flag values in %j",
+  (message, expected) => {
+    expect(redactReport(message, [])).toBe(expected);
+  },
+  30_000,
+);

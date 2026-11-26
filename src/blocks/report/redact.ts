@@ -11,9 +11,9 @@ const EMAIL =
 const ASSIGNMENT =
   /\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
 const FLAG_VALUE =
-  /(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|t)\s+[^\s,;]+/gi;
+  /(?<![\w-])--?(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key|auth|pat)\s*(?:[:=]|\s)\s*[^\s,;]+/gi;
 const ROOTED_PATH =
-  /(?<![^\s([<{"'=:,;`>])(?:~?\/|\.\.?[\\/]|[a-z]:[\\/]|\\\\)(?:(?:[^()[\]"'`<>{}=]|\[[^\]]*\]|\([^)]*\))*[\\/])?[^\s)\]}>"'`<={]*/iu;
+  /(?<![^\s([<{"'=:,;`>|])(?:~?\/|\.\.?[\\/]|[a-z]:[\\/]|\\\\)(?:(?:[^()[\]"'`<>{}=]|\[[^\]]*\]|\([^)]*\))*[\\/])?[^\s)\]}>"'`<={]*/iu;
 const UNROOTED_PATH =
   /(?<![^\s"'`<>{}=])(?:[a-z][a-z\d+.-]*:\/\/|[\p{L}\p{N}][^\s"'`<>{}=:,;]*[\\/])[^\s"'`<>{}=]+/iu;
 const PATH = new RegExp(
