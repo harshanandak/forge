@@ -99,26 +99,39 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       } as const;
     });
     if (!result.ok) return result;
-    const parts = splitAnswer(text);
-    const channelId =
-      result.form === "channel"
-        ? result.channelId
-        : result.conversation.channelId;
-    const projectName =
-      result.form === "channel"
-        ? result.projectName
-        : (config.projects.find(
-            (entry) => entry.projectId === result.conversation.projectId,
-          )?.name ?? result.conversation.channelId);
-    let body = text;
-    if (parts.long) {
-      const title =
-        projectName + ": " + (parts.short.split("\n")[0] ?? parts.short);
-      const link = await chat.createLongAnswer(channelId, title, text);
-      body = parts.short + "\nFull answer: " + link;
-    }
-    const posted = result.prefix + " " + body;
     try {
+      const parts = splitAnswer(text);
+      const channelId =
+        result.form === "channel"
+          ? result.channelId
+          : result.conversation.channelId;
+      const projectName =
+        result.form === "channel"
+          ? result.projectName
+          : (config.projects.find(
+              (entry) => entry.projectId === result.conversation.projectId,
+            )?.name ?? result.conversation.channelId);
+      let body = text;
+      if (parts.long) {
+        const title =
+          projectName + ": " + (parts.short.split("\n")[0] ?? parts.short);
+        try {
+          const link = await chat.createLongAnswer(channelId, title, text);
+          body = parts.short + "\nFull answer: " + link;
+        } catch (error) {
+          if (error instanceof ChatWriteFailure && error.effect === "refused") {
+            ctx.deps.log.warn("canvas_fallback", {
+              reason: error.reason ?? "unknown",
+            });
+            body =
+              parts.short +
+              " (The full answer could not be posted as a canvas. Ask " +
+              person.displayName +
+              "'s agent for the detail.)";
+          } else throw error;
+        }
+      }
+      const posted = result.prefix + " " + body;
       if (result.form === "channel") {
         const ref = await chat.postText(
           { kind: "channel", channelId: result.channelId },
