@@ -2,50 +2,41 @@ import { expect, test } from "bun:test";
 import { runCli } from "../../src/surface/cli.ts";
 import { candidate, fakeCatalog } from "./fixtures/catalog.ts";
 import { isLoginSession } from "../../src/contract/login-session.ts";
-import { renderExample } from "../../src/contract/example.ts";
 import type { McpCandidate } from "../../src/contract/mcp.ts";
 const T = ["fct", `${"0".repeat(16)}.${"A".repeat(43)}`].join("_");
 const G = ["ghp", "A".repeat(36)].join("_");
 const L = "--pre-release";
 const e = (): McpCandidate => candidate("sample.echo", { args: [] });
 async function refuse(
-  t: string,
-  s: string,
-  v: readonly string[],
-  n: McpCandidate,
-  m?: string,
-  q?: boolean,
+  args: readonly string[],
+  entry: McpCandidate,
+  text = true,
 ) {
-  const w = m ?? `pass --value ${JSON.stringify(s)}`;
-  const p = `Unexpected argument ${JSON.stringify(s)}; ${w}`;
-  const o = `Invalid input for sample.echo:\n${p}`;
-  for (const x of q ? ([[]] as const) : ([[], ["--text"]] as const)) {
-    const c = fakeCatalog([n]);
-    const r = await runCli(c, [...x, ...v]);
-    if (r.envelope.ok) throw new Error("Expected refusal");
-    expect(r.exitCode).toBe(6);
-    expect(r.envelope.error.code).toBe("INPUT_INVALID");
-    expect(r.envelope.error.retry).toBe("never");
-    expect(c.calls).toHaveLength(0);
-    expect(r.envelope.error.message).toBe(o);
-    expect(r.envelope.error).toMatchObject({
+  const message =
+    "Unexpected argument at this position. Use named flags or --input JSON.";
+  for (const mode of text ? [[], ["--text"]] : [[]]) {
+    const catalog = fakeCatalog([entry]);
+    const reply = await runCli(catalog, [...mode, ...args]);
+    if (reply.envelope.ok) throw new Error("Expected refusal");
+    expect(reply.exitCode).toBe(6);
+    expect(reply.envelope.error).toMatchObject({
+      code: "INPUT_INVALID",
+      retry: "never",
+      message: `Invalid input for sample.echo:\n${message}`,
       observed: {
         problems: [
           {
             pointer: "/arguments/0",
             keyword: "false",
-            message: p,
+            message,
             expected:
               "declared flags or --input JSON; no positional argument at this position",
-            received: JSON.stringify(s),
+            received: "[redacted]",
           },
         ],
       },
     });
-    if (s === "[redacted]") {
-      expect(r.stdout).not.toContain(t);
-      expect(JSON.stringify(r.envelope)).not.toContain(t);
-    }
+    expect(catalog.calls).toHaveLength(0);
   }
 }
 async function ok(a: readonly string[], n: McpCandidate, w: unknown) {
@@ -81,16 +72,16 @@ const PLAIN = [
   "ghp_",
 ];
 test("CLI redacts credential-shaped arguments", async () => {
-  for (const t of RED) await refuse(t, "[redacted]", ["sample.echo", t], e());
+  for (const t of RED) await refuse(["sample.echo", t], e());
 }, 30_000);
-test("CLI retains ordinary unexpected words", async () => {
-  for (const t of PLAIN) await refuse(t, t, ["sample.echo", t], e());
+test("CLI hides ordinary unexpected words", async () => {
+  for (const t of PLAIN) await refuse(["sample.echo", t], e());
 }, 30_000);
 test("CLI redacts after a bare boolean switch", async () => {
-  await refuse(T, "[redacted]", ["sample.echo", L, T], e());
+  await refuse(["sample.echo", L, T], e());
 }, 30_000);
-test("CLI preserves a literal bare switch in diagnostics", async () => {
-  await refuse(L, L, ["sample.echo", "--", L], e());
+test("CLI hides a literal bare switch in diagnostics", async () => {
+  await refuse(["sample.echo", "--", L], e());
 }, 30_000);
 test("CLI preserves bare and explicit booleans", async () => {
   for (const [q, b] of [
@@ -119,7 +110,7 @@ test("CLI redacts without a unique suggestion", async () => {
       additionalProperties: false,
     },
   };
-  await refuse(T, "[redacted]", ["sample.echo", T], n, "use --input JSON");
+  await refuse(["sample.echo", T], n);
 }, 30_000);
 test("CLI redacts the reserved-input repair", async () => {
   const s = {
@@ -129,23 +120,7 @@ test("CLI redacts the reserved-input repair", async () => {
     additionalProperties: false,
   };
   const n: McpCandidate = { ...e(), inputSchema: s };
-  const d = {
-    title: "",
-    summary: "",
-    examples: [{ input: { text: "[redacted]" } }],
-  };
-  const f = renderExample("sample.echo", d, s);
-  const p = `Unexpected argument "[redacted]"; --text is reserved; use ${f}`;
-  await refuse(
-    T,
-    "[redacted]",
-    ["sample.echo", T],
-    n,
-    `--text is reserved; use ${f}`,
-    true,
-  );
-  expect(p).toContain("[redacted]");
-  expect(p).toContain("--input");
+  await refuse(["sample.echo", T], n, false);
 }, 30_000);
 test("Login session validation retains its policy", () => {
   expect(isLoginSession("session-1")).toBe(true);
@@ -157,4 +132,65 @@ test("Login session validation retains its policy", () => {
   expect(isLoginSession("bad session")).toBe(false);
   expect(isLoginSession("")).toBe(false);
   expect(isLoginSession(undefined)).toBe(false);
+}, 30_000);
+
+const sentinel = "ghp_synthetic_fixture";
+
+for (const [name, args, message] of [
+  [
+    "unknown flag",
+    [`--token ${sentinel}`],
+    "Unknown argument. Use --help to see accepted arguments.",
+  ],
+  ["malformed --input", ["--input", sentinel], "Expected valid JSON."],
+  [
+    "malformed typed value",
+    ["message", "--count", sentinel],
+    "Expected valid JSON.",
+  ],
+] as const) {
+  test(`CLI rejects ${name} without quoting input`, async () => {
+    for (const mode of [[], ["--text"]]) {
+      const catalog = fakeCatalog();
+      const reply = await runCli(catalog, ["sample.echo", ...mode, ...args]);
+      expect(reply.exitCode).toBe(6);
+      expect(reply.envelope.ok).toBe(false);
+      expect(reply.stdout.includes(sentinel)).toBe(false);
+      expect(reply.envelope).toMatchObject({
+        error: { code: "INPUT_INVALID", message },
+      });
+      expect(catalog.calls).toEqual([]);
+    }
+  }, 30_000);
+}
+
+test("CLI passes leading flags literally after the separator", async () => {
+  const catalog = fakeCatalog();
+  const value = `--token ${sentinel}`;
+  for (const literal of [value, "--help"]) {
+    const reply = await runCli(catalog, ["sample.echo", "--", literal]);
+    expect(reply.exitCode).toBe(0);
+    expect(catalog.calls.at(-1)?.input).toEqual({ value: literal });
+  }
+}, 30_000);
+
+test("CLI rejects excess positionals without exposing any input", async () => {
+  for (const mode of [[], ["--text"]]) {
+    const catalog = fakeCatalog();
+    const reply = await runCli(catalog, [
+      "sample",
+      "echo",
+      ...mode,
+      "AcceptedPrivateFixture",
+      "/var/lib/PrivateFixture/report.log",
+    ]);
+    expect(reply.exitCode).toBe(6);
+    expect(reply.envelope).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID" },
+    });
+    for (const output of [reply.stdout, JSON.stringify(reply.envelope)])
+      expect(output.includes("PrivateFixture")).toBe(false);
+    expect(catalog.calls).toEqual([]);
+  }
 }, 30_000);

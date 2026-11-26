@@ -69,9 +69,27 @@ test("different failure paths escape controls in CLI text and shared envelopes",
       error,
       warnings: [],
     });
+    const positional = await runCli(catalog, [entry.op, key, "--text"]);
+    expect(positional.envelope.ok).toBe(false);
+    if (positional.envelope.ok) throw new Error("Expected a failure envelope");
+    const { error: positionalError } = positional.envelope;
+    expect(positionalError.code).toBe("INPUT_INVALID");
+    const { problems } = positionalError.observed as {
+      problems: { received: string }[];
+    };
+    expect(problems.map(({ received }) => received)).toEqual(["[redacted]"]);
+    for (const text of [
+      positionalError.message,
+      ...problems.map(({ received }) => received),
+      positional.stdout,
+    ]) {
+      expectNoControls(text);
+      expect(text).not.toContain(key);
+      expect(text).not.toContain(escaped);
+    }
+
     const input = { op: entry.op, [key]: true };
     for (const argv of [
-      [entry.op, key],
       ["catalog.describe", "--input", JSON.stringify(input)],
       [entry.op, "--value", "hello"],
     ]) {
