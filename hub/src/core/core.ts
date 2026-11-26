@@ -24,6 +24,7 @@ export interface CoreContext {
   readonly store: CoreStore;
   readonly chat: ChatPort | undefined;
   readonly waiters: ReturnType<typeof createWaiters>;
+  readonly threadGates: Map<string, Promise<void>>;
   readonly notify: (notice: Notice) => Promise<void>;
 }
 export type CreateCoreContext = (deps: CoreDeps) => CoreContext;
@@ -40,6 +41,7 @@ export const createCoreContext: CreateCoreContext = (deps) => {
     store,
     chat: deps.config.slack.mode === "off" ? undefined : deps.chat,
     waiters: createWaiters(),
+    threadGates: new Map(),
     notify: (notice) =>
       notify(ctx, notice).catch(() =>
         deps.log.warn("delivery_notification_failed"),

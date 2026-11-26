@@ -135,15 +135,82 @@ export function recordAgentPost(
   );
 }
 
-export function paused(db: HubDb, thread: string): boolean {
+export const LOOP_PAUSE_TEXT = "Paused: the agents need a person to reply.";
+
+function agentRunStart(db: HubDb, thread: string): number | undefined {
   const rows = db
     .prepare(
-      `SELECT kind FROM thread_messages WHERE adapter = 'slack'
+      `SELECT seq,kind FROM thread_messages WHERE adapter = 'slack'
     AND chat_thread_id = ? AND kind IN ('agent','person') ORDER BY seq DESC LIMIT ?`,
     )
     .all(thread, LIMITS.agentRunMax);
-  return (
-    rows.length === LIMITS.agentRunMax &&
-    rows.every(({ kind }) => kind === "agent")
-  );
+  if (
+    rows.length !== LIMITS.agentRunMax ||
+    !rows.every(({ kind }) => kind === "agent")
+  )
+    return undefined;
+  const first = rows[rows.length - 1];
+  return first ? num(first.seq) : undefined;
+}
+
+export function paused(db: HubDb, thread: string): boolean {
+  return agentRunStart(db, thread) !== undefined;
+}
+
+export async function enterThread(
+  ctx: CoreContext,
+  thread: string,
+): Promise<() => void> {
+  const gates = ctx.threadGates;
+  const previous = gates.get(thread) ?? Promise.resolve();
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => (release = resolve));
+  const queued = previous.then(() => entered);
+  gates.set(thread, queued);
+  await previous;
+  return () => {
+    release();
+    if (gates.get(thread) === queued) gates.delete(thread);
+  };
+}
+
+export async function postLoopPause(
+  ctx: CoreContext,
+  conversation: Conversation,
+  projectId: string,
+): Promise<void> {
+  const due = ctx.store.tx(() => {
+    const start = agentRunStart(ctx.deps.db, conversation.chatThreadId);
+    return (
+      start !== undefined &&
+      ctx.deps.db
+        .prepare(
+          `SELECT 1 FROM thread_messages WHERE adapter = 'slack'
+        AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq >= ? LIMIT 1`,
+        )
+        .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, start) === undefined
+    );
+  });
+  if (!ctx.chat || !due) return;
+  try {
+    const ref = await ctx.chat.postText(
+      { kind: "thread", chatThreadId: conversation.chatThreadId },
+      LOOP_PAUSE_TEXT,
+    );
+    ctx.store.tx(() =>
+      recordThread(
+        ctx,
+        {
+          ...ref,
+          chatThreadId: conversation.chatThreadId,
+          channelId: conversation.channelId,
+        },
+        projectId,
+        "system",
+        LOOP_PAUSE_TEXT,
+      ),
+    );
+  } catch {
+    ctx.deps.log.warn("chat_notice_failed");
+  }
 }

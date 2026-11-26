@@ -1,4 +1,4 @@
-import { ChatWriteFailure } from "../contract/chat.ts";
+import { ChatWriteFailure, type ChatPostTarget } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import type { HubError } from "../contract/errors.ts";
 import { LIMITS } from "../contract/mcp.ts";
@@ -9,10 +9,56 @@ import { refused } from "./inbox.ts";
 import {
   byConversation,
   conversation,
+  enterThread,
   paused,
+  postLoopPause,
   recordAgentPost,
   str,
 } from "./thread.ts";
+
+export interface AgentPostInput {
+  readonly target: ChatPostTarget;
+  readonly channelId: string;
+  readonly projectName: string;
+  readonly label: string;
+  readonly prefix: string;
+  readonly text: string;
+  readonly fallbackName: string;
+}
+
+export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
+  if (!ctx.chat) throw new Error("Chat is unavailable");
+  const parts = splitAnswer(input.text);
+  let body = input.text;
+  if (parts.long) {
+    const title =
+      input.projectName + ": " + (parts.short.split("\n")[0] ?? parts.short);
+    try {
+      const link = await ctx.chat.createLongAnswer(
+        input.channelId,
+        title,
+        input.text,
+      );
+      body = parts.short + "\nFull answer: " + link;
+    } catch (error) {
+      if (error instanceof ChatWriteFailure && error.effect === "refused") {
+        ctx.deps.log.warn("canvas_fallback", {
+          reason: error.reason ?? "unknown",
+        });
+        body =
+          parts.short +
+          " (The full answer could not be posted as a canvas. Ask " +
+          input.fallbackName +
+          "'s agent for the detail.)";
+      } else throw error;
+    }
+  }
+  const posted = fitSection(input.prefix + " ", body);
+  const ref = await ctx.chat.postText(input.target, posted, {
+    agentLabel: input.label,
+  });
+  return { ref, text: posted };
+}
 
 export function createReply(ctx: CoreContext): HubCore["reply"] {
   return async (caller, input) => {
@@ -108,8 +154,8 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       } as const;
     });
     if (!result.ok) return result;
+    let releaseThread: (() => void) | undefined;
     try {
-      const parts = splitAnswer(text);
       const channelId =
         result.form === "channel"
           ? result.channelId
@@ -120,33 +166,20 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
           : (config.projects.find(
               (entry) => entry.projectId === result.conversation.projectId,
             )?.name ?? result.conversation.channelId);
-      let body = text;
-      if (parts.long) {
-        const title =
-          projectName + ": " + (parts.short.split("\n")[0] ?? parts.short);
-        try {
-          const link = await chat.createLongAnswer(channelId, title, text);
-          body = parts.short + "\nFull answer: " + link;
-        } catch (error) {
-          if (error instanceof ChatWriteFailure && error.effect === "refused") {
-            ctx.deps.log.warn("canvas_fallback", {
-              reason: error.reason ?? "unknown",
-            });
-            body =
-              parts.short +
-              " (The full answer could not be posted as a canvas. Ask " +
-              person.displayName +
-              "'s agent for the detail.)";
-          } else throw error;
-        }
-      }
-      const posted = fitSection(result.prefix + " ", body);
+      const postInput = {
+        channelId,
+        projectName,
+        label: result.label,
+        prefix: result.prefix,
+        text,
+        fallbackName: person.displayName,
+      };
       if (result.form === "channel") {
-        const ref = await chat.postText(
-          { kind: "channel", channelId: result.channelId },
-          posted,
-          { agentLabel: result.label },
-        );
+        const posted = await postAgentText(ctx, {
+          ...postInput,
+          target: { kind: "channel", channelId: result.channelId },
+        });
+        const ref = posted.ref;
         const created = ctx.store.tx(() => {
           const id = ctx.store.newId("conversation");
           const row = db
@@ -172,7 +205,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
               next,
               result.sessionId,
               person.personId,
-              posted,
+              posted.text,
             );
             db.prepare(
               "UPDATE reply_owed SET answered = 1 WHERE conversation_id = ?",
@@ -196,7 +229,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
             next,
             result.sessionId,
             person.personId,
-            posted,
+            posted.text,
           );
           return next;
         });
@@ -209,20 +242,23 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
           },
         };
       }
-      const ref = await chat.postText(
-        { kind: "thread", chatThreadId: result.conversation.chatThreadId },
-        posted,
-        { agentLabel: result.label },
-      );
+      const conv = result.conversation;
+      releaseThread = await enterThread(ctx, conv.chatThreadId);
+      if (ctx.store.tx(() => paused(db, conv.chatThreadId)))
+        return refused("CONVERSATION_PAUSED");
+      const posted = await postAgentText(ctx, {
+        ...postInput,
+        target: { kind: "thread", chatThreadId: conv.chatThreadId },
+      });
       ctx.store.tx(() => {
-        if (!result.conversation.isDirect)
+        if (!conv.isDirect)
           recordAgentPost(
             ctx,
-            ref,
-            result.conversation,
+            posted.ref,
+            conv,
             result.sessionId,
             person.personId,
-            posted,
+            posted.text,
           );
         if (result.owed.length > 0)
           db.prepare(
@@ -231,11 +267,13 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
               ")",
           ).run(...result.owed);
       });
+      if (conv.projectId !== undefined)
+        await postLoopPause(ctx, conv, conv.projectId);
       return {
         ok: true,
         value: {
           conversationId: result.conversation.conversationId,
-          chatMessageId: ref.chatMessageId,
+          chatMessageId: posted.ref.chatMessageId,
           postedAs: result.label,
         },
       };
@@ -258,6 +296,8 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         conversationId: result.conversation.conversationId,
       };
       return { ok: false, error: failure };
+    } finally {
+      releaseThread?.();
     }
   };
 }

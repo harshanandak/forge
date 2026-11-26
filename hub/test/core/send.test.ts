@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { AGENT_MESSAGE_NOTICE, LIMITS } from "../../src/contract/mcp.ts";
 import { ID_PATTERN } from "../../src/contract/ids.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
-import { baseFixture, bellFor, seedThread } from "./base-fixture.ts";
+import { baseFixture, bellFor, seedThread, thread } from "./base-fixture.ts";
 import { refusal, until } from "./base-fakes.ts";
 import { a, b, configPeople, p1, p2, value } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
@@ -229,6 +229,60 @@ test(
     expect(f.rows("inbox_items")).toEqual(before);
     expect(f.chat.writes).toHaveLength(writes);
     expect(f.rings).toHaveLength(rings);
+  },
+  timeout,
+);
+
+test(
+  "SD1 visible send posts only in project channel conversations and never answers owed rows",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const channelConversation = f.read(alpha.sessionId).items[0]!
+      .conversationId!;
+    const send = (text: string, conversationId?: string) =>
+      f.core.send(f.caller(), {
+        ...draft(alpha.sessionId),
+        text,
+        ...(conversationId === undefined ? {} : { conversationId }),
+      });
+    const posted = value(await send("Visible question", channelConversation));
+    expect(posted.threadPost).toBe("posted");
+    expect(f.writes("postText")).toHaveLength(1);
+    expect(f.writes("postText")[0]!.args).toEqual([
+      { kind: "thread", chatThreadId: thread },
+      "Fixture Alpha's agent asked Fixture Beta's agent: Visible question",
+      { agentLabel: "Forge (Fixture Alpha's agent)" },
+    ]);
+    expect(f.col("reply_owed", "answered")).toEqual([0]);
+    await f.dm("alpha-dm", "Alpha note");
+    const dm = f.rows(
+      "conversations WHERE is_direct = 1",
+      "conversation_id",
+    )[0];
+    expect(dm).toBeDefined();
+    const direct = value(
+      await send("Direct note", String(dm!.conversation_id)),
+    );
+    expect(direct.threadPost).toBeUndefined();
+    const privateSend = value(await send("Private note"));
+    expect(privateSend.threadPost).toBeUndefined();
+    const visible = (call: { readonly args: readonly unknown[] }) =>
+      typeof call.args[1] === "string" &&
+      call.args[1].startsWith("Fixture Alpha's agent asked");
+    const attempts = () =>
+      f.chat.calls.filter((call) => call.name === "postText" && visible(call))
+        .length;
+    expect(attempts()).toBe(1);
+    f.chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
+    const failed = value(await send("Refused visible", channelConversation));
+    expect(failed.threadPost).toBe("failed");
+    expect(attempts()).toBe(2);
+    expect(f.writes("postText").filter(visible)).toHaveLength(1);
+    expect(
+      f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
+    ).toHaveLength(4);
   },
   timeout,
 );
