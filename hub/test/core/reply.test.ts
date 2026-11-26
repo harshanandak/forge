@@ -343,11 +343,13 @@ test(
       person_id: a.personId,
       project_id: p1,
       session_id: alpha.sessionId,
-      chat_message_id: out.chatMessageId,
+      chat_thread_id: channel,
+      channel_id: channel,
     });
     const agents = f.rows("thread_messages WHERE kind = 'agent'");
     expect(agents).toHaveLength(1);
     expect(agents[0]).toMatchObject({
+      chat_thread_id: channel,
       chat_message_id: out.chatMessageId,
       person_id: a.personId,
       session_id: alpha.sessionId,
