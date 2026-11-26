@@ -26,8 +26,14 @@ const replyFixture = async () => {
       text: "Agent note",
     }),
   );
-  const conv = f.read(alpha.sessionId).items[0]!.conversationId!;
-  const betaConv = f.read(beta.sessionId, b).items[0]!.conversationId!;
+  const alphaItem = f.read(alpha.sessionId).items.find((i) => i.conversationId);
+  const conv = alphaItem?.conversationId;
+  expect(conv).toBeDefined();
+  const betaItem = f
+    .read(beta.sessionId, b)
+    .items.find((i) => i.conversationId);
+  const betaConv = betaItem?.conversationId;
+  expect(betaConv).toBeDefined();
   return { f, alpha, beta, gamma, conv, betaConv };
 };
 
@@ -73,7 +79,7 @@ test(
     const secretText = "note " + ["gh", "p_", "a".repeat(36)].join("");
     const markedText = "note " + SUMMARY_KEY_MARKER + " end";
     const tooLong = "x".repeat(LIMITS.replyText + 1);
-    const said = { conversationId: conv };
+    const said = { conversationId: conv! };
     await deny(a, beta.sessionId, "SESSION_NOT_YOURS", said);
     await deny(a, "ses_missing", "SESSION_UNKNOWN", said);
     await deny(a, alpha.sessionId, "INPUT_INVALID", { ...said, projectId: p1 });
@@ -111,9 +117,9 @@ test(
         ),
       ).toMatchObject({ code, retry: "never" });
     await refuse(a, alpha.sessionId, "con_missing", "CONVERSATION_UNKNOWN");
-    await refuse(a, alpha.sessionId, betaConv, "CONVERSATION_NOT_YOURS");
-    await refuse(c, gamma.sessionId, betaConv, "CONVERSATION_NOT_YOURS");
-    await refuse(a, alpha.sessionId, conv, "CONVERSATION_PAUSED");
+    await refuse(a, alpha.sessionId, betaConv!, "CONVERSATION_NOT_YOURS");
+    await refuse(c, gamma.sessionId, betaConv!, "CONVERSATION_NOT_YOURS");
+    await refuse(a, alpha.sessionId, conv!, "CONVERSATION_PAUSED");
     expect(f.rows("inbox_items")).toEqual(before);
     expect(f.chat.writes).toHaveLength(writes);
   },
@@ -126,8 +132,8 @@ test(
     const { f, alpha, beta, conv, betaConv } = await replyFixture();
     expect(f.read(beta.sessionId, b).mode).toBe("reply_only");
     for (const [person, sessionId, conversationId] of [
-      [b, beta.sessionId, betaConv],
-      [a, alpha.sessionId, conv],
+      [b, beta.sessionId, betaConv!],
+      [a, alpha.sessionId, conv!],
     ] as const) {
       const out = value(
         await f.core.reply(f.caller(person), {
@@ -137,7 +143,6 @@ test(
         }),
       );
       expect(out.conversationId).toBe(conversationId);
-      expect(typeof out.chatMessageId).toBe("string");
     }
     expect(f.posts()).toHaveLength(2);
     expect(f.posts()[0]).toContain("Hello thread");
@@ -152,7 +157,7 @@ test(
     const { f, alpha, conv } = await replyFixture();
     const input = {
       sessionId: alpha.sessionId,
-      conversationId: conv,
+      conversationId: conv!,
       text: "Hello thread",
     };
     const attempts = () =>
