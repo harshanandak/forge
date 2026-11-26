@@ -88,6 +88,53 @@ test(
 );
 
 test(
+  "LP3 a member post over the mention limit is recorded so the pause releases without delivery",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+    const reply = (text: string) =>
+      f.core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        conversationId,
+        text,
+      });
+    for (let index = 0; index < LIMITS.agentRunMax; index++)
+      value(await reply("reply " + index));
+    expect(refusal(await reply("blocked reply"))).toMatchObject({
+      code: "CONVERSATION_PAUSED",
+      retry: "never",
+    });
+    const itemsBefore = f.rows("inbox_items", "item_id");
+    const reactsBefore = f.writes("react").length;
+    const targets = ["U00000002", "U00000003", "U00000004", "U00000005"];
+    expect(targets).toHaveLength(LIMITS.mentionTargetsMax + 1);
+    await f.follow("member-overlimit", { mentionedSlackUserIds: targets });
+    const note = "Name at most " + LIMITS.mentionTargetsMax + " people.";
+    expect(f.posts()).toContain(note);
+    expect(
+      f.rows(
+        "thread_messages WHERE chat_message_id = 'member-overlimit'",
+        "kind,person_id,text",
+      ),
+    ).toEqual([
+      { kind: "person", person_id: a.personId, text: "member-overlimit" },
+    ]);
+    expect(f.rows("inbox_items", "item_id")).toEqual(itemsBefore);
+    expect(f.writes("react")).toHaveLength(reactsBefore);
+    value(await reply("after a person"));
+    const postCount = f.posts().length;
+    await f.follow("member-overlimit", { mentionedSlackUserIds: targets });
+    expect(
+      f.rows("thread_messages WHERE chat_message_id = 'member-overlimit'"),
+    ).toHaveLength(1);
+    expect(f.posts()).toHaveLength(postCount);
+  },
+  timeout,
+);
+
+test(
   "B1B-LOOP1 a concurrent reply is rechecked inside the thread gate",
   async () => {
     const f = await baseFixture();

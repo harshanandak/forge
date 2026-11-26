@@ -309,6 +309,19 @@ export async function route(
     if (mentionsBot && targets.length) {
       if (targets.length > LIMITS.mentionTargetsMax) {
         notes.push("Name at most " + LIMITS.mentionTargetsMax + " people.");
+        if (
+          existing.length > 0 &&
+          !recordThread(
+            ctx,
+            event,
+            projectId,
+            "person",
+            text,
+            sender.personId,
+            mentionsBot,
+          )
+        )
+          notes.length = 0;
         return;
       }
       if (!named.length)
