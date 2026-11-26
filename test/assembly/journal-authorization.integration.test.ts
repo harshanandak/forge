@@ -71,7 +71,7 @@ test("receipt effects are authorized without note write authority", async () => 
     join(block, "forge.block.json"),
     JSON.stringify({
       schemaVersion: "forge.block/1",
-      id: "example.org/journal-probe",
+      id: "example.org/probe",
       version: "1.0.0",
       authorAbi: "forge.author/v2",
       profile: "trusted-action/v2",
