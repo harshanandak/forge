@@ -32,14 +32,15 @@ function author(value: unknown) {
   };
 }
 
-const groupTypes = new Set<unknown>(["group", "supergroup", "channel"]);
-
 function messageRef(value: unknown) {
   const message = record(value);
   const chat = record(message?.chat);
   if (!telegramId(chat?.id, true) || !telegramId(message?.message_id)) return;
   const isDirect = chat.type === "private" && chat.id > 0;
-  if (!isDirect && !(chat.id < 0 && groupTypes.has(chat.type))) return;
+  const isGroup = ["group", "supergroup", "channel"].some(
+    (type) => type === chat.type,
+  );
+  if (!isDirect && !(chat.id < 0 && isGroup)) return;
   return { chatId: chat.id, messageId: message.message_id, isDirect };
 }
 

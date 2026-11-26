@@ -13,7 +13,7 @@ type Handle = (
   username: string | undefined,
 ) => Promise<void>;
 
-const activeBots = new Set<number>();
+let activeBots: Set<number> | undefined;
 const maxBackoffMs = 30_000;
 const sleepUntil: TelegramSleep = (ms, signal) =>
   delay(ms, undefined, { signal, ref: false });
@@ -81,14 +81,15 @@ export function createTelegramPolling(
       throw new ChatWriteFailure("refused");
     }
     const bot = await api.request("getMe", {}, signal);
-    if (signal.aborted || activeBots.has(bot.id))
+    const active = (activeBots ??= new Set<number>());
+    if (signal.aborted || active.has(bot.id))
       throw new ChatWriteFailure("refused");
-    activeBots.add(bot.id);
+    active.add(bot.id);
     ready.resolve();
     try {
       await poll(signal, (update) => handle(update, bot.username));
     } finally {
-      activeBots.delete(bot.id);
+      active.delete(bot.id);
     }
   }
 
