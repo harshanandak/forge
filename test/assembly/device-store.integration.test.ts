@@ -84,14 +84,24 @@ function fixture() {
   };
 }
 
-function expectRefused(result: ResultEnvelope, path: string) {
+function expectRefused(
+  reply: { result: ResultEnvelope; stdout: string; stderr: string },
+  path: string,
+) {
+  const { result, stdout, stderr } = reply;
   expect(result).toMatchObject({
     ok: false,
-    error: { code: "UNAVAILABLE", retry: "never" },
+    error: {
+      code: "UNAVAILABLE",
+      retry: "never",
+      message:
+        "Device record store could not be opened; Use a private local device directory outside Git work trees",
+    },
   });
-  expect(
-    JSON.stringify(result).includes(JSON.stringify(path).slice(1, -1)),
-  ).toBe(false);
+  const escaped = JSON.stringify(path).slice(1, -1);
+  expect(JSON.stringify(result).includes(escaped)).toBe(false);
+  expect(stdout.includes(path) || stdout.includes(escaped)).toBe(false);
+  expect(stderr.includes(path) || stderr.includes(escaped)).toBe(false);
 }
 
 for (const { entry, loose, privateMode } of [
@@ -129,7 +139,7 @@ test.skipIf(!canChangeOwner)(
         execFileSync("sudo", ["-n", "chown", ...args], { timeout: 10_000 });
       else execFileSync("chown", args, { timeout: 10_000 });
       expect(statSync(f.records).uid).toBe(Number(owner));
-      expectRefused(f.call(search), f.device);
+      expectRefused(f.invoke(search), f.device);
       expect(statSync(f.records).mode & 0o777).toBe(0o644);
     } finally {
       f.close();
@@ -143,7 +153,7 @@ test("a device root inside a checkout is refused before the records directory is
     f.initGit();
     symlinkSync(f.root, f.device, "junction");
     const nested = join(f.device, "nested", "device");
-    expectRefused(f.call(add, nested), f.root);
+    expectRefused(f.invoke(add, nested), f.work);
     expect(existsSync(join(f.root, "nested"))).toBe(false);
   } finally {
     f.close();
@@ -159,7 +169,7 @@ test.skipIf(!posix)(
       mkdirSync(f.device, { mode: 0o700 });
       writeFileSync(target, "", { mode: 0o644 });
       symlinkSync(target, f.records);
-      expectRefused(f.call(add), f.device);
+      expectRefused(f.invoke(add), f.device);
       expect(lstatSync(f.records).isSymbolicLink()).toBe(true);
       expect(statSync(target).mode & 0o777).toBe(0o644);
       expect(readFileSync(target)).toHaveLength(0);
@@ -176,7 +186,7 @@ test.skipIf(!posix)(
     try {
       expect(f.call(add)).toMatchObject({ ok: true });
       chmodSync(f.work, 0o777);
-      expectRefused(f.call(search), f.device);
+      expectRefused(f.invoke(search), f.device);
     } finally {
       f.close();
     }
@@ -192,7 +202,7 @@ test.skipIf(!posix)(
       mkdirSync(parent, { mode: 0o700 });
       chmodSync(f.work, 0o777);
       const device = join(parent, "device");
-      expectRefused(f.call(add, device), device);
+      expectRefused(f.invoke(add, device), device);
       expect(existsSync(device)).toBe(false);
     } finally {
       f.close();
@@ -212,17 +222,7 @@ for (const failure of ["Dropbox filesystem", "invalid SQLite file"] as const)
         expect(f.call(add)).toMatchObject({ ok: true });
         writeFileSync(f.records, "invalid SQLite header".repeat(16));
       }
-      const { result, stdout, stderr } = f.invoke(add, device);
-      expectRefused(result, device);
-      const escaped = JSON.stringify(device).slice(1, -1);
-      expect(stdout.includes(device) || stdout.includes(escaped)).toBe(false);
-      expect(stderr.includes(device) || stderr.includes(escaped)).toBe(false);
-      expect(result).toMatchObject({
-        error: {
-          message:
-            "Device record store could not be opened; Use a private local device directory outside Git work trees",
-        },
-      });
+      expectRefused(f.invoke(add, device), device);
     } finally {
       f.close();
     }
