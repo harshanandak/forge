@@ -1,3 +1,4 @@
+import type { ChatMessageRef } from "../../src/contract/chat.ts";
 import type { Caller } from "../../src/contract/core.ts";
 import type { Person } from "../../src/contract/domain.ts";
 import type { HubDb, SqlValue } from "../../src/contract/runtime.ts";
@@ -27,13 +28,23 @@ export async function lifeFixture() {
   const project = f.config.projects.find((entry) => entry.projectId === p1);
   if (!project?.summaryMessage)
     throw new Error("The fixture needs a configured summary");
-  const ref = project.summaryMessage;
+  const initialRef = project.summaryMessage;
   const publicationKey = "fixture-summary";
   let time = 1_700_000_000_000;
 
-  function context(db: HubDb, chat: FakeChatPort) {
+  function context(
+    db: HubDb,
+    chat: FakeChatPort,
+    summaryMessage: ChatMessageRef,
+  ) {
+    const config = {
+      ...f.config,
+      projects: f.config.projects.map((entry) =>
+        entry.projectId === p1 ? { ...entry, summaryMessage } : entry,
+      ),
+    };
     return createCoreContext({
-      config: f.config,
+      config,
       db,
       chat,
       doorbell: doorbellFake(false).port,
@@ -44,9 +55,9 @@ export async function lifeFixture() {
     });
   }
 
-  async function attach(db: HubDb) {
+  async function attach(db: HubDb, ref = initialRef) {
     const chat = new FakeChatPort(f.config.slack.teamId);
-    const ctx = context(db, chat);
+    const ctx = context(db, chat, ref);
     const core = createCoreBase(ctx);
     const worker = createEffectWorker(ctx);
     await chat.start(core.chatHandlers);
@@ -164,13 +175,14 @@ export async function lifeFixture() {
       },
       ref,
       publicationKey,
-      async reopen() {
+      async reopen(summaryMessage = ref) {
         await chat.stop();
         closeDb(db);
-        return attach(openDb(f.path));
+        return attach(openDb(f.path), summaryMessage);
       },
       openPeer: () => openDb(f.path),
-      peerReport: () => createReport(context(openDb(f.path), chat), worker),
+      peerReport: () =>
+        createReport(context(openDb(f.path), chat, ref), worker),
     };
   }
 

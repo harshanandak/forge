@@ -263,6 +263,37 @@ test(
 );
 
 test(
+  "E1.rebind edits the replacement configured summary after reopening",
+  async () => {
+    const f = await lifeFixture();
+    const session = f.bind();
+    const input = await approve(f, session);
+    const first = value(await f.report(session.owner, input));
+    expect(first).toMatchObject({ summary: "edited", summaryRevision: 1 });
+    expectSummaryEdits(f, [1]);
+    await f.worker.drain();
+    const publicationKey =
+      "SELECT publication_key FROM summaries WHERE project_id = ?";
+    const original = f.rows(publicationKey, p1);
+
+    const reopened = await f.reopen({
+      ...f.ref,
+      chatThreadId: "3.000001",
+      chatMessageId: "3.000001",
+    });
+    const second = value(
+      await reopened.report(session.owner, { ...input, state: "done" }),
+    );
+    expect(second.summaryRevision).toBe(2);
+    expect(second.summary).toBe("edited");
+    expectSummaryEdits(reopened, [2]);
+    expectRevision(reopened, 2);
+    expect(reopened.rows(publicationKey, p1)).toEqual(original);
+  },
+  timeout,
+);
+
+test(
   "V2 upserts by person and issue and records the reporting session's host label",
   async () => {
     const f = await lifeFixture();
