@@ -80,10 +80,8 @@ export async function inspect(
       : caller?.actor === held.actor;
     if (!own || caller?.session !== held.session)
       return refuse(field, "LEASE_NOT_HELD");
-    return {
-      status: "context",
-      context: { issue, workspace, branch, head, digest },
-    };
+    const context = { issue, workspace, branch, head, digest };
+    return { status: "context", context };
   } catch {
     return refuse(field, "UNAVAILABLE");
   }
@@ -174,10 +172,13 @@ async function localReads(): Promise<InspectReads> {
         .split("\0")
         .filter((key) => filter.test(key))
         .flatMap(disableFilter);
+      const revision = ["rev-parse", "--verify", "HEAD^{commit}"];
+      const head = await git(path, ...revision);
+      const ref = await git(path, "rev-parse", "--symbolic-full-name", "HEAD");
       const flags = ["status", "--porcelain", "-uall", "--ignore-submodules"];
       const status = await git(path, ...disabled, ...flags);
-      const ref = await git(path, "rev-parse", "--symbolic-full-name", "HEAD");
-      const head = await git(path, "rev-parse", "--verify", "HEAD^{commit}");
+      if (head !== (await git(path, ...revision)))
+        throw new Error("HEAD moved while reading workspace status");
       const branch = ref.startsWith("refs/heads/")
         ? ref.slice(11).trimEnd()
         : "";
