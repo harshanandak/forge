@@ -46,7 +46,7 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
         if (!chat) return refused("CONVERSATION_UNKNOWN");
         if (chat.personId !== person.personId)
           return refused("CONVERSATION_NOT_YOURS");
-        if (chat.projectId !== undefined && chat.projectId !== projectId)
+        if (!chat.isDirect && chat.projectId !== projectId)
           return refused("INPUT_INVALID", "/conversationId");
         if (paused(db, chat.chatThreadId))
           return refused("CONVERSATION_PAUSED");

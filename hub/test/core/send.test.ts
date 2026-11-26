@@ -307,6 +307,24 @@ test(
     ).toMatchObject({ code: "INPUT_INVALID", pointer: "/conversationId" });
     expect(f.rows("inbox_items WHERE kind = 'agent_message'")).toEqual([]);
     expect(f.writes("postText")).toEqual([]);
+    await f.dm("alpha-dm", "Alpha note");
+    const dm = f.rows(
+      "conversations WHERE is_direct = 1",
+      "conversation_id",
+    )[0];
+    const direct = value(
+      await f.core.send(f.caller(), {
+        sessionId: alpha.sessionId,
+        projectId: p2,
+        toPersonId: c.personId,
+        conversationId: String(dm!.conversation_id),
+        text: "Direct cross-project note",
+      }),
+    );
+    expect(direct.threadPost).toBeUndefined();
+    expect(
+      f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
+    ).toHaveLength(1);
   },
   timeout,
 );
