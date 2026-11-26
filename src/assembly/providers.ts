@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import {
   basename,
   delimiter,
@@ -48,6 +48,8 @@ import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { DEFAULT_PARSE_LIMITS } from "../contract/untrusted.ts";
 import { firstPartyBlocks, firstPartyTemplates } from "./first-party.ts";
 import { createDeviceFiles } from "../adapters/fs/device-identity.ts";
+import { createLocalJournal } from "../adapters/fs/journal.ts";
+import type { Journal, JournalFileSecurity } from "../ports/journal.ts";
 import type { DeviceFiles } from "../ports/device-files.ts";
 import type { CloudLogin } from "../ports/cloud-login.ts";
 import type { CloudLoginDeps } from "./cloud-login.ts";
@@ -159,6 +161,7 @@ export interface ProviderOptions {
 }
 export interface AssemblyProviders {
   deviceFiles?(scope: ServiceScope): DeviceFiles;
+  journal?(instance: string, scope: ServiceScope): Journal;
   cloudLogin?(scope: ServiceScope): CloudLogin;
   process(scope: ServiceScope): ProcessService;
   environment(scope: ServiceScope): EnvironmentService;
@@ -197,6 +200,7 @@ export const SNAPSHOT_TIMEOUT_MS: number =
 export const SNAPSHOT_OPERATION_TIMEOUT_MS: number = SNAPSHOT_TIMEOUT_MS + 1000;
 export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.device-files@1.0.0",
+  "forge.journal@1.0.0",
   "forge.cloud-login@1.0.0",
   "forge.store-export@1.0.0",
   "forge.state@1.0.0",
@@ -223,6 +227,21 @@ function active(scope: ServiceScope): void {
     refuse("SERVICE_EXPIRED", "Invocation was cancelled");
   if (Date.now() >= scope.deadline)
     refuse("INVOCATION_TIMEOUT", "Invocation deadline exceeded");
+}
+
+function journalFileSecurity(): JournalFileSecurity {
+  const native = windowsPrivateFiles();
+  return privateFileGuard(
+    {
+      ...native,
+      protect(path, descriptor) {
+        if (!lstatSync(path).isDirectory())
+          throw new Error("Journal files must already be private");
+        native.protect(path, descriptor);
+      },
+    },
+    { protectDirectories: false },
+  );
 }
 
 /** The runtime also wraps this capability, drains pending calls and revokes cached methods. */
@@ -692,6 +711,32 @@ export function createAssemblyProviders(
         scratch() {
           requireEffect("files:write");
           return files.scratch();
+        },
+      };
+    },
+    journal(instance, scope) {
+      if (options.deviceRoot === undefined)
+        refuse("UNAVAILABLE", "Journal requires a device folder");
+      const local = createLocalJournal({
+        root: options.deviceRoot,
+        instance,
+        ...(process.platform === "win32"
+          ? { security: journalFileSecurity() }
+          : {}),
+      });
+      const requireEffect = (effect: string) => {
+        active(scope);
+        if (!scope.effects.includes(effect))
+          refuse("EFFECT_UNDECLARED", `Journal requires ${effect}`);
+      };
+      return {
+        append(line, policy) {
+          requireEffect("files:write");
+          local.append(line, policy);
+        },
+        read() {
+          requireEffect("files:read");
+          return local.read();
         },
       };
     },

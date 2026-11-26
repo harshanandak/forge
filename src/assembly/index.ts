@@ -2165,6 +2165,14 @@ export async function createAssembly(
                   continue;
                 }
                 if (
+                  interfaceSatisfies("forge.journal@1.0.0", binding.interface)
+                ) {
+                  if (!providers.journal)
+                    refuse("PROVIDER_MISSING", "Journal unavailable");
+                  clients[binding.slot] = providers.journal(instance, scope);
+                  continue;
+                }
+                if (
                   interfaceSatisfies("forge.files@1.0.0", binding.interface)
                 ) {
                   if (

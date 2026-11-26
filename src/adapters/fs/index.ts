@@ -361,3 +361,5 @@ export function nodeConfigFiles(
     },
   };
 }
+
+export { createLocalJournal } from "./journal.ts";
