@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
+import { configFixture } from "./config-fixture.ts";
 import {
   a,
   b,
@@ -341,10 +342,10 @@ test.each([
     });
     const f = await askFixture(new FakeChatPort(), {
       ...configFor(original),
-      people: [
-        { ...a, slackUserId: slackA, telegramUserId: "123" },
-        { ...b, slackUserId: slackB, telegramUserId: "456" },
-      ],
+      people: configFixture().people.map((person, index) => ({
+        ...person,
+        telegramUserId: String(index + 1),
+      })),
     });
     const { askId, expiresAt } = value(await f.choice({ to: [a.personId] }));
     f.setTime(Date.parse(expiresAt) + 1);
