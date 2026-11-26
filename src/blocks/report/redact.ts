@@ -1,13 +1,15 @@
 const MASK = "[redacted]";
 const CREDENTIAL =
   /(?:fct_|gh[psour]_|github_pat_|sk-|xox[baprs]-|AKIA|AIza)[a-z\d_-]+/gi;
+const AUTHORIZATION = /\b(?:proxy-)?authorization\s*[:=]\s*\S.*$/gi;
+const BASIC = /\bbasic\s+[a-z\d+/]+={0,2}(?=\s|[.,;)\]}]|$)/gi;
 const BEARER = /\bbearer\s+[^\s,;]+/gi;
 const QUOTED =
   /"(?:\\(?:.|$)|[^"\\])*(?:"|$)|(?<!\p{L})'(?:\\(?:.|$)|[^'\\])*(?:'|$)|`(?:\\(?:.|$)|[^`\\])*(?:`|$)/gu;
 const EMAIL =
   /(?:"(?:\\.|[^"\\])*"|[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+)@(?:\[[^\]\r\n]+\]|[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*)/gu;
 const ASSIGNMENT =
-  /\b(?:authorization|password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
+  /\b(?:password|passwd|secret|credential|(?:access[_-]?)?token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
 const PATH_START =
   /(?<![^\s"'`<>{}=])(?:[a-z][a-z\d+.-]*:\/\/|[^\s"'`<>{}=]*[\\/])(?=\S|$)/iu;
 const PATH = new RegExp(
@@ -50,7 +52,15 @@ export function redactReport(
   if (PASTED.test(message)) return MASK;
   const text = normalize(message);
   if (PASTED.test(text)) return MASK;
-  const patterns = [CREDENTIAL, ASSIGNMENT, BEARER, QUOTED, EMAIL];
+  const patterns = [
+    CREDENTIAL,
+    ASSIGNMENT,
+    AUTHORIZATION,
+    BASIC,
+    BEARER,
+    QUOTED,
+    EMAIL,
+  ];
   for (const label of labels) {
     const literal = normalize(label);
     if (literal.trim())
