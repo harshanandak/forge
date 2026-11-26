@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { cpSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { dispatch, record } from "../../../src/surface/dispatch.ts";
 import { withOwnerApproval } from "../../fixtures/owner-approval.mjs";
@@ -69,13 +75,33 @@ test("a configured custom CLI alias owns report create without breaking other co
       digest: record(added.result)?.digest,
     });
     expect(admitted.ok).toBe(true);
-    const reply = await cli(["report", "create", "--name", "World"]);
-    expect(reply.envelope).toMatchObject({
-      ok: true,
-      op: "hello.say",
-      result: { message: "Hello, World!" },
+    for (const config of [undefined, { conflictThreshold: -1 }]) {
+      if (config)
+        f.configure({
+          blocks: {
+            hello: { source: { path: "./hello" } },
+            memory: { config },
+          },
+        });
+      const reply = await cli(["report", "create", "--name", "World"]);
+      expect(reply.envelope).toMatchObject({
+        ok: true,
+        op: "hello.say",
+        result: { message: "Hello, World!" },
+      });
+      expect((await cli(["catalog", "list"])).exitCode).toBe(0);
+    }
+    unlinkSync(join(f.root, "hello/index.cjs"));
+    const refused = await cli([
+      "report",
+      "create",
+      "Owned by the configured block",
+    ]);
+    expect(refused.envelope).toMatchObject({
+      ok: false,
+      error: { code: "PROVIDER_MISSING" },
     });
-    expect((await cli(["catalog", "list"])).exitCode).toBe(0);
+    expect(existsSync(f.records)).toBe(false);
   });
 }, 30_000);
 

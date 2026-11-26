@@ -20,20 +20,19 @@ export function isReportFiling(entry: McpCandidate | undefined): boolean {
 
 export function reportHost(
   manifestRoot: string,
-  checkout: string | undefined,
+  scopeRoot: string | undefined,
   home: string | undefined,
   mcp: boolean,
 ): ReportHost {
   const labels = [basename(home || homedir())];
-  if (checkout !== undefined) labels.push(basename(checkout));
+  if (scopeRoot !== undefined) labels.push(basename(manifestRoot));
   try {
     labels.push(userInfo().username);
   } catch {
     labels.push("");
   }
   try {
-    const name = readProjectManifest(manifestRoot)?.name;
-    if (name !== undefined) labels.push(name);
+    labels.push(readProjectManifest(manifestRoot)?.name ?? "");
   } catch {
     labels.push("");
   }
