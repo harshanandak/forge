@@ -29,7 +29,7 @@ export const createCoreStore: CreateCoreStore = (deps) => {
   const asks = {
     ask: createAsk({ ...deps, chat, adapter }, sessions, guards),
     ...createAnswers({ ...deps, adapter }, sessions),
-    ...createAskEffects(deps),
+    ...createAskEffects({ ...deps, adapter }),
   };
   return { ...store, asks };
 };
