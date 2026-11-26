@@ -1,6 +1,7 @@
 import {
   ChatWriteFailure,
   type AskCardView,
+  type ChatAdapter,
   type ChatMessageRef,
   type ChatPort,
 } from "../contract/chat.ts";
@@ -29,7 +30,15 @@ function refuse(code: HubErrorCode, pointer?: string) {
 }
 
 export function createAsk(
-  { db, config, people, chat, now, log }: StoreDeps & { chat: ChatPort },
+  {
+    db,
+    config,
+    people,
+    chat,
+    now,
+    log,
+    adapter,
+  }: StoreDeps & { chat: ChatPort; adapter: ChatAdapter },
   sessions: SessionStore,
   guards: Guards,
 ): AskStore["ask"] {
@@ -51,7 +60,7 @@ export function createAsk(
     FROM sessions WHERE session_id = ?
   `);
   const planned = db.prepare(
-    "INSERT INTO ask_deliveries (ask_id, person_id, delivery_state) VALUES (?, ?, 'pending')",
+    "INSERT INTO ask_deliveries (ask_id, person_id, adapter, delivery_state) VALUES (?, ?, ?, 'pending')",
   );
   const claim = db.prepare(`
     UPDATE ask_deliveries SET delivery_state = 'posting'
@@ -123,7 +132,9 @@ export function createAsk(
         if (!person) return refuse("PERSON_UNKNOWN");
         if (!sessions.isMember(projectId, personId))
           return refuse("NOT_PROJECT_MEMBER");
-        if (!person.slackUserId)
+        const userId =
+          adapter === "slack" ? person.slackUserId : person.telegramUserId;
+        if (!userId)
           return {
             ok: false,
             error: { ...fail("CHAT_UNAVAILABLE"), retry: "never" },
@@ -131,7 +142,7 @@ export function createAsk(
         recipients.push({
           personId,
           name: person.displayName,
-          slackId: person.slackUserId,
+          userId,
         });
       }
       const item =
@@ -145,7 +156,9 @@ export function createAsk(
       const askId = newStoreId("ask");
       const state = {
         kind: "open" as const,
-        digitFallback: !config.slack.buttons || !chat.capabilities.buttons,
+        digitFallback:
+          !chat.capabilities.buttons ||
+          (adapter === "slack" && !config.slack.buttons),
       };
       const card: AskCardView = {
         askId,
@@ -175,7 +188,7 @@ export function createAsk(
         expiry,
         sessionId,
       );
-      for (const id of ids) planned.run(askId, id);
+      for (const id of ids) planned.run(askId, id, adapter);
       return { ok: true, value: { card, recipients, expiry } } as const;
     });
     if (!plan.ok) return plan;
@@ -184,12 +197,12 @@ export function createAsk(
     const { askId } = card;
     let permanentMessage: string | undefined;
     let wait = 0;
-    for (const { personId, slackId } of recipients) {
+    for (const { personId, userId } of recipients) {
       if (!Number(claim.run(askId, personId).changes)) continue;
       let ref: ChatMessageRef | undefined;
       let state = "unknown";
       try {
-        ref = await chat.postAskDm(slackId, card);
+        ref = await chat.postAskDm(userId, card);
         state = "delivered";
       } catch (error) {
         if (error instanceof ChatWriteFailure && error.effect === "refused") {

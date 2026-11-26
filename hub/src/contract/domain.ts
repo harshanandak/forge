@@ -29,6 +29,7 @@ export interface Project {
   readonly name: string;
   readonly purpose?: string;
   readonly slackChannelId?: string;
+  readonly telegramChatId?: string;
   readonly summaryChannelId?: string;
   readonly summaryMessage?: ChatMessageRef;
   readonly frontPersonId: string;
@@ -58,11 +59,11 @@ export interface Conversation {
   readonly projectId?: string;
   readonly personId: string;
   readonly sessionId?: string;
-  readonly adapter: "slack";
+  readonly adapter: ChatAdapter;
   readonly chatThreadId: string;
   readonly channelId: string;
   readonly isDirect: boolean;
-  readonly createdBy: "slack" | "agent";
+  readonly createdBy: ChatAdapter | "agent";
   readonly createdAt: number;
 }
 

@@ -19,10 +19,16 @@ export const createCoreStore: CreateCoreStore = (deps) => {
     newId: newStoreId,
     syncDirectory: () => syncDirectory(db, config),
   };
-  if (!chat || config.slack.mode === "off") return store;
+  const adapter = config.chat?.adapter ?? "slack";
+  if (
+    !chat ||
+    adapter === "off" ||
+    (adapter === "slack" && config.slack.mode === "off")
+  )
+    return store;
   const asks = {
-    ask: createAsk({ ...deps, chat }, sessions, guards),
-    ...createAnswers(deps, sessions),
+    ask: createAsk({ ...deps, chat, adapter }, sessions, guards),
+    ...createAnswers({ ...deps, adapter }, sessions),
     ...createAskEffects(deps),
   };
   return { ...store, asks };
