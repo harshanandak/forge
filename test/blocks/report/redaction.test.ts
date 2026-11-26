@@ -366,3 +366,35 @@ test.each([
   },
   30_000,
 );
+
+test("forge-1992 redacts secret values across commas and semicolons", () => {
+  expect(redactReport("Deploy --password Alpha,PrivateTail now", [])).toBe(
+    "Deploy [redacted] now",
+  );
+  expect(redactReport("password=Alpha,PrivateTail", [])).toBe("[redacted]");
+  expect(redactReport("Bearer Alpha;PrivateTail done", [])).toBe(
+    "[redacted] done",
+  );
+  expect(redactReport("--token abc,--verbose value", [])).toBe(
+    "[redacted],--verbose value",
+  );
+}, 30_000);
+
+test("forge-1992 leaves non-secret comma text untouched", () => {
+  expect(redactReport("token=abc, and more", [])).toBe("[redacted], and more");
+  expect(redactReport("token=abc,, and more", [])).toBe(
+    "[redacted],, and more",
+  );
+  expect(redactReport("--verbose value", [])).toBe("--verbose value");
+  expect(redactReport("a,b,c", [])).toBe("a,b,c");
+}, 30_000);
+
+test("forge-1992 r2 keeps adjacent secret assignments detected", () => {
+  expect(
+    redactReport("Failed password=Alpha,password= PrivateTail now", []),
+  ).toBe("Failed [redacted],[redacted] now");
+  expect(redactReport("Bearer Alpha;Bearer PrivateTail done", [])).toBe(
+    "[redacted];[redacted] done",
+  );
+  expect(redactReport("token=a,,PrivateTail", [])).toBe("[redacted]");
+}, 30_000);
