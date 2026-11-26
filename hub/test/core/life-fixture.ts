@@ -3,7 +3,10 @@ import type { Caller } from "../../src/contract/core.ts";
 import type { Person } from "../../src/contract/domain.ts";
 import type { HubDb, SqlValue } from "../../src/contract/runtime.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
-import { createEffectWorker } from "../../src/core/effects.ts";
+import {
+  createEffectWorker,
+  type EffectSchedule,
+} from "../../src/core/effects.ts";
 import { nullTracker } from "../../src/core/index.ts";
 import { createReport } from "../../src/core/report.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
@@ -23,7 +26,7 @@ import {
 } from "./fixture.ts";
 import { button, choices, host, question } from "./fakes.ts";
 
-export async function lifeFixture() {
+export async function lifeFixture(schedule?: EffectSchedule) {
   const f = await fixture({ hooks: { enabled: true } });
   const project = f.config.projects.find((entry) => entry.projectId === p1);
   if (!project?.summaryMessage)
@@ -59,7 +62,7 @@ export async function lifeFixture() {
     const chat = new FakeChatPort(f.config.slack.teamId);
     const ctx = context(db, chat, ref);
     const core = createCoreBase(ctx);
-    const worker = createEffectWorker(ctx);
+    const worker = createEffectWorker(ctx, schedule);
     await chat.start(core.chatHandlers);
     chat.provisionSummary(ref.channelId, publicationKey, ref);
 
