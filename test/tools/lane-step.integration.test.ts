@@ -165,3 +165,22 @@ test("C1 CLI", async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("I4 refuses a branch switch at the same HEAD during status", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-lane-step-")));
+  try {
+    const f = cliFixture(root);
+    const branch = "feat/other";
+    const result = await f.runWithBranchSwitch(branch);
+    const after = f.snapshot();
+    expect(after.branch).toBe(`refs/heads/${branch}`);
+    expect(f.head()).toBe(f.request.expectedHead);
+    expect(after.status).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject(
+      refusal("workspace", "UNAVAILABLE"),
+    );
+    expect(result.exitCode).toBe(2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

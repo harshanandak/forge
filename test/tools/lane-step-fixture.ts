@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
@@ -139,10 +139,14 @@ export function cliFixture(root: string) {
     )
       env[key] = value;
   }
-  const run = (input: unknown) =>
+  const run = (input: unknown, args: string[] = []) =>
     proc.run(
       { kind: "resolved", path: process.execPath },
-      [resolve(import.meta.dirname, "../../tools/lane-step.ts"), "inspect"],
+      [
+        ...args,
+        resolve(import.meta.dirname, "../../tools/lane-step.ts"),
+        "inspect",
+      ],
       {
         cwd: repo,
         env,
@@ -151,5 +155,39 @@ export function cliFixture(root: string) {
         maxOutputBytes: 16_384,
       },
     );
-  return { request, snapshot, run };
+  function runWithBranchSwitch(branch: string) {
+    laneGit(["branch", branch, request.expectedHead], workspace);
+    const preload = join(root, "before-status.ts");
+    const adapter = resolve(
+      import.meta.dirname,
+      "../../src/adapters/process/index.ts",
+    );
+    writeFileSync(
+      preload,
+      `
+import { mock } from "bun:test";
+import * as processAdapter from ${JSON.stringify(adapter)};
+const { createProcessPort } = processAdapter;
+mock.module(${JSON.stringify(adapter)}, () => ({
+  ...processAdapter,
+  createProcessPort(options) {
+    const port = createProcessPort(options);
+    return {
+      ...port,
+      async run(executable, args, spawnOptions) {
+        if (args.includes("status") && args.includes("--porcelain")) {
+          const switched = await port.run(executable, ["switch", "--quiet", ${JSON.stringify(branch)}], spawnOptions);
+          if (switched.exitCode !== 0) throw new Error(switched.stderr);
+        }
+        return port.run(executable, args, spawnOptions);
+      },
+    };
+  },
+}));
+`,
+    );
+    return run(request, ["--preload", preload]);
+  }
+  const head = () => laneGit(["rev-parse", "HEAD"], workspace);
+  return { request, snapshot, run, runWithBranchSwitch, head };
 }
