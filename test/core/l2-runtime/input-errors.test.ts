@@ -134,7 +134,7 @@ for (const [name, input, path, problem] of [
   });
 }
 
-test("positional misuse names the argument, expected form and canonical example", async () => {
+test("positional misuse includes input-free advice and a canonical example", async () => {
   const reply = await runCli(fixture(), ["issue", "create", "Task"], {
     caller: "agent",
     context,
@@ -142,9 +142,10 @@ test("positional misuse names the argument, expected form and canonical example"
   expect(reply.exitCode).toBe(6);
   if (reply.envelope.ok) throw new Error("expected refusal");
   expect(reply.envelope.error.message).toContain(
-    'Unexpected argument "Task"; pass --title "Task"',
+    "Unexpected argument at this position. Use named flags or --input JSON.",
   );
   expect(reply.envelope.error.message).not.toContain("/arguments/0");
+  expect(reply.stdout).not.toContain('"Task"');
   expect(reply.stdout).toContain("Example: forge issue create --title");
 });
 
@@ -190,36 +191,25 @@ test("all failing fields, nested references, array paths and escaped names retai
   expect(error.message).not.toContain("/a~1b/0");
 });
 
-test("positional advice follows schemas and lists flags when no unique field fits", async () => {
-  for (const [properties, required, expected] of [
-    [{ caption: { type: "string" } }, ["caption"], 'pass --caption "Task"'],
-    [{ count: { type: "integer" } }, ["count"], "use --count, --input JSON"],
-    [
-      { left: { type: "string" }, right: { type: "string" } },
-      [],
-      "use --left, --right, --input JSON",
-    ],
-    [
-      { mode: { type: "string", enum: ["fast"] } },
-      ["mode"],
-      "use --mode, --input JSON",
-    ],
-    [
-      { code: { type: "string", pattern: "^[0-9]+$" } },
-      ["code"],
-      "use --code, --input JSON",
-    ],
+test("positional advice stays input-free for different schemas", async () => {
+  for (const [properties, required] of [
+    [{ caption: { type: "string" } }, ["caption"]],
+    [{ count: { type: "integer" } }, ["count"]],
+    [{ left: { type: "string" }, right: { type: "string" } }, []],
+    [{ mode: { type: "string", enum: ["fast"] } }, ["mode"]],
+    [{ code: { type: "string", pattern: "^[0-9]+$" } }, ["code"]],
   ] as const) {
     const entry = {
       ...candidate("sample.run", { args: [] }),
       inputSchema: { type: "object", properties, required },
     };
     const catalog = fakeCatalog([entry]);
-    const reply = await runCli(catalog, ["sample", "run", "Task"]);
+    const reply = await runCli(catalog, ["sample", "run", "PrivateFixture"]);
     if (reply.envelope.ok) throw new Error("expected refusal");
     expect(reply.envelope.error.message).toBe(
-      `Invalid input for sample.run:\nUnexpected argument "Task"; ${expected}`,
+      "Invalid input for sample.run:\nUnexpected argument at this position. Use named flags or --input JSON.",
     );
+    expect(reply.stdout).not.toContain("PrivateFixture");
     expect(catalog.calls).toHaveLength(0);
   }
 });

@@ -73,14 +73,6 @@ import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { record } from "../surface/dispatch.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
-import {
-  isReportFiling,
-  privateReportResult,
-  REPORT_ACTOR,
-  REPORT_OP,
-  REPORT_SOURCE,
-  reportHost,
-} from "./reports.ts";
 import { version } from "../version.ts";
 import { missingOperationHint } from "./stale-build.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
@@ -842,13 +834,11 @@ export async function createAssembly(
       remedy: `Repair the source or configuration for ${name}, or remove /blocks/${name} with config.apply at the current config revision.`,
     };
   }
-  const reportName = (name?: string) => /^report(?:[.-]|$)/.test(name ?? "");
   function snapshot(
     call: CallScope,
     deviceMemory = false,
     invalidMemoryConfig = false,
     configuredShow?: ShowResult,
-    includeReport = false,
   ): {
     show: ShowResult;
     document: ConfigDocument;
@@ -866,7 +856,7 @@ export async function createAssembly(
       if (deviceMemory && !configured.valid)
         refuse("INPUT_INVALID", "Invalid project config");
     } catch (error) {
-      if (!deviceMemory && !includeReport) throw error;
+      if (!deviceMemory) throw error;
       fallback = true;
       call.inProject = false;
       const kind =
@@ -921,46 +911,22 @@ export async function createAssembly(
       version,
     );
     const nounOwners = new Map<string, string[]>();
-    let captureFailed = false;
-    let reportOccupied =
-      Object.hasOwn(document.blocks, "report") ||
-      Object.values(document.blocks).some(
-        ({ source }) =>
-          "builtin" in source && source.builtin === REPORT_SOURCE.builtin,
-      );
     for (const [name, instance] of Object.entries(document.blocks)) {
       if (instance.enabled === false) continue;
       try {
         const block = call.captured(instance.source);
-        for (const [op, declaration] of Object.entries(
-          block.manifest.operations,
-        )) {
+        for (const op of Object.keys(block.manifest.operations)) {
           const noun = parseOperationName(op)?.noun;
           if (noun === undefined) continue;
           const exposed = instance.rename?.[noun] ?? noun;
-          const alias =
-            exposed === noun
-              ? parseOperationName(declaration.cli ?? "")?.noun
-              : undefined;
-          reportOccupied ||= [exposed, alias].some(reportName);
           const names = nounOwners.get(exposed) ?? [];
           if (!names.includes(name))
             nounOwners.set(exposed, [...names, name].sort());
         }
       } catch {
         // The registration loop reports capture failures through its existing path.
-        captureFailed = true;
       }
     }
-    if (
-      includeReport &&
-      !reportOccupied &&
-      !(captureFailed && createCatalog(false, call).diagnose?.(REPORT_OP))
-    )
-      document = {
-        ...document,
-        blocks: { ...document.blocks, report: { source: REPORT_SOURCE } },
-      };
     if (
       call.operatorExport &&
       call.inProject &&
@@ -1033,7 +999,7 @@ export async function createAssembly(
             (value) => block.problems(block.manifest.configSchema!, value),
           ).problems.length > 0
         )
-          return snapshot(call, true, true, undefined, includeReport);
+          return snapshot(call, true, true);
         const prepared = ready(block, instance, name, call);
         const { docs } = prepared;
         document = {
@@ -1117,9 +1083,7 @@ export async function createAssembly(
       candidates: candidates.filter(
         (entry) =>
           executable.has(entry.op) &&
-          (!fallback ||
-            DEVICE_MEMORY_OPS.has(entry.op) ||
-            isReportFiling(entry)),
+          (!fallback || DEVICE_MEMORY_OPS.has(entry.op)),
       ),
       unavailable,
       problems: [
@@ -1143,14 +1107,7 @@ export async function createAssembly(
       reconcileWith: "config.show",
     };
   }
-  function reportSnapshot(call: CallScope, mcp = false) {
-    const show = mcp ? mcpConfig(call) : undefined;
-    return snapshot(call, false, false, show, true);
-  }
-  const createCatalog = (
-    mcp: boolean,
-    probe?: CallScope,
-  ): Assembly["catalog"] => ({
+  const createCatalog = (mcp: boolean): Assembly["catalog"] => ({
     admit(blockId, declaredOp, dryRun, input) {
       admitCloud(
         { root, env: options.providers?.env ?? process.env },
@@ -1211,18 +1168,7 @@ export async function createAssembly(
     unavailable: () => snapshot(callScope()).unavailable,
     diagnose(op) {
       if (parseOperationName(op) === undefined) return undefined;
-      const call = probe ?? callScope();
-      const current =
-        !probe && op === REPORT_OP ? reportSnapshot(call, mcp) : snapshot(call);
-      const report = current.unavailable.find(
-        ({ name, source }) =>
-          "builtin" in source &&
-          source.builtin === REPORT_SOURCE.builtin &&
-          op ===
-            `${current.document.blocks[name]?.rename?.report ?? "report"}.create`,
-      );
-      if (report && !current.candidates.some((entry) => entry.op === op))
-        return report.error;
+      const current = snapshot(callScope());
       if (
         configOperationNames.has(op) ||
         [grantCandidate, ...discoveryOperations, ...current.candidates].some(
@@ -1284,16 +1230,11 @@ export async function createAssembly(
               manifest.ok &&
               Object.keys(manifest.value.operations).some((declaredOp) => {
                 const parsed = parseOperationName(declaredOp);
-                if (!parsed) return false;
-                const exposed = instance?.rename?.[parsed.noun] ?? parsed.noun;
-                const alias =
-                  exposed === parsed.noun
-                    ? manifest.value.operations[declaredOp]?.cli
-                    : undefined;
-                return probe
-                  ? [exposed, alias].some(reportName)
-                  : `${exposed}.${parsed.verb}` === op ||
-                      (op === REPORT_OP && alias === op);
+                return (
+                  parsed !== undefined &&
+                  `${instance?.rename?.[parsed.noun] ?? parsed.noun}.${parsed.verb}` ===
+                    op
+                );
               })
             );
           } catch {
@@ -1314,22 +1255,20 @@ export async function createAssembly(
         return [
           ...configCandidates(),
           grantCandidate,
-          ...reportSnapshot(call, true).candidates,
+          ...snapshot(call, false, false, mcpConfig(call)).candidates,
         ];
-      let candidates = snapshot(call, true, false, undefined, true).candidates;
+      const candidates = [...snapshot(call, true).candidates];
       if (
         call.warnings.some(
           (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
         )
       ) {
         try {
-          const recovered = reportSnapshot(callScope([], true));
-          candidates = [
-            ...recovered.candidates.filter(
+          candidates.unshift(
+            ...snapshot(callScope([], true)).candidates.filter(
               (entry) => !DEVICE_MEMORY_OPS.has(entry.op),
             ),
-            ...candidates.filter((entry) => !isReportFiling(entry)),
-          ];
+          );
         } catch {
           // An unreadable config has no healthy project candidates to retain.
         }
@@ -1342,18 +1281,6 @@ export async function createAssembly(
         !mcp && deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived, request.op === "store.export");
       try {
-        if (request.op.endsWith(".create")) {
-          const report = reportSnapshot(call, mcp);
-          if (
-            isReportFiling(
-              report.candidates.find((entry) => entry.op === request.op),
-            )
-          )
-            return privateReportResult(
-              request.op,
-              await direct.invoke(call, request, mcp, deviceMemory, report),
-            );
-        }
         const preview =
           request.op === "config.show"
             ? configCandidates().find((entry) => entry.op === request.op)
@@ -1499,7 +1426,6 @@ export async function createAssembly(
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
       mcp: boolean,
       deviceMemory: boolean,
-      report?: ReturnType<typeof snapshot>,
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
         const checked = validateInvocationRequest(request);
@@ -1974,7 +1900,7 @@ export async function createAssembly(
           mcp
             ? snapshot(call, false, false, mcpConfig(call))
             : snapshot(call, deviceMemory);
-        let current = report ?? load();
+        let current = load();
         const target = current.candidates.find(
           (candidate) => candidate.op === request.op,
         );
@@ -2007,7 +1933,6 @@ export async function createAssembly(
             current.catalog.resolve(request.op).operation.declaration,
             request.op,
           );
-        const filing = isReportFiling(target);
         const ownContext = (context: BoundContext) => {
           if (
             (context.variant === "project" || context.variant === "leased") &&
@@ -2358,20 +2283,10 @@ export async function createAssembly(
                 const client = createStateClient({
                   owner,
                   namespace,
-                  context:
-                    filing && context.variant === "device"
-                      ? { ...context, actor: REPORT_ACTOR }
-                      : context,
+                  context,
                   write: scope.effects.includes(`${noun}:write`),
-                  requestId: filing
-                    ? providers.crypto(scope).randomUUID()
-                    : request.requestId,
+                  requestId: request.requestId,
                 });
-                if (filing) {
-                  const host = reportHost(manifestRoot, scopeRoot, home, mcp);
-                  clients[binding.slot] = { ...client, host };
-                  continue;
-                }
                 clients[binding.slot] = interfaceSatisfies(
                   "forge.state@2.0.0",
                   binding.interface,
@@ -2500,7 +2415,6 @@ export async function createAssembly(
               },
             };
         }
-        if (filing) return runtime.invoke(request);
         if (!routed) {
           const cloud = await fromCloud(runtime);
           if (cloud) return cloud;

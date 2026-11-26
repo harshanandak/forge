@@ -1,14 +1,8 @@
 import { cliOperation, type McpCandidate } from "../contract/mcp.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { inputError } from "../contract/input-error.ts";
-import { redactCredentialArgument } from "../contract/credential-shape.ts";
-import {
-  flagName,
-  propertyFromFlag,
-  RESERVED_FLAGS,
-} from "../contract/naming.ts";
-import { renderExample } from "../contract/example.ts";
-import { pointerFragment, validateWithSchema } from "../contract/schema.ts";
+import { propertyFromFlag } from "../contract/naming.ts";
+import { pointerFragment } from "../contract/schema.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import {
   dispatch,
@@ -149,35 +143,6 @@ function mapArguments(
     } else {
       const key = positions[position++];
       if (key === undefined) {
-        const shown = redactCredentialArgument(token);
-        const fitting = Object.keys(properties).filter((name) => {
-          const property = record(properties[name]);
-          return (
-            !Object.hasOwn(result, name) &&
-            !positions.includes(name) &&
-            property?.type === "string" &&
-            validateWithSchema(property, token).length === 0
-          );
-        });
-        const required = fitting.filter(
-          (name) =>
-            Array.isArray(schema.required) && schema.required.includes(name),
-        );
-        const choices = required.length > 0 ? required : fitting;
-        const suggestion = choices.length === 1 ? choices[0] : undefined;
-        const remedy =
-          suggestion === undefined
-            ? `use ${[
-                ...Object.keys(properties)
-                  .filter(
-                    (name) => !RESERVED_FLAGS.includes(flagName(name) ?? ""),
-                  )
-                  .map((name) => `--${flagName(name)}`),
-                "--input JSON",
-              ].join(", ")}`
-            : RESERVED_FLAGS.includes(flagName(suggestion) ?? "")
-              ? `--${flagName(suggestion)} is reserved; use ${renderExample(entry?.op ?? "", { title: "", summary: "", examples: [{ input: { ...result, [suggestion]: shown } }] }, schema)}`
-              : `pass --${flagName(suggestion)} ${JSON.stringify(shown)}`;
         throw new ForgeFailure(
           inputError(
             entry?.op ?? "",
@@ -185,10 +150,11 @@ function mapArguments(
               {
                 pointer: `/arguments/${position - 1}`,
                 keyword: "false",
-                message: `Unexpected argument ${JSON.stringify(shown)}; ${remedy}`,
+                message:
+                  "Unexpected argument at this position. Use named flags or --input JSON.",
                 expected:
                   "declared flags or --input JSON; no positional argument at this position",
-                received: JSON.stringify(shown),
+                received: "[redacted]",
               },
             ],
             entry?.docs,
