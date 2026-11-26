@@ -472,18 +472,7 @@ export async function createAssembly(
             );
             reusable?.set(key, found);
           } catch (error) {
-            found = {
-              failed:
-                "builtin" in source &&
-                Object.hasOwn(firstPartyBlocks, source.builtin)
-                  ? new ForgeFailure({
-                      code: "PROVIDER_MISSING",
-                      message:
-                        "Built-in block could not be prepared. Repair or reinstall Forge.",
-                      retry: "never",
-                    })
-                  : error,
-            };
+            found = { failed: error };
           }
         }
         captures.set(key, found);
