@@ -226,19 +226,28 @@ export function createEffectWorker({
   }
 
   let draining: Promise<void> | undefined;
+  let drainRequested = false;
+
+  async function drainRequestedWork(): Promise<void> {
+    try {
+      do {
+        drainRequested = false;
+        await drainDue();
+      } while (drainRequested);
+    } finally {
+      draining = undefined;
+    }
+  }
+
   return {
     drain() {
-      draining ??= Promise.resolve()
-        .then(drainDue)
-        .finally(() => {
-          draining = undefined;
-        });
+      drainRequested = true;
+      draining ??= Promise.resolve().then(drainRequestedWork);
       return draining;
     },
-    waitForSummary(projectId, revision) {
+    async waitForSummary(projectId, revision) {
       const row = published.get(projectId);
-      if (row && integer(row.published_revision) >= revision)
-        return Promise.resolve("edited");
+      if (row && integer(row.published_revision) >= revision) return "edited";
       return new Promise<SummaryStatus>((resolve) => {
         function wake(updatedProject: string, updatedRevision: number): void {
           if (updatedProject === projectId && updatedRevision >= revision)
