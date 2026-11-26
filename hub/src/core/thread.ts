@@ -120,7 +120,7 @@ export function recordAgentPost(
       .prepare(
         `INSERT INTO thread_messages
     (adapter,chat_thread_id,channel_id,project_id,chat_message_id,kind,text,person_id,session_id,created_at)
-    VALUES ('slack',?,?,?,?,?,'agent',?,?,?,?) ON CONFLICT DO NOTHING`,
+    VALUES ('slack',?,?,?,?,'agent',?,?,?,?) ON CONFLICT DO NOTHING`,
       )
       .run(
         conversation.chatThreadId,
