@@ -463,6 +463,7 @@ export async function createAssembly(
     } catch {
       return error;
     }
+    installRoot = installRoot.replace(/[\\/]+$/, "");
     if (error instanceof ForgeFailure) {
       const inner = error.error;
       return new ForgeFailure({

@@ -27,8 +27,9 @@ async function fixture() {
   const sandbox = mkdtempSync(join(tmpdir(), "forge-builtin-redact-"));
   const blockDir = join(sandbox, "redacted-block");
   cpSync(example, blockDir, { recursive: true });
-  (firstPartyBlocks as Record<string, URL>)[builtinId] =
-    pathToFileURL(blockDir);
+  (firstPartyBlocks as Record<string, URL>)[builtinId] = pathToFileURL(
+    blockDir + "/",
+  );
   const root = join(sandbox, "project");
   mkdirSync(join(root, ".forge"), { recursive: true });
   writeFileSync(
