@@ -472,3 +472,42 @@ test(
   },
   timeout,
 );
+
+test(
+  "B1B-RACE1 inbound reply during a pending project post is adopted",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.chat.nextWrite = { kind: "delay", until: gate };
+    const pending = f.core.reply(f.caller(), {
+      sessionId: alpha.sessionId,
+      projectId: p1,
+      text: "Hello channel",
+    });
+    await f.emit("inbound", {
+      chatThreadId: channel,
+      threadRootMessageId: "inbound",
+      slackUserId: slackB,
+      mentionsBot: true,
+    });
+    release();
+    const out = value(await pending);
+    expect(out.conversationId).toBeDefined();
+    const convs = f.rows("conversations");
+    expect(convs).toHaveLength(1);
+    expect(convs[0]).toMatchObject({
+      conversation_id: out.conversationId,
+      person_id: a.personId,
+      project_id: p1,
+      session_id: alpha.sessionId,
+    });
+    const agents = f.rows("thread_messages WHERE kind = 'agent'");
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({ chat_message_id: out.chatMessageId });
+  },
+  timeout,
+);

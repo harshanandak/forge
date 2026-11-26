@@ -4,6 +4,7 @@ import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
 import { baseFixture, channel } from "./base-fixture.ts";
 import { p1, value } from "./fixture.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
+import { escapeSlackText } from "../../src/chat/cards.ts";
 
 const timeout = 30_000;
 const prefix = "Fixture Alpha's agent:";
@@ -288,6 +289,33 @@ test(
     });
     expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(1);
     expect(JSON.stringify(f.logged)).toContain("canvas_unavailable");
+  },
+  timeout,
+);
+
+test(
+  "B1B-TRUNC1 rendered fallback post fits the section budget with tail and note intact",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    const text = "&".repeat(1000) + " SUMMARY END\n---\nDetail";
+    f.chat.nextWrite = { kind: "refused", reason: "canvas_unavailable" };
+    const out = value(
+      await f.core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        projectId: p1,
+        text,
+      }),
+    );
+    expect(out.conversationId).toBeDefined();
+    const posts = f.posts();
+    expect(posts).toHaveLength(1);
+    const rendered = escapeSlackText(String(posts[0]));
+    expect(rendered.length).toBeLessThanOrEqual(3000);
+    expect(rendered).toContain("SUMMARY END");
+    expect(rendered).toContain(
+      "(The full answer could not be posted as a canvas. Ask Fixture Alpha's agent for the detail.)",
+    );
   },
   timeout,
 );
