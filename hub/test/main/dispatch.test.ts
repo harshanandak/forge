@@ -63,16 +63,102 @@ for (const command of ["init", "doctor"]) {
       const argv = [command, "--config", "fixture.json"];
       expect(await f.run(argv)).toBe(19);
       expect(runSetupCommand).toHaveBeenCalledTimes(1);
-      expect(runSetupCommand).toHaveBeenCalledWith(argv, {
-        loadConfig: f.services.loadConfig,
+      const call = runSetupCommand.mock.calls[0];
+      ok(call);
+      const [actualArgv, { loadConfig, ...setupDeps }] = call;
+      expect(actualArgv).toEqual(argv);
+      expect(setupDeps).toEqual({
         inspectStorage: f.services.inspectStorage,
         protectPath: f.services.protectPath,
       });
       expect(f.calls).toEqual([]);
+      expect(loadConfig("fixture.json")).toBe(f.config);
+      expect(f.calls).toEqual(["loadConfig"]);
     },
     timeout,
   );
 }
+
+const privateDetail = "fixture-private-detail";
+
+function refuseFixture(): never {
+  throw new Error(privateDetail);
+}
+
+for (const [kind, stderr, fixture] of [
+  [
+    "configuration",
+    "could not load hub configuration\n",
+    () => mainFixture({ loadConfig: refuseFixture }),
+  ],
+  [
+    "database",
+    "could not access the hub database\n",
+    () => {
+      const f = adminFixture();
+      f.openHubDb.mockImplementation(refuseFixture);
+      return f;
+    },
+  ],
+  [
+    "stdin",
+    "could not read stdin\n",
+    () =>
+      adminFixture({
+        stdin: () =>
+          new ReadableStream({
+            pull(controller) {
+              controller.error(new Error(privateDetail));
+            },
+          }),
+        runAdminCommand: async (_, deps) => {
+          await deps.readStdin();
+          return 0;
+        },
+      }),
+  ],
+  ...["not_built", "invalid_invocation", privateDetail].map(
+    (reason) =>
+      [
+        "admin command throwing " + reason,
+        "hub command failed\n",
+        () =>
+          adminFixture({
+            runAdminCommand: () => Promise.reject(new Error(reason)),
+          }),
+      ] as const,
+  ),
+] as const) {
+  test(
+    "reports a sanitized failure for " + kind,
+    async () => {
+      const f = fixture();
+      const code = await f.run(["send", "--config", "fixture.json"]);
+      expect(f.stderr).toEqual([stderr]);
+      expect(code).toBe(1);
+      expect(f.stdout).toEqual([]);
+    },
+    timeout,
+  );
+}
+
+test(
+  "reports not_built for the explicitly unbuilt service",
+  async () => {
+    const f = adminFixture({
+      loadConfig: () => ({
+        ...f.config,
+        slack: { mode: "off", buttons: false },
+        doorbells: [],
+        mcp: { enabled: false },
+        hooks: { enabled: false },
+      }),
+    });
+    expect(await f.run(["serve"])).toBe(1);
+    expect(f.stderr).toEqual(["not_built\n"]);
+  },
+  timeout,
+);
 
 test(
   "NB2 rejects the first byte over the cap, releases the reader and does not echo input",

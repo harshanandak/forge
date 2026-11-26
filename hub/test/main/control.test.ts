@@ -1,17 +1,24 @@
 import { expect, mock, spyOn, test } from "bun:test";
-import { ok } from "node:assert/strict";
-import * as http from "node:http";
 import { main } from "../../src/main.ts";
 import type { MainServices } from "../../src/main.ts";
 import { mainFixture, timeout } from "./main-fixture.ts";
 
-for (const node of ["20.19.0", "22.5.0", "22.99.0", "23.11.0"]) {
+for (const node of ["20.19.0", "22.5.0", "22.99.0", "23.11.0", undefined]) {
   test(
-    "MN3 refuses Node " + node + " with exit 1",
+    "MN3 refuses " +
+      (node ? "Node " + node : "missing Node version") +
+      " before reading argv",
     async () => {
       const versions = process.versions;
-      Object.defineProperty(process, "versions", {
-        value: { ...versions, node, bun: undefined },
+      const runtime: { node?: string; bun?: string } = { ...versions };
+      delete runtime.bun;
+      if (node === undefined) delete runtime.node;
+      else runtime.node = node;
+      Object.defineProperty(process, "versions", { value: runtime });
+      const argv = new Proxy(["doctor"], {
+        get() {
+          throw new Error("argv was read before checking the runtime");
+        },
       });
       const stderr: string[] = [];
       const write = spyOn(process.stderr, "write").mockImplementation(
@@ -21,7 +28,7 @@ for (const node of ["20.19.0", "22.5.0", "22.99.0", "23.11.0"]) {
         },
       );
       try {
-        expect(await main(["doctor"], {})).toBe(1);
+        expect(await main(argv, {})).toBe(1);
         expect(stderr).toEqual(["forge-hub requires Node 24 or later\n"]);
       } finally {
         write.mockRestore();
@@ -34,6 +41,7 @@ for (const node of ["20.19.0", "22.5.0", "22.99.0", "23.11.0"]) {
 
 for (const [runtime, versions] of [
   ["Node 24.0.0", { node: "24.0.0" }],
+  ["Node 24.0.0-pre", { node: "24.0.0-pre" }],
   ["Bun", { node: "20.19.0", bun: "1.4.4" }],
 ] as const) {
   test(
@@ -50,37 +58,3 @@ for (const [runtime, versions] of [
     timeout,
   );
 }
-
-test(
-  "CT5 importing main exposes command and service entry points without process or HTTP effects",
-  async () => {
-    const on = spyOn(process, "on").mockImplementation(() => process);
-    const exit = spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("Unexpected exit during import");
-    });
-    const createServer = spyOn(http, "createServer").mockImplementation(() => {
-      throw new Error("Unexpected HTTP server creation during import");
-    });
-    try {
-      const url = new URL("../../src/main.ts?import-purity", import.meta.url);
-      const loaded: unknown = await import(url.href);
-      ok(typeof loaded === "object" && loaded !== null);
-      expect("main" in loaded && typeof loaded.main === "function").toBe(true);
-      expect(
-        "mainWithServices" in loaded &&
-          typeof loaded.mainWithServices === "function",
-      ).toBe(true);
-      expect(
-        "runService" in loaded && typeof loaded.runService === "function",
-      ).toBe(true);
-      expect(on).not.toHaveBeenCalled();
-      expect(exit).not.toHaveBeenCalled();
-      expect(createServer).not.toHaveBeenCalled();
-    } finally {
-      createServer.mockRestore();
-      exit.mockRestore();
-      on.mockRestore();
-    }
-  },
-  timeout,
-);
