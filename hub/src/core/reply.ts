@@ -131,6 +131,9 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
             person.personId,
             result.postedText,
           );
+          db.prepare(
+            "UPDATE reply_owed SET answered = 1 WHERE conversation_id = ?",
+          ).run(next.conversationId);
           return next;
         });
         return {
@@ -147,8 +150,8 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         result.postedText,
         { agentLabel: result.label },
       );
-      if (!result.conversation.isDirect)
-        ctx.store.tx(() =>
+      ctx.store.tx(() => {
+        if (!result.conversation.isDirect)
           recordAgentPost(
             ctx,
             ref,
@@ -156,8 +159,11 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
             result.sessionId,
             person.personId,
             result.postedText,
-          ),
-        );
+          );
+        db.prepare(
+          "UPDATE reply_owed SET answered = 1 WHERE conversation_id = ?",
+        ).run(result.conversation.conversationId);
+      });
       return {
         ok: true,
         value: {
