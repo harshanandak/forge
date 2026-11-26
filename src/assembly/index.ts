@@ -45,6 +45,7 @@ import {
 import {
   cliWords,
   nounCollisions,
+  parseBlockId,
   parseOperationName,
 } from "../contract/naming.ts";
 import { checkBlockDocs } from "./block-docs.ts";
@@ -719,6 +720,20 @@ export async function createAssembly(
       ),
     };
   }
+  function shippedAs(block: CapturedBlock | undefined, id: string): boolean {
+    return block !== undefined && block.shipped && block.manifest.id === id;
+  }
+  function stateNamespace(block: CapturedBlock): string {
+    const id = block.manifest.id;
+    if (
+      block.shipped ||
+      (!Object.hasOwn(firstPartyBlocks, id) && !id.startsWith("forge.local/"))
+    )
+      return id;
+    const parsed = parseBlockId(id)!;
+    const publisher = parsed.publisher.replaceAll(".", "-");
+    return `forge.local/${publisher}-${parsed.name}`;
+  }
   function ready(
     block: CapturedBlock,
     instance: BlockInstance,
@@ -756,7 +771,7 @@ export async function createAssembly(
         );
       configured = { ...instance, config: checked.config };
     }
-    if (block.shipped && block.manifest.id === "forge/check")
+    if (shippedAs(block, "forge/check"))
       validateConfiguration(
         configured.config as unknown as CheckConfig,
         `blocks.${name}.config`,
@@ -2143,7 +2158,7 @@ export async function createAssembly(
                       "Receipts require project context",
                     );
                   const configured = [...current.blocks.values()].some(
-                    (block) => block.manifest.id === "forge/check",
+                    (block) => shippedAs(block, "forge/check"),
                   );
                   const lease = await projectState.acquire(false);
                   leases.push(lease);
@@ -2199,7 +2214,7 @@ export async function createAssembly(
                   clients[binding.slot] = lease.value;
                   continue;
                 }
-                const namespace = current.blocks.get(instance)!.manifest.id;
+                const namespace = stateNamespace(current.blocks.get(instance)!);
                 // This host's project and, read-only, other projects: a declared capability,
                 // bound to the host's project and never to a project named in the request.
                 const asyncLevels = interfaceSatisfies(
