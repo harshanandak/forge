@@ -3,13 +3,9 @@
     "report.create": {
       "title": "File a field report",
       "summary": "Record a Forge bug, wrong result, suggestion, or missing capability in one line. Leave out credentials, project names, paths, and file contents.",
+      "description": "Add report.create to mcp.expose to list this experimental MCP tool.",
       "examples": [
-        {
-          "input": {
-            "kind": "suggest",
-            "message": "Show the next action in the result"
-          }
-        }
+        { "command": "forge report create \"Show the next action\"" }
       ]
     }
   }

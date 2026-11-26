@@ -65,7 +65,7 @@ async function stageReport(path: string, staged: string) {
   });
   const bundle = await Bun.build({
     entrypoints: [join(path, "entry.cts")],
-    target: "node",
+    target: "bun",
     format: "cjs",
   });
   writeFileSync(join(staged, "entry.cjs"), await bundle.outputs[0]!.text());

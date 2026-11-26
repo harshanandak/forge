@@ -4,9 +4,7 @@ export const FINGERPRINT_VERSION = "fp1";
 
 export function reportFingerprint(
   sha256: (value: string) => string,
-  op: string,
-  code: string,
-  kind: ReportKind,
+  dimensions: readonly [op: string, code: string, kind: ReportKind],
   redacted: string,
 ): string {
   const normalized = redacted
@@ -16,6 +14,6 @@ export function reportFingerprint(
   return (
     FINGERPRINT_VERSION +
     ":" +
-    sha256(JSON.stringify([FINGERPRINT_VERSION, op, code, kind, normalized]))
+    sha256(JSON.stringify([FINGERPRINT_VERSION, ...dimensions, normalized]))
   );
 }

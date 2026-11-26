@@ -24,9 +24,7 @@ export function recordOccurrence(
   const redacted = redactReport(input.message, labels);
   const fingerprint = reportFingerprint(
     (value) => crypto.sha256(value),
-    UNKNOWN,
-    UNKNOWN,
-    kind,
+    [UNKNOWN, UNKNOWN, kind],
     redacted,
   );
   const at = new Date(state.host.now()).toISOString();

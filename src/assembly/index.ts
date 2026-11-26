@@ -73,6 +73,13 @@ import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { record } from "../surface/dispatch.ts";
 import { discoveryOperations } from "../generated/core-discovery.ts";
 import { createStateClient } from "./state-client.ts";
+import {
+  canCaptureReport,
+  privateReportResult,
+  REPORT_ACTOR,
+  reportHost,
+  REPORT_SOURCE,
+} from "./reports.ts";
 import { version } from "../version.ts";
 import { missingOperationHint } from "./stale-build.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
@@ -917,6 +924,15 @@ export async function createAssembly(
       }
     }
     if (
+      !document.blocks.report &&
+      !nounOwners.has("report") &&
+      canCaptureReport((source) => call.captured(source))
+    )
+      document = {
+        ...document,
+        blocks: { ...document.blocks, report: { source: REPORT_SOURCE } },
+      };
+    if (
       call.operatorExport &&
       call.inProject &&
       show.valid &&
@@ -1072,7 +1088,9 @@ export async function createAssembly(
       candidates: candidates.filter(
         (entry) =>
           executable.has(entry.op) &&
-          (!fallback || DEVICE_MEMORY_OPS.has(entry.op)),
+          (!fallback ||
+            DEVICE_MEMORY_OPS.has(entry.op) ||
+            entry.op === "report.create"),
       ),
       unavailable,
       problems: [
@@ -1255,7 +1273,9 @@ export async function createAssembly(
         try {
           candidates.unshift(
             ...snapshot(callScope([], true)).candidates.filter(
-              (entry) => !DEVICE_MEMORY_OPS.has(entry.op),
+              (entry) =>
+                !DEVICE_MEMORY_OPS.has(entry.op) &&
+                entry.op !== "report.create",
             ),
           );
         } catch {
@@ -1266,9 +1286,11 @@ export async function createAssembly(
     },
     async invoke(request) {
       const derived: DetectionObservation[] = [];
+      const filing = request.op === "report.create";
       const deviceMemory =
-        !mcp && deviceMemoryRequest(request.op, request.input);
+        !mcp && (filing || deviceMemoryRequest(request.op, request.input));
       const call = callScope(derived, request.op === "store.export");
+      if (filing) return direct.invoke(call, request, mcp, deviceMemory);
       try {
         const preview =
           request.op === "config.show"
@@ -1922,6 +1944,8 @@ export async function createAssembly(
             current.catalog.resolve(request.op).operation.declaration,
             request.op,
           );
+        const filing =
+          target?.builtin === true && target.blockId === "forge/report";
         const ownContext = (context: BoundContext) => {
           if (
             (context.variant === "project" || context.variant === "leased") &&
@@ -2272,9 +2296,14 @@ export async function createAssembly(
                 const client = createStateClient({
                   owner,
                   namespace,
-                  context,
+                  context:
+                    filing && context.variant === "device"
+                      ? { ...context, actor: REPORT_ACTOR }
+                      : context,
                   write: scope.effects.includes(`${noun}:write`),
-                  requestId: request.requestId,
+                  requestId: filing
+                    ? providers.crypto(scope).randomUUID()
+                    : request.requestId,
                 });
                 clients[binding.slot] = interfaceSatisfies(
                   "forge.state@2.0.0",
@@ -2282,6 +2311,15 @@ export async function createAssembly(
                 )
                   ? createLocalAsyncStateClient(client)
                   : client;
+                if (filing)
+                  clients[binding.slot] = {
+                    ...client,
+                    host: reportHost(
+                      manifestRoot,
+                      [root, stateRoot, manifestRoot],
+                      mcp,
+                    ),
+                  };
                 if (
                   namespace === "forge/work" &&
                   current.catalog.resolve(scope.op).operation.declaredOp ===
@@ -2404,6 +2442,7 @@ export async function createAssembly(
               },
             };
         }
+        if (filing) return privateReportResult(await runtime.invoke(request));
         if (!routed) {
           const cloud = await fromCloud(runtime);
           if (cloud) return cloud;
