@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { windowsPrivateFiles } from "../../src/adapters/process/windows-acl.ts";
+import { privateFileGuard } from "../../src/adapters/store-sqlite/private-files.ts";
 
 setDefaultTimeout(30_000);
 
@@ -40,6 +41,10 @@ export interface JournalFactoryOptions {
   readonly insideLock?: () => void;
   readonly afterRead?: (path: string) => void;
   readonly publish?: (from: string, to: string) => void;
+  readonly security?: {
+    directory(path: string, created: boolean): void;
+    file(path: string): void;
+  };
 }
 
 export type JournalFactory = (options: JournalFactoryOptions) => Journal;
@@ -128,18 +133,39 @@ function protectWindows(path: string): void {
   native.protect(path, `D:P(A;;FA;;;${native.sid})(A;;FR;;;WD)`);
 }
 
+function journalSecurity() {
+  if (process.platform !== "win32") return undefined;
+  const native = windowsPrivateFiles();
+  return privateFileGuard(
+    {
+      ...native,
+      protect(path, descriptor) {
+        if (!lstatSync(path).isDirectory())
+          throw new Error("Journal files must already be private");
+        native.protect(path, descriptor);
+      },
+    },
+    { protectDirectories: false },
+  );
+}
+
 export function journalContract(
   label: string,
   factory: () => JournalFactory,
 ): void {
   const policy = { maxBytes: minimumMaxBytes, maxFiles: 4 } as const;
+  const security = journalSecurity();
+  const create = (options: JournalFactoryOptions) =>
+    factory()({
+      ...options,
+      ...(security === undefined ? {} : { security }),
+    });
 
   test(`journal capability is available (${label})`, () => {
     expect(factory()).toBeFunction();
   });
 
   test(`append keeps UTF8 lines and rotates at the exact byte boundary (${label})`, () => {
-    const create = factory();
     for (const unicode of [false, true]) {
       for (const over of [false, true]) {
         withRoot((root) => {
@@ -178,7 +204,6 @@ export function journalContract(
   });
 
   test(`rotation bounds active and archived bytes (${label})`, () => {
-    const create = factory();
     withRoot((root) => {
       const journal = create({ root, instance: "memory" });
       const first = recordOf(minimumMaxBytes - 1, false);
@@ -239,7 +264,6 @@ export function journalContract(
   });
 
   test(`journal readers never create or repair files (${label})`, () => {
-    const create = factory();
     withRoot((root) => {
       const missing = join(root, "missing");
       const journal = create({ root: missing, instance: "memory" });
@@ -278,7 +302,6 @@ export function journalContract(
   });
 
   test(`private journal writes serialize and survive interrupted rotation (${label})`, () => {
-    const create = factory();
     withRoot((root) => {
       const outerLine = `{"writer":"outer"}`;
       const innerLine = `{"writer":"inner"}`;
@@ -326,7 +349,6 @@ export function journalContract(
   });
 
   test(`journal refuses links and nonprivate targets (${label})`, () => {
-    const create = factory();
     withRoot((root) => {
       const outside = join(root, "outside");
       mkdirSync(outside);
