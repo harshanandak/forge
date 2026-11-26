@@ -117,7 +117,14 @@ export function cliFixture(root: string) {
     ),
     issue: forge(["issue", "show", issue]),
   });
-  const proc = createProcessPort();
+  const proc = createProcessPort({
+    supervision: {
+      cleanupTimeoutMs: 5000,
+      pollIntervalMs: 25,
+      drainTimeoutMs: 250,
+      maxConcurrent: 1,
+    },
+  });
   const env: Record<string, string> = {
     FORGE_DEVICE_ID: device,
     FORGE_DEVICE_ROOT: join(root, "device"),
