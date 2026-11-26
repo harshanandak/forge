@@ -29,7 +29,14 @@ export function createReport(
     INSERT INTO summaries (project_id, publication_key, post_state, channel_id,
       chat_thread_id, chat_message_id, revision, updated_at)
     VALUES (?, ?, 'posted', ?, ?, ?, 1, ?)
-    ON CONFLICT(project_id) DO UPDATE SET revision = summaries.revision + 1,
+    ON CONFLICT(project_id) DO UPDATE SET
+      published_revision = CASE WHEN summaries.channel_id IS NOT excluded.channel_id
+        OR summaries.chat_thread_id IS NOT excluded.chat_thread_id
+        OR summaries.chat_message_id IS NOT excluded.chat_message_id
+        THEN 0 ELSE summaries.published_revision END,
+      channel_id = excluded.channel_id, chat_thread_id = excluded.chat_thread_id,
+      chat_message_id = excluded.chat_message_id, post_state = excluded.post_state,
+      revision = summaries.revision + 1,
       updated_at = excluded.updated_at
     RETURNING revision
   `);
