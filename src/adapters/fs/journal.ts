@@ -97,12 +97,11 @@ function makeDirectories(path: string): boolean {
   if (parent !== path) makeDirectories(parent);
   try {
     createPrivateDirectory(path);
-    return true;
   } catch (error) {
     if (errorCode(error) !== "EEXIST" || !lstatSync(path).isDirectory())
       throw error;
-    return true;
   }
+  return true;
 }
 
 export function createLocalJournal(options: LocalJournalOptions): Journal {
@@ -117,12 +116,20 @@ export function createLocalJournal(options: LocalJournalOptions): Journal {
   ).concat(current);
   const security = options.security;
 
+  function isPrivate(info: Stats, verify: () => void): boolean {
+    try {
+      verify();
+    } catch {
+      return false;
+    }
+    return process.platform === "win32" || (info.mode & 0o077) === 0;
+  }
+
   function inspectDirectory(path: string, created: boolean): void {
     const info = lstatSync(path);
     if (info.isSymbolicLink() || !info.isDirectory())
       refuse("INPUT_INVALID", "Journal directory must be a real directory");
-    security?.directory(path, created);
-    if (process.platform !== "win32" && (info.mode & 0o077) !== 0)
+    if (!isPrivate(info, () => security?.directory(path, created)))
       refuse("INPUT_INVALID", "Journal directory is not private");
   }
 
@@ -130,25 +137,17 @@ export function createLocalJournal(options: LocalJournalOptions): Journal {
     const info = lstatSync(path);
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
       refuse("INPUT_INVALID", "Journal generation must be one private file");
-    security?.file(path);
-    if (process.platform !== "win32" && (info.mode & 0o077) !== 0)
+    if (!isPrivate(info, () => security?.file(path)))
       refuse("INPUT_INVALID", "Journal generation is not private");
     return info;
   }
 
-  function prepareDirectory(): void {
-    inspectDirectory(logs, makeDirectories(logs));
-    inspectDirectory(directory, makeDirectories(directory));
-  }
-
   function rotate(maxFiles: number): void {
     const archives = maxFiles - 1;
-    if (archives === 0) {
-      if (!missing(current)) removeDurable(current);
-      return;
-    }
-    const oldest = join(directory, `journal.jsonl.${archives}`);
+    const oldest =
+      archives === 0 ? current : join(directory, `journal.jsonl.${archives}`);
     if (!missing(oldest)) removeDurable(oldest);
+    if (archives === 0) return;
     for (let index = archives - 1; index >= 1; index -= 1) {
       const from = join(directory, `journal.jsonl.${index}`);
       if (!missing(from))
@@ -191,7 +190,8 @@ export function createLocalJournal(options: LocalJournalOptions): Journal {
       const recordBytes = Buffer.byteLength(line, "utf8") + 1;
       if (recordBytes > maxBytes)
         refuse("LIMIT_EXCEEDED", "Journal record exceeds the active byte cap");
-      prepareDirectory();
+      inspectDirectory(logs, makeDirectories(logs));
+      inspectDirectory(directory, makeDirectories(directory));
       let fd: number;
       try {
         fd = createPrivateFile(lock, false);
