@@ -34,8 +34,33 @@ const noDoorbell: DoorbellPort = {
   ring: () => Promise.resolve({ kind: "not_configured" }),
 };
 
-function notBuilt(): never {
-  throw new Error("not_built");
+const failureMessages = {
+  config: "could not load hub configuration",
+  database: "could not access the hub database",
+  stdin: "could not read stdin",
+  stdinLimit: "stdin exceeds " + LIMITS.bodyBytes + " bytes",
+  unavailable: "not_built",
+};
+
+class EntryFailure extends Error {
+  readonly kind: keyof typeof failureMessages;
+
+  constructor(kind: keyof typeof failureMessages) {
+    super(failureMessages[kind]);
+    this.kind = kind;
+  }
+}
+
+class InvalidInvocation extends Error {}
+
+function callShippedFactory<T>(create: () => T): T {
+  try {
+    return create();
+  } catch (error) {
+    if (error instanceof Error && error.message === "not_built")
+      throw new EntryFailure("unavailable");
+    throw error;
+  }
 }
 
 export interface MainServices {
@@ -59,10 +84,14 @@ export interface MainServices {
   readonly createRemoteHandler: typeof createRemoteHandler;
 }
 
+function noDatabase(): never {
+  throw new EntryFailure("database");
+}
+
 const noDb: HubDb = {
-  exec: notBuilt,
-  prepare: notBuilt,
-  transaction: notBuilt,
+  exec: noDatabase,
+  prepare: noDatabase,
+  transaction: noDatabase,
   close: ignore,
 };
 
@@ -96,7 +125,7 @@ function option(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name, 1);
   if (index === -1) return undefined;
   const value = argv[index + 1];
-  if (!value || value.startsWith("--")) throw new Error("invalid_invocation");
+  if (!value || value.startsWith("--")) throw new InvalidInvocation();
   return value;
 }
 
@@ -153,29 +182,36 @@ async function postSummary(
   }
 }
 
-class StdinLimitError extends Error {}
-
-async function readStdin(source: ReadableStream<unknown>): Promise<string> {
+async function readStdin(open: MainServices["stdin"]): Promise<string> {
   const bytes = new Uint8Array(LIMITS.bodyBytes);
-  const reader = source.getReader();
+  let reader: ReadableStreamDefaultReader<unknown> | undefined;
   let size = 0;
   try {
+    reader = open().getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) return new TextDecoder().decode(bytes.subarray(0, size));
-      if (!(value instanceof Uint8Array)) throw new Error("invalid_stdin");
+      if (!(value instanceof Uint8Array)) throw new EntryFailure("stdin");
       if (value.byteLength > LIMITS.bodyBytes - size)
-        throw new StdinLimitError(
-          "stdin exceeds " + LIMITS.bodyBytes + " bytes",
-        );
+        throw new EntryFailure("stdinLimit");
       bytes.set(value, size);
       size += value.byteLength;
     }
   } catch (error) {
-    void reader.cancel().catch(ignore);
-    throw error;
+    void reader?.cancel().catch(ignore);
+    if (error instanceof EntryFailure && error.kind === "stdinLimit")
+      throw error;
+    throw new EntryFailure("stdin");
   } finally {
-    reader.releaseLock();
+    reader?.releaseLock();
+  }
+}
+
+function databaseAction<T>(run: () => T): T {
+  try {
+    return run();
+  } catch {
+    throw new EntryFailure("database");
   }
 }
 
@@ -186,7 +222,9 @@ async function withCore(
   secret?: ReadSecret,
 ): Promise<number> {
   const { createHubCore, nullTracker, openHubDb } = await services.loadCore();
-  const db = openHubDb(join(config.dataDir, "hub.sqlite"));
+  const db = databaseAction(() =>
+    openHubDb(join(config.dataDir, "hub.sqlite")),
+  );
   try {
     const people = createPeopleDirectory(config.people);
     const chat =
@@ -213,7 +251,7 @@ async function withCore(
       await core.close();
     }
   } finally {
-    db.close();
+    databaseAction(() => db.close());
   }
 }
 
@@ -228,7 +266,7 @@ export function runService(
     async (core) => {
       if (config.mcp.enabled || config.hooks.enabled)
         await services.createRemoteHandler({ config, core, log }).close();
-      return notBuilt();
+      throw new EntryFailure("unavailable");
     },
     secret,
   );
@@ -248,14 +286,23 @@ export function main(
     inspectStorage,
     protectPath,
     runSetupCommand,
-    runAdminCommand,
-    loadCore: () => import("./core/index.ts"),
+    runAdminCommand: (argv, deps) =>
+      callShippedFactory(() => runAdminCommand(argv, deps)),
+    async loadCore() {
+      const core = await import("./core/index.ts");
+      return {
+        ...core,
+        createHubCore: (deps) =>
+          callShippedFactory(() => core.createHubCore(deps)),
+      };
+    },
     async createChatPort(deps) {
       const { createSlackChatPort } = await import("./chat/index.ts");
       return createSlackChatPort(deps);
     },
-    createDoorbell,
-    createRemoteHandler,
+    createDoorbell: (deps) => callShippedFactory(() => createDoorbell(deps)),
+    createRemoteHandler: (deps) =>
+      callShippedFactory(() => createRemoteHandler(deps)),
   });
 }
 
@@ -266,29 +313,36 @@ export async function mainWithServices(
 ): Promise<number> {
   if (!supportedRuntime(services.versions))
     return fail(services, "forge-hub requires Node 24 or later");
-  if (!isArgv(argv)) return usage(services);
-  const [command, subcommand] = argv;
-  if (
-    !command ||
-    ![
-      "serve",
-      "init",
-      "doctor",
-      "token",
-      "host",
-      "summary",
-      "inbox",
-      "send",
-    ].includes(command)
-  )
-    return usage(services);
-  if (command === "summary" && subcommand !== "post") return usage(services);
-
   try {
+    if (!isArgv(argv)) return usage(services);
+    const [command, subcommand] = argv;
+    if (
+      !command ||
+      ![
+        "serve",
+        "init",
+        "doctor",
+        "token",
+        "host",
+        "summary",
+        "inbox",
+        "send",
+      ].includes(command)
+    )
+      return usage(services);
+    if (command === "summary" && subcommand !== "post") return usage(services);
+
     const path =
       option(argv, "--config") ?? envString(env.FORGE_HUB_CONFIG) ?? "";
     const secret: ReadSecret = (name) => envString(env[name]);
-    const { loadConfig, inspectStorage, protectPath } = services;
+    const { inspectStorage, protectPath } = services;
+    const loadConfig: MainServices["loadConfig"] = (path) => {
+      try {
+        return services.loadConfig(path);
+      } catch {
+        throw new EntryFailure("config");
+      }
+    };
     if (command === "init" || command === "doctor") {
       const deps = { loadConfig, inspectStorage, protectPath };
       if (command === "doctor" && argv.includes("--network")) {
@@ -313,15 +367,13 @@ export async function mainWithServices(
         config,
         core,
         protectPath,
-        readStdin: () => readStdin(services.stdin()),
+        readStdin: () => readStdin(services.stdin),
       }),
     );
   } catch (error) {
-    if (error instanceof StdinLimitError) return fail(services, error.message);
-    const reason = error instanceof Error ? error.message : undefined;
-    if (reason === "invalid_invocation") return usage(services);
-    if (command === "init" || command === "doctor")
-      return fail(services, "not_built: " + command);
-    return fail(services, "not_built");
+    if (error instanceof EntryFailure)
+      return fail(services, failureMessages[error.kind]);
+    if (error instanceof InvalidInvocation) return usage(services);
+    return fail(services, "hub command failed");
   }
 }
