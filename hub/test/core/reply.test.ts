@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { SUMMARY_KEY_MARKER } from "../../src/contract/chat.ts";
 import type { HubErrorCode } from "../../src/contract/errors.ts";
-import { LIMITS } from "../../src/contract/mcp.ts";
+import { LIMITS, type ReplyInput } from "../../src/contract/mcp.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
-import { baseFixture, seedThread } from "./base-fixture.ts";
+import { baseFixture, bellFor, seedThread, thread } from "./base-fixture.ts";
 import { refusal } from "./base-fakes.ts";
 import { a, b, configPeople, p1, value } from "./fixture.ts";
-import { slackB } from "./fakes.ts";
+import { slackA, slackB } from "./fakes.ts";
 
 const timeout = 30_000;
 const c = { personId: "per_c", displayName: "Fixture Gamma" };
@@ -179,6 +179,96 @@ test(
       (error as unknown as { conversationId?: string }).conversationId,
     ).toBe(conv);
     expect(attempts()).toBe(2);
+  },
+  timeout,
+);
+
+test(
+  "AD5 reply labels from Forge identity, prefixes the asker, ignores caller fields",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const beta = f.bind(b, "bound-b", "beta");
+    await f.emit("ask-beta", { mentionedSlackUserIds: [slackB] });
+    const conv = f.read(beta.sessionId, b).items[0]!.conversationId!;
+    const out = value(
+      await f.core.reply(f.caller(b), {
+        sessionId: beta.sessionId,
+        conversationId: conv,
+        text: "Hello thread",
+        agentLabel: "Fake",
+        asker: slackB,
+        prefix: "Fake:",
+      } as ReplyInput),
+    );
+    expect(out.postedAs).toBe("Forge (Fixture Beta's agent)");
+    expect(f.writes("postText")[0]!.args[2]).toEqual({
+      agentLabel: "Forge (Fixture Beta's agent)",
+    });
+    expect(f.posts()[0]).toContain("answering <@" + slackA + ">:");
+  },
+  timeout,
+);
+
+test(
+  "AD5 reply prefixes from the latest delivered item, ignoring undelivered ones",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const conv = f.read(alpha.sessionId).items[0]!.conversationId!;
+    f.advance(1);
+    await f.follow("b-note", { slackUserId: slackB, mentionsBot: false });
+    const say = (text: string) =>
+      f.core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        conversationId: conv,
+        text,
+      });
+    await say("First reply");
+    expect(f.posts()[0]).toContain("Fixture Alpha's agent:");
+    expect(f.posts()[0]).not.toContain("answering");
+    f.read(alpha.sessionId);
+    await say("Second reply");
+    expect(f.posts()).toHaveLength(2);
+    expect(f.posts()[1]).toContain("answering <@" + slackB + ">:");
+  },
+  timeout,
+);
+
+test(
+  "AD5 reply records the agent row for channel posts only",
+  async () => {
+    const { f, alpha, beta, conv, betaConv } = await replyFixture();
+    const say = (
+      who: typeof a,
+      sid: string,
+      cid: string,
+      text = "Hello thread",
+    ) =>
+      f.core.reply(f.caller(who), {
+        sessionId: sid,
+        conversationId: cid,
+        text,
+      });
+    const out = value(await say(a, alpha.sessionId, conv!));
+    const agents = () =>
+      f.rows(
+        "thread_messages WHERE kind = 'agent'",
+        "chat_thread_id,chat_message_id,person_id,session_id",
+      );
+    expect(agents()).toHaveLength(1);
+    expect(agents()[0]).toMatchObject({
+      chat_thread_id: thread,
+      chat_message_id: out.chatMessageId,
+      person_id: a.personId,
+      session_id: alpha.sessionId,
+    });
+    await say(b, beta.sessionId, betaConv!, "Hello dm");
+    f.chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
+    expect(
+      refusal(await say(a, alpha.sessionId, conv!, "Hello again")).code,
+    ).toBe("CHAT_UNAVAILABLE");
+    expect(agents()).toHaveLength(1);
   },
   timeout,
 );
