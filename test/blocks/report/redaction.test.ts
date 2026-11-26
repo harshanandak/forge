@@ -220,3 +220,56 @@ test.each(["Basic dXNlcjpwYXNz", "bAsIc Zm9vOmI=", "Bearer FixtureToken"])(
   },
   30_000,
 );
+
+test.each([
+  [
+    "Input/output validation should explain why the request failed.",
+    "[redacted] validation should explain why the request failed.",
+  ],
+  ["Use and/or to join them.", "Use [redacted] to join them."],
+  [
+    "Compare v1/v2 behavior after the 3/4 rollout.",
+    "Compare [redacted] behavior after the [redacted] rollout.",
+  ],
+])(
+  "preserves prose after unrooted slash tokens in %j",
+  (message, expected) => {
+    expect(redactReport(message, [])).toBe(expected);
+  },
+  30_000,
+);
+
+test.each([
+  "/home/alice/My Project/config.yml",
+  String.raw`C:\Users\alice\My Project\x.ts`,
+])(
+  "redacts rooted paths across spaces and preserves the prose in %j",
+  (path) => {
+    expect(redactReport(`Cannot open ${path} after the update.`, [])).toBe(
+      "Cannot open [redacted] after the update.",
+    );
+  },
+  30_000,
+);
+
+test.each([
+  ["Cannot open (/home/alice/x.yml) today.", "Cannot open ([redacted]) today."],
+  ["Cannot open [/home/alice/x] today.", "Cannot open [[redacted]] today."],
+  [
+    "Cannot open path=/home/alice/x today.",
+    "Cannot open path=[redacted] today.",
+  ],
+  ["Cannot open at:/home/alice/x today.", "Cannot open at:[redacted] today."],
+  ["Cannot open at,/home/alice/x today.", "Cannot open at,[redacted] today."],
+  ["Cannot open at;/home/alice/x today.", "Cannot open at;[redacted] today."],
+  [
+    String.raw`Cannot open "C:\Users\alice\x" today.`,
+    "Cannot open [redacted] today.",
+  ],
+])(
+  "masks rooted paths next to punctuation in %j",
+  (message, expected) => {
+    expect(redactReport(message, [])).toBe(expected);
+  },
+  30_000,
+);
