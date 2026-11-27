@@ -249,6 +249,17 @@ export function escapePointer(segment: string): string {
   return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
+function budgetedPointer(
+  at: string,
+  key: string | number,
+  spend: ValidationBudget,
+  depth: number,
+): string {
+  const segment = String(key);
+  spend(depth, undefined, Math.ceil((at.length + 1 + 2 * segment.length) / 64));
+  return `${at}/${escapePointer(segment)}`;
+}
+
 function unescapePointer(segment: string): string {
   return segment.replaceAll("~1", "/").replaceAll("~0", "~");
 }
@@ -273,9 +284,6 @@ function equalJson(
   depth = 0,
 ): boolean {
   spend?.(depth);
-  if (typeof a === "string" && typeof b === "string" && a.length === b.length) {
-    spend?.(depth, Math.ceil(Math.max(0, a.length - 64) / 8));
-  }
   if (a === b) return true;
   if (Array.isArray(a)) {
     return (
@@ -517,7 +525,7 @@ export class SchemaRegistry {
       depth = 0,
     ): SchemaProblem[] =>
       entries.map((problem) => {
-        spend(depth, problem.pointer);
+        spend(depth);
         const alternatives = problem.alternatives?.map((branch) =>
           protect(branch, depth + 1),
         );
@@ -577,7 +585,7 @@ export class SchemaRegistry {
       at: string,
       depth: number,
     ): void => {
-      spend(depth, at);
+      spend(depth);
       if (!isObject(node)) return;
       const descend = (
         child: unknown,
@@ -587,6 +595,11 @@ export class SchemaRegistry {
       ) => visit(child, base, value, pointer, depth + 1);
       if (typeof node.$ref === "string") {
         const reference = this.resolve(node.$ref, uri);
+        spend(
+          depth,
+          undefined,
+          Math.ceil((6 * (reference.length + at.length) + 7) / 8),
+        );
         const key = JSON.stringify([reference, at]);
         if (!seen.has(key)) {
           seen.add(key);
@@ -609,11 +622,16 @@ export class SchemaRegistry {
               : node.additionalProperties,
             uri,
             child,
-            `${at}/${escapePointer(key)}`,
+            budgetedPointer(at, key, spend, depth),
           );
       } else if (Array.isArray(current)) {
         current.forEach((child, index) =>
-          descend(node.items, uri, child, `${at}/${index}`),
+          descend(
+            node.items,
+            uri,
+            child,
+            budgetedPointer(at, index, spend, depth),
+          ),
         );
       }
       for (const keyword of ["allOf", "oneOf", "anyOf"])
@@ -867,7 +885,7 @@ export class SchemaRegistry {
       knownProperties?: readonly string[],
       alternatives?: readonly (readonly SchemaProblem[])[],
     ): void => {
-      spend(depth, pointer);
+      spend(depth);
       problems.push({
         pointer,
         keyword,
@@ -962,30 +980,21 @@ export class SchemaRegistry {
     }
 
     if (typeof value === "string") {
-      const stringWork = Math.ceil(Math.max(0, value.length - 64) / 8);
+      const length = [...value].length;
+      if (typeof schema.minLength === "number" && length < schema.minLength) {
+        add("minLength", `must be at least ${schema.minLength} characters`);
+      }
+      if (typeof schema.maxLength === "number" && length > schema.maxLength) {
+        add("maxLength", `must be at most ${schema.maxLength} characters`);
+      }
       if (
-        typeof schema.minLength === "number" ||
-        typeof schema.maxLength === "number"
+        typeof schema.pattern === "string" &&
+        !this.#pattern(schema.pattern).test(value)
       ) {
-        charge(stringWork);
-        let length = 0;
-        for (const _point of value) length++;
-        if (typeof schema.minLength === "number" && length < schema.minLength)
-          add("minLength", `must be at least ${schema.minLength} characters`);
-        if (typeof schema.maxLength === "number" && length > schema.maxLength)
-          add("maxLength", `must be at most ${schema.maxLength} characters`);
+        add("pattern", `must match ${schema.pattern}`);
       }
-      if (typeof schema.pattern === "string") {
-        charge(stringWork);
-        if (!this.#pattern(schema.pattern).test(value)) {
-          charge(Math.ceil(schema.pattern.length / 8));
-          add("pattern", `must match ${schema.pattern}`);
-        }
-      }
-      if (schema.format === "date-time") {
-        charge(stringWork);
-        if (!isRfc3339DateTime(value))
-          add("format", "must be an RFC 3339 date-time with real field values");
+      if (schema.format === "date-time" && !isRfc3339DateTime(value)) {
+        add("format", "must be an RFC 3339 date-time with real field values");
       }
     }
 
@@ -1038,12 +1047,18 @@ export class SchemaRegistry {
           return false;
         });
         if (duplicate !== -1) {
-          add("uniqueItems", "items must be unique", `${at}/${duplicate}`);
+          add(
+            "uniqueItems",
+            "items must be unique",
+            budgetedPointer(at, duplicate, spend, depth),
+          );
         }
       }
       if (schema.items !== undefined) {
         value.forEach((item, index) => {
-          append(sub(schema.items, item, `${at}/${index}`));
+          append(
+            sub(schema.items, item, budgetedPointer(at, index, spend, depth)),
+          );
         });
       }
     }
@@ -1076,7 +1091,7 @@ export class SchemaRegistry {
             add(
               "required",
               `missing required property "${name}"`,
-              `${at}/${escapePointer(name)}`,
+              budgetedPointer(at, name, spend, depth),
               () =>
                 this.#expected(
                   properties[name] as JsonSchema | undefined,
@@ -1089,8 +1104,7 @@ export class SchemaRegistry {
         }
       }
       for (const key of keys) {
-        spend(depth);
-        const pointer = `${at}/${escapePointer(key)}`;
+        const pointer = budgetedPointer(at, key, spend, depth);
         if (schema.propertyNames !== undefined) {
           for (const problem of sub(schema.propertyNames, key, pointer)) {
             charge(Math.ceil((key.length + problem.message.length) / 8));

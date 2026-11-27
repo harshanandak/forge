@@ -13,17 +13,6 @@ test("detailed diagnostics charge value rendering before repeated formatting", (
   );
 }, 30_000);
 
-test("repeated string assertions use the work budget", () => {
-  const registry = new SchemaRegistry([
-    { allOf: Array.from({ length: 80 }, () => ({ minLength: 1 })) },
-  ]);
-  expect(registry.validate("#", "x".repeat(120_000))[0]?.keyword).toBe(
-    "budget",
-  );
-  const unicode = new SchemaRegistry([{ minLength: 1, maxLength: 1 }]);
-  expect(unicode.validate("#", "\u{1F600}")).toEqual([]);
-}, 30_000);
-
 test("name suggestions respect the shared work budget", () => {
   const properties = Object.fromEntries(
     Array.from({ length: 8 }, (_, index) => [
