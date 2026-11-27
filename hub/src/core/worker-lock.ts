@@ -18,7 +18,6 @@ export function workerLockPath(database: string): string {
 }
 
 const statOptions = { bigint: true } as const;
-const windows = process.platform === "win32";
 
 function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
   return left.ino !== 0n && left.dev === right.dev && left.ino === right.ino;
@@ -46,7 +45,7 @@ function verifyLock(path: string, identity: BigIntStats): void {
 }
 
 function syncDirectory(path: string, identity: BigIntStats): void {
-  if (windows) return;
+  if (process.platform === "win32") return;
   const fd = openSync(
     path,
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
@@ -69,7 +68,7 @@ export function claimWorkerLock(database: string): WorkerClaim {
     verifyDirectory(parent, directory);
     const fd = openSync(path, "wx", 0o600);
     file = fd;
-    if (!windows) fchmodSync(fd, 0o600);
+    if (process.platform !== "win32") fchmodSync(fd, 0o600);
     const identity = fstatSync(fd, statOptions);
     verifyLock(path, identity);
     fsyncSync(fd);
