@@ -127,6 +127,15 @@ mcp:
 Configure your MCP client to start `forge --mcp` as a stdio server from the
 project folder.
 
+Forge admits up to eight concurrent tool executions per stdio connection.
+When all slots are occupied, a new execution receives `MCP_BUSY` immediately.
+Wait for a call to finish, then try again. Protocol checks, tool listing, and
+`catalog_list` and `catalog_describe` stay available while the server is full.
+
+Cancelling a request stops its runtime invocation and releases its slot after
+cleanup. Any writes already committed at the cancellation point remain in
+place. Check the affected state before repeating a cancelled write.
+
 ## Owner approval
 
 Forge asks the owner before admitting a block, granting effects, recovering a

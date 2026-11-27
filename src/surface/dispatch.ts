@@ -17,6 +17,7 @@ import { validateInvocationRequest } from "../generated/validators.ts";
 
 export interface CallOptions {
   readonly caller: Caller;
+  readonly signal?: AbortSignal;
   /** Host-owned interactive fallback when an operation requires conversation approval. */
   readonly confirmHuman?: (op: string, input: unknown) => Promise<boolean>;
   readonly readOnly?: boolean;
@@ -154,17 +155,10 @@ async function dispatchRaw(
       return failure("INPUT_INVALID", "Invalid catalog invocation request.");
     const request = checked.value;
     return dispatch(catalog, request.op, request.input, {
-      caller: options.caller,
-      ...(options.confirmHuman === undefined
-        ? {}
-        : { confirmHuman: options.confirmHuman }),
-      ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
+      ...options,
       context: request.context,
       explicitContext:
         options.explicitContext === true || args.context !== undefined,
-      ...(options.resolveContext === undefined
-        ? {}
-        : { resolveContext: options.resolveContext }),
       requestId: request.requestId,
       ...(options.dryRun === undefined && request.dryRun === undefined
         ? {}
@@ -232,7 +226,7 @@ async function dispatchRaw(
       context: await heldContext(catalog, op, input, { ...options, context }),
       ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
     } as const;
-    const result = await catalog.invoke(request);
+    const result = await catalog.invoke(request, options.signal);
     if (
       !result.ok &&
       result.error.code === "HUMAN_REQUIRED" &&
@@ -301,7 +295,7 @@ async function heldContext(
   // A failed hidden lookup (thrown or rejected) must not replace the write's own result or leak its diagnostics.
   let shown: ResultEnvelope | undefined;
   try {
-    shown = await catalog.invoke({
+    const request = {
       schemaVersion: "forge.invocation/1",
       requestId: randomUUID(),
       op: show,
@@ -313,7 +307,8 @@ async function heldContext(
       },
       caller: options.caller,
       context,
-    });
+    } as const;
+    shown = await catalog.invoke(request, options.signal);
   } catch {
     return context;
   }

@@ -81,7 +81,7 @@ export function createMcpHandlers(
   const exposed = candidates.filter((candidate) => reachable.has(candidate.op));
   const restricted: SurfaceCatalog = {
     list: () => exposed,
-    invoke: (request) => catalog.invoke(request),
+    invoke: (request, signal) => catalog.invoke(request, signal),
     ...(catalog.admit === undefined
       ? {}
       : {
@@ -98,7 +98,15 @@ export function createMcpHandlers(
         return tool === undefined ? [] : [tool];
       }),
     ],
-    callTool: async (name, args) => {
+    callTool: async (name, args, signal = options.signal) => {
+      const call: CallOptions = {
+        ...options,
+        caller: "agent",
+        ...(signal === undefined ? {} : { signal }),
+        ...(exposure.readOnly === undefined
+          ? {}
+          : { readOnly: exposure.readOnly }),
+      };
       const core = discoveryOperations.find(
         (entry) =>
           entry.declaration.callers.includes("agent") &&
@@ -107,24 +115,12 @@ export function createMcpHandlers(
       if (core !== undefined) {
         if (exposure.readOnly && core.declaration.effects.length > 0)
           return undefined;
-        return dispatch(restricted, core.op, args, {
-          ...options,
-          caller: "agent",
-          ...(exposure.readOnly === undefined
-            ? {}
-            : { readOnly: exposure.readOnly }),
-        });
+        return dispatch(restricted, core.op, args, call);
       }
       const candidate = byName.get(name);
       return candidate === undefined
         ? undefined
-        : dispatch(catalog, candidate.op, args, {
-            ...options,
-            caller: "agent",
-            ...(exposure.readOnly === undefined
-              ? {}
-              : { readOnly: exposure.readOnly }),
-          });
+        : dispatch(catalog, candidate.op, args, call);
     },
   };
 }

@@ -23,17 +23,23 @@ import { wireDeviceId } from "./wire-device.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 const progressWrites = new Map<string, Promise<unknown>>();
 
+function laneSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  return signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
+}
+
 /** A fresh, read-only lookup in the attachment, independent of the caller's checkout. */
 export async function readBoundLaneHead(
   flight: Preflight,
   providers: AssemblyProviders,
   worktree: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const timeoutMs = flight.operation.declaration.timeoutMs ?? 60000;
   const scope = {
     op: flight.request.op,
     effects: flight.operation.declaration.effects,
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: laneSignal(timeoutMs, signal),
     deadline: Date.now() + timeoutMs,
     processContainment: "supervised" as const,
   };
@@ -65,9 +71,12 @@ export async function coordinateLane(
     env: Readonly<Record<string, string | undefined>>;
     deviceRoot: string;
     now: () => number;
+    signal?: AbortSignal;
   },
 ): Promise<unknown> {
   const owner = await device.open(false);
+  const { signal } = options;
+  signal?.throwIfAborted();
   const state = owner && {
     get: (key: string) => owner.get("forge/work", key),
     list: (prefix?: string) => owner.list("forge/work", prefix),
@@ -89,23 +98,21 @@ export async function coordinateLane(
     const save = async (
       record: import("../blocks/work/bound-lane-state.ts").BoundLaneRecord,
       revision: number,
-    ) =>
-      writeBoundLane(
-        (await device.open(true))!.client(
-          "forge/work",
-          flight.request.context.actor!,
-        ),
-        project,
-        record,
-        revision,
-      );
+    ) => {
+      signal?.throwIfAborted();
+      const store = (await device.open(true))!;
+      signal?.throwIfAborted();
+      const client = store.client("forge/work", flight.request.context.actor!);
+      return writeBoundLane(client, project, record, revision);
+    };
     if (["lane.next", "lane.record"].includes(flight.operation.declaredOp)) {
       // Serialize this device's reservations; StateOwner revisions fence other processes.
       const key = boundLaneKey(project);
       const pending = (progressWrites.get(key) ?? Promise.resolve())
         .catch(() => {})
-        .then(() =>
-          boundLaneProgress(
+        .then(() => {
+          signal?.throwIfAborted();
+          return boundLaneProgress(
             flight.operation.declaredOp,
             flight.request.input as BoundProgressInput,
             flight.request.context,
@@ -117,9 +124,9 @@ export async function coordinateLane(
             save,
             flight.config,
             (worktree) =>
-              readBoundLaneHead(flight, options.providers, worktree),
-          ),
-        );
+              readBoundLaneHead(flight, options.providers, worktree, signal),
+          );
+        });
       progressWrites.set(key, pending);
       try {
         return await pending;
@@ -148,13 +155,16 @@ export async function coordinateLane(
       state,
       command,
       async (id) => {
+        signal?.throwIfAborted();
         const client = (await device.open(true))!.client(
           "forge/work",
           flight.request.context.actor!,
         );
         return {
-          save: (record, revision) =>
-            writeBoundLane(client, project, record, revision),
+          save: (record, revision) => {
+            signal?.throwIfAborted();
+            return writeBoundLane(client, project, record, revision);
+          },
           restore(previous, revision) {
             if (previous) writeBoundLane(client, project, previous, revision);
             else
@@ -165,18 +175,18 @@ export async function coordinateLane(
         };
       },
       async (record, fence, previous) => {
+        signal?.throwIfAborted();
+        const timeoutMs = flight.operation.declaration.timeoutMs ?? 120000;
         const scope = {
           op: flight.request.op,
           effects: flight.operation.declaration.effects,
-          signal: AbortSignal.timeout(
-            flight.operation.declaration.timeoutMs ?? 120000,
-          ),
-          deadline:
-            Date.now() + (flight.operation.declaration.timeoutMs ?? 120000),
+          signal: laneSignal(timeoutMs, signal),
+          deadline: Date.now() + timeoutMs,
           processContainment: "supervised" as const,
         };
         const files = await options.providers.openFiles(scope);
         try {
+          signal?.throwIfAborted();
           return await attachBoundLane(
             record,
             {
