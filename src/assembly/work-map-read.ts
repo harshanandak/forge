@@ -186,7 +186,9 @@ export async function readWorkMap(
       return undefined;
     }
   }
-  const sha = defaultRef.startsWith("refs/remotes/")
+  const trustedRef =
+    defaultRef.startsWith("refs/remotes/") || commitSha.test(defaultRef);
+  const sha = trustedRef
     ? (
         await gitText("default-ref", [
           "rev-parse",

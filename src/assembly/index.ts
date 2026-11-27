@@ -706,6 +706,7 @@ export async function createAssembly(
     ) => Promise<unknown>,
     deadline = Infinity,
     parent?: AbortSignal,
+    defaultRef = "refs/remotes/origin/HEAD",
   ): ReturnType<typeof readWorkWarnings> {
     const timeoutMs = 5000;
     try {
@@ -839,7 +840,7 @@ export async function createAssembly(
         },
         {
           ...run,
-          defaultRef: "refs/remotes/origin/HEAD",
+          defaultRef,
           workInstance,
           candidateId,
         },
@@ -2177,6 +2178,7 @@ export async function createAssembly(
           id: string,
           deadline?: number,
           parent = signal,
+          defaultSha?: string,
         ) => {
           call.workMap = await workAdvisory(
             id,
@@ -2194,6 +2196,7 @@ export async function createAssembly(
             },
             deadline,
             parent,
+            defaultSha,
           );
         };
         const afterClaim = async (result: ResultEnvelope) => {
@@ -2579,8 +2582,8 @@ export async function createAssembly(
                 workOperation === "lane.start" ||
                 workOperation === "lane.attempt"
               )
-                clients.adviseWork = (id: string) =>
-                  adviseWork(id, scope.deadline, scope.signal);
+                clients.adviseWork = (id: string, defaultSha?: string) =>
+                  adviseWork(id, scope.deadline, scope.signal, defaultSha);
               return {
                 ownership: "owned",
                 value: Object.freeze(clients),
