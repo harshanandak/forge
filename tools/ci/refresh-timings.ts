@@ -22,9 +22,6 @@ const isTestShard = (record: Entry) =>
   record.node === "24" &&
   /^\d+\/\d+$/.test(record.shard);
 
-// Pure part: per-file medians over the latest attempt of each run, restricted
-// to the selected files. A selected file with no measurement keeps its old
-// value; without one it is left out. Keys come out sorted, values whole ms.
 export function refreshTimings(
   records: Entry[],
   selected: readonly string[],
