@@ -27,6 +27,7 @@ async function localRead(tool: string, fields: ObjectValue, cwd: string) {
   if (tool === "Grep" && !safePattern(fields.glob)) return false;
   const target = (tool === "Read" ? fields.file_path : fields.path) ?? cwd;
   if (typeof target !== "string") return false;
+  if ([cwd, target].some((path) => /^[\\/]{2}/.test(path))) return false;
   try {
     const dir = await realpath(cwd);
     const path = relative(dir, await realpath(resolve(cwd, target)));
