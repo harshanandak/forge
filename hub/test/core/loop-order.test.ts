@@ -166,9 +166,9 @@ test(
   timeout,
 );
 
-test(
-  "forge-2024 replay of an unknown outcome settled before a recorded member does not count in the next run",
-  async () => {
+test.each([false, true])(
+  "forge-2024 replay of an unknown outcome settled before a recorded member does not count in the next run (with retention: %s)",
+  async (sweep) => {
     const r = await slackRun(1, 2);
     const { f } = r;
     const unblock = blockProjection(f);
@@ -180,6 +180,13 @@ test(
     expect(accepted).toEqual([ts(1)]);
     await r.member(ts(2));
     expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
+    if (sweep) {
+      f.advance((LIMITS.threadKeepDays + 1) * 86_400_000);
+      await sweepHistory(f);
+      expect(
+        f.rows("thread_messages WHERE chat_message_id = ?", "kind", ts(2)),
+      ).toEqual([{ kind: "person" }]);
+    }
     unblock();
     const recovered = replayRun(r);
     expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(0);

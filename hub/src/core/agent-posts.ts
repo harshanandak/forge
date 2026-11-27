@@ -3,7 +3,13 @@ import type { ChatMessageRef } from "../contract/chat.ts";
 import type { Conversation } from "../contract/domain.ts";
 import type { HubDb } from "../contract/runtime.ts";
 import type { CoreContext } from "./core.ts";
-import { recordAgentPost, UNCONFIRMED_MESSAGE_PREFIX } from "./thread.ts";
+import {
+  BEFORE_MEMBER_SUFFIX,
+  num,
+  recordAgentPost,
+  replayBeforeMember,
+  UNCONFIRMED_MESSAGE_PREFIX,
+} from "./thread.ts";
 
 type Reservation = {
   id: string;
@@ -18,8 +24,9 @@ type Outcome =
   | { phase: "confirmed"; ref: ChatMessageRef }
   | { phase: "refused" | "unknown" };
 
-export type SettledAgentPost = Reservation & Outcome;
-type JournalPost = Reservation & (Outcome | { phase: "reserved" });
+export type SettledAgentPost = Reservation &
+  Outcome & { settledThroughSeq?: number };
+type JournalPost = SettledAgentPost | (Reservation & { phase: "reserved" });
 
 export class AgentPostOutcomeError extends Error {}
 
@@ -33,8 +40,8 @@ export class AgentPostJournalError extends Error {
   }
 }
 
-const journalPrefix = "agent-post:";
-const journalKey = (thread: string) => journalPrefix + thread;
+export const AGENT_POST_JOURNAL_PREFIX = "agent-post:";
+const journalKey = (thread: string) => AGENT_POST_JOURNAL_PREFIX + thread;
 
 type JournalRead =
   { readonly ok: true; readonly post: JournalPost } | { readonly ok: false };
@@ -77,7 +84,7 @@ function validRef(value: unknown): value is ChatMessageRef {
 }
 
 function readJournalPost(key: string, value: unknown): JournalRead {
-  if (!key.startsWith(journalPrefix) || typeof value !== "string")
+  if (!key.startsWith(AGENT_POST_JOURNAL_PREFIX) || typeof value !== "string")
     return { ok: false };
   let parsed: unknown;
   try {
@@ -102,7 +109,7 @@ function readJournalPost(key: string, value: unknown): JournalRead {
   const at = parsed.at;
   if (typeof id !== "string") return { ok: false };
   if (!validConversation(conversation)) return { ok: false };
-  if (conversation.chatThreadId !== key.slice(journalPrefix.length))
+  if (conversation.chatThreadId !== key.slice(AGENT_POST_JOURNAL_PREFIX.length))
     return { ok: false };
   if (typeof sessionId !== "string") return { ok: false };
   if (typeof personId !== "string") return { ok: false };
@@ -120,6 +127,17 @@ function readJournalPost(key: string, value: unknown): JournalRead {
     const ref = parsed.ref;
     if (!validRef(ref)) return { ok: false };
     return { ok: true, post: { ...reservation, phase, ref } };
+  }
+  if (phase === "unknown" && parsed.settledThroughSeq !== undefined) {
+    if (!validJournalTime(parsed.settledThroughSeq)) return { ok: false };
+    return {
+      ok: true,
+      post: {
+        ...reservation,
+        phase,
+        settledThroughSeq: parsed.settledThroughSeq,
+      },
+    };
   }
   return { ok: true, post: { ...reservation, phase } };
 }
@@ -176,6 +194,15 @@ export function reserveAgentPost(
 }
 
 function writeOutcome(ctx: CoreContext, post: SettledAgentPost) {
+  if (post.phase === "unknown" && post.settledThroughSeq === undefined) {
+    const row = ctx.deps.db
+      .prepare(
+        `SELECT coalesce(max(seq), 0) AS seq FROM thread_messages
+         WHERE adapter = 'slack' AND chat_thread_id = ?`,
+      )
+      .get(post.conversation.chatThreadId);
+    post.settledThroughSeq = num(row?.seq);
+  }
   const { changes } = ctx.deps.db
     .prepare("UPDATE meta SET value = ? WHERE key = ?")
     .run(JSON.stringify(post), journalKey(post.conversation.chatThreadId));
@@ -194,15 +221,34 @@ function storedRead(
   return { key, read: readJournalPost(key, row.value) };
 }
 
-function projectPost(ctx: CoreContext, key: string, post: JournalPost) {
+function projectPost(
+  ctx: CoreContext,
+  key: string,
+  post: JournalPost,
+  replay = false,
+) {
   const { conversation } = post;
   ctx.store.tx(() => {
+    const beforeMember =
+      replay &&
+      post.phase === "unknown" &&
+      post.settledThroughSeq !== undefined &&
+      replayBeforeMember(
+        ctx.deps.db,
+        conversation.chatThreadId,
+        post.settledThroughSeq,
+      );
     if (post.phase !== "refused")
       recordAgentPost(
         ctx,
         post.phase === "confirmed"
           ? post.ref
-          : { ...conversation, chatMessageId: post.id },
+          : {
+              ...conversation,
+              chatMessageId: beforeMember
+                ? post.id + BEFORE_MEMBER_SUFFIX
+                : post.id,
+            },
         conversation,
         post.sessionId,
         post.personId,
@@ -218,7 +264,7 @@ export function settleAgentPost(
   reservation: Reservation,
   outcome: Outcome,
 ): boolean {
-  const post = { ...reservation, ...outcome };
+  const post: SettledAgentPost = { ...reservation, ...outcome };
   for (const retry of [true, false]) {
     try {
       writeOutcome(ctx, post);
@@ -256,7 +302,7 @@ export function recoverAgentPosts(ctx: CoreContext, thread?: string) {
     }
     const post = pending ?? agentPost(ctx, thread);
     if (!post) return;
-    projectPost(ctx, journalKey(thread), post);
+    projectPost(ctx, journalKey(thread), post, true);
     return post.conversation;
   }
   const rows = ctx.deps.db
@@ -270,7 +316,7 @@ export function recoverAgentPosts(ctx: CoreContext, thread?: string) {
       continue;
     }
     try {
-      projectPost(ctx, key, read.post);
+      projectPost(ctx, key, read.post, true);
     } catch {
       ctx.deps.log.warn("agent_post_journal_projection_failed", { key });
     }

@@ -2,8 +2,10 @@ import { ChatWriteFailure, type ChatMessageRef } from "../contract/chat.ts";
 import type { Summary, SummaryLine } from "../contract/domain.ts";
 import { LIMITS, type ReportOutput } from "../contract/mcp.ts";
 import type { SqlRow, WorkerClaim } from "../contract/runtime.ts";
+import { AGENT_POST_JOURNAL_PREFIX } from "./agent-posts.ts";
 import { integer, oneOf, text } from "./askEffects.ts";
 import type { CoreContext } from "./core.ts";
+import { keepLoopGuardRows } from "./thread.ts";
 
 export interface EffectWorker {
   prepare(): void;
@@ -140,15 +142,24 @@ export function createEffectWorker(
       next_attempt_at = CASE WHEN summary_effects.status = 'pending' THEN summary_effects.next_attempt_at
         ELSE excluded.next_attempt_at END
   `);
+  const threadsNeedingRetention = db.prepare(`
+    SELECT chat_thread_id,
+      EXISTS(SELECT 1 FROM meta WHERE key = ? || chat_thread_id) AS pending_post
+    FROM thread_messages WHERE adapter = 'slack'
+    GROUP BY chat_thread_id HAVING min(created_at) < ? OR count(*) > ?
+  `);
   const pruneThreadMessages = db.prepare(`
-    DELETE FROM thread_messages WHERE created_at < ? OR seq IN (
-      SELECT seq FROM (
-        SELECT seq, row_number() OVER (
-          PARTITION BY adapter, chat_thread_id ORDER BY seq DESC
-        ) AS position
-        FROM thread_messages WHERE created_at >= ?
-      ) WHERE position > ?
+    WITH protected AS (SELECT value FROM json_each(?)),
+    ranked AS (
+      SELECT seq, row_number() OVER (
+        PARTITION BY adapter, chat_thread_id
+        ORDER BY (seq IN protected) DESC, seq DESC
+      ) AS position
+      FROM thread_messages WHERE created_at >= ? OR seq IN protected
     )
+    DELETE FROM thread_messages
+      WHERE (created_at < ? AND seq NOT IN protected)
+        OR seq IN (SELECT seq FROM ranked WHERE position > ?)
   `);
   const pruneReplyOwed = db.prepare(
     "DELETE FROM reply_owed WHERE created_at < ?",
@@ -173,7 +184,23 @@ export function createEffectWorker(
   function retainHistory(): void {
     const cutoff = now() - LIMITS.threadKeepDays * dayMs;
     tx(() => {
-      pruneThreadMessages.run(cutoff, cutoff, LIMITS.threadKeep);
+      const keep = new Set<number>();
+      for (const row of threadsNeedingRetention.all(
+        AGENT_POST_JOURNAL_PREFIX,
+        cutoff,
+        LIMITS.threadKeep,
+      ))
+        keepLoopGuardRows(db, text(row.chat_thread_id), {
+          cutoff,
+          keep,
+          pendingPost: integer(row.pending_post) === 1,
+        });
+      pruneThreadMessages.run(
+        JSON.stringify([...keep]),
+        cutoff,
+        cutoff,
+        LIMITS.threadKeep,
+      );
       pruneReplyOwed.run(cutoff);
     });
   }
