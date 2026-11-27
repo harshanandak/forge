@@ -180,6 +180,7 @@ const ownFiles = [
   "dist/core/answers.js",
   "dist/core/askEffects.js",
   "dist/core/asks.js",
+  "dist/core/cli.js",
   "dist/core/config.js",
   "dist/core/context.js",
   "dist/core/core.js",

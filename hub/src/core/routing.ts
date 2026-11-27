@@ -72,7 +72,7 @@ export function insertItem(
   item: {
     owner: Person;
     sender: Person;
-    agent?: string;
+    senderSession?: { kind: "agent" | "cli"; sessionId: string };
     target?: Session | undefined;
     chat?: Conversation;
     projectId?: string | undefined;
@@ -81,7 +81,7 @@ export function insertItem(
   },
 ) {
   const { db, now } = ctx.deps;
-  const { owner, sender, chat, projectId, event, agent } = item;
+  const { owner, sender, chat, projectId, event, senderSession } = item;
   const selected = item.target;
   const parent =
     selected?.parentSessionId &&
@@ -90,7 +90,8 @@ export function insertItem(
       : undefined;
   const redirected =
     parent?.personId === owner.personId &&
-    (parent.projectId === undefined || parent.projectId === projectId)
+    (parent.projectId === projectId ||
+      (senderSession?.kind !== "cli" && parent.projectId === undefined))
       ? parent
       : undefined;
   const session = (redirected ?? selected)?.sessionId;
@@ -115,12 +116,12 @@ export function insertItem(
       redirected ? (selected?.sessionId ?? null) : null,
       chat?.conversationId ?? null,
       projectId ?? null,
-      agent ? "agent_message" : "chat_message",
-      agent ? "agent" : "person",
+      senderSession ? `${senderSession.kind}_message` : "chat_message",
+      senderSession?.kind ?? "person",
       sender.personId,
-      agent ?? null,
+      senderSession?.sessionId ?? null,
       sender.displayName,
-      Number(!!agent || sender.personId !== owner.personId),
+      Number(senderSession !== undefined || sender.personId !== owner.personId),
       Number(projectId === undefined),
       item.text,
       event?.chatMessageId ?? null,

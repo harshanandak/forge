@@ -1,6 +1,7 @@
 import { ChatWriteFailure } from "../contract/chat.ts";
-import type { HubCore } from "../contract/core.ts";
-import { LIMITS } from "../contract/mcp.ts";
+import type { HubCore, HubResult } from "../contract/core.ts";
+import type { Person, Session } from "../contract/domain.ts";
+import { LIMITS, type SendInput } from "../contract/mcp.ts";
 import { AgentPostOutcomeError, recoverAgentPosts } from "./agent-posts.ts";
 import type { CoreContext } from "./core.ts";
 import { refused } from "./inbox.ts";
@@ -14,20 +15,40 @@ import {
   postLoopPause,
 } from "./thread.ts";
 
+type SendTransaction = <T>(work: () => HubResult<T>) => HubResult<T>;
+
 export function createSend(ctx: CoreContext): HubCore["send"] {
-  return async (caller, input) => {
+  const send = createMessageSend(ctx, "agent", ctx.store.tx);
+  return (caller, input) => send(caller.person, input);
+}
+
+export function createPrivateSend(
+  ctx: CoreContext,
+  tx: SendTransaction,
+): HubCore["cliSend"] {
+  return createMessageSend(ctx, "cli", tx);
+}
+
+function createMessageSend(
+  ctx: CoreContext,
+  kind: "agent" | "cli",
+  tx: SendTransaction,
+): (person: Person, input: SendInput) => ReturnType<HubCore["send"]> {
+  return async (person, input) => {
     const { config, db, people } = ctx.deps;
     const { guards, sessions } = ctx.store;
-    const { person } = caller;
-    const {
-      projectId,
-      toPersonId,
-      sessionId,
-      targetSessionId,
-      conversationId,
-      text,
-    } = input;
-    const result = ctx.store.tx(() => {
+    const { projectId, toPersonId, sessionId, targetSessionId, text } = input;
+    const conversationId = kind === "agent" ? input.conversationId : undefined;
+    const storeItem = (owner: Person, target: Session | undefined) =>
+      insertItem(ctx, {
+        owner,
+        sender: person,
+        senderSession: { kind, sessionId },
+        projectId,
+        target,
+        text: guards.storedText(text),
+      });
+    const result = tx(() => {
       const own = sessions.requireOwnSession(person, sessionId);
       if (!own.ok) return own;
       if (!config.projects.some((p) => p.projectId === projectId))
@@ -39,6 +60,8 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
         !sessions.isMember(projectId, owner.personId)
       )
         return refused("NOT_PROJECT_MEMBER");
+      if (kind === "cli" && own.value.projectId !== projectId)
+        return refused("INPUT_INVALID", "/projectId");
       const chat =
         conversationId === undefined
           ? undefined
@@ -62,35 +85,27 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
         targetSessionId !== undefined &&
         (!target ||
           target.personId !== owner.personId ||
-          (target.projectId !== undefined && target.projectId !== projectId))
+          (target.projectId !== projectId &&
+            (kind === "cli" || target.projectId !== undefined)))
       )
         return refused("SESSION_UNKNOWN");
-      return { ok: true, owner, target, chat } as const;
+      const recorded = kind === "cli" ? storeItem(owner, target) : undefined;
+      return { ok: true, value: { owner, target, chat, recorded } } as const;
     });
     if (!result.ok) return result;
-    const storeItem = () =>
-      ctx.store.tx(() =>
-        insertItem(ctx, {
-          owner: result.owner,
-          sender: person,
-          agent: sessionId,
-          projectId,
-          target: result.target,
-          text: guards.storedText(text),
-        }),
-      );
+    const { owner, target, chat, recorded } = result.value;
+    const commitItem = () => ctx.store.tx(() => storeItem(owner, target));
     const deliver = async (item: ReturnType<typeof storeItem>) => {
       await ctx.notify({
-        person: result.owner,
+        person: owner,
         projectId,
         items: [item.id],
         answers: [],
         ...(item.session === undefined ? {} : { session: item.session }),
       });
     };
-    const chat = result.chat;
     if (!chat || chat.isDirect) {
-      const item = storeItem();
+      const item = recorded ?? commitItem();
       await deliver(item);
       return { ok: true, value: { itemId: item.id } };
     }
@@ -113,7 +128,7 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
         await postLoopPause(ctx, chat);
         return refused("CONVERSATION_PAUSED");
       }
-      const item = storeItem();
+      const item = commitItem();
       let threadPost: "posted" | "failed" = "posted";
       try {
         const posted = await postAgentText(ctx, {
@@ -123,7 +138,7 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
             config.projects.find((entry) => entry.projectId === projectId)
               ?.name ?? projectId,
           label: `Forge (${person.displayName}'s agent)`,
-          prefix: `${person.displayName}'s agent asked ${result.owner.displayName}'s agent:`,
+          prefix: `${person.displayName}'s agent asked ${owner.displayName}'s agent:`,
           text,
           fallbackName: person.displayName,
           conversation: chat,
