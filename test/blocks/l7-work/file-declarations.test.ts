@@ -16,7 +16,7 @@ const sha = "0123456789abcdef0123456789abcdef01234567";
 const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(486)}`);
 const mediumFiles = Array.from(
   { length: 1024 },
-  () => `src/${"a".repeat(447)}`,
+  () => `src/${"a".repeat(335)}`,
 );
 const wideFiles = Array.from({ length: 256 }, () => `src/${"é".repeat(996)}`);
 const globals = globalThis as Record<string, unknown>;
@@ -47,13 +47,14 @@ async function project() {
   const owner = new StateOwner(opened.handle.value, { now: () => 1000 });
   owner.initialize();
   let request = 0;
+  let activeSession: Record<string, string> = session;
   const context = (op: string) => {
     if (op === "issue.claim")
       return {
         variant: "leased",
         leaseMode: "acquire",
         actor,
-        session,
+        session: activeSession,
         project: { id: "test" },
       };
     if (["issue.update", "issue.close", "issue.release"].includes(op))
@@ -96,6 +97,14 @@ async function project() {
     call,
     refusal,
     close: () => opened.handle.close(),
+    longestSession: () => {
+      activeSession = {
+        id: "s".repeat(200),
+        device: "d".repeat(256),
+        agent: "a".repeat(200),
+        harness: "h".repeat(200),
+      };
+    },
   };
 }
 
@@ -246,6 +255,11 @@ test("file declaration updates keep the revision and lease fence", async () => {
     expect(["LEASE_NOT_HELD", "LEASE_STALE", "LEASE_EXPIRED"]).toContain(
       lost.code,
     );
+    p.longestSession();
+    await p.call("issue.claim", { id: "forge-1" });
+    expect(await p.call("issue.show", { id: "forge-1" })).toMatchObject({
+      id: "forge-1",
+    });
     expect(p.owner.get(namespace, "issue:work-1")?.value).toMatchObject({
       expectedFiles: wideFiles,
     });

@@ -7,8 +7,6 @@ import { configured, fail, MAX_SHOW_RESPONSE_BYTES } from "./issue-read.ts";
 import { carriesToken } from "./tokens.ts";
 import type { ReceiptPrincipal } from "./issue-request-id.ts";
 
-const LEASE_RESPONSE_RESERVE_BYTES = 5_120;
-
 export function boundedResult<Result>(op: string, result: Result): Result {
   const body = JSON.stringify({
     ok: true,
@@ -17,10 +15,7 @@ export function boundedResult<Result>(op: string, result: Result): Result {
     result,
     warnings: [],
   });
-  if (
-    new TextEncoder().encode(body).length >
-    MAX_SHOW_RESPONSE_BYTES - LEASE_RESPONSE_RESERVE_BYTES
-  )
+  if (new TextEncoder().encode(body).length > (MAX_SHOW_RESPONSE_BYTES * 3) / 4)
     throw fail("UNAVAILABLE", "response too large");
   return result;
 }

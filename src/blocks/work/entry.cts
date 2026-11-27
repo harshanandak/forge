@@ -781,7 +781,6 @@ function atomicRuntime<Input, Output>(
   };
 }
 const MAX_OUTPUT_BYTES = 1_048_576;
-const LEASE_OUTPUT_RESERVE_BYTES = 5_120;
 function utf8Bytes(text: string): number {
   let bytes = 0;
   for (let index = 0; index < text.length; index++) {
@@ -802,10 +801,7 @@ function utf8Bytes(text: string): number {
   return bytes;
 }
 function boundedOutput(value: TrackerItem): void {
-  if (
-    utf8Bytes(JSON.stringify(value)) >
-    MAX_OUTPUT_BYTES - LEASE_OUTPUT_RESERVE_BYTES
-  )
+  if (utf8Bytes(JSON.stringify(value)) > (MAX_OUTPUT_BYTES * 3) / 4)
     fail("LIMIT_EXCEEDED", `output exceeds maxOutputBytes ${MAX_OUTPUT_BYTES}`);
 }
 function boundedItem(
