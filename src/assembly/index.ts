@@ -718,12 +718,11 @@ export async function createAssembly(
     signal: AbortSignal,
     laneStart: boolean,
   ): ReturnType<typeof readWorkWarnings> {
-    const timeoutMs = advisoryMs;
     const scope = {
       op: "work-file-map",
       effects: ["environment:read", "external:process", "files:read"],
       signal,
-      deadline: Date.now() + timeoutMs,
+      deadline: Date.now() + advisoryMs,
       processContainment: "supervised" as const,
     };
     const process = providers.process(scope);
@@ -743,8 +742,7 @@ export async function createAssembly(
       "LOCALAPPDATA",
     ]);
     const git = gitCapability(process, env, createGitScope(stateRoot, root));
-    const run = { cwd: stateRoot, env, signal, timeoutMs };
-    const initialProcesses = laneStart ? 3 : 1;
+    const run = { cwd: stateRoot, env, signal, timeoutMs: advisoryMs };
     let defaultRef = "refs/remotes/origin/HEAD";
     if (laneStart) {
       const executable = git.executable();
@@ -765,8 +763,8 @@ export async function createAssembly(
         "origin",
         "HEAD",
       ]);
-      const sha = head.match(/^([0-9a-f]{40}|[0-9a-f]{64})\tHEAD$/)?.[1];
-      if (!sha) throw new Error("Default commit unavailable");
+      defaultRef = head.match(/^([0-9a-f]{40}|[0-9a-f]{64})\tHEAD$/)?.[1] ?? "";
+      if (!defaultRef) throw new Error("Default commit unavailable");
       await readDefault([
         "fetch",
         "--no-write-fetch-head",
@@ -775,9 +773,8 @@ export async function createAssembly(
         "--no-prune",
         "--no-recurse-submodules",
         "origin",
-        sha,
+        defaultRef,
       ]);
-      defaultRef = sha;
     }
     let bytes: number = WORK_MAP_LIMITS.outputBytes;
     const charge = (size: number) => {
@@ -806,10 +803,7 @@ export async function createAssembly(
     return await readWorkWarnings(
       {
         now: Date.now,
-        process: {
-          resolve: () => git.executable(),
-          run: process.run.bind(process),
-        },
+        process: { ...process, resolve: () => git.executable() },
         async issues({ limit }) {
           const page = (await read("issue.list", {
             status: "open",
@@ -883,7 +877,7 @@ export async function createAssembly(
         defaultRef,
         workInstance,
         candidateId,
-        initialProcesses,
+        initialProcesses: laneStart ? 3 : 1,
       },
       (id) =>
         lanes.findLast(
@@ -2701,7 +2695,11 @@ export async function createAssembly(
           const output = record(result.result);
           const id = laneStart ? output?.issue : output?.id;
           const expiry = Date.parse(String(output?.expiresAt));
-          if (
+          if (mcp || !options.oneShot)
+            call.workMap = unavailableMap(
+              "advisory skipped: shared process runner",
+            );
+          else if (
             workOperation === "issue.claim" &&
             !(expiry - Date.now() > 2 * advisoryMs)
           )
