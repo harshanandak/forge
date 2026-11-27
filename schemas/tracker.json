@@ -99,6 +99,17 @@
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/ItemId" }
         },
+        "expectedFiles": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        },
+        "actualFiles": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        },
+        "filesAt": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
         "lease": { "$ref": "state.json#/$defs/LeaseRecord" },
         "createdAt": { "$ref": "common.json#/$defs/Timestamp" },
         "updatedAt": { "$ref": "common.json#/$defs/Timestamp" },
@@ -161,6 +172,11 @@
           "maxItems": 256,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/ItemId" }
+        },
+        "expectedFiles": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
         }
       },
       "additionalProperties": false
@@ -236,7 +252,18 @@
           "maxItems": 256,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/ItemId" }
-        }
+        },
+        "expectedFiles": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        },
+        "actualFiles": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        },
+        "filesAt": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
       },
       "additionalProperties": false
     },

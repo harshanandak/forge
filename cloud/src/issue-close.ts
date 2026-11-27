@@ -18,7 +18,7 @@ import {
   storedId,
 } from "./issue-read.ts";
 import { fence, heldReplay, shownWrite } from "./issue-update.ts";
-import { receipted, type WriteCall } from "./issue-write.ts";
+import { boundedResult, receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 const close = manifest.operations["issue.close"];
@@ -125,7 +125,10 @@ export function closeIssue(
         actor,
         { expectRevision: record.revision, fence: held, readSet: reads },
       );
-      return shownWrite(owner, written, id, prefix);
+      return boundedResult(
+        "issue.close",
+        shownWrite(owner, written, id, prefix),
+      );
     },
     heldReplay(owner, "issue.close"),
   );

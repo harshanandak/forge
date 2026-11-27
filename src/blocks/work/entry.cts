@@ -19,6 +19,13 @@ const {
   approvalFor,
   hostedCheck: { hostedGate, repo: hostedRepo },
 } = require("./record-primitives.ts") as typeof import("./record-primitives.ts");
+const {
+  FILE_DECLARATION_REFUSALS,
+  jsonBytes,
+  normalizeFileDeclarations,
+  overFileDeclarationBudget,
+} =
+  require("./file-declarations.ts") as typeof import("./file-declarations.ts");
 import type {
   ReceiptsService,
   ProcessService,
@@ -143,7 +150,7 @@ type LaneInput = ItemRef & { branch: string; brief: string; attempt?: string };
 type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
 type CloseIssue = (
   call: HandlerCall<TrackerOperations<"issue">["issue.close"][0]>,
-  validateOnly?: boolean,
+  validateOnly?: boolean | "receipt",
   deliveredUrl?: string,
   hostedProof?: string,
 ) => Promise<TrackerItem>;
@@ -538,7 +545,7 @@ function get(state: LeaseStateClient, id: string, given = id): StateRecord {
   if (!record) fail("NOT_FOUND", `Issue ${given} was not found`);
   return record;
 }
-function stored(record: StateRecord): Stored {
+function stored(record: Pick<StateRecord, "value">): Stored {
   return record.value as Stored;
 }
 function live(state: LeaseStateClient, id: string) {
@@ -565,7 +572,7 @@ function cleanupConflict(expiresAt: string): never {
 }
 function item(
   state: LeaseStateClient,
-  record: StateRecord,
+  record: Pick<StateRecord, "value" | "revision" | "updatedAt">,
   ids: Ids,
 ): TrackerItem {
   const {
@@ -777,6 +784,25 @@ function atomicRuntime<Input, Output>(
       return rejectRuntimeWrite(error);
     }
   };
+}
+const MAX_OUTPUT_BYTES = 1_048_576;
+function boundedItem(
+  state: LeaseStateClient,
+  value: object,
+  revision: number,
+  ids: Ids,
+  checkFiles = true,
+): TrackerItem {
+  if (checkFiles && overFileDeclarationBudget(value))
+    fail("INPUT_INVALID", FILE_DECLARATION_REFUSALS.size);
+  const projection = item(
+    state,
+    { value, revision, updatedAt: new Date(state.now()).toISOString() },
+    ids,
+  );
+  if (jsonBytes(projection) > (MAX_OUTPUT_BYTES * 3) / 4)
+    fail("LIMIT_EXCEEDED", `output exceeds maxOutputBytes ${MAX_OUTPUT_BYTES}`);
+  return projection;
 }
 function persist(
   state: LeaseStateClient,
@@ -1183,6 +1209,8 @@ function update(
   given: string,
 ): TrackerItem {
   const value = stored(get(state, input.id, given));
+  const declarations = normalizeFileDeclarations(input);
+  if (!declarations.ok) fail("INPUT_INVALID", declarations.message);
   checkKind(input.kind);
   if (
     value.kind === "epic" &&
@@ -1207,13 +1235,14 @@ function update(
     ? [...validateDependencies(state, input.id, input.dependsOn, ids)]
     : [];
   const { id, expectRevision, parent, ...patch } = input;
-  const next = { ...value, ...patch };
+  const next = { ...value, ...patch, ...declarations.patch };
   if (parent === null) delete next.parent;
   else if (parent !== undefined) {
     const target = ids.stored(parent);
     readSet.push(...validateDependencies(state, id, [target], ids, true));
     Object.assign(next, { parent: target });
   }
+  boundedItem(state, next, expectRevision + 1, ids);
   return item(
     state,
     persist(state, key(id), next, expectRevision, undefined, readSet),
@@ -5867,23 +5896,24 @@ const operations: Operations<WorkOperations> = {
         },
       };
       const hostedProof = hosted ? ([receipt] as const) : ([] as const);
+      const shouldClose = !keepOpen && current.status !== "closed";
       if (!dropped) {
+        await (operations["issue.close"] as CloseIssue)(
+          closing,
+          shouldClose ? true : "receipt",
+          pull.url,
+          ...hostedProof,
+        );
         if (!linked)
           await operations["issue.link"]({
             ...call,
             input: { id: current.id, relation: "delivers", url: pull.url! },
           });
-        await (operations["issue.close"] as CloseIssue)(
-          closing,
-          true,
-          pull.url,
-          ...hostedProof,
-        );
         if (!keepOpen && !recovering)
           persist(state, landingKey, landing, accepted?.revision ?? 0, key(id));
       }
       save();
-      if (!keepOpen && current.status !== "closed")
+      if (shouldClose)
         current = await (operations["issue.close"] as CloseIssue)(
           closing,
           false,
@@ -6022,6 +6052,8 @@ const operations: Operations<WorkOperations> = {
   "issue.create": ({ input, services, config }) => {
     const state = client(services);
     const ids = idsFor(state, config);
+    const declarations = normalizeFileDeclarations(input, ["expectedFiles"]);
+    if (!declarations.ok) fail("INPUT_INVALID", declarations.message);
     checkKind(input.kind);
     const dependsOn = [...new Set((input.dependsOn ?? []).map(ids.stored))];
     const parent =
@@ -6042,7 +6074,9 @@ const operations: Operations<WorkOperations> = {
         ...(input.kind ? { kind: input.kind } : {}),
         ...(input.body === undefined ? {} : { body: input.body }),
         ...(parent === undefined ? {} : { parent }),
+        ...declarations.patch,
       };
+      boundedItem(state, value, 1, ids);
       return { value, readSet };
     });
     return item(state, checked(state, written), ids);
@@ -6731,7 +6765,7 @@ const operations: Operations<WorkOperations> = {
   },
   "issue.close": async (
     { input, services, config, signal },
-    validateOnly = false,
+    validateOnly: boolean | "receipt" = false,
     deliveredUrl?: string,
     hostedProof?: string,
   ) => {
@@ -6777,13 +6811,15 @@ const operations: Operations<WorkOperations> = {
           "RECEIPT_INVALID",
           "Closing requires an existing verified PASS receipt",
         );
-      const link = appended(state, `link:${id}:`).findLast((record) => {
+      let link = appended(state, `link:${id}:`).findLast((record) => {
         const link = record.value as LinkInput;
         return (
           link.relation === "delivers" &&
           (deliveredUrl === undefined || link.url === deliveredUrl)
         );
       })?.value as LinkInput | undefined;
+      if (!link && validateOnly && deliveredUrl)
+        link = { id, relation: "delivers", url: deliveredUrl };
       const closeRepair =
         `Link a merged PR with forge issue link ${ids.shown(id)} --relation delivers --url <pr-url>, then close with --receipt <receipt-id>; ` +
         `or omit --receipt and run forge issue close ${ids.shown(id)} --without-receipt "<reason>".`;
@@ -6903,7 +6939,7 @@ const operations: Operations<WorkOperations> = {
         "Supply a PASS receipt or an explicit withoutReceipt reason",
       );
     }
-    if (validateOnly) return item(state, record, ids);
+    if (validateOnly === "receipt") return item(state, record, ids);
     const {
       receipt: _previousReceipt,
       withoutReceipt: _previousExemption,
@@ -6918,11 +6954,15 @@ const operations: Operations<WorkOperations> = {
         : { receipt: input.receipt }),
       ...(input.reason === undefined ? {} : { closeReason: input.reason }),
     };
-    const written = persist(state, key(id), value, record.revision);
-    const { closeReason: _reason, ...view } = written.value as Stored & {
-      closeReason?: string;
-    };
-    return item(state, { ...written, value: view }, ids);
+    const candidate = boundedItem(
+      state,
+      value,
+      record.revision + 1,
+      ids,
+      false,
+    );
+    if (validateOnly) return candidate;
+    return item(state, persist(state, key(id), value, record.revision), ids);
   },
   "issue.comment": ({ input, services, config }) => {
     const state = client(services);

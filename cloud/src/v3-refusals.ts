@@ -1,3 +1,4 @@
+import { FILE_DECLARATION_REFUSALS } from "../../src/blocks/work/file-declarations.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import {
@@ -29,8 +30,19 @@ const refused = (message: string): ForgeError => ({
   retry: "never",
 });
 export const INPUT_REFUSALS = {
-  "issue.create": [CREATE_GRAPH, CREATE_SCHEMA, KIND_REFUSED].map(refused),
-  "issue.update": [UPDATE_GRAPH, UPDATE_SCHEMA, INVALID_ID].map(refused),
+  "issue.create": [
+    CREATE_GRAPH,
+    CREATE_SCHEMA,
+    KIND_REFUSED,
+    FILE_DECLARATION_REFUSALS.paths,
+    FILE_DECLARATION_REFUSALS.size,
+  ].map(refused),
+  "issue.update": [
+    UPDATE_GRAPH,
+    UPDATE_SCHEMA,
+    INVALID_ID,
+    ...Object.values(FILE_DECLARATION_REFUSALS),
+  ].map(refused),
   "issue.claim": [CLAIM_INVALID, INVALID_ID].map(refused),
 };
 

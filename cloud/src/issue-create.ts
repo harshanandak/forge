@@ -3,11 +3,12 @@
 // an id: the input is checked against the work block's declared schema and only bound as values.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import CreateItemInput from "../../src/blocks/work/schemas/CreateItemInput.json" with { type: "json" };
+import { normalizeFileDeclarations } from "../../src/blocks/work/file-declarations.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { fail, schemas, shownItem } from "./issue-read.ts";
-import { receipted, type WriteCall } from "./issue-write.ts";
+import { boundedResult, receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 const FLOOR_MISSING =
@@ -28,6 +29,7 @@ interface Fields {
   body?: string;
   kind?: string;
   labels?: string[];
+  expectedFiles?: readonly string[];
 }
 
 // Parent and dependencies are refused by name, never dropped: the graph arrives in a later slice.
@@ -43,7 +45,9 @@ export function checked(input: unknown): Fields {
   const fields = input as Fields;
   if (fields.kind !== undefined && !KINDS.includes(fields.kind))
     throw fail("INPUT_INVALID", KIND_REFUSED);
-  return fields;
+  const declarations = normalizeFileDeclarations(fields, ["expectedFiles"]);
+  if (!declarations.ok) throw fail("INPUT_INVALID", declarations.message);
+  return { ...fields, ...declarations.patch };
 }
 
 /** Creates one open issue, or returns the recorded answer for a repeated request. */
@@ -64,18 +68,15 @@ export function createIssue(
         NAMESPACE,
         "issue:work-",
         (_key, number) => {
-          const id = `work-${number}`;
           return {
             value: {
-              id,
+              ...fields,
+              id: `work-${number}`,
               prefix,
-              title: fields.title,
-              status: "open",
+              status: "open" as const,
               labels: fields.labels ?? [],
               dependsOn: [],
               createdAt: new Date(now).toISOString(),
-              ...(fields.kind ? { kind: fields.kind } : {}),
-              ...(fields.body === undefined ? {} : { body: fields.body }),
             },
           };
         },
@@ -83,7 +84,11 @@ export function createIssue(
         { refuseMissing: FLOOR_MISSING },
       );
       const id = `work-${written.key.slice("issue:work-".length)}`;
-      return shownItem({ ...written }, id, undefined, now, prefix);
+      return boundedResult(
+        "issue.create",
+        shownItem({ ...written }, id, undefined, now, prefix),
+        written.value as Fields,
+      );
     },
   );
 }
