@@ -5,6 +5,28 @@ import {
   type SchemaProblem,
 } from "../../src/contract/schema.ts";
 
+const annotation = {
+  default: {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    patternProperties: { "^x$": false },
+  },
+};
+
+test("registration refuses a reference into annotation data", () => {
+  expect(
+    () => new SchemaRegistry([{ ...annotation, $ref: "#/default" }]),
+  ).toThrow(/does not resolve/);
+}, 30_000);
+
+test("validation entrypoints refuse annotation data and accept checked subschemas", () => {
+  const registry = new SchemaRegistry([
+    { ...annotation, $defs: { value: { type: "integer" } } },
+  ]);
+  expect(() => registry.validator("#/default")).toThrow(/no schema/);
+  expect(() => registry.validate("#/default", { x: 1 })).toThrow(/no schema/);
+  expect(registry.validate("#/$defs/value", 1)).toEqual([]);
+}, 30_000);
+
 test("the registry refuses a declared dialect Forge cannot enforce", () => {
   expect(
     () =>
