@@ -43,8 +43,7 @@ function patternMatcher(pattern: string): (path: string) => boolean {
         const width = (path.codePointAt(i) ?? 0) > 0xffff ? 2 : 1;
         if (token === "*" || token === "**") {
           if (reachable[i]) next[i] = 1;
-          if (next[i] && i < path.length && (token === "**" || path[i] !== "/"))
-            next[i + width] = 1;
+          if (next[i] && i < path.length) next[i + width] = 1;
         } else if (reachable[i]) {
           if (token === "?") {
             if (i < path.length && path[i] !== "/") next[i + width] = 1;
@@ -135,8 +134,13 @@ export function resolveFileOverlap(input: {
     if (rightPattern === undefined) continue;
     const overlap = { path, leftPattern: leftMatches.get(path)!, rightPattern };
     const exclusion = rules.find((rule) => rule.matches(path));
-    if (exclusion) generated.push({ ...overlap, rule: exclusion.rule });
-    else overlaps.push(overlap);
+    if (exclusion) continue;
+    overlaps.push(overlap);
   }
-  return { complete: reasons.length === 0, reasons, overlaps, generated };
+  return {
+    complete: reasons.every((reason) => reason.kind === "unmatched-pattern"),
+    reasons,
+    overlaps,
+    generated,
+  };
 }
