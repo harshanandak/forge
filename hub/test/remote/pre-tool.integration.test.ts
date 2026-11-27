@@ -1,6 +1,5 @@
 import { expect } from "bun:test";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MCP_TOOL_NAMES } from "../../src/contract/mcp.ts";
 import { digest, key, safeOutput } from "./fixtures.ts";
@@ -71,14 +70,13 @@ for (const [code, respond] of failures) {
 check(
   "P4 missing or malformed key and closed port all fail closed",
   async (f) => {
-    const missing = { FORGE_HUB_HOST_KEY_FILE: f.path("missing") };
-    for (const tool of probed)
-      expect(await f.tool(tool, {}, missing)).toEqual(
-        deny(r3("HOST_KEY_UNAVAILABLE")),
-      );
     await writeFile(f.keyPath, "bad");
-    for (const tool of probed)
-      expect(await f.tool(tool)).toEqual(deny(r3("HOST_KEY_UNAVAILABLE")));
+    const unavailable = deny(r3("HOST_KEY_UNAVAILABLE"));
+    for (const file of [f.path("missing"), f.keyPath]) {
+      const env = { FORGE_HUB_HOST_KEY_FILE: file };
+      for (const tool of probed)
+        expect(await f.tool(tool, {}, env)).toEqual(unavailable);
+    }
     expect(f.seen).toEqual([]);
     await writeFile(f.keyPath, key);
     await f.stopServer();
@@ -162,36 +160,51 @@ check("P9 inside cwd, Read Glob and Grep do not need network", async (f) => {
   expect(f.seen).toEqual([]);
 });
 
-check(
-  "P10 outside, junction, traversal and missing paths need clean mode",
-  async (f) => {
-    const outside = await mkdtemp(join(tmpdir(), "forge-outside-"));
-    try {
-      const file = join(outside, "file");
-      await writeFile(file, "fixture");
-      await symlink(outside, f.path("link"), "junction");
-      const cases = [
-        ["Read", { file_path: file }],
-        ["Glob", { pattern: "../x/*" }],
-        ["Glob", { pattern: file }],
-        ["Grep", { path: "..", pattern: "fixture" }],
-        ["Grep", { path: ".", pattern: "fixture", glob: "../*" }],
-        ["Read", { file_path: join(f.root, "link", "file") }],
-        ["Read", { file_path: "missing" }],
-      ] as const;
-      for (const current of modes) {
-        f.respond = () => mode(current);
-        for (const [name, input] of cases)
-          expect(await f.tool(name, input)).toEqual(
-            current === "normal" ? silence : deny(r1),
-          );
-      }
-      expect(f.seen).toHaveLength(modes.length * cases.length);
-    } finally {
-      await rm(outside, { recursive: true, force: true });
-    }
-  },
-);
+check("P10 outside and missing reads need clean mode", async (f) => {
+  const cwd = f.path("cwd");
+  const outside = f.path("outside");
+  const file = join(outside, "file");
+  await Promise.all([mkdir(cwd), mkdir(outside)]);
+  await writeFile(file, "fixture");
+  await symlink(outside, join(cwd, "link"), "junction");
+  const cases = [
+    ["Read", { file_path: file }],
+    ["Glob", { pattern: "../x/*" }],
+    ["Glob", { pattern: file }],
+    ["Grep", { path: "..", pattern: "fixture" }],
+    ["Grep", { path: ".", pattern: "fixture", glob: "../*" }],
+    ["Read", { file_path: join(cwd, "link", "file") }],
+    ["Read", { file_path: "missing" }],
+  ] as const;
+  for (const current of modes) {
+    f.respond = () => mode(current);
+    for (const [name, input] of cases)
+      expect(await f.run("pre-tool", guard(cwd, name, input))).toEqual(
+        current === "normal" ? silence : deny(r1),
+      );
+  }
+  expect(f.seen).toHaveLength(modes.length * cases.length);
+});
+
+check("P10 UNC and device reads reach mode without realpath", async (f) => {
+  const source = `
+    import fs from "node:fs/promises";
+    import { syncBuiltinESMExports } from "node:module";
+    fs.realpath = () => process.exit(79);
+    syncBuiltinESMExports();
+  `;
+  const flags = ["--import", `data:text/javascript;base64,${btoa(source)}`];
+  const run = (cwd: string, file_path: string) =>
+    f.run("pre-tool", guard(cwd, "Read", { file_path }), {}, flags);
+  expect((await run(f.root, "local")).status).toBe(79);
+  f.respond = () => mode("reply_only");
+  const unc = String.raw`\\example.invalid\share`;
+  const device = String.raw`\\?\UNC\example.invalid\share`;
+  for (const target of [unc, device, "//example.invalid/share"])
+    expect(await run(f.root, target)).toEqual(deny(r1));
+  expect(await run(unc, "file")).toEqual(deny(r1));
+  expect(f.seen).toHaveLength(4);
+});
 
 check("P11 and Y1 invalid guard input refuses without a request", async (f) => {
   const base = guard(f.root);
@@ -219,24 +232,17 @@ check("P12 unset and non-loopback HTTP hub URL fail closed", async (f) => {
 });
 
 check("P13 redirect does not send the host key to another port", async (f) => {
+  let forwarded = 0;
   const other = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: () => new Response(),
-  });
-  let forwarded = 0;
-  other.reload({
     fetch: () => {
       forwarded++;
       return new Response();
     },
   });
   try {
-    f.respond = () =>
-      new Response(null, {
-        status: 307,
-        headers: { location: other.url.href },
-      });
+    f.respond = () => Response.redirect(other.url, 307);
     const result = await f.tool();
     expect(result.status).toBe(2);
     expect(result.stderr).toStartWith(
@@ -297,15 +303,9 @@ check(
 );
 
 check("Y3 importing built shared library has no launch effect", async (f) => {
-  const sharedModule = new URL("../../dist/hooks/shared.js", import.meta.url)
-    .href;
+  const sharedModule = new URL("../../dist/hooks/shared.js", import.meta.url);
   expect(
-    await child(f.root, [
-      "--input-type=module",
-      "-e",
-      "await import(process.argv[1])",
-      sharedModule,
-    ]),
+    await child(f.root, ["--import", sharedModule.href, "-e", ""]),
   ).toEqual(silence);
   expect(f.seen).toEqual([]);
   expect(hubRoot.length).toBeGreaterThan(0);
