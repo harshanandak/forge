@@ -121,7 +121,10 @@ async function boundary() {
     [0, 998],
     [null, 997],
   ] as const) {
-    const server = createServer({ requireHostHeader: false }, listener);
+    const server = createServer(
+      { requireHostHeader: false },
+      (input, output) => void listener(input, output),
+    );
     server.maxHeadersCount = limit;
     await listen(server);
     try {
