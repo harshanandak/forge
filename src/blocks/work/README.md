@@ -34,7 +34,7 @@ Overlap compares file paths case-sensitively on every platform. A literal names 
 
 Expected patterns match a pinned list of tracked paths plus literal files declared by either issue, including learned files. For each shared file, the result names a source declaration from each issue. An omitted expected list, an unmatched pattern or a truncated tracked list makes the result incomplete even when it has no shared paths. An empty expected list explicitly declares no planned files.
 
-The work-map snapshot records its observation time and reads tracked paths and generated policy from one commit on the fetched default branch. Literal expected paths from open issues extend the search to files that have yet to be committed.
+The work-map snapshot records its observation time and reads tracked paths and generated policy from one commit on the fetched default branch. Literal expected and learned paths from open issues extend the search beyond that tree.
 
 An open issue holds files while its claim lease is live or any delivered PR is open, including after lease release. The reader checks each delivered PR within its budgets. Closed issues and leftover worktrees hold no files.
 

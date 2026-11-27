@@ -202,16 +202,11 @@ export async function readWorkMap(
       "--full-tree",
       sha,
     ]);
-    if (paths) {
-      if (!paths.endsWith("\0"))
-        note("git-unavailable", { source: "tracked-paths" });
-      else {
-        const entries = paths.slice(0, -1).split("\0", limits.trackedPaths + 1);
-        if (entries.length > limits.trackedPaths)
-          note("tracked-paths-truncated");
-        snapshot.trackedPaths = entries.slice(0, limits.trackedPaths);
-      }
-    }
+    if (paths?.endsWith("\0")) {
+      const entries = paths.slice(0, -1).split("\0", limits.trackedPaths + 1);
+      if (entries.length > limits.trackedPaths) note("tracked-paths-truncated");
+      snapshot.trackedPaths = entries.slice(0, limits.trackedPaths);
+    } else if (paths) note("git-unavailable", { source: "tracked-paths" });
     const config = await gitText("generated-policy", [
       "cat-file",
       "blob",
@@ -254,9 +249,12 @@ export async function readWorkMap(
   for (const issue of issues) {
     if (issue.status === "closed") continue;
     const declaration = normalizeFileDeclarations(issue);
-    if (declaration.ok)
+    if (declaration.ok) {
       for (const path of declaration.patch.expectedFiles ?? [])
         if (!wildcard.test(path)) literalPaths.add(path);
+      for (const path of declaration.patch.actualFiles ?? [])
+        literalPaths.add(path);
+    }
 
     const lease = issue.lease;
     const leaseExpiresAt =
@@ -285,12 +283,9 @@ export async function readWorkMap(
         processes++;
         pulls.set(url, await lookupPull(url, issue.id));
       }
-      const pull = pulls.get(url);
-      if (pull?.state === "OPEN")
-        openPulls.push({
-          url,
-          ...(pull.branch === undefined ? {} : { branch: pull.branch }),
-        });
+      const { state, branch } = pulls.get(url) ?? {};
+      if (state === "OPEN")
+        openPulls.push(branch === undefined ? { url } : { url, branch });
     }
     if (leaseExpiresAt !== undefined || openPulls.length > 0)
       snapshot.holders.push({
@@ -312,21 +307,21 @@ export async function readWorkMap(
       note("invalid-declarations", { issue: issue.id });
       continue;
     }
-    const { expectedFiles, actualFiles = [] } = declaration.patch;
+    const { expectedFiles } = declaration.patch;
     if (expectedFiles === undefined) {
       note("undeclared", { issue: issue.id });
       continue;
     }
     const patterns = expectedFiles.filter((path) => wildcard.test(path));
     if (patterns.length === 0) continue;
-    const work = (universeWork + pathWork(actualFiles)) * pathWork(patterns);
+    const work = universeWork * pathWork(patterns);
     if (work > patternWork) {
       note("resolution-budget", { issue: issue.id });
       continue;
     }
     patternWork -= work;
     const resolved = resolveFileOverlap({
-      left: { expectedFiles: patterns, actualFiles },
+      left: { expectedFiles: patterns },
       right: { expectedFiles: [] },
       trackedPaths: universe,
     });

@@ -96,6 +96,7 @@ test("a released builder's open delivered pull still holds its shared file", asy
   f.ports.pull = () => ({ state: "OPEN", branch: "feat/incumbent" });
   const result = await f.read();
   expect(result.complete).toBe(true);
+  expect(result.literalPaths).toEqual(["src/ui/ask.rs"]);
   expect(result.holders).toEqual([
     {
       issue: incumbent,
@@ -278,12 +279,12 @@ test("paths and generated rules share the pinned default SHA, read once", async 
   ]);
 });
 
-test("new literal paths on open issues satisfy a holder's glob, but closed issues cannot", async () => {
+test("learned paths on open issues satisfy a holder's glob, but closed issues cannot", async () => {
   const incumbent = issue("work-1", {
     lease: { expiresAt: future },
     expectedFiles: ["new/*.ts"],
   });
-  const futureFile = issue("work-2", { expectedFiles: ["new/file.ts"] });
+  const futureFile = issue("work-2", { actualFiles: ["new/file.ts"] });
   expect(await fixture([incumbent, futureFile]).read()).toMatchObject({
     complete: true,
     literalPaths: ["new/file.ts"],
