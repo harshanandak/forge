@@ -417,15 +417,15 @@ test("the later concurrent one-shot CLI claim reports overlap before lane start"
       }
       expect(replies[0]).toMatchObject({ ok: true, result: { id: first } });
       expect(replies[1]).toMatchObject({ ok: true, result: { id: second } });
-      if (!linuxAdvisory) {
-        for (const reply of replies) expectUnprovedGit(reply);
-        return;
-      }
       const claimOverlap = mapWarnings(replies[1]!).find(
         ({ code }) => code === "WORK_FILE_OVERLAP",
       );
-      expect(claimOverlap?.message ?? "").toContain(sharedFile);
-      expect(claimOverlap?.message ?? "").toContain(first);
+      if (linuxAdvisory) {
+        expect(claimOverlap?.message ?? "").toContain(sharedFile);
+        expect(claimOverlap?.message ?? "").toContain(first);
+      } else {
+        for (const reply of replies) expectUnprovedGit(reply);
+      }
     } finally {
       for (const { child } of claims) child.kill();
       await Promise.allSettled(claims.map(({ done }) => done));
@@ -705,6 +705,7 @@ test("a broken lane registry preserves claim overlap and reports incomplete evid
     writeFileSync(join(repo, ".git", "forge-lanes.json"), "{");
     const result = claim(second);
     expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(hasIncompleteMap(result)).toBe(true);
     if (!(await advisoryGitAvailable(repo))) {
       expectUnprovedGit(result);
       return;
@@ -712,7 +713,6 @@ test("a broken lane registry preserves claim overlap and reports incomplete evid
     expect(mapWarnings(result).map(({ code }) => code)).toContain(
       "WORK_FILE_OVERLAP",
     );
-    expect(hasIncompleteMap(result)).toBe(true);
   });
 }, 30_000);
 
