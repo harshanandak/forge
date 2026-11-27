@@ -43,7 +43,8 @@ function normalizePath(path: unknown): string | undefined {
   const normalized = segments.join("/");
   return normalized.length > 0 &&
     normalized.length <= limit &&
-    !normalized.startsWith("!")
+    !normalized.startsWith("!") &&
+    !/^[A-Za-z]:/.test(normalized)
     ? normalized
     : undefined;
 }

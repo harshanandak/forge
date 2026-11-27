@@ -151,6 +151,7 @@ test("invalid declarations refuse create without a partial write", async () => {
     const cases: unknown[] = [
       ["/src/a.ts"],
       ["C:/src/a.ts"],
+      ["./C:/outside.ts"],
       ["../a.ts"],
       ["src\a.ts"],
       ["!src/a.ts"],
@@ -192,7 +193,7 @@ test("file declaration updates keep the revision and lease fence", async () => {
     for (const patch of [
       { expectedFiles: ["src/[ab].ts"] },
       { actualFiles: Array.from({ length: 1025 }, (_, i) => `src/${i}.ts`) },
-      { actualFiles: ["src/../outside.ts"] },
+      { actualFiles: ["src/../outside.ts", "./D:/outside.ts"] },
       { filesAt: "not-a-sha" },
     ]) {
       const error = await p.refusal("issue.update", {

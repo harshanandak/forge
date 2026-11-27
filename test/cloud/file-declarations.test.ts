@@ -13,6 +13,7 @@ const actor = { kind: "agent", id: "fixture" } as const;
 const session = { id: "fixture" } as const;
 const leased = { actor, session, leaseGeneration: 1 };
 const sha = "0123456789abcdef0123456789abcdef01234567";
+const full = Array.from({ length: 1024 }, (_, index) => `src/${index}.ts`);
 
 beforeEach(() => setSystemTime(time));
 afterEach(() => setSystemTime());
@@ -144,14 +145,14 @@ test(
     expect((await f.command(claim)).status).toBe(200);
     const edit = update("update", {
       expectedFiles: ["src/./delivered.ts", "docs//planned-*.ts"],
-      actualFiles: ["src//delivered.ts"],
+      actualFiles: full,
       filesAt: sha,
     });
     const updated = await f.command(edit);
     expect(updated.status).toBe(200);
     const wanted = {
       expectedFiles: ["src/delivered.ts", "docs/planned-*.ts"],
-      actualFiles: ["src/delivered.ts"],
+      actualFiles: full,
       filesAt: sha,
     };
     expect(updated.body).toMatchObject({ result: wanted });
@@ -182,6 +183,7 @@ test(
     const invalid = [
       "/src/a.ts",
       "C:/src/a.ts",
+      "./C:/outside.ts",
       "../a.ts",
       "src\a.ts",
       "!src/a.ts",
@@ -241,7 +243,7 @@ test(
     for (const [index, patch] of [
       { expectedFiles: ["src/[ab].ts"] },
       { actualFiles: Array.from({ length: 1025 }, (_, i) => `src/${i}.ts`) },
-      { actualFiles: ["src/../outside.ts"] },
+      { actualFiles: ["src/../outside.ts", "./D:/outside.ts"] },
       { filesAt: "not-a-sha" },
     ].entries()) {
       const got = await f.command(update(`invalid-${index}`, patch));
