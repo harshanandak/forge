@@ -35,6 +35,7 @@ function writeBlock(root: string) {
     profile: "trusted-action/v2",
     entry: "entry.cjs",
     docs: "docs.json",
+    files: ["schemas/nested/text.json", "schemas/limits.json"],
     operations: Object.fromEntries(
       operations.map((op) => [
         op,
@@ -62,7 +63,7 @@ function writeBlock(root: string) {
     required: ["text", "at"],
     properties: {
       text: {
-        $ref: "nested/text.json#/$defs/Text",
+        $ref: "nested/text.json#/$defs/Text~1~0",
         minLength: 4,
         maxLength: 9,
       },
@@ -73,12 +74,12 @@ function writeBlock(root: string) {
     additionalProperties: false,
   });
   write("schemas/nested/text.json", {
-    $defs: { Text: { $ref: "../limits.json#/$defs/Minimum" } },
+    $defs: { "Text/~": { $ref: "../limits.json#/$defs/Minimum" } },
   });
   write("schemas/limits.json", {
     $defs: {
-      Minimum: { $ref: "#/$defs/String", minLength: 6 },
-      String: { type: "string" },
+      Minimum: { $ref: "#/$defs/Text~1~0", minLength: 6 },
+      "Text/~": { type: "string" },
     },
   });
   write("schemas/scalar.json", { $ref: "limits.json#/$defs/Minimum" });
@@ -237,6 +238,7 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
         expect(created).toMatchObject({ ok: true });
         expect(typeof created.result?.id).toBe("string");
         const issueInput = { id: created.result!.id };
+        const dispatchInput = { op: "issue.show", input: issueInput };
         const cases = [
           ["issue_create", createInput, created],
           ["issue_claim", issueInput, await call("issue_claim", issueInput)],
@@ -254,8 +256,14 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
           ],
           [
             "catalog_call",
-            { op: "issue.show", input: issueInput },
-            await call("catalog_call", { op: "issue.show", input: issueInput }),
+            {
+              schemaVersion: "forge.invocation/1",
+              requestId: "offline-dispatch",
+              caller: "agent",
+              context: {},
+              ...dispatchInput,
+            },
+            await call("catalog_call", dispatchInput),
           ],
         ] as const;
         for (const [name, , envelope] of cases) {
