@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { parseMessageRef } from "../../src/chat/inbound.ts";
 import { LIMITS } from "../../src/contract/mcp.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
-import { baseFixture, channel, type BaseFixture } from "./base-fixture.ts";
+import { createEffectWorker } from "../../src/core/effects.ts";
+import {
+  baseFixture,
+  channel,
+  unknownUser,
+  type BaseFixture,
+} from "./base-fixture.ts";
 import { p1, value } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
 
@@ -73,6 +79,74 @@ async function slackRun(
     f.read(alpha.sessionId).items[0]!.conversationId!,
   );
 }
+
+test.each([false, true])(
+  "forge-2024 a member reopens a paused run (with retention pressure: %s)",
+  async (sweep) => {
+    const r = await slackRun(1001, 1012);
+    const { f } = r;
+    await r.post(LIMITS.agentRunMax);
+    expect(r.notices()).toBe(1);
+    if (sweep) {
+      for (let i = 1; i <= LIMITS.threadKeep; i++)
+        await f.follow(ts(i), {
+          chatThreadId: thread,
+          slackUserId: unknownUser,
+          mentionsBot: false,
+        });
+      expect(f.rows("thread_messages WHERE kind = 'outsider'")).toHaveLength(
+        LIMITS.threadKeep,
+      );
+      const worker = createEffectWorker(f.context, () => () => {});
+      await worker.start();
+      await worker.close();
+      expect(f.rows("thread_messages")).toHaveLength(LIMITS.threadKeep);
+    }
+    await r.paused();
+    expect(r.notices()).toBe(1);
+    await r.member(ts(1012));
+    await r.post(LIMITS.agentRunMax - 1);
+    expect(r.notices()).toBe(1);
+    await r.post(1);
+    await r.paused();
+    expect(r.notices()).toBe(2);
+  },
+  timeout,
+);
+
+test(
+  "forge-2024 replay of an unknown outcome settled before a recorded member does not count in the next run",
+  async () => {
+    const r = await slackRun(2);
+    const { f } = r;
+    f.db.exec(
+      "CREATE TRIGGER block_projection BEFORE INSERT ON thread_messages WHEN NEW.kind = 'agent' BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END",
+    );
+    f.chat.nextWrite = { kind: "unknown" };
+    expect(await r.reply("post with a lost response")).toMatchObject({
+      ok: false,
+      error: { retry: "reconcile_first" },
+    });
+    await r.member(ts(1));
+    expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
+    f.db.exec("DROP TRIGGER block_projection");
+    const recovered = run(
+      { ...f, core: createCoreBase(createCoreContext(f.deps)) },
+      r.session,
+      r.conversationId,
+    );
+    expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(0);
+    expect(
+      f.rows("thread_messages WHERE chat_message_id LIKE 'unconfirmed:%'"),
+    ).toHaveLength(1);
+    await recovered.post(LIMITS.agentRunMax - 1);
+    expect(recovered.notices()).toBe(0);
+    await recovered.post(1);
+    await recovered.paused();
+    expect(recovered.notices()).toBe(1);
+  },
+  timeout,
+);
 
 test.each([
   ["C1", false],
