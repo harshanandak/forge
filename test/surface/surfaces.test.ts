@@ -267,11 +267,22 @@ test("MCP output schemas describe the full shared envelope", () => {
 test("command entry routes hook stdin, version and absent transport into observable exits", async () => {
   const input = new PassThrough();
   const output = new PassThrough();
+  const errors = new PassThrough();
   let stdout = "";
+  let stderr = "";
   output.on("data", (chunk: Buffer) => {
     stdout += chunk.toString();
   });
-  const options = { catalog: fakeCatalog(), version: "1.2.3", input, output };
+  errors.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  const options = {
+    catalog: fakeCatalog(),
+    version: "1.2.3",
+    input,
+    output,
+    errorOutput: errors,
+  };
   expect(await runCommand(["--version"], options)).toBe(0);
   expect(stdout).toBe("1.2.3\n");
   stdout = "";
@@ -283,12 +294,14 @@ test("command entry routes hook stdin, version and absent transport into observa
   });
   stdout = "";
   expect(await runCommand(["--mcp"], options)).toBe(1);
-  expect(JSON.parse(stdout)).toMatchObject({
+  expect(stdout).toBe("");
+  expect(JSON.parse(stderr)).toMatchObject({
     ok: false,
     error: { code: "UNAVAILABLE" },
   });
   input.destroy();
   output.destroy();
+  errors.destroy();
 }, 30_000);
 
 test("05538ad7: failures retain their full envelope and contract exit, batches stay enveloped", async () => {

@@ -17,6 +17,7 @@ export interface CommandOptions {
   readonly exposure?: McpExposure;
   readonly input?: Readable;
   readonly output?: Writable;
+  readonly errorOutput?: Writable;
 }
 
 /** Assembly injects the catalog and transport; no block or adapter is selected here. */
@@ -26,6 +27,7 @@ export async function runCommand(
 ): Promise<number> {
   const output = options.output ?? process.stdout;
   const input = options.input ?? process.stdin;
+  const errorOutput = options.errorOutput ?? process.stderr;
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
     output.write(escapeDisplayText(`${options.version}\n`));
     return 0;
@@ -38,7 +40,7 @@ export async function runCommand(
           "MCP requires an assembled transport and no additional arguments.",
         ),
       );
-      output.write(escapeDisplayText(response.stdout));
+      errorOutput.write(escapeDisplayText(response.stdout));
       return response.exitCode;
     }
     const opened = await options.mcp.open({
@@ -56,7 +58,7 @@ export async function runCommand(
       const response = respond(
         failure("UNAVAILABLE", opened.unavailable.reason),
       );
-      output.write(escapeDisplayText(response.stdout));
+      errorOutput.write(escapeDisplayText(response.stdout));
       return response.exitCode;
     }
     await new Promise<void>((resolve) => {

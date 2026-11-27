@@ -23,12 +23,23 @@ export function createMcpTransport(): McpTransportPort {
               { capabilities: { tools: { listChanged: true } } },
             );
             instance = server;
-            server.setRequestHandler("tools/list", () => ({
-              tools: options.handlers.listTools().map((tool) => ({
-                ...tool,
-                inputSchema: { ...tool.inputSchema, type: "object" as const },
-              })),
-            }));
+            server.setRequestHandler("tools/list", (request) => {
+              const params = request.params as unknown;
+              const cursor =
+                typeof params === "object" &&
+                params !== null &&
+                "cursor" in params
+                  ? (params as { readonly cursor?: unknown }).cursor
+                  : undefined;
+              if (cursor !== undefined && cursor !== "")
+                throw new ProtocolError(-32602, "Unknown cursor.");
+              return {
+                tools: options.handlers.listTools().map((tool) => ({
+                  ...tool,
+                  inputSchema: { ...tool.inputSchema, type: "object" as const },
+                })),
+              };
+            });
             server.setRequestHandler("tools/call", async (request) => {
               const result = await options.handlers.callTool(
                 request.params.name,

@@ -9,7 +9,6 @@ import type { McpHandlers } from "../ports/mcp-transport.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import { dispatch, type CallOptions } from "./dispatch.ts";
 import { discoveryOperations } from "./discovery.ts";
-import { failure } from "./result.ts";
 
 /** MCP output schemas describe the shared result envelope, including failures. */
 function enveloped(candidate: McpCandidate): McpCandidate {
@@ -115,18 +114,6 @@ export function createMcpHandlers(
         });
       }
       const candidate = byName.get(name);
-      if (
-        candidate === undefined &&
-        exposure.readOnly &&
-        catalog
-          .list()
-          .some(
-            (entry) =>
-              entry.declaration.effects.length > 0 &&
-              mcpToolName(entry.op, exposure.toolPrefix) === name,
-          )
-      )
-        return failure("UNKNOWN_COMMAND", `Unknown tool: ${name}`);
       return candidate === undefined
         ? undefined
         : dispatch(catalog, candidate.op, args, {

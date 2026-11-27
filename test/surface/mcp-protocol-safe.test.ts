@@ -106,12 +106,17 @@ async function exchange(
   }
 }
 
-test("mcp open refusal keeps stdout empty with a nonzero exit", async () => {
+test("mcp open refusal reports on stderr and leaves stdout empty", async () => {
   const input = new PassThrough();
   const output = new PassThrough();
+  const errors = new PassThrough();
   let stdout = "";
+  let stderr = "";
   output.on("data", (chunk: Buffer) => {
     stdout += chunk.toString();
+  });
+  errors.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
   });
   const mcp: McpTransportPort = {
     open: () =>
@@ -129,12 +134,18 @@ test("mcp open refusal keeps stdout empty with a nonzero exit", async () => {
     version: "0.0.0",
     input,
     output,
+    errorOutput: errors,
     mcp,
   });
   expect(exit).not.toBe(0);
   expect(stdout).toBe("");
+  expect(JSON.parse(stderr)).toMatchObject({
+    ok: false,
+    error: { code: "UNAVAILABLE" },
+  });
   input.destroy();
   output.destroy();
+  errors.destroy();
 }, 30_000);
 
 test("mcp transport reports failed opens instead of throwing", async () => {
