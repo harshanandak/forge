@@ -1,8 +1,8 @@
-﻿import { randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { ChatMessageRef } from "../contract/chat.ts";
 import type { Conversation } from "../contract/domain.ts";
 import type { CoreContext } from "./core.ts";
-import { recordAgentPost, str, UNCONFIRMED_MESSAGE_PREFIX } from "./thread.ts";
+import { recordAgentPost, UNCONFIRMED_MESSAGE_PREFIX } from "./thread.ts";
 
 type Reservation = {
   id: string;
@@ -22,7 +22,102 @@ type JournalPost = Reservation & (Outcome | { phase: "reserved" });
 
 export class AgentPostOutcomeError extends Error {}
 
+export class AgentPostJournalError extends Error {
+  readonly key: string;
+
+  constructor(key: string) {
+    super("Invalid agent post journal row");
+    this.name = "AgentPostJournalError";
+    this.key = key;
+  }
+}
+
 const journalPrefix = "agent-post:";
+const journalKey = (thread: string) => journalPrefix + thread;
+
+type JournalRead =
+  { readonly ok: true; readonly post: JournalPost } | { readonly ok: false };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validCreatedBy(value: unknown): value is Conversation["createdBy"] {
+  return value === "slack" || value === "telegram" || value === "agent";
+}
+
+function validConversation(value: unknown): value is Conversation {
+  if (!isRecord(value)) return false;
+  if (typeof value.conversationId !== "string") return false;
+  if (typeof value.personId !== "string") return false;
+  if (value.adapter !== "slack") return false;
+  if (typeof value.chatThreadId !== "string") return false;
+  if (typeof value.channelId !== "string") return false;
+  if (value.isDirect !== false) return false;
+  if (!validCreatedBy(value.createdBy)) return false;
+  if (typeof value.createdAt !== "number") return false;
+  if (typeof value.projectId !== "string") return false;
+  if (value.sessionId !== undefined && typeof value.sessionId !== "string")
+    return false;
+  return true;
+}
+
+function validRef(value: unknown): value is ChatMessageRef {
+  return (
+    isRecord(value) &&
+    typeof value.chatThreadId === "string" &&
+    typeof value.chatMessageId === "string" &&
+    typeof value.channelId === "string"
+  );
+}
+
+function readJournalPost(key: string, value: unknown): JournalRead {
+  if (!key.startsWith(journalPrefix) || typeof value !== "string")
+    return { ok: false };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { ok: false };
+  }
+  if (!isRecord(parsed)) return { ok: false };
+  const phase = parsed.phase;
+  if (
+    phase !== "reserved" &&
+    phase !== "confirmed" &&
+    phase !== "refused" &&
+    phase !== "unknown"
+  )
+    return { ok: false };
+  const id = parsed.id;
+  const conversation = parsed.conversation;
+  const sessionId = parsed.sessionId;
+  const personId = parsed.personId;
+  const text = parsed.text;
+  const at = parsed.at;
+  if (typeof id !== "string") return { ok: false };
+  if (!validConversation(conversation)) return { ok: false };
+  if (conversation.chatThreadId !== key.slice(journalPrefix.length))
+    return { ok: false };
+  if (typeof sessionId !== "string") return { ok: false };
+  if (typeof personId !== "string") return { ok: false };
+  if (typeof text !== "string") return { ok: false };
+  if (typeof at !== "number") return { ok: false };
+  const reservation = {
+    id,
+    conversation,
+    sessionId,
+    personId,
+    text,
+    at,
+  };
+  if (phase === "confirmed") {
+    const ref = parsed.ref;
+    if (!validRef(ref)) return { ok: false };
+    return { ok: true, post: { ...reservation, phase, ref } };
+  }
+  return { ok: true, post: { ...reservation, phase } };
+}
 
 export function reserveAgentPost(
   ctx: CoreContext,
@@ -43,18 +138,18 @@ export function reserveAgentPost(
   };
   ctx.deps.db
     .prepare("INSERT INTO meta (key,value) VALUES (?,?)")
-    .run(journalPrefix + conversation.chatThreadId, JSON.stringify(post));
+    .run(journalKey(conversation.chatThreadId), JSON.stringify(post));
   return post;
 }
 
 function writeOutcome(ctx: CoreContext, post: SettledAgentPost) {
   const { changes } = ctx.deps.db
     .prepare("UPDATE meta SET value = ? WHERE key = ?")
-    .run(JSON.stringify(post), journalPrefix + post.conversation.chatThreadId);
+    .run(JSON.stringify(post), journalKey(post.conversation.chatThreadId));
   if (Number(changes) !== 1) throw new Error("Agent post reservation missing");
 }
 
-function projectPost(ctx: CoreContext, post: JournalPost) {
+function projectPost(ctx: CoreContext, key: string, post: JournalPost) {
   const { conversation } = post;
   ctx.store.tx(() => {
     if (post.phase !== "refused")
@@ -69,9 +164,7 @@ function projectPost(ctx: CoreContext, post: JournalPost) {
         post.text,
         post.at,
       );
-    ctx.deps.db
-      .prepare("DELETE FROM meta WHERE key = ?")
-      .run(journalPrefix + conversation.chatThreadId);
+    ctx.deps.db.prepare("DELETE FROM meta WHERE key = ?").run(key);
   });
 }
 
@@ -92,7 +185,7 @@ export function settleAgentPost(
     }
   }
   try {
-    projectPost(ctx, post);
+    projectPost(ctx, journalKey(post.conversation.chatThreadId), post);
     return true;
   } catch {
     ctx.deps.log.warn("agent_post_projection_failed");
@@ -103,10 +196,14 @@ export function settleAgentPost(
 export function agentPost(ctx: CoreContext, thread: string) {
   const pending = ctx.pendingAgentPosts.get(thread);
   if (pending) return pending;
+  const key = journalKey(thread);
   const row = ctx.deps.db
     .prepare("SELECT value FROM meta WHERE key=?")
-    .get(journalPrefix + thread);
-  return row && (JSON.parse(str(row.value)) as JournalPost);
+    .get(key);
+  if (!row) return;
+  const read = readJournalPost(key, row.value);
+  if (!read.ok) throw new AgentPostJournalError(key);
+  return read.post;
 }
 
 export function recoverAgentPosts(ctx: CoreContext, thread?: string) {
@@ -118,12 +215,19 @@ export function recoverAgentPosts(ctx: CoreContext, thread?: string) {
     }
     const post = pending ?? agentPost(ctx, thread);
     if (!post) return;
-    projectPost(ctx, post);
+    projectPost(ctx, journalKey(thread), post);
     return post.conversation;
   }
   const rows = ctx.deps.db
-    .prepare("SELECT value FROM meta WHERE key GLOB 'agent-post:*'")
+    .prepare("SELECT key,value FROM meta WHERE key GLOB 'agent-post:*'")
     .all();
-  for (const row of rows)
-    projectPost(ctx, JSON.parse(str(row.value)) as JournalPost);
+  for (const row of rows) {
+    const key = String(row.key);
+    const read = readJournalPost(key, row.value);
+    if (!read.ok) {
+      ctx.deps.log.warn("agent_post_journal_invalid", { key });
+      continue;
+    }
+    projectPost(ctx, key, read.post);
+  }
 }

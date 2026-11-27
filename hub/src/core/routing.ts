@@ -1,5 +1,9 @@
 import type { ChatMessageEvent } from "../contract/chat.ts";
-import { agentPost, recoverAgentPosts } from "./agent-posts.ts";
+import {
+  AgentPostJournalError,
+  agentPost,
+  recoverAgentPosts,
+} from "./agent-posts.ts";
 import type { Conversation, Person, Session } from "../contract/domain.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
@@ -165,7 +169,14 @@ export async function route(
   let react = false;
   const { channelId, chatThreadId, chatMessageId, isDirect, mentionsBot } =
     event;
-  const post = isDirect ? undefined : agentPost(ctx, chatThreadId);
+  let post: ReturnType<typeof agentPost>;
+  try {
+    post = isDirect ? undefined : agentPost(ctx, chatThreadId);
+  } catch (error) {
+    if (!(error instanceof AgentPostJournalError)) throw error;
+    ctx.deps.log.warn("agent_post_journal_invalid", { key: error.key });
+    post = undefined;
+  }
   const ref = { channelId, chatThreadId, chatMessageId };
   const ephemeral = ctx.store.tx(() => {
     const existing = db
