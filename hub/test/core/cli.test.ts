@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { CLI_MESSAGE_NOTICE } from "../../src/contract/mcp.ts";
+import type { CliInboxInput, CliSendInput } from "../../src/contract/core.ts";
+import type { DoorbellResult } from "../../src/contract/hooks.ts";
+import { CLI_MESSAGE_NOTICE, LIMITS } from "../../src/contract/mcp.ts";
 import { createCli } from "../../src/core/cli.ts";
 import { createCoreContext } from "../../src/core/core.ts";
 import { baseFixture, type BaseFixture } from "./base-fixture.ts";
@@ -185,6 +187,186 @@ test(
     expect(f.rows("inbox_items")).toEqual(beforeItems);
     expect(f.rows("sessions")).toEqual(beforeSessions);
     expectNoApproval(f);
+  },
+  timeout,
+);
+
+function draft(sessionId: string): CliSendInput {
+  return { sessionId, projectId: p1, toPersonId: b.personId, text: "CLI note" };
+}
+
+test(
+  "R1 CLI send redirects a stale child to its live parent and notifies that parent",
+  async () => {
+    const f = await baseFixture({ ring: true });
+    const cli = createCli(f.context);
+    const { sessionId } = f.unbound({ projectId: p1 });
+    const parent = f.unbound({ projectId: p1 }, b).sessionId;
+    const child = f.unbound(
+      { projectId: p1, parentSessionId: parent },
+      b,
+    ).sessionId;
+    f.advance(LIMITS.liveSessionMs + 1);
+    value(cli.cliInbox(b, { projectId: p1, sessionId: parent }));
+
+    const { itemId } = value(
+      await cli.cliSend(a, { ...draft(sessionId), targetSessionId: child }),
+    );
+    expect({
+      rows: f.rows(
+        "inbox_items",
+        "item_id, target_session_id, for_subagent_session_id",
+      ),
+      rings: f.rings,
+      items: value(cli.cliInbox(b, { projectId: p1, sessionId: parent })).items,
+    }).toMatchObject({
+      rows: [
+        {
+          item_id: itemId,
+          target_session_id: parent,
+          for_subagent_session_id: child,
+        },
+      ],
+      rings: [{ person: b.personId, session: parent, items: [itemId] }],
+      items: [{ itemId, forSubagentSessionId: child, trust: "cli" }],
+    });
+  },
+  timeout,
+);
+
+test(
+  "R2 CLI send refuses explicit targets without the requested project",
+  async () => {
+    const f = await baseFixture();
+    const cli = createCli(f.context);
+    const { sessionId } = f.unbound({ projectId: p1 });
+    const projectless = f.unbound({}, b).sessionId;
+    const otherProject = f.unbound({}, b).sessionId;
+    f.db
+      .prepare("UPDATE sessions SET project_id = ? WHERE session_id = ?")
+      .run(p2, otherProject);
+    const input = draft(sessionId);
+
+    expect({
+      projectless: await cli.cliSend(a, {
+        ...input,
+        targetSessionId: projectless,
+      }),
+      otherProject: await cli.cliSend(a, {
+        ...input,
+        targetSessionId: otherProject,
+      }),
+      items: f.rows("inbox_items"),
+    }).toMatchObject({
+      projectless: { ok: false, error: { code: "SESSION_UNKNOWN" } },
+      otherProject: { ok: false, error: { code: "SESSION_UNKNOWN" } },
+      items: [],
+    });
+  },
+  timeout,
+);
+
+test(
+  "R3 CLI send waits for the doorbell ring to settle",
+  async () => {
+    const f = await baseFixture();
+    const { sessionId } = f.unbound({ projectId: p1 });
+    const ring = Promise.withResolvers<DoorbellResult>();
+    let ringing = false;
+    const cli = createCli(
+      createCoreContext({
+        ...f.deps,
+        doorbell: {
+          configured: () => true,
+          ring: () => {
+            ringing = true;
+            return ring.promise;
+          },
+        },
+      }),
+    );
+    let settled = false;
+    const send = Promise.resolve(cli.cliSend(a, draft(sessionId))).then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const whileHeld = { ringing, settled };
+    ring.resolve({ kind: "sent", status: 202 });
+    const sent = await send;
+
+    expect(whileHeld).toEqual({ ringing: true, settled: false });
+    expect(sent.ok).toBe(true);
+    expect(f.col("doorbell_rings", "outcome")).toEqual(["sent"]);
+  },
+  timeout,
+);
+
+test(
+  "R4 CLI refuses malformed acknowledgement IDs and missing message text",
+  async () => {
+    const f = await baseFixture();
+    const cli = createCli(f.context);
+    const { sessionId } = f.unbound({ projectId: p1 });
+    const sessions = f.rows("sessions");
+    f.advance(1);
+    const inbox = {
+      sessionId,
+      projectId: p1,
+      ackItemIds: "inb_invalid",
+    } as unknown as CliInboxInput;
+    const { text: _text, ...withoutText } = draft(sessionId);
+    const malformedSend = withoutText as CliSendInput;
+    const threw = (error: unknown) => ({
+      threw: error instanceof Error ? error.name : String(error),
+    });
+
+    expect({
+      inbox: await Promise.resolve()
+        .then(() => cli.cliInbox(a, inbox))
+        .catch(threw),
+      send: await Promise.resolve()
+        .then(() => cli.cliSend(a, malformedSend))
+        .catch(threw),
+    }).toMatchObject({
+      inbox: {
+        ok: false,
+        error: { code: "INPUT_INVALID", pointer: "/ackItemIds" },
+      },
+      send: { ok: false, error: { code: "INPUT_INVALID", pointer: "/text" } },
+    });
+    expect(f.rows("sessions")).toEqual(sessions);
+    expect(f.rows("inbox_items")).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "R5 CLI send refuses a removed sender while the recipient is still a project member",
+  async () => {
+    const f = await baseFixture({ ring: true });
+    const cli = createCli(f.context);
+    const { sessionId } = f.unbound({ projectId: p1 });
+    const targetSessionId = f.unbound({ projectId: p1 }, b).sessionId;
+    const sessions = f.rows("sessions");
+    f.advance(1);
+    f.db
+      .prepare(
+        "DELETE FROM project_members WHERE project_id = ? AND person_id = ?",
+      )
+      .run(p1, a.personId);
+    expect(f.context.store.sessions.isMember(p1, b.personId)).toBe(true);
+    expect(
+      await cli.cliSend(a, { ...draft(sessionId), targetSessionId }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "NOT_PROJECT_MEMBER" },
+    });
+    expect(f.rows("sessions")).toEqual(sessions);
+    expect(f.rows("inbox_items")).toEqual([]);
+    expect(f.rings).toEqual([]);
   },
   timeout,
 );
