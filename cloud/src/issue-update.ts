@@ -9,7 +9,11 @@ import { normalizeFileDeclarations } from "../../src/blocks/work/file-declaratio
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
-import type { BoundContext, TrackerItem } from "../../src/generated/types.ts";
+import type {
+  BoundContext,
+  TrackerItem,
+  UpdateItemInput as UpdateInput,
+} from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import {
   checkedValue,
@@ -19,7 +23,12 @@ import {
   shownItem,
   storedId,
 } from "./issue-read.ts";
-import { boundedResult, receipted, type WriteCall } from "./issue-write.ts";
+import {
+  boundedResult,
+  checkFileDeclarationBudget,
+  receipted,
+  type WriteCall,
+} from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 export const UPDATE_GRAPH =
@@ -31,18 +40,12 @@ if (
   update.output !== "schemas/TrackerItem.json"
 )
   throw new Error("issue.update no longer declares its input and output");
-interface Fields {
+type Editable = Omit<UpdateInput, "kind" | "parent" | "dependsOn">;
+type Fields = {
   id: string;
   expectRevision: number;
-  patch: {
-    title?: string;
-    body?: string;
-    labels?: string[];
-    expectedFiles?: readonly string[];
-    actualFiles?: readonly string[];
-    filesAt?: string;
-  };
-}
+  patch: Omit<Editable, "id" | "expectRevision">;
+};
 
 // The fence a held-lease context names: the caller's holder and generation, the device from the token.
 // Shared by every command that holds a lease on one issue.
@@ -111,16 +114,10 @@ export function checkedUpdateInput(input: unknown) {
     throw fail("INPUT_INVALID", UPDATE_GRAPH);
   if (schemas().validate(UpdateItemInput.$ref, input).length > 0)
     throw fail("INPUT_INVALID", UPDATE_SCHEMA);
-  const declarations = normalizeFileDeclarations(input, [
-    "expectedFiles",
-    "actualFiles",
-    "filesAt",
-  ]);
+  const fields = input as Editable;
+  const declarations = normalizeFileDeclarations(fields);
   if (!declarations.ok) throw fail("INPUT_INVALID", declarations.message);
-  return {
-    ...(input as Fields["patch"] & { id: string; expectRevision: number }),
-    ...declarations.patch,
-  };
+  return { ...fields, ...declarations.patch };
 }
 
 /** Edits one issue's title, body or labels, or returns the recorded answer while the caller still holds its lease. */
@@ -143,21 +140,17 @@ export function updateIssue(
     },
     ({ id, expectRevision, patch }, actor, prefix, context) => {
       const key = `issue:${id}`;
-      const row = owner.get(NAMESPACE, key)!;
-      const current = checkedValue({ ...row }, id);
+      const current = checkedValue({ ...owner.get(NAMESPACE, key)! }, id);
       const value = { ...current, ...patch };
-      const candidate = {
-        ...row,
-        value,
-        revision: expectRevision + 1,
-        updatedBy: actor,
-      };
-      boundedResult("issue.update", shownWrite(owner, candidate, id, prefix));
       const written = owner.put(NAMESPACE, key, value, actor, {
         expectRevision,
         fence: fence(context, id, "issue.update"),
       });
-      return shownWrite(owner, written, id, prefix);
+      checkFileDeclarationBudget(value);
+      return boundedResult(
+        "issue.update",
+        shownWrite(owner, written, id, prefix),
+      );
     },
     heldReplay(owner, "issue.update"),
   );

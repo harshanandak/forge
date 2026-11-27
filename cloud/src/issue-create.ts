@@ -45,7 +45,7 @@ export function checked(input: unknown): Fields {
   const fields = input as Fields;
   if (fields.kind !== undefined && !KINDS.includes(fields.kind))
     throw fail("INPUT_INVALID", KIND_REFUSED);
-  const declarations = normalizeFileDeclarations(input, ["expectedFiles"]);
+  const declarations = normalizeFileDeclarations(fields, ["expectedFiles"]);
   if (!declarations.ok) throw fail("INPUT_INVALID", declarations.message);
   return { ...fields, ...declarations.patch };
 }
@@ -68,45 +68,26 @@ export function createIssue(
         NAMESPACE,
         "issue:work-",
         (_key, number) => {
-          const id = `work-${number}`;
-          const value = {
-            id,
-            prefix,
-            title: fields.title,
-            status: "open" as const,
-            labels: fields.labels ?? [],
-            dependsOn: [],
-            createdAt: new Date(now).toISOString(),
-            ...(fields.kind ? { kind: fields.kind } : {}),
-            ...(fields.body === undefined ? {} : { body: fields.body }),
-            ...(fields.expectedFiles === undefined
-              ? {}
-              : { expectedFiles: fields.expectedFiles }),
-          };
-          boundedResult(
-            "issue.create",
-            shownItem(
-              {
-                namespace: NAMESPACE,
-                key: `issue:${id}`,
-                value,
-                revision: 1,
-                updatedAt: value.createdAt,
-                updatedBy: actor,
-              },
-              id,
-              undefined,
-              now,
+          return {
+            value: {
+              ...fields,
+              id: `work-${number}`,
               prefix,
-            ),
-          );
-          return { value };
+              status: "open" as const,
+              labels: fields.labels ?? [],
+              dependsOn: [],
+              createdAt: new Date(now).toISOString(),
+            },
+          };
         },
         actor,
         { refuseMissing: FLOOR_MISSING },
       );
       const id = `work-${written.key.slice("issue:work-".length)}`;
-      return shownItem({ ...written }, id, undefined, now, prefix);
+      return boundedResult(
+        "issue.create",
+        shownItem({ ...written }, id, undefined, now, prefix),
+      );
     },
   );
 }

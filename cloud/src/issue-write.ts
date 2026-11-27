@@ -1,4 +1,9 @@
 // Issue-specific configuration, input and lease guards around the shared receipt transaction.
+import {
+  FILE_DECLARATION_REFUSALS,
+  jsonBytes,
+  overFileDeclarationBudget,
+} from "../../src/blocks/work/file-declarations.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { Actor, BoundContext } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -8,16 +13,15 @@ import { carriesToken } from "./tokens.ts";
 import type { ReceiptPrincipal } from "./issue-request-id.ts";
 
 export function boundedResult<Result>(op: string, result: Result): Result {
-  const body = JSON.stringify({
-    ok: true,
-    op,
-    status: "OK",
-    result,
-    warnings: [],
-  });
-  if (new TextEncoder().encode(body).length > (MAX_SHOW_RESPONSE_BYTES * 3) / 4)
+  const envelope = { ok: true, op, status: "OK", result, warnings: [] };
+  if (jsonBytes(envelope) > (MAX_SHOW_RESPONSE_BYTES * 3) / 4)
     throw fail("UNAVAILABLE", "response too large");
   return result;
+}
+
+export function checkFileDeclarationBudget(value: object): void {
+  if (overFileDeclarationBudget(value))
+    throw fail("INPUT_INVALID", FILE_DECLARATION_REFUSALS.size);
 }
 
 export interface WriteCall {

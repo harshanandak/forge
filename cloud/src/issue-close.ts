@@ -113,25 +113,22 @@ export function closeIssue(
           "RECEIPT_REQUIRED",
           "Supply a PASS receipt or an explicit withoutReceipt reason",
         );
-      const value = {
-        ...previous,
-        status: "closed" as const,
-        ...(receipt === undefined ? { withoutReceipt } : { receipt }),
-        ...(reason === undefined ? {} : { closeReason: reason }),
-      };
-      const candidate = {
-        ...record,
-        value,
-        revision: record.revision + 1,
-        updatedBy: actor,
-      };
-      boundedResult("issue.close", shownWrite(owner, candidate, id, prefix));
-      const written = owner.put(NAMESPACE, held.subject, value, actor, {
-        expectRevision: record.revision,
-        fence: held,
-        readSet: reads,
-      });
-      return shownWrite(owner, written, id, prefix);
+      const written = owner.put(
+        NAMESPACE,
+        held.subject,
+        {
+          ...previous,
+          status: "closed",
+          ...(receipt === undefined ? { withoutReceipt } : { receipt }),
+          ...(reason === undefined ? {} : { closeReason: reason }),
+        },
+        actor,
+        { expectRevision: record.revision, fence: held, readSet: reads },
+      );
+      return boundedResult(
+        "issue.close",
+        shownWrite(owner, written, id, prefix),
+      );
     },
     heldReplay(owner, "issue.close"),
   );

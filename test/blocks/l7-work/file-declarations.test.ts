@@ -98,10 +98,10 @@ async function project() {
     close: () => opened.handle.close(),
     longestSession: () => {
       activeSession = {
-        id: "s".repeat(200),
-        device: "d".repeat(256),
-        agent: "a".repeat(200),
-        harness: "h".repeat(200),
+        id: "\u0001".repeat(200),
+        device: "\u0001".repeat(256),
+        agent: "\u0001".repeat(200),
+        harness: "\u0001".repeat(200),
       };
     },
   };
@@ -255,11 +255,6 @@ test("file declaration updates keep the revision and lease fence", async () => {
     expect(["LEASE_NOT_HELD", "LEASE_STALE", "LEASE_EXPIRED"]).toContain(
       lost.code,
     );
-    p.longestSession();
-    await p.call("issue.claim", { id: "forge-1" });
-    expect(await p.call("issue.show", { id: "forge-1" })).toMatchObject({
-      id: "forge-1",
-    });
     expect(p.owner.get(namespace, "issue:work-1")?.value).toMatchObject({
       expectedFiles,
     });
@@ -268,7 +263,7 @@ test("file declaration updates keep the revision and lease fence", async () => {
   }
 });
 
-test("closing an admitted near-limit issue leaves the record intact on refusal", async () => {
+test("closing an existing near-limit issue leaves the record intact on refusal", async () => {
   const p = await project();
   try {
     await p.call("issue.create", { title: "Files" });
@@ -299,6 +294,10 @@ test("closing an admitted near-limit issue leaves the record intact on refusal",
       ).code,
     ).toBe("LIMIT_EXCEEDED");
     expect(await show()).toEqual(before);
+    await p.call("issue.release", { id: "forge-1" });
+    p.longestSession();
+    await p.call("issue.claim", { id: "forge-1" });
+    expect(await show()).toMatchObject({ actualFiles: value.actualFiles });
   } finally {
     await p.close();
   }

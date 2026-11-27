@@ -15,6 +15,7 @@ import { configured, shownId, storedId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
 import { receiptScope, type ReceiptPrincipal } from "./issue-request-id.ts";
 import { checkedUpdateInput, fence } from "./issue-update.ts";
+import { checkFileDeclarationBudget } from "./issue-write.ts";
 import { NAMESPACE, requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
 import {
@@ -181,6 +182,7 @@ const commands: Readonly<Record<string, Command>> = {
       if ("refusal" in decided)
         throw new CommandRefusal(decided.refusal, basis);
       const { key, current, lease } = decided;
+      checkFileDeclarationBudget({ ...current, ...patch });
       return updateEffect(
         { key, prefix, expectRevision, patch },
         current,
