@@ -279,12 +279,19 @@ const laneInput = (id: string) => ({ id, brief, branch: `feat/${id}` });
 const hasIncompleteMap = (reply: object) =>
   mapWarnings(reply).some(({ code }) => code === "WORK_FILE_MAP_INCOMPLETE");
 
-for (const fault of ["I/O error", "missing expiry"] as const)
+for (const [fault, replacement] of Object.entries({
+  "I/O error":
+    'throw Object.assign(new Error("Lease read failed"), { code: "EIO" });',
+  "missing expiry": "return {};",
+  "wrong subject":
+    'return { ...read.call(this, namespace, subject), subject: "issue:work-3" };',
+}))
   test(`an advisory with a lease ${fault} preserves the healthy overlap`, async () => {
     await project(async ({ good }, repo, root) => {
-      const incumbent = String((await good("issue.create", planned)).id);
-      const candidate = String((await good("issue.create", planned)).id);
       const damaged = String((await good("issue.create", planned)).id);
+      const candidate = String((await good("issue.create", planned)).id);
+      await good("issue.create", planned);
+      const incumbent = String((await good("issue.create", planned)).id);
       await good("issue.claim", { id: incumbent });
       await good("issue.claim", { id: damaged });
       const state = new URL(
@@ -295,8 +302,8 @@ for (const fault of ["I/O error", "missing expiry"] as const)
         import { StateOwner } from ${JSON.stringify(state.href)};
         const read = StateOwner.prototype.lease;
         StateOwner.prototype.lease = function (namespace, subject) {
-          if (namespace === "forge/work" && subject === "issue:work-3") {
-            ${fault === "I/O error" ? 'throw Object.assign(new Error("Lease read failed"), { code: "EIO" });' : "return {};"}
+          if (namespace === "forge/work" && subject === "issue:work-1") {
+            ${replacement}
           }
           return read.call(this, namespace, subject);
         };
@@ -310,7 +317,11 @@ for (const fault of ["I/O error", "missing expiry"] as const)
           NODE_OPTIONS: `--import=${preload}`,
         },
       );
-      expect(result).toMatchObject({ ok: true, result: { id: candidate } });
+      expect(result).toMatchObject({
+        exit: 0,
+        ok: true,
+        result: { id: candidate },
+      });
       const warnings = mapWarnings(result);
       expect(warnings.map(({ code }) => code)).toEqual([
         "WORK_FILE_MAP_INCOMPLETE",
