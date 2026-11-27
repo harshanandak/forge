@@ -51,18 +51,20 @@ async function openServer(
     config,
     log,
     chat: {
-      async handleWebhook(input) {
+      handleWebhook(input) {
         chatCalls.push(input);
-        return new Response("adapter refused", {
-          status: 401,
-          headers: { "x-adapter-result": "refused" },
-        });
+        return Promise.resolve(
+          new Response("adapter refused", {
+            status: 401,
+            headers: { "x-adapter-result": "refused" },
+          }),
+        );
       },
     },
     remote: {
-      async handle(input) {
+      handle(input) {
         remoteCalls.push(input);
-        return handle(input);
+        return Promise.resolve(handle(input));
       },
     },
   });
@@ -328,15 +330,7 @@ test(
         input.once("data", () => firstChunk.resolve());
         input.once("close", () => closed.resolve());
       });
-      const originalAbort = AbortController.prototype.abort;
-      const signals: AbortSignal[] = [];
-      const abort = spyOn(
-        AbortController.prototype,
-        "abort",
-      ).mockImplementation(function (this: AbortController, reason?: unknown) {
-        originalAbort.call(this, reason);
-        signals.push(this.signal);
-      });
+      const abort = spyOn(AbortController.prototype, "abort");
       const { client, response } = startRequest(port, webhook, "POST", {
         "content-length": "10",
       });
@@ -347,8 +341,11 @@ test(
         expect(abort).not.toHaveBeenCalled();
         client.destroy();
         await closed.promise;
-        expect(signals[0]?.aborted).toBe(true);
-        expect(signals[0]?.reason).toHaveProperty("name", "AbortError");
+        const controller = abort.mock.contexts[0];
+        const signal =
+          controller instanceof AbortController ? controller.signal : undefined;
+        expect(signal?.aborted).toBe(true);
+        expect(signal?.reason).toHaveProperty("name", "AbortError");
         expect(chatCalls).toHaveLength(0);
         expect(remoteCalls).toHaveLength(0);
       } finally {

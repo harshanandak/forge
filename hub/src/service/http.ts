@@ -4,6 +4,7 @@ import type {
   RequestListener,
   ServerResponse,
 } from "node:http";
+import type { ReadableStreamDefaultReader } from "node:stream/web";
 import { LIMITS } from "../contract/mcp.ts";
 import type { HubConfig, HubLog } from "../contract/runtime.ts";
 
@@ -74,7 +75,8 @@ async function writeResponse(
   if (cookies.length > 0) output.setHeader("set-cookie", cookies);
   output.writeHead(response.status);
   if (response.body) output.flushHeaders();
-  const reader = response.body?.getReader();
+  const reader: ReadableStreamDefaultReader<unknown> | undefined =
+    response.body?.getReader();
   if (reader) {
     const cancel = () => void reader.cancel().catch(() => {});
     signal.addEventListener("abort", cancel, { once: true });
@@ -82,6 +84,8 @@ async function writeResponse(
       while (!signal.aborted) {
         const { done, value } = await reader.read();
         if (done || signal.aborted) break;
+        if (!(value instanceof Uint8Array))
+          throw new TypeError("Expected response bytes");
         if (!output.write(value)) await once(output, "drain", { signal });
       }
     } finally {
