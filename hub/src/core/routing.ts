@@ -1,4 +1,5 @@
 import type { ChatMessageEvent } from "../contract/chat.ts";
+import { recoverAgentPosts } from "./agent-posts.ts";
 import type { Conversation, Person, Session } from "../contract/domain.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
@@ -162,6 +163,7 @@ export async function route(
   let react = false;
   const { channelId, chatThreadId, chatMessageId, isDirect, mentionsBot } =
     event;
+  if (!isDirect) recoverAgentPosts(ctx, chatThreadId, false);
   const ref = { channelId, chatThreadId, chatMessageId };
   const ephemeral = ctx.store.tx(() => {
     const existing = db

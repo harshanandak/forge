@@ -142,6 +142,7 @@ export function recordAgentPost(
   sessionId: string,
   personId: string,
   text: string,
+  createdAt = ctx.deps.now(),
 ) {
   if (conversation.isDirect || conversation.projectId === undefined)
     return false;
@@ -160,40 +161,13 @@ export function recordAgentPost(
         text,
         personId,
         sessionId,
-        ctx.deps.now(),
+        createdAt,
       ).changes !== 0
   );
 }
 
 export function isUnconfirmedMessage(id: unknown): boolean {
   return typeof id === "string" && id.startsWith(UNCONFIRMED_MESSAGE_PREFIX);
-}
-
-export function confirmAgentPost(
-  ctx: CoreContext,
-  conversation: Conversation,
-  reservedId: string,
-  chatMessageId: string,
-) {
-  ctx.deps.db
-    .prepare(
-      `UPDATE thread_messages SET chat_message_id = ?
-    WHERE adapter = 'slack' AND chat_thread_id = ? AND chat_message_id = ?`,
-    )
-    .run(chatMessageId, conversation.chatThreadId, reservedId);
-}
-
-export function releaseAgentPost(
-  ctx: CoreContext,
-  conversation: Conversation,
-  reservedId: string,
-) {
-  ctx.deps.db
-    .prepare(
-      `DELETE FROM thread_messages
-    WHERE adapter = 'slack' AND chat_thread_id = ? AND chat_message_id = ?`,
-    )
-    .run(conversation.chatThreadId, reservedId);
 }
 
 export const LOOP_PAUSE_TEXT = "Paused: the agents need a person to reply.";
@@ -237,21 +211,22 @@ export async function enterThread(
 export async function postLoopPause(
   ctx: CoreContext,
   conversation: Conversation,
-  projectId: string,
 ): Promise<void> {
-  const due = ctx.store.tx(() => {
-    const start = agentRunStart(ctx.deps.db, conversation.chatThreadId);
-    return (
-      start !== undefined &&
-      ctx.deps.db
-        .prepare(
-          `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq >= ? LIMIT 1`,
-        )
-        .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, start) === undefined
-    );
-  });
-  if (!ctx.chat || !due) return;
+  const { projectId } = conversation;
+  if (!ctx.chat || projectId === undefined) return;
   try {
+    const due = ctx.store.tx(() => {
+      const start = agentRunStart(ctx.deps.db, conversation.chatThreadId);
+      return (
+        start !== undefined &&
+        ctx.deps.db
+          .prepare(
+            `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq >= ? LIMIT 1`,
+          )
+          .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, start) === undefined
+      );
+    });
+    if (!due) return;
     const ref = await ctx.chat.postText(
       { kind: "thread", chatThreadId: conversation.chatThreadId },
       LOOP_PAUSE_TEXT,

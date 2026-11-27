@@ -132,7 +132,16 @@ test(
     await refuse(c, gamma.sessionId, betaConv!, "CONVERSATION_NOT_YOURS");
     await refuse(a, alpha.sessionId, conv!, "CONVERSATION_PAUSED");
     expect(f.rows("inbox_items")).toEqual(before);
-    expect(f.chat.writes).toHaveLength(writes);
+    expect(f.chat.writes.slice(writes)).toEqual([
+      {
+        name: "postText",
+        args: [
+          { kind: "thread", chatThreadId: thread },
+          "Paused: the agents need a person to reply.",
+          undefined,
+        ],
+      },
+    ]);
   },
   timeout,
 );

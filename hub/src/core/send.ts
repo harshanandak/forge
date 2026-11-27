@@ -1,6 +1,7 @@
 import { ChatWriteFailure } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import { LIMITS } from "../contract/mcp.ts";
+import { AgentPostOutcomeError, recoverAgentPosts } from "./agent-posts.ts";
 import type { CoreContext } from "./core.ts";
 import { refused } from "./inbox.ts";
 import { postAgentText } from "./reply.ts";
@@ -48,8 +49,6 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
           return refused("CONVERSATION_NOT_YOURS");
         const binding = channelBindingRefusal(db, chat, projectId);
         if (binding) return binding;
-        if (paused(db, chat.chatThreadId))
-          return refused("CONVERSATION_PAUSED");
       }
       if (!text.length || text.length > LIMITS.sendText)
         return refused("INPUT_INVALID", "/text");
@@ -102,11 +101,18 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
         if (!fresh) return refused("CONVERSATION_UNKNOWN");
         const binding = channelBindingRefusal(db, fresh, projectId);
         if (binding) return binding;
-        if (paused(db, chat.chatThreadId))
-          return refused("CONVERSATION_PAUSED");
         return undefined;
       });
       if (blocked) return blocked;
+      try {
+        recoverAgentPosts(ctx, chat.chatThreadId);
+      } catch {
+        return refused("CHAT_UNAVAILABLE");
+      }
+      if (paused(db, chat.chatThreadId)) {
+        await postLoopPause(ctx, chat);
+        return refused("CONVERSATION_PAUSED");
+      }
       const item = storeItem();
       let threadPost: "posted" | "failed" = "posted";
       try {
@@ -124,9 +130,11 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
           sessionId,
           personId: person.personId,
         });
-        if (chat.projectId !== undefined)
-          await postLoopPause(ctx, chat, chat.projectId);
       } catch (error) {
+        if (error instanceof AgentPostOutcomeError) {
+          await deliver(item);
+          return refused("CHAT_UNAVAILABLE");
+        }
         if (!(error instanceof ChatWriteFailure)) throw error;
         threadPost = "failed";
       }

@@ -4,10 +4,17 @@ import { baseFixture, type BaseFixture } from "./base-fixture.ts";
 import { refusal } from "./base-fakes.ts";
 import { value } from "./fixture.ts";
 
+const timeout = 30_000;
 const journal = (f: BaseFixture) =>
   f.rows("meta WHERE key LIKE 'agent-post:%'");
 const transcripts = (f: BaseFixture) =>
   f.col("thread_messages WHERE kind = 'agent' ORDER BY seq", "chat_message_id");
+
+function expectUnknownTranscript(f: BaseFixture) {
+  const ids = transcripts(f);
+  expect(ids).toHaveLength(1);
+  expect(String(ids[0])).toMatch(/^unconfirmed:.{36}$/);
+}
 
 async function setup() {
   const f = await baseFixture();
@@ -59,12 +66,11 @@ for (const abandon of [false, true]) {
         .run(pending[0]!.key!, pending[0]!.value!);
       const before = f.chat.calls.length;
       createCoreContext(f.deps);
-      expect(transcripts(f)).toEqual([
-        expect.stringMatching(/^unconfirmed:.{36}$/),
-      ]);
+      expectUnknownTranscript(f);
       expect(journal(f)).toEqual([]);
       expect(f.chat.calls).toHaveLength(before);
     },
+    timeout,
   );
 }
 
@@ -95,54 +101,58 @@ for (const phase of ["confirmed", "unknown", "refused"] as const) {
       const before = f.chat.calls.length;
       createCoreContext(f.deps);
       createCoreContext(f.deps);
-      const expected = {
-        confirmed: ["message-1"],
-        unknown: [expect.stringMatching(/^unconfirmed:.{36}$/)],
-        refused: [],
-      };
-      expect(transcripts(f)).toEqual(expected[phase]);
+      if (phase === "unknown") expectUnknownTranscript(f);
+      else
+        expect(transcripts(f)).toEqual(
+          phase === "confirmed" ? ["message-1"] : [],
+        );
       expect(journal(f)).toEqual([]);
       expect(f.chat.calls).toHaveLength(before);
     },
+    timeout,
   );
 }
 
 for (const failures of [1, 2]) {
-  test(`a failed journal write preserves the known outcome for the next entry (${failures} failures)`, async () => {
-    const { f, reply } = await setup();
-    const prepare = f.db.prepare.bind(f.db);
-    let remaining = failures;
-    f.db.prepare = (sql) => {
-      const statement = prepare(sql);
-      if (!/^(?:UPDATE|INSERT INTO) meta/.test(sql)) return statement;
-      return {
-        ...statement,
-        run: (...params) => {
-          if (
-            remaining &&
-            params.some(
-              (value) =>
-                typeof value === "string" &&
-                value.includes('"phase":"refused"'),
-            )
-          ) {
-            remaining--;
-            throw new Error("injected outcome failure");
-          }
-          return statement.run(...params);
-        },
+  test(
+    `a failed journal write preserves the known outcome for the next entry (${failures} failures)`,
+    async () => {
+      const { f, reply } = await setup();
+      const prepare = f.db.prepare.bind(f.db);
+      let remaining = failures;
+      f.db.prepare = (sql) => {
+        const statement = prepare(sql);
+        if (!/^(?:UPDATE|INSERT INTO) meta/.test(sql)) return statement;
+        return {
+          ...statement,
+          run: (...params) => {
+            if (
+              remaining &&
+              params.some(
+                (value) =>
+                  typeof value === "string" &&
+                  value.includes('"phase":"refused"'),
+              )
+            ) {
+              remaining--;
+              throw new Error("injected outcome failure");
+            }
+            return statement.run(...params);
+          },
+        };
       };
-    };
-    f.chat.nextWrite = { kind: "refused" };
-    const result = await reply("refused text");
-    expect(refusal(result).retry).toBe(
-      failures === 1 ? "safe" : "reconcile_first",
-    );
-    expect(journal(f)).toHaveLength(failures - 1);
-    expect(remaining).toBe(0);
-    expect(value(await reply("next text")).chatMessageId).toBe("message-1");
-    expect(transcripts(f)).toEqual(["message-1"]);
-    expect(journal(f)).toEqual([]);
-    expect(f.posts()).toEqual(["Fixture Alpha's agent: next text"]);
-  });
+      f.chat.nextWrite = { kind: "refused" };
+      const result = await reply("refused text");
+      expect(refusal(result).retry).toBe(
+        failures === 1 ? "safe" : "reconcile_first",
+      );
+      expect(journal(f)).toHaveLength(failures - 1);
+      expect(remaining).toBe(0);
+      expect(value(await reply("next text")).chatMessageId).toBe("message-1");
+      expect(transcripts(f)).toEqual(["message-1"]);
+      expect(journal(f)).toEqual([]);
+      expect(f.posts()).toEqual(["Fixture Alpha's agent: next text"]);
+    },
+    timeout,
+  );
 }
