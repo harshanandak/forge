@@ -38,10 +38,7 @@ runs:
     - if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        Set-Service StorSvc -StartupType Disabled
-        Stop-Service StorSvc -Force
-        $service = Get-Service StorSvc
-        if ($service.Status -ne 'Stopped' -or $service.StartType -ne 'Disabled') { throw "StorSvc is $($service.Status) and $($service.StartType)" }
+        & "$env:GITHUB_WORKSPACE/.github/scripts/disable-storsvc.ps1"
         $env:TEMP = $env:RUNNER_TEMP
         $env:TMP = $env:RUNNER_TEMP
         "TEMP=$env:TEMP", "TMP=$env:TMP", "FORGE_HANDLE_EXE=", "FORGE_HANDLE_UNAVAILABLE=" >> $env:GITHUB_ENV

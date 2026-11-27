@@ -43,7 +43,7 @@ test("the guard rejects retired paths and shapes", () => {
   }
 }, 30_000);
 
-test("the guard allows detectors, legacy readers, fixtures and clean docs", () => {
+test("the guard allows detectors, legacy readers, fixtures, the StorSvc CI script and clean docs", () => {
   const files = [
     {
       path: "src/blocks/project/detect-hooks.ts",
@@ -63,6 +63,7 @@ test("the guard allows detectors, legacy readers, fixtures and clean docs", () =
   const paths = [
     "test/fixtures/a/.husky/x",
     "test/project/fixtures/a/lefthook.yml",
+    ".github/scripts/disable-storsvc.ps1",
   ];
   expect(findRetiredNames([], paths)).toEqual([]);
 }, 30_000);

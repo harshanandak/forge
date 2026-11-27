@@ -3,6 +3,7 @@ import { DETECTOR_MODULE, type SourceFile, type Violation } from "./repo.ts";
 /** Paths where retired names may legitimately appear (recognition and fixtures), plus the denylist itself. */
 export const RETIRED_EXEMPT: readonly RegExp[] = [
   /^test\/structure\//,
+  /^\.github\/scripts\/disable-storsvc\.ps1$/,
   /^src\/blocks\/migrate\/legacy\//,
   DETECTOR_MODULE,
   /(?:^|\/)fixtures\//,
