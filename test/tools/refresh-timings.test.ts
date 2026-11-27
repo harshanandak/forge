@@ -5,10 +5,7 @@ import { refreshTimings } from "../../tools/ci/refresh-timings.ts";
 setDefaultTimeout(30_000);
 
 type Entry = ReturnType<typeof jobRecord>;
-const entry = (
-  files: Record<string, number | null>,
-  shard = "1/3",
-): Entry => ({
+const entry = (files: Record<string, number | null>, shard = "1/3"): Entry => ({
   run_id: "1",
   run_attempt: 1,
   head_sha: "abc",
@@ -75,9 +72,13 @@ test("unselected files and non-shard records are dropped", () => {
 });
 
 test("a selected file with no records keeps its old value, without one it is omitted", () => {
-  const out = refreshTimings([entry({ "a.test.ts": 5 })], ["a.test.ts", "b.test.ts", "c.test.ts"], {
-    "b.test.ts": 42,
-  });
+  const out = refreshTimings(
+    [entry({ "a.test.ts": 5 })],
+    ["a.test.ts", "b.test.ts", "c.test.ts"],
+    {
+      "b.test.ts": 42,
+    },
+  );
   expect(out).toEqual({ "a.test.ts": 5, "b.test.ts": 42 });
   expect(Object.keys(out)).toEqual(["a.test.ts", "b.test.ts"]);
 });
