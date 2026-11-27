@@ -16,6 +16,7 @@ import {
 import { host, slackA } from "./fakes.ts";
 
 const timeout = 30_000;
+const secondThread = "slack:C00000001:11.000001";
 
 async function stopFixture() {
   const f = await fixture({ hooks: { enabled: true } });
@@ -61,7 +62,11 @@ async function stopFixture() {
       .filter(({ name }) => name === "postText")
       .map(({ args }) => args[1]);
   const rows = (sql: string) => f.db.prepare(sql).all();
-  return { ...f, chat, core, host, binding, sessionId, stop, owe, posts, rows };
+  const owed = () =>
+    rows("SELECT answered FROM reply_owed ORDER BY rowid").map(
+      (row) => row.answered,
+    );
+  return { ...f, chat, core, binding, sessionId, stop, owe, posts, rows, owed };
 }
 
 test(
@@ -73,10 +78,7 @@ test(
     const permits = f.rows("SELECT * FROM permits");
     expect(value(await f.stop("Finished."))).toEqual({ result: "posted" });
     expect(value(await f.stop("Duplicate."))).toEqual({ result: "skipped" });
-    const conversationId = await f.owe(
-      "another question",
-      "slack:C00000001:11.000001",
-    );
+    const conversationId = await f.owe("another question", secondThread);
     value(
       await f.core.reply(caller, {
         sessionId: f.sessionId,
@@ -130,15 +132,14 @@ test(
     await f.owe("previous question");
     f.db.exec("UPDATE reply_owed SET answered = 1");
     await f.owe("new question");
-    const owed = () => f.rows("SELECT answered FROM reply_owed ORDER BY rowid");
     f.chat.nextWrite = { kind: "refused" };
     expect(refusal(await f.stop("First attempt."))).toMatchObject({
       code: "CHAT_UNAVAILABLE",
       retry: "safe",
     });
-    expect(owed()).toEqual([{ answered: 1 }, { answered: 0 }]);
+    expect(f.owed()).toEqual([1, 0]);
     expect(value(await f.stop("Recovered."))).toEqual({ result: "posted" });
-    expect(owed()).toEqual([{ answered: 1 }, { answered: 1 }]);
+    expect(f.owed()).toEqual([1, 1]);
     expect(f.posts()).toEqual([expect.stringContaining("Recovered.")]);
   },
   timeout,
@@ -161,25 +162,20 @@ for (const outcome of ["transcript", "journal"]) {
         conversationId,
         text: "Explicit reply.",
       });
-      try {
-        await nextTurn();
-        expect(f.posts()).toHaveLength(1);
-        const waiting = f.stop("Stop while explicit reply is pending.");
-        release.resolve();
-        expect(refusal(await explicit)).toMatchObject({
-          code: "CHAT_UNAVAILABLE",
-          retry: "reconcile_first",
-        });
-        const later = await f.stop("Stop after the uncertain reply.");
-        const skipped = { ok: true, value: { result: "skipped" } } as const;
-        expect([await waiting, later]).toEqual([skipped, skipped]);
-        expect(f.rows("SELECT answered FROM reply_owed")).toEqual([
-          { answered: 0 },
-        ]);
-        expect(f.posts()).toEqual([expect.stringContaining("Explicit reply.")]);
-      } finally {
-        release.resolve();
-      }
+      await nextTurn();
+      const postsWhilePending = f.posts();
+      const waiting = f.stop("Stop while explicit reply is pending.");
+      release.resolve();
+      expect(postsWhilePending).toHaveLength(1);
+      expect(refusal(await explicit)).toMatchObject({
+        code: "CHAT_UNAVAILABLE",
+        retry: "reconcile_first",
+      });
+      const later = await f.stop("Stop after the uncertain reply.");
+      const skipped = { ok: true, value: { result: "skipped" } } as const;
+      expect([await waiting, later]).toEqual([skipped, skipped]);
+      expect(f.owed()).toEqual([0]);
+      expect(f.posts()).toEqual([expect.stringContaining("Explicit reply.")]);
     },
     timeout,
   );
@@ -197,20 +193,20 @@ test(
       conversationId,
       text: "Explicit reply.",
     });
-    try {
-      await nextTurn();
-      expect(f.posts()).toEqual([expect.stringContaining("Explicit reply.")]);
-      const stop = f.stop("Automatic duplicate.");
-      expect(await Promise.race([stop.then(() => true), nextTurn(false)])).toBe(
-        false,
-      );
-      release.resolve();
-      expect(value(await explicit).conversationId).toBe(conversationId);
-      expect(value(await stop)).toEqual({ result: "skipped" });
-      expect(f.posts()).toEqual([expect.stringContaining("Explicit reply.")]);
-    } finally {
-      release.resolve();
-    }
+    await nextTurn();
+    const postsWhilePending = f.posts();
+    const stop = f.stop("Automatic duplicate.");
+    const settled = await Promise.race([
+      stop.then(() => true),
+      nextTurn(false),
+    ]);
+    release.resolve();
+    const onePost = [expect.stringContaining("Explicit reply.")];
+    expect(postsWhilePending).toEqual(onePost);
+    expect(settled).toBe(false);
+    expect(value(await explicit).conversationId).toBe(conversationId);
+    expect(value(await stop)).toEqual({ result: "skipped" });
+    expect(f.posts()).toEqual(onePost);
   },
   timeout,
 );
@@ -220,15 +216,12 @@ test(
   async () => {
     const f = await stopFixture();
     await f.owe("first question");
-    await f.owe("separate question", "slack:C00000001:11.000001");
+    await f.owe("separate question", secondThread);
     expect(value(await f.stop("Ambiguous answer."))).toEqual({
       result: "skipped",
     });
     expect(f.posts()).toEqual([]);
-    expect(f.rows("SELECT answered FROM reply_owed")).toEqual([
-      { answered: 0 },
-      { answered: 0 },
-    ]);
+    expect(f.owed()).toEqual([0, 0]);
   },
   timeout,
 );
@@ -238,13 +231,10 @@ test(
   async () => {
     const f = await stopFixture();
     await f.owe("question");
-    const fragments = [
-      "private-answer-start",
-      "xoxb-",
-      "0".repeat(32),
-      "private-answer-end",
-    ];
-    const [start, prefix, body, end] = fragments;
+    const start = "private-answer-start";
+    const prefix = "xoxb-";
+    const body = "0".repeat(32);
+    const end = "private-answer-end";
     const result = await f.stop(
       start + "a".repeat(3500) + prefix + body + " " + end,
     );
@@ -256,7 +246,7 @@ test(
       f.rows("SELECT value FROM meta"),
       result,
     ]);
-    for (const fragment of fragments)
+    for (const fragment of [start, prefix, body, end])
       expect(recorded.includes(fragment)).toBe(false);
     expect(value(result)).toEqual({ result: "held" });
     expect(f.posts()).toEqual([
@@ -277,12 +267,12 @@ test(
     seedHost(f.db, "hst_other");
     const input = { ...f.binding, text: "Wrong binding." };
     for (const result of [
-      await f.core.hookStop({ ...f.host, hostInstanceId: "hst_other" }, input),
-      await f.core.hookStop(f.host, {
+      await f.core.hookStop({ ...host, hostInstanceId: "hst_other" }, input),
+      await f.core.hookStop(host, {
         ...input,
         hostSessionId: "unregistered",
       }),
-      await f.core.hookStop(f.host, { ...input, host: "codex" }),
+      await f.core.hookStop(host, { ...input, host: "codex" }),
     ]) {
       expect(refusal(result)).toMatchObject({ code: "SESSION_UNKNOWN" });
     }
@@ -290,9 +280,7 @@ test(
     expect(f.rows("SELECT session_id FROM sessions")).toEqual([
       { session_id: f.sessionId },
     ]);
-    expect(f.rows("SELECT answered FROM reply_owed")).toEqual([
-      { answered: 0 },
-    ]);
+    expect(f.owed()).toEqual([0]);
     expect(value(await f.stop("Right binding."))).toEqual({ result: "posted" });
   },
   timeout,

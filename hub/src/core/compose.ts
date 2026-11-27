@@ -13,14 +13,19 @@ export const createHubCore: CreateHubCore = (deps) => {
   let running = false;
   let closed = false;
   let chatAttempted = false;
+  let chatStartup: Promise<void> | undefined;
   let startup: Promise<void> | undefined;
   let cleanup: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
+  const stopStarting = Promise.withResolvers<void>();
+
+  function drainEffects(): Promise<void> {
+    return running && !closed ? worker.drain() : Promise.resolve();
+  }
 
   const base = createCoreBase(ctx, {
     kickEffects() {
-      if (running && !closed)
-        void worker.drain().catch(() => deps.log.warn("effect_drain_failed"));
+      void drainEffects().catch(() => deps.log.warn("effect_drain_failed"));
     },
   });
 
@@ -44,12 +49,16 @@ export const createHubCore: CreateHubCore = (deps) => {
         worker.prepare();
         if (chat) {
           recoverAgentPosts(ctx);
-          chatAttempted = true;
-          await chat.start(base.chatHandlers);
+          chatStartup = Promise.resolve().then(() => {
+            if (closed) return;
+            chatAttempted = true;
+            return chat.start(base.chatHandlers);
+          });
+          await chatStartup;
         }
         if (closed) return;
-        await worker.start();
-        running = true;
+        await Promise.race([worker.start(), stopStarting.promise]);
+        if (!closed) running = true;
       })
       .catch(async (error: unknown) => {
         closed = true;
@@ -68,7 +77,8 @@ export const createHubCore: CreateHubCore = (deps) => {
 
   function close(): Promise<void> {
     closed = true;
-    return (closing ??= Promise.resolve(startup)
+    stopStarting.resolve();
+    return (closing ??= Promise.resolve(chatStartup)
       .catch(() => undefined)
       .then(stopResources));
   }
@@ -76,7 +86,7 @@ export const createHubCore: CreateHubCore = (deps) => {
   return {
     ...base,
     ...createCli(ctx),
-    report: createReport(ctx, worker),
+    report: createReport(ctx, { ...worker, drain: drainEffects }),
     hookStop: createStop(ctx, base.reply),
     start,
     close,

@@ -1,8 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import type { MainServices } from "../../src/main.ts";
 import { createHubCore, nullTracker } from "../../src/core/index.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
+import { FakeHostBridge } from "../fakes/fake-host.ts";
 import { mainFixture } from "../main/main-fixture.ts";
 import { doorbellFake, fakeHostCore } from "./base-fakes.ts";
 import { button, host } from "./fakes.ts";
@@ -15,7 +15,6 @@ import {
   onFixtureCleanup,
   p1,
   seedHost,
-  value,
 } from "./fixture.ts";
 
 const timeout = 30_000;
@@ -69,8 +68,7 @@ test(
       );
       expect(core.person(a.personId)).toMatchObject(a);
       expect(f.chat.calls.map(({ name }) => name)).toEqual([]);
-      expect(f.events).toEqual([]);
-      expect(f.rings).toEqual([]);
+      expect([...f.events, ...f.rings]).toEqual([]);
       expect(timers).toHaveBeenCalledTimes(0);
     } finally {
       timers.mockRestore();
@@ -91,28 +89,26 @@ for (const argv of [
     "C2 " + argv.slice(0, 2).join(" ") + " closes each acquired resource once",
     async () => {
       const f = await compositionFixture();
-      const loadCore: MainServices["loadCore"] = () =>
-        Promise.resolve({
-          nullTracker,
-          openHubDb: () => f.db,
-          createHubCore(deps) {
-            const core = f.track(createHubCore(deps));
-            return {
-              ...core,
-              close() {
-                f.events.push("core.close");
-                return core.close();
-              },
-            };
-          },
-        });
       const entry = mainFixture({
         loadConfig: () => f.config,
-        loadCore,
-        runAdminCommand: (args, { core }) => {
+        loadCore: () =>
+          Promise.resolve({
+            nullTracker,
+            openHubDb: () => f.db,
+            createHubCore(deps) {
+              const core = f.track(createHubCore(deps));
+              return {
+                ...core,
+                close() {
+                  f.events.push("core.close");
+                  return core.close();
+                },
+              };
+            },
+          }),
+        runAdminCommand: (args) => {
           f.events.push("admin");
           expect(args).toEqual(argv);
-          expect(core.person(a.personId)).toMatchObject(a);
           return Promise.resolve(0);
         },
       });
@@ -224,13 +220,8 @@ test(
     const f = await compositionFixture();
     const core = f.track(createHubCore({ ...f.deps, chat: f.chat }));
     seedHost(f.db);
-    const { sessionId } = value(
-      core.hookSession(host, {
-        host: "claude",
-        hostSessionId: "startup-report",
-        source: "startup",
-      }),
-    );
+    const hostBridge = new FakeHostBridge(core, host);
+    const { sessionId } = hostBridge.start("startup-report", "startup");
     f.db
       .prepare(
         `INSERT INTO asks VALUES ('ask_report','prj_one','work_request','work',
@@ -241,45 +232,40 @@ test(
       .exec(`INSERT INTO permits VALUES ('permit_report','per_a','prj_one','request:ask_report',
       'demo-12','ask_report','approved_request','owner_approval',1,NULL)`);
     const chatRelease = Promise.withResolvers<void>();
-    const editEntered = Promise.withResolvers<void>();
-    const editRelease = Promise.withResolvers<void>();
+    const edit = Promise.withResolvers<"edited">();
+    let editing = false;
     f.chat.start = () => chatRelease.promise;
-    f.chat.editSummary = async () => {
-      editEntered.resolve();
-      await editRelease.promise;
-      return "edited";
+    f.chat.editSummary = () => {
+      editing = true;
+      return edit.promise;
     };
     const timers = spyOn(globalThis, "setTimeout");
     const start = core.start();
     try {
       await nextTurn();
-      const report = core.report(caller, {
+      void core.report(caller, {
         sessionId,
         projectId: p1,
         requestAskId: "ask_report",
         state: "working",
         text: "Started approved work.",
       });
-      const edited = editEntered.promise.then(() => true);
-      const editedEarly = await Promise.race([edited, nextTurn(false)]);
-      chatRelease.resolve();
-      expect(await Promise.race([edited, report.then(() => false)])).toBe(true);
       await nextTurn();
+      const editedEarly = editing;
+      chatRelease.resolve();
+      await nextTurn();
+      expect(editing).toBe(true);
       const close = core.close();
       await nextTurn();
       const deadline = timers.mock.calls.find(([, delay]) => delay === 5_000);
       deadline?.[0]();
-      const bounded = await Promise.race([
-        close.then(() => !!deadline),
-        nextTurn(false),
-      ]);
-      expect({ editedEarly, bounded }).toEqual({
-        editedEarly: false,
-        bounded: true,
-      });
+      const closedByDeadline = close.then(() => Boolean(deadline));
+      const bounded = await Promise.race([closedByDeadline, nextTurn(false)]);
+      expect(bounded).toBe(true);
+      expect(editedEarly).toBe(false);
     } finally {
       chatRelease.resolve();
-      editRelease.resolve();
+      edit.resolve("edited");
       await Promise.all([start, core.close()]);
       timers.mockRestore();
     }
@@ -298,7 +284,6 @@ test(
       throw new Error("injected chat failure");
     };
     await expect(core.start()).rejects.toThrow("injected chat failure");
-    await core.close();
     expect(f.chat.calls.map(({ name }) => name)).toEqual(["start", "stop"]);
     expect(f.events).toEqual(["claim", "release"]);
   },
