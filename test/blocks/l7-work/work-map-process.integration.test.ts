@@ -4,7 +4,6 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -23,7 +22,36 @@ const mapWarnings = (reply: object) =>
 const hasIncompleteMap = (reply: object) =>
   mapWarnings(reply).some(({ code }) => code === "WORK_FILE_MAP_INCOMPLETE");
 
-test.each(["script", "unknown native executable", "GitHub CLI build"] as const)(
+function githubCliBuildInfo(executable: string): string[] {
+  const preload = `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    const expected = fs.statSync(${JSON.stringify(executable)}, { bigint: true });
+    const buildInfo = Buffer.from(
+      "\\xff Go buildinf:".padEnd(32, "\\0") +
+        "path\\tgithub.com/cli/cli/v2/cmd/gh\\nmod\\tgithub.com/cli/cli/v2\\tfixture\\n",
+      "latin1",
+    );
+    const originalRead = fs.readSync;
+    fs.readSync = function (fd, buffer, offset, length, position) {
+      const count = originalRead.apply(this, arguments);
+      if (position === 0 && count >= 256 && Buffer.isBuffer(buffer)) {
+        const current = fs.fstatSync(fd, { bigint: true });
+        if (current.dev === expected.dev && current.ino === expected.ino)
+          buildInfo.copy(buffer, offset + 16);
+      }
+      return count;
+    };
+    syncBuiltinESMExports();
+  `;
+  return ["--import", `data:text/javascript,${encodeURIComponent(preload)}`];
+}
+
+test.each([
+  "script",
+  "unknown native executable",
+  "known native executable",
+] as const)(
   "advisory process accounting with %s preserves the CLI claim",
   async (kind) => {
     await advisoryProject(
@@ -70,57 +98,13 @@ test.each(["script", "unknown native executable", "GitHub CLI build"] as const)(
                 ? `@echo off\r\n>"${launcherStarted}" echo started\r\n${forward} %*\r\n`
                 : `#!/bin/sh\nprintf '%s\\n' "$$" >"${launcherStarted}"\n${forward} "$@"\nexit $?\n`,
             );
-          } else if (kind === "unknown native executable") {
+          } else {
             const node = spawnSync("node", ["-p", "process.execPath"], {
               encoding: "utf8",
               timeout: 5000,
             });
             expect(node.status, node.stderr).toBe(0);
             copyFileSync(node.stdout.trim(), launcher);
-          } else {
-            const go = join(root, "go-fixture");
-            mkdirSync(join(go, "cmd", "gh"), { recursive: true });
-            writeFileSync(
-              join(go, "go.mod"),
-              "module github.com/cli/cli/v2\n\ngo 1.20\n",
-            );
-            writeFileSync(
-              join(go, "cmd", "gh", "main.go"),
-              `package main
-import ("os"; "strconv")
-func main() {
-    want := []string{"pr", "view", "https://github.com/example/overlap/pull/1", "--json", "state,headRefName"}
-    if len(os.Args) != len(want) + 1 { panic("wrong argument count") }
-    for i, arg := range want {
-        if os.Args[i + 1] != arg { panic("wrong argument") }
-    }
-    f, err := os.OpenFile(${JSON.stringify(launches)}, os.O_WRONLY|os.O_APPEND, 0)
-    if err != nil { panic(err) }
-    defer f.Close()
-    if _, err = f.WriteString("[" + strconv.Itoa(os.Getppid()) + "," + strconv.Itoa(os.Getpid()) + "]\\n"); err != nil { panic(err) }
-    os.Stdout.WriteString(${JSON.stringify('{"state":"OPEN","headRefName":"feat/released"}')})
-}`,
-            );
-            const compiled = spawnSync(
-              "go",
-              ["build", "-o", launcher, "./cmd/gh"],
-              {
-                cwd: go,
-                env: {
-                  ...process.env,
-                  CGO_ENABLED: "0",
-                  GOPROXY: "off",
-                  GOTOOLCHAIN: "local",
-                },
-                encoding: "utf8",
-                timeout: 15_000,
-                windowsHide: true,
-              },
-            );
-            expect(
-              compiled.status,
-              compiled.error?.message ?? compiled.stderr,
-            ).toBe(0);
           }
           if (!windows) chmodSync(launcher, 0o755);
           writeFileSync(
@@ -146,6 +130,9 @@ func main() {
               FORGE_DEVICE_ID: "lane-fixture",
               GH_TOKEN: "fixture-token",
             },
+            kind === "known native executable"
+              ? githubCliBuildInfo(launcher)
+              : [],
           );
           expect(result).toMatchObject({
             exit: 0,
@@ -160,8 +147,10 @@ func main() {
             .trim()
             .split("\n")
             .filter((line) => line.includes('"event":"start"'));
-          expect(gitProcesses.length).toBeGreaterThan(0);
-          if (kind !== "GitHub CLI build") {
+          expect(
+            gitProcesses.some((line) => line.includes('"--no-lazy-fetch"')),
+          ).toBe(true);
+          if (kind !== "known native executable") {
             expect(trees, "batch/interpreter and native child PIDs").toEqual(
               [],
             );
@@ -172,6 +161,12 @@ func main() {
             expect(JSON.parse(trees[0]!)).toEqual([
               expect.any(Number),
               expect.any(Number),
+              [
+                "view",
+                "https://github.com/example/overlap/pull/1",
+                "--json",
+                "state,headRefName",
+              ],
             ]);
             expect(hasIncompleteMap(result)).toBe(false);
             expect(mapWarnings(result)[0]?.message).toContain("feat/released");

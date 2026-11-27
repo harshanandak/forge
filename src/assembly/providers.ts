@@ -169,6 +169,7 @@ export interface AssemblyProviders {
     scope: ServiceScope,
     discoveryOnly?: {
       executable: ResolvedExecutable;
+      requested: ResolvedExecutable;
       unchanged(): boolean;
     },
   ): Promise<OwnedHandle<FilesService>>;
@@ -950,17 +951,21 @@ export function createAssemblyProviders(
           if (discoveryOnly) {
             if (
               discoveryStarted ||
-              executable.path !== discoveryOnly.executable.path ||
+              executable.path !== discoveryOnly.requested.path ||
               !discoveryOnly.unchanged()
             )
               refuse("UNAVAILABLE", "Advisory Git discovery is unavailable");
             discoveryStarted = true;
           }
-          const result = port.run(executable, args, {
-            ...options,
-            signal,
-            containment: scope.processContainment,
-          });
+          const result = port.run(
+            discoveryOnly?.executable ?? executable,
+            args,
+            {
+              ...options,
+              signal,
+              containment: scope.processContainment,
+            },
+          );
           pending.add(result);
           void result.then(
             () => pending.delete(result),

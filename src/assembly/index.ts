@@ -783,7 +783,7 @@ export async function createAssembly(
       return answer;
     };
     const lanes = await providers
-      .openFiles(scope, gitPin)
+      .openFiles(scope, { ...gitPin, requested: gitExecutable })
       .then(async (files) => {
         try {
           const { boundLaneRegistry } =
@@ -804,7 +804,7 @@ export async function createAssembly(
             if (current.kind !== "resolved") return current;
             if (current.path !== gitExecutable.path || !gitPin.unchanged())
               throw new Error("Advisory Git changed");
-            return gitExecutable;
+            return gitPin.executable;
           },
         },
         gitProcessCost,

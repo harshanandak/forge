@@ -314,6 +314,12 @@ const ghModule = Buffer.from(
   "path\tgithub.com/cli/cli/v2/cmd/gh\nmod\tgithub.com/cli/cli/v2\t",
 );
 const gitVersionFormat = Buffer.from("git version %s");
+const gitNoLazyFetch = Buffer.from("--no-lazy-fetch");
+const gitNoReplace = Buffer.from("--no-replace-objects");
+const appleGitPaths = [
+  "/Library/Developer/CommandLineTools/usr/bin/git",
+  "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+];
 const gitForWindows = Buffer.from("Git for Windows\0", "utf16le");
 const gitDispatchTarget = Buffer.from("bin\\git.exe\0", "utf16le");
 
@@ -365,13 +371,38 @@ function sameFile(initial: BigIntStats, current: BigIntStats): boolean {
   );
 }
 
+type AdvisoryExecutablePin = {
+  executable: ResolvedExecutable;
+  cost: 1 | 2;
+  unchanged(): boolean;
+};
+
 export function pinAdvisoryExecutable(
   executable: ResolvedExecutable,
   platform: NodeJS.Platform,
   program: "git" | "gh",
-):
-  | { executable: ResolvedExecutable; cost: 1 | 2; unchanged(): boolean }
-  | undefined {
+): AdvisoryExecutablePin | undefined {
+  if (
+    platform !== "darwin" ||
+    program !== "git" ||
+    executable.path !== "/usr/bin/git"
+  )
+    return pinAdvisoryFile(executable, platform, program);
+  for (const path of appleGitPaths) {
+    const direct = pinAdvisoryFile(
+      { kind: "resolved", path },
+      platform,
+      program,
+    );
+    if (direct) return direct;
+  }
+}
+
+function pinAdvisoryFile(
+  executable: ResolvedExecutable,
+  platform: NodeJS.Platform,
+  program: "git" | "gh",
+): AdvisoryExecutablePin | undefined {
   if (platform === "win32" && !/\.exe$/i.test(executable.path)) return;
   let fd: number | undefined;
   try {
@@ -414,6 +445,15 @@ function gitCost(
   path: string,
 ): 1 | 2 | undefined {
   if (matchesBuild(fd, size, (block) => block.includes(gitVersionFormat)))
+    return 1;
+  if (
+    platform === "darwin" &&
+    matchesBuild(
+      fd,
+      size,
+      (block) => block.includes(gitNoLazyFetch) && block.includes(gitNoReplace),
+    )
+  )
     return 1;
   if (
     platform === "win32" &&
