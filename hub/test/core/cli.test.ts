@@ -210,7 +210,9 @@ test(
     value(cli.cliInbox(b, { projectId: p1, sessionId: parent }));
 
     const { itemId } = value(
-      await cli.cliSend(a, { ...draft(sessionId), targetSessionId: child }),
+      await Promise.resolve(
+        cli.cliSend(a, { ...draft(sessionId), targetSessionId: child }),
+      ),
     );
     expect({
       rows: f.rows(
@@ -246,16 +248,12 @@ test(
       .prepare("UPDATE sessions SET project_id = ? WHERE session_id = ?")
       .run(p2, otherProject);
     const input = draft(sessionId);
+    const send = (targetSessionId: string) =>
+      Promise.resolve(cli.cliSend(a, { ...input, targetSessionId }));
 
     expect({
-      projectless: await cli.cliSend(a, {
-        ...input,
-        targetSessionId: projectless,
-      }),
-      otherProject: await cli.cliSend(a, {
-        ...input,
-        targetSessionId: otherProject,
-      }),
+      projectless: await send(projectless),
+      otherProject: await send(otherProject),
       items: f.rows("inbox_items"),
     }).toMatchObject({
       projectless: { ok: false, error: { code: "SESSION_UNKNOWN" } },
@@ -359,7 +357,9 @@ test(
       .run(p1, a.personId);
     expect(f.context.store.sessions.isMember(p1, b.personId)).toBe(true);
     expect(
-      await cli.cliSend(a, { ...draft(sessionId), targetSessionId }),
+      await Promise.resolve(
+        cli.cliSend(a, { ...draft(sessionId), targetSessionId }),
+      ),
     ).toMatchObject({
       ok: false,
       error: { code: "NOT_PROJECT_MEMBER" },
