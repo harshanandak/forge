@@ -3,6 +3,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { gitExecutable } from "../git-executable.ts";
 
 const MAX_BLOB_BYTES = 16 * 1024 * 1024;
+const OBJECT_ID = "[0-9a-f]{40}(?:[0-9a-f]{24})?";
+const BATCH_HEADER = new RegExp(`^(${OBJECT_ID}) ([a-z]+)(?: ([0-9]+))?$`);
+const TREE_RECORD = new RegExp(`^(\\S+) (\\S+) (${OBJECT_ID})$`);
 
 export interface CommentSnapshot {
   readonly head: string;
@@ -22,7 +25,7 @@ export function parseCatFileBatch(
     const end = output.indexOf(10, offset);
     if (end < 0) throw new Error("Incomplete batch blob output");
     const header = output.subarray(offset, end).toString("latin1");
-    const found = /^([0-9a-f]{40}) ([a-z]+)(?: ([0-9]+))?$/.exec(header);
+    const found = BATCH_HEADER.exec(header);
     const id = found?.[1];
     const kind = found?.[2];
     const rawSize = found?.[3];
@@ -42,6 +45,20 @@ export function parseCatFileBatch(
   }
   if (offset !== output.length) throw new Error("Incomplete batch blob output");
   return bodies;
+}
+export function parseLsTree(output: string): Map<string, string> {
+  const blobs = new Map<string, string>();
+  for (const record of output.split("\0")) {
+    if (!record) continue;
+    const tab = record.indexOf("\t");
+    const file = tab < 0 ? "" : record.slice(tab + 1);
+    const match = TREE_RECORD.exec(tab < 0 ? "" : record.slice(0, tab));
+    const oid = match?.[3];
+    if (!match || match[2] !== "blob" || !file || !oid || blobs.has(file))
+      throw new Error("Incomplete committed blob listing");
+    blobs.set(file, oid);
+  }
+  return blobs;
 }
 export function readCommittedTexts(
   root: string,
@@ -64,21 +81,7 @@ export function readCommittedTexts(
         stdio: "pipe",
       },
     );
-  const blobs = new Map<string, string>();
-  for (const record of git("ls-tree", "-r", "-z", head, "--", ...files).split(
-    "\0",
-  )) {
-    if (!record) continue;
-    const tab = record.indexOf("\t");
-    const file = tab < 0 ? "" : record.slice(tab + 1);
-    const match = /^(\S+) (\S+) ([0-9a-f]{40})$/.exec(
-      tab < 0 ? "" : record.slice(0, tab),
-    );
-    const oid = match?.[3];
-    if (!match || match[2] !== "blob" || !file || !oid || blobs.has(file))
-      throw new Error("Incomplete committed blob listing");
-    blobs.set(file, oid);
-  }
+  const blobs = parseLsTree(git("ls-tree", "-r", "-z", head, "--", ...files));
   const oids = files.map((file) => {
     const oid = blobs.get(file);
     if (oid === undefined) throw new Error("Incomplete committed blob listing");

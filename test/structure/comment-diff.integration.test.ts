@@ -34,6 +34,7 @@ interface CommentDiffModule {
     output: Buffer,
     oids: readonly string[],
   ) => Buffer[];
+  readonly parseLsTree?: (output: string) => Map<string, string>;
 }
 
 let tested: CommentDiffModule | undefined;
@@ -97,6 +98,12 @@ function parse(): (output: Buffer, oids: readonly string[]) => Buffer[] {
   if (typeof parseFrames !== "function")
     throw new Error("The batch frame parser is unavailable");
   return parseFrames;
+}
+function parseTree(): (output: string) => Map<string, string> {
+  const parseListing = api().parseLsTree;
+  if (typeof parseListing !== "function")
+    throw new Error("The tree listing parser is unavailable");
+  return parseListing;
 }
 function readTexts(): (
   root: string,
@@ -212,6 +219,17 @@ test("batch frames decode after framing and keep every byte", () => {
   expect(parsed[0]?.equals(Buffer.from(bodies[0] ?? "", "utf8"))).toBe(true);
   expect(parsed[1]?.equals(Buffer.from(bodies[1] ?? "", "utf8"))).toBe(true);
   expect(parse()(Buffer.alloc(0), [])).toHaveLength(0);
+}, 30_000);
+
+test("both parsers accept a 64-character object id", () => {
+  const oid = "e".repeat(64);
+  const body = "export const sha = 256;\n";
+  const parsed = parse()(frame(oid, "blob", body), [oid]);
+  expect(parsed).toHaveLength(1);
+  expect(parsed[0]?.toString("utf8")).toBe(body);
+  expect(
+    parseTree()(`100644 blob ${oid}\tsrc/sha.ts\0`).get("src/sha.ts"),
+  ).toBe(oid);
 }, 30_000);
 
 test("batch frames fail closed on missing, wrong or short output", () => {
