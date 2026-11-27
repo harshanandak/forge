@@ -46,6 +46,10 @@ function validCreatedBy(value: unknown): value is Conversation["createdBy"] {
   return value === "slack" || value === "telegram" || value === "agent";
 }
 
+function validJournalTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 function validConversation(value: unknown): value is Conversation {
   if (!isRecord(value)) return false;
   if (typeof value.conversationId !== "string") return false;
@@ -55,7 +59,7 @@ function validConversation(value: unknown): value is Conversation {
   if (typeof value.channelId !== "string") return false;
   if (value.isDirect !== false) return false;
   if (!validCreatedBy(value.createdBy)) return false;
-  if (typeof value.createdAt !== "number") return false;
+  if (!validJournalTime(value.createdAt)) return false;
   if (typeof value.projectId !== "string") return false;
   if (value.sessionId !== undefined && typeof value.sessionId !== "string")
     return false;
@@ -102,7 +106,7 @@ function readJournalPost(key: string, value: unknown): JournalRead {
   if (typeof sessionId !== "string") return { ok: false };
   if (typeof personId !== "string") return { ok: false };
   if (typeof text !== "string") return { ok: false };
-  if (typeof at !== "number") return { ok: false };
+  if (!validJournalTime(at)) return { ok: false };
   const reservation = {
     id,
     conversation,
@@ -228,6 +232,10 @@ export function recoverAgentPosts(ctx: CoreContext, thread?: string) {
       ctx.deps.log.warn("agent_post_journal_invalid", { key });
       continue;
     }
-    projectPost(ctx, key, read.post);
+    try {
+      projectPost(ctx, key, read.post);
+    } catch {
+      ctx.deps.log.warn("agent_post_journal_projection_failed", { key });
+    }
   }
 }
