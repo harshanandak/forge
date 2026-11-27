@@ -145,6 +145,48 @@ test(
   timeout,
 );
 
+test(
+  "H1 a queued explicit reply answers the obligation restored by a refused Stop",
+  async () => {
+    const f = await stopFixture();
+    const conversationId = await f.owe("question");
+    const release = Promise.withResolvers<void>();
+    const post = f.chat.postText.bind(f.chat);
+    let automaticPending = false;
+    f.chat.postText = async (...args) => {
+      if (args[1].endsWith("Automatic answer.")) {
+        automaticPending = true;
+        await release.promise;
+        f.chat.nextWrite = { kind: "refused" };
+      }
+      return post(...args);
+    };
+    const automatic = f.stop("Automatic answer.");
+    await nextTurn();
+    const queuedWhilePending = automaticPending;
+    const explicit = f.core.reply(caller, {
+      sessionId: f.sessionId,
+      conversationId,
+      text: "Explicit answer.",
+    });
+    release.resolve();
+    expect(queuedWhilePending).toBe(true);
+    expect(refusal(await automatic)).toMatchObject({
+      code: "CHAT_UNAVAILABLE",
+      retry: "safe",
+    });
+    expect(value(await explicit).conversationId).toBe(conversationId);
+    const onePost = [expect.stringContaining("Explicit answer.")];
+    expect(f.posts()).toEqual(onePost);
+    expect(f.owed()).toEqual([1]);
+    expect(value(await f.stop("Later automatic answer."))).toEqual({
+      result: "skipped",
+    });
+    expect(f.posts()).toEqual(onePost);
+  },
+  timeout,
+);
+
 for (const outcome of ["transcript", "journal"]) {
   test(
     "H1 Stop skips an uncertain explicit reply recorded in the " + outcome,
