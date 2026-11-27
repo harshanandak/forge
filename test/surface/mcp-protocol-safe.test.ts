@@ -162,8 +162,13 @@ test("mcp transport reports failed opens instead of throwing", async () => {
 test("hidden and unknown tool names share the unknown-tool error", async () => {
   for (const era of eras) {
     await exchange(era, true, async (rpc) => {
-      for (const name of ["sample_write", "never_existed"]) {
-        const reply = await rpc("tools/call", { name });
+      for (const call of [
+        { name: "sample_write" },
+        { name: "never_existed" },
+        { name: "block_add", arguments: { path: "./hello" } },
+      ] as const) {
+        const reply = await rpc("tools/call", { ...call });
+        const name = call.name;
         expect({ era, name, code: reply.error?.code }).toEqual({
           era,
           name,
