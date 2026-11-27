@@ -7,6 +7,7 @@ import {
   type ReplyInput,
 } from "../../src/contract/mcp.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
+import { enterThread } from "../../src/core/thread.ts";
 import {
   baseFixture,
   bellFor,
@@ -564,6 +565,93 @@ test(
     expect(f.rows("thread_messages WHERE kind = 'agent'")).toEqual(agents);
     expect(f.rows("reply_owed")).toEqual(owed);
     expect(f.chat.writes).toHaveLength(writes);
+  },
+  timeout,
+);
+
+test(
+  "OW1.reply reply refuses when the project channel is rebound during the thread wait",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+    const beforeInbox = f.rows("inbox_items");
+    const beforeAgents = f.rows("thread_messages WHERE kind = 'agent'");
+    const beforeOwed = f.rows("reply_owed");
+    const beforeConvs = f.rows("conversations");
+    const beforeWrites = f.chat.writes.length;
+    const releaseGate = await enterThread(f.context, thread);
+    const pending = f.core.reply(f.caller(), {
+      sessionId: alpha.sessionId,
+      conversationId,
+      text: "Race reply",
+    });
+    await Bun.sleep(10);
+    const rebound = f.config.projects.map((project) =>
+      project.projectId === p1
+        ? { ...project, slackChannelId: "C00000009" }
+        : project,
+    );
+    createCoreBase(
+      createCoreContext({
+        ...f.deps,
+        config: { ...f.config, projects: rebound },
+        people: configPeople(f.config.people),
+      }),
+    );
+    releaseGate();
+    expect(refusal(await pending)).toEqual({
+      code: "INPUT_INVALID",
+      message: "The input is invalid.",
+      retry: "never",
+      pointer: "/conversationId",
+    });
+    expect(f.rows("inbox_items")).toEqual(beforeInbox);
+    expect(f.rows("thread_messages WHERE kind = 'agent'")).toEqual(
+      beforeAgents,
+    );
+    expect(f.rows("reply_owed")).toEqual(beforeOwed);
+    expect(f.rows("conversations")).toEqual(beforeConvs);
+    expect(f.chat.writes).toHaveLength(beforeWrites);
+    createCoreBase(
+      createCoreContext({
+        ...f.deps,
+        config: f.config,
+        people: configPeople(f.config.people),
+      }),
+    );
+    const retry = value(
+      await f.core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        conversationId,
+        text: "After rebind",
+      }),
+    );
+    expect(retry.conversationId).toBe(conversationId);
+  },
+  timeout,
+);
+
+test(
+  "OW1.reply reply posts when the channel is unchanged across the thread wait",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+    const releaseGate = await enterThread(f.context, thread);
+    const pending = f.core.reply(f.caller(), {
+      sessionId: alpha.sessionId,
+      conversationId,
+      text: "Held reply",
+    });
+    await Bun.sleep(10);
+    releaseGate();
+    const out = value(await pending);
+    expect(out.conversationId).toBe(conversationId);
+    expect(f.writes("postText")).toHaveLength(1);
+    expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(1);
   },
   timeout,
 );

@@ -10,6 +10,7 @@ import { fail } from "./errors.ts";
 import { refused } from "./inbox.ts";
 import {
   byConversation,
+  channelBindingRefusal,
   confirmAgentPost,
   conversation,
   enterThread,
@@ -158,16 +159,8 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         !sessions.isMember(existing.projectId, person.personId)
       )
         return refused("CONVERSATION_NOT_YOURS");
-      if (!existing.isDirect) {
-        const currentChannel = config.projects.find(
-          (entry) => entry.projectId === existing.projectId,
-        )?.slackChannelId;
-        if (
-          existing.projectId === undefined ||
-          existing.channelId !== currentChannel
-        )
-          return refused("INPUT_INVALID", "/conversationId");
-      }
+      const binding = channelBindingRefusal(db, existing, existing.projectId);
+      if (binding) return binding;
       if (paused(db, existing.chatThreadId))
         return refused("CONVERSATION_PAUSED");
       if (!text.length || text.length > LIMITS.replyText)
@@ -301,8 +294,16 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       }
       const conv = result.conversation;
       releaseThread = await enterThread(ctx, conv.chatThreadId);
-      if (ctx.store.tx(() => paused(db, conv.chatThreadId)))
-        return refused("CONVERSATION_PAUSED");
+      const blocked = ctx.store.tx(() => {
+        const fresh = byConversation(db, conv.conversationId);
+        if (!fresh) return refused("CONVERSATION_UNKNOWN");
+        const binding = channelBindingRefusal(db, fresh, fresh.projectId);
+        if (binding) return binding;
+        if (paused(db, conv.chatThreadId))
+          return refused("CONVERSATION_PAUSED");
+        return undefined;
+      });
+      if (blocked) return blocked;
       const posted = await postAgentText(ctx, {
         ...postInput,
         target: { kind: "thread", chatThreadId: conv.chatThreadId },
