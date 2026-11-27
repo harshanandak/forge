@@ -43,6 +43,7 @@ type Ports = {
 type Options = Pick<SpawnOptions, "cwd" | "env" | "signal" | "timeoutMs"> & {
   defaultRef: string;
   workInstance?: string;
+  candidateId?: string;
 };
 type Reason = {
   kind:
@@ -70,6 +71,8 @@ type Snapshot = {
   trackedPaths: string[];
   literalPaths: string[];
   generatedFiles: readonly GeneratedFileRule[];
+  candidate?: Issue;
+  dependencies?: ReadonlyMap<string, Issue["dependsOn"]>;
   holders: {
     issue: Issue;
     leaseExpiresAt?: string;
@@ -114,7 +117,7 @@ export async function readWorkMap(
   };
   const note = (kind: Reason["kind"], detail?: Omit<Reason, "kind">) =>
     snapshot.reasons.push({ kind, ...detail });
-  const { defaultRef, workInstance = "work", ...spawn } = options;
+  const { defaultRef, workInstance = "work", candidateId, ...spawn } = options;
   const limits = WORK_MAP_LIMITS;
   const env = Object.fromEntries(
     Object.entries(spawn.env).filter(([name]) => !/^GIT_/i.test(name)),
@@ -193,6 +196,7 @@ export async function readWorkMap(
         ])
       )?.trim()
     : undefined;
+  let policyKnown = false;
   if (sha && commitSha.test(sha)) {
     snapshot.defaultSha = sha;
     const paths = await gitText("tracked-paths", [
@@ -215,6 +219,7 @@ export async function readWorkMap(
     if (config !== undefined) {
       try {
         snapshot.generatedFiles = generatedPolicy(config, workInstance);
+        policyKnown = true;
       } catch {
         note("policy-unreadable");
       }
@@ -222,9 +227,14 @@ export async function readWorkMap(
   } else if (snapshot.reasons.length === 0)
     note("git-unavailable", { source: "default-ref" });
 
+  if (candidateId !== undefined && !policyKnown) return snapshot;
   const issues = await readPage("issues", limits.issues, (input) =>
     ports.issues(input),
   );
+  if (candidateId !== undefined)
+    snapshot.dependencies = new Map(
+      issues.map(({ id, dependsOn }) => [id, dependsOn]),
+    );
   const pulls = new Map<string, Pull | undefined>();
   async function lookupPull(
     url: string,
@@ -248,6 +258,7 @@ export async function readWorkMap(
   const wildcard = /[*?]/u;
   for (const issue of issues) {
     if (issue.status === "closed") continue;
+    if (issue.id === candidateId) snapshot.candidate = issue;
     const declaration = normalizeFileDeclarations(issue);
     if (declaration.ok) {
       for (const path of declaration.patch.expectedFiles ?? [])
@@ -299,7 +310,10 @@ export async function readWorkMap(
     paths.reduce((total, path) => total + path.length + 1, 0);
   const universeWork = pathWork(universe);
   let patternWork: number = limits.patternWork;
-  for (const { issue } of snapshot.holders) {
+  const activeIssues = snapshot.holders.map(({ issue }) => issue);
+  if (snapshot.candidate && !activeIssues.includes(snapshot.candidate))
+    activeIssues.push(snapshot.candidate);
+  for (const issue of activeIssues) {
     const declaration = normalizeFileDeclarations(issue);
     if (!declaration.ok) {
       note("invalid-declarations", { issue: issue.id });
