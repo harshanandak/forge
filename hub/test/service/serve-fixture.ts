@@ -22,6 +22,7 @@ const mcp = basePath + MCP_PATH;
 const slack =
   scenario === "chat" || scenario === "reconcile" || scenario === "headers";
 const remoteEnabled = scenario !== "lifecycle" && scenario !== "telegram";
+const admitted = scenario === "shutdown" || scenario === "drain";
 const config: HubConfig = {
   ...configFixture(),
   listen: { host, port: 0 },
@@ -182,13 +183,18 @@ async function probe() {
       createRemoteHandler: () => ({
         handle(request) {
           remoteCalls++;
-          if (scenario !== "shutdown") return Promise.resolve(new Response());
+          if (!admitted) return Promise.resolve(new Response());
           const pending = Promise.withResolvers<Response>();
           request.signal.addEventListener(
             "abort",
             () => {
               events.push("abort");
-              pending.resolve(new Response());
+              if (scenario !== "drain") pending.resolve(new Response());
+              else
+                setImmediate(() => {
+                  events.push("handler.settled");
+                  pending.resolve(new Response());
+                });
             },
             { once: true },
           );
@@ -285,7 +291,7 @@ async function probe() {
             belowLimit: await status(active, mcp, 997),
           };
         }
-        if (scenario === "shutdown") {
+        if (admitted) {
           pending = status(active, mcp).catch(() => "closed");
           await Promise.race([dispatch.promise, pending]);
         }

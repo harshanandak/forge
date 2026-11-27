@@ -62,6 +62,30 @@ test(
   timeout,
 );
 
+test(
+  "S1 shutdown closes remote, core and database only after an aborted handler settles",
+  () => {
+    expect(probe("drain")).toMatchObject({
+      code: 0,
+      stderr: [],
+      events: [
+        "db.open",
+        "claim",
+        "listening",
+        "abort",
+        "handler.settled",
+        "remote.close",
+        "core.close",
+        "release",
+        "db.close",
+      ],
+      pending: "closed",
+      listeningAfter: false,
+    });
+  },
+  timeout,
+);
+
 for (const [scenario, startup] of [
   ["port", ["claim"]],
   ["chat", ["claim", "chat.start", "chat.stop", "release"]],
