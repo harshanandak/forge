@@ -35,6 +35,7 @@ type ReadLimits = Budget & { limit: number };
 type Read<T> = T | Promise<T>;
 type Ports = {
   now(): number;
+  authoritativeLeases?: boolean;
   issues(limits: ReadLimits): Read<Page<Issue>>;
   deliveries(issue: string, limits: ReadLimits): Read<Page<string>>;
   pull(url: string, limits: Budget): Read<Pull>;
@@ -272,10 +273,12 @@ export async function readWorkMap(
     }
 
     const lease = issue.lease;
+    const expiration = Date.parse(lease?.expiresAt ?? "");
     const leaseExpiresAt =
       lease &&
       lease.releasedAt === undefined &&
-      Date.parse(lease.expiresAt) > now
+      Number.isFinite(expiration) &&
+      (ports.authoritativeLeases || expiration > now)
         ? lease.expiresAt
         : undefined;
     const openPulls: Snapshot["holders"][number]["openPulls"] = [];

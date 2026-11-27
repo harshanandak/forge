@@ -30,6 +30,7 @@ export interface CloudAuthorityDeps {
   readonly root: string;
   readonly deviceRoot: string;
   readonly signal?: AbortSignal;
+  readonly observeClaimClock?: (now: () => number) => void;
   /** The runtime's own check that a context is this project's; it throws the refusal. */
   readonly scope: (context: BoundContext) => void;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -292,15 +293,35 @@ export async function selectCloud(
     wireDeviceId(named) !== wireDeviceId(device)
   )
     throw fail("AUTH_DEVICE_MISMATCH", "This session is not on this machine.");
-  const [{ createCloudHttp }, { createCloudLeaseClient, CloudCommandFailure }] =
-    await Promise.all([loadHttp(), loadLeaseClient()]);
+  const [
+    { createCloudHttp, defaultCloudFetch },
+    { createCloudLeaseClient, CloudCommandFailure },
+  ] = await Promise.all([loadHttp(), loadLeaseClient()]);
   deps.signal?.throwIfAborted();
   const { fetch, now, security } = deps.cloud ?? {};
+  const observe =
+    declared === "issue.claim" ? deps.observeClaimClock : undefined;
   const client = createCloudLeaseClient({
     key: { origin, identity, project },
     credentials: credentialStore(openCloudFiles(home, security, {})),
     now: now ?? Date.now,
-    http: createCloudHttp({ origin, project, ...(fetch ? { fetch } : {}) }),
+    http: createCloudHttp({
+      origin,
+      project,
+      ...(fetch ? { fetch } : {}),
+      ...(observe
+        ? {
+            async fetch(url, init) {
+              const started = performance.now();
+              const response = await (fetch ?? defaultCloudFetch)(url, init);
+              const date = Date.parse(response.headers.get("date") ?? "");
+              if (response.ok && Number.isFinite(date))
+                observe(() => date + 1000 + performance.now() - started);
+              return response;
+            },
+          }
+        : {}),
+    }),
     ...(deps.signal === undefined ? {} : { signal: deps.signal }),
   });
   try {

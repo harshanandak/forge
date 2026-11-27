@@ -717,6 +717,7 @@ export async function createAssembly(
     ) => Promise<unknown>,
     signal: AbortSignal,
     laneStart: boolean,
+    authoritativeLeases: boolean,
   ): ReturnType<typeof readWorkWarnings> {
     const scope = {
       op: "work-file-map",
@@ -803,6 +804,7 @@ export async function createAssembly(
     return await readWorkWarnings(
       {
         now: Date.now,
+        authoritativeLeases,
         process: { ...process, resolve: () => git.executable() },
         async issues({ limit }) {
           const page = (await read("issue.list", {
@@ -2197,14 +2199,103 @@ export async function createAssembly(
             : undefined;
         const laneStart =
           workOperation === "lane.start" || workOperation === "lane.attempt";
+        let claimClock: (() => number) | undefined;
+        const cloudDeps = {
+          root,
+          deviceRoot,
+          scope: ownContext,
+          env: options.providers?.env ?? process.env,
+          cloud: options.providers?.cloudLogin,
+        };
+        const decorateWork = async (
+          result: ResultEnvelope,
+          selected: typeof current.catalog,
+          invoke: (
+            nested: typeof request,
+            signal: AbortSignal,
+          ) => Promise<ResultEnvelope | undefined>,
+          bound = false,
+        ) => {
+          if (
+            !result.ok ||
+            request.dryRun ||
+            (!laneStart && workOperation !== "issue.claim")
+          )
+            return;
+          if (mcp || !options.oneShot) {
+            call.workMap = unavailableMap(
+              "advisory skipped: shared process runner",
+            );
+            return;
+          }
+          const output = record(result.result);
+          const id = laneStart ? output?.issue : output?.id;
+          const now = bound ? claimClock?.() : Date.now();
+          const expiry = Date.parse(String(output?.expiresAt));
+          if (workOperation === "issue.claim") {
+            if (now === undefined) {
+              call.workMap = unavailableMap(
+                "claim authority clock unavailable",
+              );
+              return;
+            }
+            const reserve = bound ? 1000 : advisoryMs;
+            if (!(expiry - now > advisoryMs + reserve)) {
+              call.workMap = unavailableMap("claim lease is too short");
+              return;
+            }
+          }
+          if (typeof id !== "string") return;
+          const controller = new AbortController();
+          const bounded = signal
+            ? AbortSignal.any([signal, controller.signal])
+            : controller.signal;
+          try {
+            const instance = selected.resolve(request.op).operation.instance;
+            const read: Parameters<typeof workAdvisory>[2] = async (
+              op,
+              input,
+              signal,
+            ) => {
+              const nested = selected.list().find((name) => {
+                const { operation } = selected.resolve(name);
+                return (
+                  operation.declaredOp === op && operation.instance === instance
+                );
+              });
+              if (!nested)
+                refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
+              const answer = await invoke(
+                { ...request, op: nested, input },
+                signal,
+              );
+              if (!answer) throw new Error("Issue authority unavailable");
+              if (!answer.ok) throw new ForgeFailure(answer.error);
+              return answer.result;
+            };
+            call.workMap = await Promise.race([
+              delay(advisoryMs, unavailableMap("read timed out"), {
+                signal: bounded,
+              }),
+              workAdvisory(id, instance, read, bounded, laneStart, bound),
+            ]);
+          } catch {
+            call.workMap = unavailableMap("read unavailable");
+          } finally {
+            controller.abort();
+          }
+        };
         const fromCloud = (runtime: Pick<Runtime, "preflight">) =>
           selectCloud(
             {
-              root,
-              deviceRoot,
-              scope: ownContext,
-              env: options.providers?.env ?? process.env,
-              cloud: options.providers?.cloudLogin,
+              ...cloudDeps,
+              ...(!mcp && options.oneShot
+                ? {
+                    observeClaimClock: (clock: () => number) => {
+                      claimClock = clock;
+                    },
+                  }
+                : {}),
               ...(signal === undefined ? {} : { signal }),
               coordinate: async (flight, project) =>
                 (await loadLaneCoordinator()).coordinateLane(
@@ -2260,8 +2351,18 @@ export async function createAssembly(
             : "local";
         const routed = route === "cloud" || route === "coordinator";
         if (routed) {
-          const cloud = await fromCloud(new Runtime(current.catalog, trust));
-          if (cloud) return cloud;
+          const authority = new Runtime(current.catalog, trust);
+          const cloud = await fromCloud(authority);
+          if (cloud) {
+            await decorateWork(
+              cloud,
+              current.catalog,
+              (nested, signal) =>
+                selectCloud({ ...cloudDeps, signal }, authority, nested),
+              true,
+            );
+            return cloud;
+          }
         }
         // The owner's words for memory forget, restore and adopt are relayed through Forge's own
         // approval: a request for these exact arguments, then the reply and where it was said.
@@ -2687,65 +2788,9 @@ export async function createAssembly(
           request,
           signal === undefined ? undefined : { signal },
         );
-        if (
-          result.ok &&
-          !request.dryRun &&
-          (laneStart || workOperation === "issue.claim")
-        ) {
-          const output = record(result.result);
-          const id = laneStart ? output?.issue : output?.id;
-          const expiry = Date.parse(String(output?.expiresAt));
-          if (mcp || !options.oneShot)
-            call.workMap = unavailableMap(
-              "advisory skipped: shared process runner",
-            );
-          else if (
-            workOperation === "issue.claim" &&
-            !(expiry - Date.now() > 2 * advisoryMs)
-          )
-            call.workMap = unavailableMap("claim lease is too short");
-          else if (typeof id === "string") {
-            const controller = new AbortController();
-            const bounded = signal
-              ? AbortSignal.any([signal, controller.signal])
-              : controller.signal;
-            const instance = runtimeCatalog.resolve(request.op).operation
-              .instance;
-            try {
-              const read: Parameters<typeof workAdvisory>[2] = async (
-                op,
-                input,
-                signal,
-              ) => {
-                const nested = runtimeCatalog.list().find((name) => {
-                  const { operation } = runtimeCatalog.resolve(name);
-                  return (
-                    operation.declaredOp === op &&
-                    operation.instance === instance
-                  );
-                });
-                if (!nested)
-                  refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
-                const answer = await runtime.invoke(
-                  { ...request, op: nested, input },
-                  { signal },
-                );
-                if (!answer.ok) throw new ForgeFailure(answer.error);
-                return answer.result;
-              };
-              call.workMap = await Promise.race([
-                delay(advisoryMs, unavailableMap("read timed out"), {
-                  signal: bounded,
-                }),
-                workAdvisory(id, instance, read, bounded, laneStart),
-              ]);
-            } catch {
-              call.workMap = unavailableMap("read unavailable");
-            } finally {
-              controller.abort();
-            }
-          }
-        }
+        await decorateWork(result, runtimeCatalog, (nested, signal) =>
+          runtime.invoke(nested, { signal }),
+        );
         return checkResult(
           runtimeCatalog,
           request.op,
