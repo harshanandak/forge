@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { Buffer } from "node:buffer";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   createConfig,
   createConfigOperations,
@@ -169,6 +170,16 @@ import {
 // Only skills.sync writes skill files, so no other command loads the writer.
 const loadLaneCoordinator = lazy(() => import("./cloud-lane-coordinator.ts"));
 const loadSkills = lazy(() => import("./skills.ts"));
+const advisoryMs = 5000;
+const unavailableMap = (reason: string) => ({
+  warnings: [
+    {
+      code: "WORK_FILE_MAP_INCOMPLETE",
+      message: `File overlap map incomplete (${reason}). Some overlap may be missing.`,
+    },
+  ],
+  omitted: 0,
+});
 
 const TRUST_NAMESPACE = "forge/core-trust";
 const DEVICE_MEMORY: BlockInstance = {
@@ -704,160 +715,183 @@ export async function createAssembly(
       input: object,
       signal: AbortSignal,
     ) => Promise<unknown>,
-    deadline = Infinity,
-    parent?: AbortSignal,
-    defaultRef = "refs/remotes/origin/HEAD",
+    signal: AbortSignal,
+    laneStart: boolean,
   ): ReturnType<typeof readWorkWarnings> {
-    const timeoutMs = 5000;
-    try {
-      if (deadline - Date.now() < 4 * timeoutMs)
-        throw new Error("Insufficient advisory time");
-      const timer = AbortSignal.timeout(timeoutMs);
-      const signal = parent ? AbortSignal.any([parent, timer]) : timer;
-      const scope = {
-        op: "work-file-map",
-        effects: ["environment:read", "external:process", "files:read"],
-        signal,
-        deadline: Date.now() + timeoutMs,
-        processContainment: "supervised" as const,
+    const timeoutMs = advisoryMs;
+    const scope = {
+      op: "work-file-map",
+      effects: ["environment:read", "external:process", "files:read"],
+      signal,
+      deadline: Date.now() + timeoutMs,
+      processContainment: "supervised" as const,
+    };
+    const process = providers.process(scope);
+    const environment = providers.environment(scope);
+    const env = environment.select([
+      "PATH",
+      "PATHEXT",
+      "SystemRoot",
+      "WINDIR",
+      "ComSpec",
+      "TEMP",
+      "TMP",
+      "TMPDIR",
+      "HOME",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+    ]);
+    const git = gitCapability(process, env, createGitScope(stateRoot, root));
+    const run = { cwd: stateRoot, env, signal, timeoutMs };
+    const initialProcesses = laneStart ? 3 : 1;
+    let defaultRef = "refs/remotes/origin/HEAD";
+    if (laneStart) {
+      const executable = git.executable();
+      if (executable.kind !== "resolved")
+        throw new Error("Default Git unavailable");
+      const readDefault = async (args: string[]) => {
+        const result = await process.run(executable, args, {
+          ...run,
+          maxOutputBytes: 16_384,
+        });
+        if (result.exitCode !== 0 || result.timedOut || result.truncated)
+          throw new Error("Default policy unavailable");
+        return result.stdout.trim();
       };
-      const process = providers.process(scope);
-      const environment = providers.environment(scope);
-      const env = environment.select([
-        "PATH",
-        "PATHEXT",
-        "SystemRoot",
-        "WINDIR",
-        "ComSpec",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "HOME",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
+      const head = await readDefault([
+        "ls-remote",
+        "--exit-code",
+        "origin",
+        "HEAD",
       ]);
-      const git = gitCapability(process, env, createGitScope(stateRoot, root));
-      const run = { cwd: stateRoot, env, signal, timeoutMs };
-      let bytes: number = WORK_MAP_LIMITS.outputBytes;
-      const charge = (size: number) => {
-        bytes -= size;
-        if (bytes < 0) throw new Error("Work map output limit reached");
-      };
-      const read = async (op: string, input: object) => {
-        if (bytes <= 0) throw new Error("Work map output limit reached");
-        const result = await command(op, input, signal);
-        charge(Buffer.byteLength(JSON.stringify(result)));
-        return result;
-      };
-      const branches = new Map<string, string>();
-      const files = await providers.openFiles(scope).catch(() => undefined);
-      if (files) {
+      const sha = head.match(/^([0-9a-f]{40}|[0-9a-f]{64})\tHEAD$/)?.[1];
+      if (!sha) throw new Error("Default commit unavailable");
+      await readDefault([
+        "fetch",
+        "--no-write-fetch-head",
+        "--refmap=",
+        "--no-tags",
+        "--no-prune",
+        "--no-recurse-submodules",
+        "origin",
+        sha,
+      ]);
+      defaultRef = sha;
+    }
+    let bytes: number = WORK_MAP_LIMITS.outputBytes;
+    const charge = (size: number) => {
+      bytes -= size;
+      if (bytes < 0) throw new Error("Work map output limit reached");
+    };
+    const read = async (op: string, input: object) => {
+      signal.throwIfAborted();
+      if (bytes <= 0) throw new Error("Work map output limit reached");
+      const result = await command(op, input, signal);
+      charge(Buffer.byteLength(JSON.stringify(result)));
+      return result;
+    };
+    const lanes = await providers
+      .openFiles(scope)
+      .then(async (files) => {
         try {
           const { boundLaneRegistry } =
             await import("../blocks/work/bound-lane.ts");
-          for (const lane of boundLaneRegistry(files.value).lanes)
-            branches.set(
-              lane.issueId ?? lane.issue.replace(/^.*-/, "work-"),
-              lane.branch,
-            );
-        } catch {
-          branches.clear();
+          return boundLaneRegistry(files.value).lanes;
         } finally {
-          await files.close().catch(() => {});
+          await files.close();
         }
-      }
-      return await readWorkWarnings(
-        {
-          now: options.providers?.cloudLogin?.now ?? Date.now,
-          process: {
-            resolve: () => git.executable(),
-            run: process.run.bind(process),
-          },
-          async issues({ limit }) {
-            const page = (await read("issue.list", {
-              status: "open",
-              limit,
-            })) as {
-              items: TrackerItem[];
-              truncated?: boolean;
-            };
-            return { items: page.items, truncated: page.truncated === true };
-          },
-          async deliveries(id, { limit }) {
-            const { records } = (await read("issue.links", { id })) as {
-              records: StateRecord[];
-            };
-            const urls = records.flatMap(({ value }) => {
-              const link = record(value);
-              return link?.relation === "delivers" &&
-                typeof link.url === "string"
-                ? [link.url]
-                : [];
-            });
-            return {
-              items: urls.slice(0, limit),
-              truncated: urls.length > limit,
-            };
-          },
-          async pull(url, { maxBytes }) {
-            if (
-              bytes <= 0 ||
-              !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*$/i.test(
-                url,
-              )
+      })
+      .catch(() => []);
+    return await readWorkWarnings(
+      {
+        now: Date.now,
+        process: {
+          resolve: () => git.executable(),
+          run: process.run.bind(process),
+        },
+        async issues({ limit }) {
+          const page = (await read("issue.list", {
+            status: "open",
+            limit,
+          })) as {
+            items: TrackerItem[];
+            truncated?: boolean;
+          };
+          return { items: page.items, truncated: page.truncated === true };
+        },
+        async deliveries(id, { limit }) {
+          const { records } = (await read("issue.links", { id })) as {
+            records: StateRecord[];
+          };
+          const urls = records.flatMap(({ value }) => {
+            const link = record(value);
+            return link?.relation === "delivers" && typeof link.url === "string"
+              ? [link.url]
+              : [];
+          });
+          return {
+            items: urls.slice(0, limit),
+            truncated: urls.length > limit,
+          };
+        },
+        async pull(url, { maxBytes }) {
+          if (
+            bytes <= 0 ||
+            !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?$/i.test(
+              url,
             )
-              throw new Error("PR lookup unavailable");
-            const gh = resolveOutside(process, "gh", env, [stateRoot, root]);
-            if (gh.kind !== "resolved")
-              throw new Error("GitHub CLI unavailable");
-            const result = await process.run(
-              gh,
-              ["pr", "view", url, "--json", "state,headRefName"],
-              {
-                ...run,
-                env: {
-                  ...env,
-                  ...environment.select(["GH_TOKEN", "GITHUB_TOKEN"]),
-                },
-                maxOutputBytes: Math.min(maxBytes, bytes),
+          )
+            throw new Error("PR lookup unavailable");
+          const gh = resolveOutside(process, "gh", env, [stateRoot, root]);
+          if (gh.kind !== "resolved") throw new Error("GitHub CLI unavailable");
+          const result = await process.run(
+            gh,
+            [
+              "pr",
+              "view",
+              url.replace(/\/$/, ""),
+              "--json",
+              "state,headRefName",
+            ],
+            {
+              ...run,
+              env: {
+                ...env,
+                ...environment.select(["GH_TOKEN", "GITHUB_TOKEN"]),
               },
-            );
-            charge(Buffer.byteLength(result.stdout + result.stderr));
-            if (result.exitCode !== 0 || result.timedOut || result.truncated)
-              throw new Error("PR state unavailable");
-            const row = record(JSON.parse(result.stdout) as unknown);
-            const state = row?.state;
-            if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED")
-              throw new Error("Unknown PR state");
-            return {
-              state,
-              ...(typeof row?.headRefName === "string"
-                ? { branch: row.headRefName }
-                : {}),
-            };
-          },
+              maxOutputBytes: Math.min(maxBytes, bytes),
+            },
+          );
+          charge(Buffer.byteLength(result.stdout + result.stderr));
+          if (result.exitCode !== 0 || result.timedOut || result.truncated)
+            throw new Error("PR state unavailable");
+          const row = record(JSON.parse(result.stdout) as unknown);
+          const state = row?.state;
+          if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED")
+            throw new Error("Unknown PR state");
+          return {
+            state,
+            ...(typeof row?.headRefName === "string"
+              ? { branch: row.headRefName }
+              : {}),
+          };
         },
-        {
-          ...run,
-          defaultRef,
-          workInstance,
-          candidateId,
-        },
-        (id) => branches.get(id.replace(/^.*-/, "work-")),
-      );
-    } catch {
-      return {
-        warnings: [
-          {
-            code: "WORK_FILE_MAP_INCOMPLETE",
-            message:
-              "File overlap map incomplete (read unavailable). Some overlap may be missing.",
-          },
-        ],
-        omitted: 0,
-      };
-    }
+      },
+      {
+        ...run,
+        defaultRef,
+        workInstance,
+        candidateId,
+        initialProcesses,
+      },
+      (id) =>
+        lanes.findLast(
+          (lane) =>
+            (lane.issueId ?? lane.issue.replace(/^.*-/, "work-")) ===
+            id.replace(/^.*-/, "work-"),
+        )?.branch,
+    );
   }
 
   function withCallWarnings(
@@ -2167,48 +2201,8 @@ export async function createAssembly(
           target?.builtin === true && target.blockId === "forge/work"
             ? target.declaredOp
             : undefined;
-        const findWork = (op: string) =>
-          current.candidates.find(
-            (entry) =>
-              entry.builtin === true &&
-              entry.blockId === "forge/work" &&
-              entry.declaredOp === op,
-          );
-        const adviseWork = async (
-          id: string,
-          deadline?: number,
-          parent = signal,
-          defaultSha?: string,
-        ) => {
-          call.workMap = await workAdvisory(
-            id,
-            current.catalog.resolve(request.op).operation.instance,
-            async (op, input, signal) => {
-              const nested = findWork(op);
-              if (!nested)
-                refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
-              const answer = await (mcp ? mcpCatalog : catalog).invoke(
-                { ...request, op: nested.op, input },
-                signal,
-              );
-              if (!answer.ok) throw new ForgeFailure(answer.error);
-              return answer.result;
-            },
-            deadline,
-            parent,
-            defaultSha,
-          );
-        };
-        const afterClaim = async (result: ResultEnvelope) => {
-          const id = result.ok && record(result.result)?.id;
-          if (
-            workOperation === "issue.claim" &&
-            typeof id === "string" &&
-            !request.dryRun
-          )
-            await adviseWork(id);
-          return result;
-        };
+        const laneStart =
+          workOperation === "lane.start" || workOperation === "lane.attempt";
         const fromCloud = (runtime: Pick<Runtime, "preflight">) =>
           selectCloud(
             {
@@ -2224,7 +2218,12 @@ export async function createAssembly(
                   project,
                   deviceState,
                   async (op, input, generation, release) => {
-                    const nested = findWork(op);
+                    const nested = current.candidates.find(
+                      (entry) =>
+                        entry.builtin === true &&
+                        entry.blockId === "forge/work" &&
+                        entry.declaredOp === op,
+                    );
                     if (!nested)
                       refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
                     const nestedRequest = {
@@ -2252,9 +2251,6 @@ export async function createAssembly(
                     env,
                     deviceRoot,
                     now: options.providers?.cloudLogin?.now ?? Date.now,
-                    ...(workOperation === "lane.start"
-                      ? { beforeAttach: adviseWork }
-                      : {}),
                     ...(signal === undefined ? {} : { signal }),
                   },
                 ),
@@ -2271,7 +2267,7 @@ export async function createAssembly(
         const routed = route === "cloud" || route === "coordinator";
         if (routed) {
           const cloud = await fromCloud(new Runtime(current.catalog, trust));
-          if (cloud) return afterClaim(cloud);
+          if (cloud) return cloud;
         }
         // The owner's words for memory forget, restore and adopt are relayed through Forge's own
         // approval: a request for these exact arguments, then the reply and where it was said.
@@ -2578,12 +2574,6 @@ export async function createAssembly(
                   );
                 }
               }
-              if (
-                workOperation === "lane.start" ||
-                workOperation === "lane.attempt"
-              )
-                clients.adviseWork = (id: string, defaultSha?: string) =>
-                  adviseWork(id, scope.deadline, scope.signal, defaultSha);
               return {
                 ownership: "owned",
                 value: Object.freeze(clients),
@@ -2697,16 +2687,71 @@ export async function createAssembly(
         }
         if (!routed) {
           const cloud = await fromCloud(runtime);
-          if (cloud) return afterClaim(cloud);
+          if (cloud) return cloud;
         }
         const result = await runtime.invoke(
           request,
           signal === undefined ? undefined : { signal },
         );
+        if (
+          result.ok &&
+          !request.dryRun &&
+          (laneStart || workOperation === "issue.claim")
+        ) {
+          const output = record(result.result);
+          const id = laneStart ? output?.issue : output?.id;
+          const expiry = Date.parse(String(output?.expiresAt));
+          if (
+            workOperation === "issue.claim" &&
+            !(expiry - Date.now() > 2 * advisoryMs)
+          )
+            call.workMap = unavailableMap("claim lease is too short");
+          else if (typeof id === "string") {
+            const controller = new AbortController();
+            const bounded = signal
+              ? AbortSignal.any([signal, controller.signal])
+              : controller.signal;
+            const instance = runtimeCatalog.resolve(request.op).operation
+              .instance;
+            try {
+              const read: Parameters<typeof workAdvisory>[2] = async (
+                op,
+                input,
+                signal,
+              ) => {
+                const nested = runtimeCatalog.list().find((name) => {
+                  const { operation } = runtimeCatalog.resolve(name);
+                  return (
+                    operation.declaredOp === op &&
+                    operation.instance === instance
+                  );
+                });
+                if (!nested)
+                  refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
+                const answer = await runtime.invoke(
+                  { ...request, op: nested, input },
+                  { signal },
+                );
+                if (!answer.ok) throw new ForgeFailure(answer.error);
+                return answer.result;
+              };
+              call.workMap = await Promise.race([
+                delay(advisoryMs, unavailableMap("read timed out"), {
+                  signal: bounded,
+                }),
+                workAdvisory(id, instance, read, bounded, laneStart),
+              ]);
+            } catch {
+              call.workMap = unavailableMap("read unavailable");
+            } finally {
+              controller.abort();
+            }
+          }
+        }
         return checkResult(
           runtimeCatalog,
           request.op,
-          await afterClaim(result),
+          result,
           mergeOutcome.result(),
         );
       } catch (error) {

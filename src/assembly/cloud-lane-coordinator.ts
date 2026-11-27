@@ -72,11 +72,6 @@ export async function coordinateLane(
     deviceRoot: string;
     now: () => number;
     signal?: AbortSignal;
-    beforeAttach?: (
-      id: string,
-      deadline: number,
-      signal: AbortSignal,
-    ) => Promise<void>;
   },
 ): Promise<unknown> {
   const { signal } = options;
@@ -215,19 +210,7 @@ export async function coordinateLane(
               now: options.now,
               ...scope,
             },
-            {
-              ...fence,
-              async publish(...args) {
-                const leaseTime =
-                  Date.parse(record.grant.expiresAt) - options.now();
-                await options.beforeAttach?.(
-                  record.cloudId,
-                  Math.min(scope.deadline, Date.now() + leaseTime),
-                  scope.signal,
-                );
-                return fence.publish(...args);
-              },
-            },
+            fence,
             previous,
           );
         } finally {

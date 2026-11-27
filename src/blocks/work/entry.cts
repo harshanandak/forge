@@ -4928,14 +4928,6 @@ const operations: Operations<WorkOperations> = {
           "INPUT_CONFLICT",
           `Worktree ${worktree} belongs to a different branch`,
         );
-      await (
-        services as {
-          adviseWork?: (id: string, defaultSha?: string) => Promise<void>;
-        }
-      ).adviseWork?.(
-        issue.id,
-        laneConfig?.base === undefined ? base : undefined,
-      );
       if (!adopted)
         await run(["worktree", "add", "-b", input.branch, worktree, base]);
       const lane: Lane = {
