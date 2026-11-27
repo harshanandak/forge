@@ -153,6 +153,18 @@ function writeOutcome(ctx: CoreContext, post: SettledAgentPost) {
   if (Number(changes) !== 1) throw new Error("Agent post reservation missing");
 }
 
+function storedRead(
+  ctx: CoreContext,
+  thread: string,
+): { readonly key: string; readonly read: JournalRead } | undefined {
+  const key = journalKey(thread);
+  const row = ctx.deps.db
+    .prepare("SELECT value FROM meta WHERE key=?")
+    .get(key);
+  if (!row) return undefined;
+  return { key, read: readJournalPost(key, row.value) };
+}
+
 function projectPost(ctx: CoreContext, key: string, post: JournalPost) {
   const { conversation } = post;
   ctx.store.tx(() => {
@@ -198,20 +210,16 @@ export function settleAgentPost(
 }
 
 export function agentPost(ctx: CoreContext, thread: string) {
-  const pending = ctx.pendingAgentPosts.get(thread);
-  if (pending) return pending;
-  const key = journalKey(thread);
-  const row = ctx.deps.db
-    .prepare("SELECT value FROM meta WHERE key=?")
-    .get(key);
-  if (!row) return;
-  const read = readJournalPost(key, row.value);
-  if (!read.ok) throw new AgentPostJournalError(key);
-  return read.post;
+  const stored = storedRead(ctx, thread);
+  if (!stored) return ctx.pendingAgentPosts.get(thread);
+  if (!stored.read.ok) throw new AgentPostJournalError(stored.key);
+  return ctx.pendingAgentPosts.get(thread) ?? stored.read.post;
 }
 
 export function recoverAgentPosts(ctx: CoreContext, thread?: string) {
   if (thread !== undefined) {
+    const stored = storedRead(ctx, thread);
+    if (stored && !stored.read.ok) throw new AgentPostJournalError(stored.key);
     const pending = ctx.pendingAgentPosts.get(thread);
     if (pending) {
       writeOutcome(ctx, pending);
