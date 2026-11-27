@@ -363,9 +363,9 @@ test("ls-tree calls stay under the path budget and grow with total length", () =
   expect(smallCalls).toHaveLength(1);
   expect(lsTreePathCost(smallCalls[0] ?? [])).toBeLessThanOrEqual(8000);
   const manyFiles: Record<string, string> = {};
-  for (let index = 0; index < 30; index++) {
-    const dir = "d".repeat(200);
-    const file = `src/${dir}/${dir}/${dir}/${dir}/file-${String(index).padStart(2, "0")}.ts`;
+  for (let index = 0; index < 240; index++) {
+    const tag = String(index).padStart(3, "0");
+    const file = `src/p${tag}-${"x".repeat(40)}/q${tag}-${"y".repeat(40)}/file-${tag}.ts`;
     manyFiles[file] = `export const value${index} = ${index};\n`;
   }
   const names = Object.keys(manyFiles);
