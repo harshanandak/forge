@@ -110,7 +110,7 @@ test("issue show loads none of the modules it never calls", () => {
 const catalog = {
   help: "d082b65bcc5bf39a55c831265b1a0fa8f6ad5d33cad2c8f828bc6ab441b6a03b",
   helpJson: "e84195312624ccf3eb8d650975635e553c8d884776bdc3ff93a791c66e3b671d",
-  mcpTools: "77c0367db5028c168088b5576bb32dec4a4e0483266cd783fa124d17ab8423e2",
+  mcpTools: "2ff46e1744b82f64c0d4d6e497bb48203dfa19f997a7045e76f4fd1cca552881",
 };
 
 async function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
