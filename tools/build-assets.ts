@@ -28,13 +28,14 @@ const git = (args: string[]): string =>
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
   version: string;
 };
+function isSourceCheckout(root: string): boolean {
+  return existsSync(join(root, ".git"));
+}
 export function buildIdentity(
   root: string,
   git: (args: string[]) => string,
 ): { commit: string; dirty: boolean } {
-  // Archives and machines without Git have no verifiable source identity.
-  if (!existsSync(join(root, ".git")))
-    return { commit: "unknown", dirty: false };
+  if (!isSourceCheckout(root)) return { commit: "unknown", dirty: false };
   const run = (args: string[]): string => {
     try {
       return git(args);
