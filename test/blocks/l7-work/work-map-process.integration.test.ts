@@ -13,9 +13,9 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
+  advisoryGitAvailable,
   advisoryProject,
   laneCli,
-  linuxAdvisory,
 } from "./lane-repository-fixture.ts";
 
 const plan = { title: "Shared file", expectedFiles: ["src/ui/ask.rs"] };
@@ -84,6 +84,14 @@ test.each(["script", "unknown native executable", "live lease"] as const)(
             `[trace2]\n\teventTarget = ${gitTrace.replaceAll("\\", "/")}\n`,
           );
 
+          const cliEnv = {
+            PATH: [bin, process.env.PATH ?? process.env.Path].join(delimiter),
+            PATHEXT: ".CMD;.EXE",
+            HOME: bin,
+            USERPROFILE: bin,
+            FORGE_DEVICE_ID: "lane-fixture",
+          };
+          const linuxAdvisory = await advisoryGitAvailable(repo, cliEnv);
           const claim = laneCli(
             root,
             repo,
@@ -94,13 +102,7 @@ test.each(["script", "unknown native executable", "live lease"] as const)(
               JSON.stringify({ id: candidate, ttlSeconds: 600 }),
             ],
             "reader",
-            {
-              PATH: [bin, process.env.PATH ?? process.env.Path].join(delimiter),
-              PATHEXT: ".CMD;.EXE",
-              HOME: bin,
-              USERPROFILE: bin,
-              FORGE_DEVICE_ID: "lane-fixture",
-            },
+            cliEnv,
           );
           expect(claim).toMatchObject({
             exit: 0,

@@ -15,12 +15,12 @@ import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
   advisoryProject,
+  advisoryGitAvailable,
   laneBin,
   laneCli,
   laneCommands,
   laneGit,
   laneRepository,
-  linuxAdvisory,
 } from "./lane-repository-fixture.ts";
 
 const brief = ".worktrees/briefs/overlap.md";
@@ -231,6 +231,7 @@ for (const mode of [
       checkLane(started);
       expect(hasIncompleteMap(replay)).toBe(true);
       expect(hasIncompleteMap(started)).toBe(true);
+      const linuxAdvisory = await advisoryGitAvailable(repo);
       if (mode === "stale default policy") {
         if (linuxAdvisory) expect(mapWarnings(claimed)).toEqual([]);
         else expectUnprovedGit(claimed);
@@ -313,7 +314,7 @@ for (const [fault, replacement] of Object.entries({
         ok: true,
         result: { id: candidate },
       });
-      if (!linuxAdvisory) {
+      if (!(await advisoryGitAvailable(repo))) {
         expectUnprovedGit(result);
         return;
       }
@@ -400,6 +401,7 @@ test("the later concurrent one-shot CLI claim reports overlap before lane start"
       });
       return { child, done, checkpoint: Promise.race([ready.promise, done]) };
     };
+    const linuxAdvisory = await advisoryGitAvailable(repo);
     const claims = [startClaim(first), startClaim(second)] as const;
     try {
       if (linuxAdvisory)
@@ -683,7 +685,7 @@ test("advisory authority reads stay in the invoking renamed work instance", asyn
     expect(claim(first).ok).toBe(true);
     const result = claim(second);
     expect(result.ok).toBe(true);
-    if (!linuxAdvisory) {
+    if (!(await advisoryGitAvailable(repo))) {
       expectUnprovedGit(result);
       return;
     }
@@ -703,7 +705,7 @@ test("a broken lane registry preserves claim overlap and reports incomplete evid
     writeFileSync(join(repo, ".git", "forge-lanes.json"), "{");
     const result = claim(second);
     expect(result.ok, JSON.stringify(result)).toBe(true);
-    if (!linuxAdvisory) {
+    if (!(await advisoryGitAvailable(repo))) {
       expectUnprovedGit(result);
       return;
     }
