@@ -36,7 +36,7 @@ test(
     const { sessionId } = value(cli.cliInbox(a, project));
     const other = value(cli.cliInbox(b, project));
     const text = "Approve the release";
-    const sent = cli.cliSend(a, {
+    const sent = await cli.cliSend(a, {
       ...project,
       sessionId,
       toPersonId: b.personId,
@@ -145,11 +145,11 @@ test(
     });
     expect({
       disabledInbox: disabled.cliInbox(a, { projectId: p1 }),
-      disabledSend: disabled.cliSend(a, send),
+      disabledSend: await disabled.cliSend(a, send),
       foreignInbox: cli.cliInbox(b, { ...inbox, ackItemIds: [itemId] }),
-      foreignSend: cli.cliSend(b, send),
+      foreignSend: await cli.cliSend(b, send),
       nonMemberInbox: cli.cliInbox(b, { projectId: p2 }),
-      nonMemberSend: cli.cliSend(a, {
+      nonMemberSend: await cli.cliSend(a, {
         ...send,
         projectId: p2,
         sessionId: otherProject,
@@ -161,7 +161,10 @@ test(
       newSessionAck: cli.cliInbox(a, { projectId: p1, ackItemIds: [itemId] }),
       badLimit: cli.cliInbox(a, { projectId: p1, limit: 0 }),
       wrongProjectInbox: cli.cliInbox(a, { ...inbox, projectId: p2 }),
-      secretText: cli.cliSend(a, { ...send, text: "xoxb-" + "a".repeat(24) }),
+      secretText: await cli.cliSend(a, {
+        ...send,
+        text: "xoxb-" + "a".repeat(24),
+      }),
     }).toMatchObject({
       disabledInbox: refused("BLOCK_DISABLED"),
       disabledSend: refused("BLOCK_DISABLED"),
