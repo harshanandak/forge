@@ -42,11 +42,13 @@ export async function serveHub(deps: HubServiceDeps): Promise<void> {
     configurable: false,
     enumerable: true,
   });
+  const failed = new Promise<never>((_, reject) => server.on("error", reject));
+  failed.catch(() => undefined);
   try {
     await deps.core.start();
     server.listen(deps.config.listen.port, deps.config.listen.host);
-    await once(server, "listening");
-    await stop.promise;
+    await Promise.race([once(server, "listening"), failed]);
+    await Promise.race([stop.promise, failed]);
     server.close();
     const aborted = [...active].map(([output, input]) => closed(input, output));
     server.closeAllConnections();
