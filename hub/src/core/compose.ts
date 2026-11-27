@@ -23,6 +23,7 @@ export const createHubCore: CreateHubCore = (deps) => {
         void worker.drain().catch(() => deps.log.warn("effect_drain_failed"));
     },
   });
+  if (chat) void chat.start(base.chatHandlers);
 
   function stopResources(): Promise<void> {
     return (cleanup ??= Promise.resolve().then(async () => {
@@ -30,6 +31,7 @@ export const createHubCore: CreateHubCore = (deps) => {
         if (chatAttempted) await chat?.stop();
       } finally {
         await worker.close();
+        if (!chat) deps.db.close();
       }
     }));
   }
