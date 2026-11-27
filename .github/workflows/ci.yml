@@ -226,10 +226,21 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           Set-Service StorSvc -StartupType Disabled
-          Stop-Service StorSvc -Force
           $service = Get-Service StorSvc
-          if ($service.Status -ne 'Stopped' -or $service.StartType -ne 'Disabled') { throw "StorSvc is $($service.Status) and $($service.StartType)" }
+          $stopError = 'none'
+          if ($service.Status -ne 'Stopped') {
+            try {
+              Stop-Service StorSvc -Force
+            } catch {
+              $stopError = $_.Exception.Message
+            }
+          }
+          $service = Get-Service StorSvc
+          if ($service.Status -ne 'Stopped' -or $service.StartType -ne 'Disabled') {
+            throw "StorSvc is $($service.Status) and $($service.StartType); stop error: $stopError"
+          }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
