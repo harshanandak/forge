@@ -7,18 +7,16 @@ import { createMcpHandlers } from "../../src/surface/mcp.ts";
 import { candidate, fakeCatalog } from "./fixtures/catalog.ts";
 
 setDefaultTimeout(30_000);
-const catalog = fakeCatalog([
-  candidate("sample.read"),
-  candidate("sample.write", { effects: ["external:network"] }),
-]);
+const writeTool = candidate("sample.write", { effects: ["external:network"] });
+const catalog = fakeCatalog([candidate("sample.read"), writeTool]);
 const clientInfo = { name: "safe", version: "0.0.0" };
 const transport = createMcpTransport();
 const failure = (code: string) => ({ ok: false, error: { code } });
 
-async function checkProtocol(era: string) {
+async function checkProtocol(era: string, readOnly: boolean) {
   const input = new PassThrough();
   const output = new PassThrough();
-  const handlers = createMcpHandlers(catalog, { readOnly: true });
+  const handlers = createMcpHandlers(catalog, readOnly ? { readOnly } : {});
   const opened = await transport.open({
     handlers,
     serverName: clientInfo.name,
@@ -30,12 +28,11 @@ async function checkProtocol(era: string) {
   const lines = createInterface({ input: output });
   const replies = lines[Symbol.asyncIterator]();
   const modern = era === "2026-07-28";
-  const capabilities = {};
-  const init = { protocolVersion: era, capabilities, clientInfo };
+  const init = { protocolVersion: era, capabilities: {}, clientInfo };
   const meta = {
     "io.modelcontextprotocol/protocolVersion": era,
     "io.modelcontextprotocol/clientInfo": clientInfo,
-    "io.modelcontextprotocol/clientCapabilities": capabilities,
+    "io.modelcontextprotocol/clientCapabilities": init.capabilities,
   };
   let id = 0;
   const rpc = async (method: string, params = {}) => {
@@ -52,30 +49,32 @@ async function checkProtocol(era: string) {
     await rpc(modern ? "server/discover" : "initialize", modern ? {} : init);
     if (!modern)
       input.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
-    for (const name of ["sample_write", "block_add", "never_existed"]) {
-      const args = { path: "./hello" };
-      const reply = await rpc("tools/call", { name, arguments: args });
-      expect(reply).toMatchObject({ error: { code: -32602 } });
-      expect(reply.result).toBeUndefined();
+    if (readOnly) {
+      const call = (name: string, args: object) =>
+        rpc("tools/call", { name, arguments: args });
+      for (const name of ["sample_write", "block_add", "never_existed"]) {
+        const reply = await call(name, { path: "./hello" });
+        expect(reply).toMatchObject({ error: { code: -32602 } });
+        expect(reply.result).toBeUndefined();
+      }
+      for (const op of [undefined, "sample.write"]) {
+        const reply = await call("catalog_describe", op ? { op } : {});
+        const code = op ? "UNKNOWN_COMMAND" : "INPUT_INVALID";
+        const result = { isError: true, structuredContent: failure(code) };
+        expect(reply.error).toBeUndefined();
+        expect(reply.result).toMatchObject(result);
+      }
     }
-    const names = handlers.listTools().map((tool) => tool.name);
     for (const params of [{}, { cursor: "" }]) {
       const reply = await rpc("tools/list", params);
       const result = reply.result as { tools: { name: string }[] };
-      expect(result.tools.map((tool) => tool.name)).toEqual(names);
+      const names = result.tools.map((tool) => tool.name);
+      expect(names).toEqual(handlers.listTools().map((tool) => tool.name));
+      expect(names).toContain("sample_read");
+      expect(names.includes("sample_write")).toBe(!readOnly);
     }
     const unissued = await rpc("tools/list", { cursor: "unissued-cursor" });
     expect(unissued).toMatchObject({ error: { code: -32602 } });
-    const name = "catalog_describe";
-    for (const op of [undefined, "sample.write"]) {
-      const args = op === undefined ? {} : { op };
-      const reply = await rpc("tools/call", { name, arguments: args });
-      const code = op === undefined ? "INPUT_INVALID" : "UNKNOWN_COMMAND";
-      expect(reply.result).toMatchObject({
-        isError: true,
-        structuredContent: failure(code),
-      });
-    }
   } finally {
     lines.close();
     await opened.handle.close();
@@ -83,7 +82,8 @@ async function checkProtocol(era: string) {
 }
 
 for (const era of ["2025-11-25", "2026-07-28"])
-  test(`MCP ${era} tool calls and cursors`, () => checkProtocol(era));
+  for (const mode of [true, false])
+    test(`MCP ${era} readOnly=${mode}`, () => checkProtocol(era, mode));
 
 test("MCP transport open failure reports on stderr", async () => {
   const output = new PassThrough();
