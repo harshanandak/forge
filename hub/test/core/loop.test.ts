@@ -537,3 +537,215 @@ test(
   },
   timeout,
 );
+
+function holdAgentPost(
+  f: BaseFixture,
+  outcome: "confirmed" | "unknown" | "refused",
+) {
+  const enter = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const post = f.chat.postText.bind(f.chat);
+  f.chat.postText = async (...args) => {
+    f.chat.postText = post;
+    enter.resolve();
+    await release.promise;
+    if (outcome !== "confirmed") f.chat.nextWrite = { kind: outcome };
+    return post(...args);
+  };
+  return { entered: enter.promise, release: release.resolve };
+}
+
+for (const kind of ["reply", "send"] as const) {
+  for (const outcome of ["confirmed", "unknown"] as const) {
+    test(`a post settled after a concurrent member starts the new run (${kind}, ${outcome})`, async () => {
+      const { f, alpha, conversationId } = await unknownRunFixture();
+      const post = (kind === "reply" ? mkReply : mkSend)(
+        f,
+        alpha.sessionId,
+        conversationId,
+      );
+      const held = holdAgentPost(f, outcome);
+      const tenth = post("in flight");
+      await held.entered;
+      await f.follow("member during write");
+      held.release();
+      await tenth;
+      const member = f.rows(
+        "thread_messages WHERE chat_message_id = 'member during write'",
+      )[0]!;
+      expect(Number(agentRows(f).at(-1)?.seq)).toBeGreaterThan(
+        Number(member.seq),
+      );
+      for (const id of seedIds) value<unknown>(await post("new " + id));
+      expectPaused(await post("over limit"));
+      expect(f.posts().filter((text) => text !== pause)).toHaveLength(
+        LIMITS.agentRunMax,
+      );
+    });
+  }
+}
+
+for (const outcome of ["confirmed", "unknown"] as const) {
+  test(`settlement never redelivers transcript context (${outcome})`, async () => {
+    const { f, alpha, beta, betaFirst } = await alphaBetaFixture();
+    const held = holdAgentPost(f, outcome);
+    const attempt = f.core.reply(f.caller(b), {
+      sessionId: beta.sessionId,
+      conversationId: betaFirst.conversationId!,
+      text: "held context",
+    });
+    const read = async (id: string) => {
+      await f.follow(id);
+      const item = f.read(alpha.sessionId).items[0]!;
+      f.ack(alpha.sessionId, [item.itemId]);
+      return item.threadContext!.entries.map((entry) => entry.text);
+    };
+    await held.entered;
+    const during = await read("during");
+    held.release();
+    await attempt;
+    const settled = agentRows(f);
+    const later = [...(await read("later")), ...(await read("last"))];
+    expect(during).not.toContain("Fixture Beta's agent: held context");
+    expect(later.filter((text) => text.endsWith("held context"))).toEqual([
+      "Fixture Beta's agent: held context",
+    ]);
+    expect(agentRows(f)).toEqual(settled);
+  });
+}
+
+for (const first of ["reply", "send"] as const) {
+  for (const second of ["reply", "send"] as const) {
+    for (const outcome of ["confirmed", "unknown", "refused"] as const) {
+      test(`a queued caller ${outcome === "refused" ? "proceeds when the pending tenth attempt is refused" : "refuses after a delivered or unknown tenth attempt"} (${first}, ${second}, ${outcome})`, async () => {
+        const { f, alpha, conversationId } = await unknownRunFixture();
+        const post = {
+          reply: mkReply(f, alpha.sessionId, conversationId),
+          send: mkSend(f, alpha.sessionId, conversationId),
+        };
+        const held = holdAgentPost(f, outcome);
+        const tenth = post[first]("pending tenth");
+        await held.entered;
+        const occupied = f.context.threadGates.get(thread);
+        const next = post[second]("queued text");
+        const queued = f.context.threadGates.get(thread);
+        held.release();
+        await tenth;
+        const result = await next;
+        expect(occupied).toBeDefined();
+        expect(queued).not.toBe(occupied);
+        if (outcome === "refused") expect(result.ok).toBe(true);
+        else expectPaused(result);
+        expect(
+          f.posts().some((text) => String(text).endsWith("queued text")),
+        ).toBe(outcome === "refused");
+        expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+      });
+    }
+  }
+}
+
+test("a failed confirmed-post projection is recovered before inbound routing", async () => {
+  const { f, alpha, beta, betaFirst } = await alphaBetaFixture();
+  seedRun(f, LIMITS.agentRunMax - 1, alpha.sessionId);
+  f.db.exec(
+    "CREATE TRIGGER block_agent BEFORE INSERT ON thread_messages WHEN NEW.kind = 'agent' BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END",
+  );
+  const posted = value(
+    await f.core.reply(f.caller(b), {
+      sessionId: beta.sessionId,
+      conversationId: betaFirst.conversationId!,
+      text: "beta answer",
+    }),
+  );
+  const reply = mkReply(
+    f,
+    alpha.sessionId,
+    f.col(
+      "conversations WHERE person_id = 'per_a'",
+      "conversation_id",
+    )[0] as string,
+  );
+  for (const text of ["first retry", "second retry"])
+    expect(refusal(await reply(text))).toMatchObject({
+      code: "CHAT_UNAVAILABLE",
+      retry: "reconcile_first",
+    });
+  await expect(
+    f.follow("blocked inbound", { mentionsBot: false }),
+  ).rejects.toThrow("injected projection failure");
+  expect(
+    f.col("thread_messages WHERE chat_message_id = 'blocked inbound'", "seq"),
+  ).toEqual([]);
+  expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
+  expect(attempts(f)).toBe(1);
+  f.db.exec("DROP TRIGGER block_agent");
+  await f.follow("beta follow-up", { mentionsBot: false });
+  expect(f.read(beta.sessionId, b).items.map((item) => item.text)).toEqual([
+    "beta follow-up",
+  ]);
+  expect(agentRows(f).at(-1)?.chat_message_id).toBe(posted.chatMessageId);
+  expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toEqual([]);
+  expect(attempts(f)).toBe(1);
+});
+
+test("a failed refusal cleanup is recovered before the next pause check", async () => {
+  const { f, alpha, conversationId } = await unknownRunFixture();
+  const reply = mkReply(f, alpha.sessionId, conversationId);
+  f.db.exec(
+    "CREATE TRIGGER block_cleanup BEFORE DELETE ON meta WHEN OLD.key LIKE 'agent-post:%' BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END",
+  );
+  f.chat.nextWrite = { kind: "refused" };
+  expect(refusal(await reply("refused tenth")).retry).toBe("safe");
+  expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
+  await expectFail(reply("blocked by storage"), conversationId);
+  expect(attempts(f)).toBe(1);
+  f.db.exec("DROP TRIGGER block_cleanup");
+  value(await reply("replacement tenth"));
+  expectPaused(await reply("extra"));
+  expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+  expect(unconfirmedRows(f)).toEqual([]);
+});
+
+for (const kind of ["reply", "send"] as const) {
+  for (const failNotice of [false, true]) {
+    test(`${failNotice ? "a failed pause notice preserves the original post result and a later paused caller retries a missing notice once" : "an unknown tenth reply or send posts one pause notice"} (${kind})`, async () => {
+      const { f, alpha, conversationId } = await unknownRunFixture();
+      const post = (kind === "reply" ? mkReply : mkSend)(
+        f,
+        alpha.sessionId,
+        conversationId,
+      );
+      const transport = f.chat.postText.bind(f.chat);
+      f.chat.postText = (target, text, options) => {
+        if (text !== pause) f.chat.nextWrite = { kind: "unknown" };
+        else if (failNotice && attempts(f) === 1)
+          f.chat.nextWrite = { kind: "refused" };
+        return transport(target, text, options);
+      };
+      if (kind === "reply")
+        await expectFail(post("unknown tenth"), conversationId);
+      else
+        expect(await post("unknown tenth")).toMatchObject({
+          ok: true,
+          value: { threadPost: "failed" },
+        });
+      expect(attempts(f)).toBe(2);
+      expect(f.posts().filter((text) => text === pause)).toHaveLength(
+        failNotice ? 0 : 1,
+      );
+      expectPaused(await post("retry notice"));
+      expectPaused(await post("notice already recorded"));
+      expect(attempts(f)).toBe(failNotice ? 3 : 2);
+      expect(unconfirmedRows(f)).toHaveLength(1);
+      expect(
+        f.rows(
+          "thread_messages WHERE kind = 'system' AND text = ?",
+          "*",
+          pause,
+        ),
+      ).toHaveLength(1);
+      expect(f.posts().filter((text) => text !== pause)).toHaveLength(1);
+    });
+  }
+}
