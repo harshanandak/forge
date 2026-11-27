@@ -92,7 +92,8 @@ export async function baseFixture(
     tracker: nullTracker,
     chat,
   };
-  const core = createCoreBase(createCoreContext(deps), {
+  const context = createCoreContext(deps);
+  const core = createCoreBase(context, {
     kickEffects: () => {
       kicks++;
     },
@@ -174,6 +175,7 @@ export async function baseFixture(
     config,
     deps,
     chat,
+    context,
     core,
     bind,
     caller,

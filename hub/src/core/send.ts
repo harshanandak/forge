@@ -10,7 +10,6 @@ import {
   enterThread,
   paused,
   postLoopPause,
-  recordAgentPost,
 } from "./thread.ts";
 
 export function createSend(ctx: CoreContext): HubCore["send"] {
@@ -108,7 +107,7 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
       const item = storeItem();
       let threadPost: "posted" | "failed" = "posted";
       try {
-        const posted = await postAgentText(ctx, {
+        await postAgentText(ctx, {
           target: { kind: "thread", chatThreadId: chat.chatThreadId },
           channelId: chat.channelId,
           projectName:
@@ -118,17 +117,10 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
           prefix: `${person.displayName}'s agent asked ${result.owner.displayName}'s agent:`,
           text,
           fallbackName: person.displayName,
+          conversation: chat,
+          sessionId,
+          personId: person.personId,
         });
-        ctx.store.tx(() =>
-          recordAgentPost(
-            ctx,
-            posted.ref,
-            chat,
-            sessionId,
-            person.personId,
-            posted.text,
-          ),
-        );
         if (chat.projectId !== undefined)
           await postLoopPause(ctx, chat, chat.projectId);
       } catch (error) {

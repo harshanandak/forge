@@ -30,7 +30,11 @@ type NextWrite =
       readonly retryAfterMs?: number;
       readonly reason?: ChatFailureReason;
     }
-  | { readonly kind: "unknown"; readonly reason?: ChatFailureReason }
+  | {
+      readonly kind: "unknown";
+      readonly reason?: ChatFailureReason;
+      readonly until?: Promise<void>;
+    }
   | { readonly kind: "delay"; readonly until: Promise<void> };
 type MessageDetails = Pick<
   ChatMessageEvent,
@@ -98,8 +102,10 @@ export class FakeChatPort implements ChatPort {
       );
     const value = apply();
     this.writes.push(call);
-    if (outcome?.kind === "unknown")
+    if (outcome?.kind === "unknown") {
+      if (outcome.until) await outcome.until;
       throw new ChatWriteFailure("unknown", undefined, outcome.reason);
+    }
     if (outcome?.kind === "delay") await outcome.until;
     return value;
   }

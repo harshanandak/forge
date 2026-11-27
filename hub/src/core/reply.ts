@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { ChatWriteFailure, type ChatPostTarget } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
+import type { Conversation } from "../contract/domain.ts";
 import type { HubError } from "../contract/errors.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import { fitSection, splitAnswer } from "./answer.ts";
@@ -8,12 +10,15 @@ import { fail } from "./errors.ts";
 import { refused } from "./inbox.ts";
 import {
   byConversation,
+  confirmAgentPost,
   conversation,
   enterThread,
   paused,
   postLoopPause,
   recordAgentPost,
+  releaseAgentPost,
   str,
+  UNCONFIRMED_MESSAGE_PREFIX,
 } from "./thread.ts";
 
 export interface AgentPostInput {
@@ -24,6 +29,9 @@ export interface AgentPostInput {
   readonly prefix: string;
   readonly text: string;
   readonly fallbackName: string;
+  readonly conversation?: Conversation;
+  readonly sessionId?: string;
+  readonly personId?: string;
 }
 
 export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
@@ -54,10 +62,49 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
     }
   }
   const posted = fitSection(input.prefix + " ", body);
-  const ref = await ctx.chat.postText(input.target, posted, {
-    agentLabel: input.label,
-  });
-  return { ref, text: posted };
+  const { conversation, sessionId, personId } = input;
+  const slot =
+    conversation && sessionId && personId
+      ? UNCONFIRMED_MESSAGE_PREFIX + randomUUID()
+      : undefined;
+  if (conversation && sessionId && personId && slot)
+    recordAgentPost(
+      ctx,
+      { ...conversation, chatMessageId: slot },
+      conversation,
+      sessionId,
+      personId,
+      posted,
+    );
+  try {
+    const ref = await ctx.chat.postText(input.target, posted, {
+      agentLabel: input.label,
+    });
+    if (conversation && slot)
+      try {
+        confirmAgentPost(ctx, conversation, slot, ref.chatMessageId);
+      } catch (error) {
+        ctx.deps.log.warn("agent_post_confirm_failed", {
+          reason: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    return { ref, text: posted };
+  } catch (error) {
+    if (
+      conversation &&
+      slot &&
+      error instanceof ChatWriteFailure &&
+      error.effect === "refused"
+    )
+      try {
+        releaseAgentPost(ctx, conversation, slot);
+      } catch (error) {
+        ctx.deps.log.warn("agent_post_release_failed", {
+          reason: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    throw error;
+  }
 }
 
 export function createReply(ctx: CoreContext): HubCore["reply"] {
@@ -259,17 +306,11 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       const posted = await postAgentText(ctx, {
         ...postInput,
         target: { kind: "thread", chatThreadId: conv.chatThreadId },
+        conversation: conv,
+        sessionId: result.sessionId,
+        personId: person.personId,
       });
       ctx.store.tx(() => {
-        if (!conv.isDirect)
-          recordAgentPost(
-            ctx,
-            posted.ref,
-            conv,
-            result.sessionId,
-            person.personId,
-            posted.text,
-          );
         if (result.owed.length > 0)
           db.prepare(
             "UPDATE reply_owed SET answered = 1 WHERE item_id IN (" +

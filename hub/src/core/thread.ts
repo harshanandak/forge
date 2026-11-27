@@ -105,6 +105,8 @@ export function recordThread(
   );
 }
 
+export const UNCONFIRMED_MESSAGE_PREFIX = "unconfirmed:";
+
 export function recordAgentPost(
   ctx: CoreContext,
   ref: ChatMessageRef,
@@ -133,6 +135,37 @@ export function recordAgentPost(
         ctx.deps.now(),
       ).changes !== 0
   );
+}
+
+export function isUnconfirmedMessage(id: unknown): boolean {
+  return typeof id === "string" && id.startsWith(UNCONFIRMED_MESSAGE_PREFIX);
+}
+
+export function confirmAgentPost(
+  ctx: CoreContext,
+  conversation: Conversation,
+  reservedId: string,
+  chatMessageId: string,
+) {
+  ctx.deps.db
+    .prepare(
+      `UPDATE thread_messages SET chat_message_id = ?
+    WHERE adapter = 'slack' AND chat_thread_id = ? AND chat_message_id = ?`,
+    )
+    .run(chatMessageId, conversation.chatThreadId, reservedId);
+}
+
+export function releaseAgentPost(
+  ctx: CoreContext,
+  conversation: Conversation,
+  reservedId: string,
+) {
+  ctx.deps.db
+    .prepare(
+      `DELETE FROM thread_messages
+    WHERE adapter = 'slack' AND chat_thread_id = ? AND chat_message_id = ?`,
+    )
+    .run(conversation.chatThreadId, reservedId);
 }
 
 export const LOOP_PAUSE_TEXT = "Paused: the agents need a person to reply.";
