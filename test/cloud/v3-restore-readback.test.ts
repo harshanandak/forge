@@ -35,7 +35,7 @@ if (!("timingSafeEqual" in crypto.subtle))
   });
 
 const timeout = 30_000;
-const time = Date.parse("2026-11-20T12:00:00.000Z");
+const time = Date.now();
 const activatedAt = new Date(time + 1).toISOString();
 const env = { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" };
 const open = () => guardFixture(env);

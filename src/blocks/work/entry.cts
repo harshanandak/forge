@@ -780,6 +780,26 @@ function atomicRuntime<Input, Output>(
     }
   };
 }
+const MAX_OUTPUT_BYTES = 1_048_576;
+function boundedOutput(value: TrackerItem): void {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_OUTPUT_BYTES)
+    fail("LIMIT_EXCEEDED", `output exceeds maxOutputBytes ${MAX_OUTPUT_BYTES}`);
+}
+function outputCandidate(
+  key: string,
+  value: unknown,
+  revision: number,
+  updatedAt: string,
+): StateRecord {
+  return {
+    namespace: "forge/work",
+    key,
+    value,
+    revision,
+    updatedAt,
+    updatedBy: { kind: "agent", id: "output-check" },
+  };
+}
 function persist(
   state: LeaseStateClient,
   recordKey: string,
@@ -1222,6 +1242,18 @@ function update(
     readSet.push(...validateDependencies(state, id, [target], ids, true));
     Object.assign(next, { parent: target });
   }
+  boundedOutput(
+    item(
+      state,
+      outputCandidate(
+        key(id),
+        next,
+        expectRevision + 1,
+        new Date(state.now()).toISOString(),
+      ),
+      ids,
+    ),
+  );
   return item(
     state,
     persist(state, key(id), next, expectRevision, undefined, readSet),
@@ -6054,6 +6086,9 @@ const operations: Operations<WorkOperations> = {
         ...(parent === undefined ? {} : { parent }),
         ...declarations.patch,
       };
+      boundedOutput(
+        item(state, outputCandidate(key(id), value, 1, value.createdAt), ids),
+      );
       return { value, readSet };
     });
     return item(state, checked(state, written), ids);

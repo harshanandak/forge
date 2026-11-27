@@ -13,6 +13,8 @@ const namespace = "forge/work";
 const actor = { kind: "agent", id: "fixture" } as const;
 const session = { id: "fixture" } as const;
 const sha = "0123456789abcdef0123456789abcdef01234567";
+const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(486)}`);
+const wideFiles = Array.from({ length: 256 }, () => `src/${"é".repeat(996)}`);
 const globals = globalThis as Record<string, unknown>;
 const hadFail = "fail" in globals;
 const previousFail = globals.fail;
@@ -178,6 +180,7 @@ test("file declaration updates keep the revision and lease fence", async () => {
   try {
     await p.call("issue.create", {
       title: "Files",
+      body: "x".repeat(65_536),
       expectedFiles: ["src/alpha.ts"],
     });
     await p.call("issue.claim", { id: "forge-1" });
@@ -206,6 +209,19 @@ test("file declaration updates keep the revision and lease fence", async () => {
         expectedFiles: ["src/alpha.ts"],
       });
     }
+    await p.call("issue.update", {
+      id: "forge-1",
+      expectRevision: 1,
+      expectedFiles: wideFiles,
+    });
+    const beforeLarge = p.owner.get(namespace, "issue:work-1")?.value;
+    const large = await p.refusal("issue.update", {
+      id: "forge-1",
+      expectRevision: 2,
+      actualFiles: longFiles,
+    });
+    expect(large.code).toBe("LIMIT_EXCEEDED");
+    expect(p.owner.get(namespace, "issue:work-1")?.value).toEqual(beforeLarge);
     await p.call("issue.release", { id: "forge-1" });
     const lost = await p.refusal("issue.update", {
       id: "forge-1",
@@ -216,7 +232,7 @@ test("file declaration updates keep the revision and lease fence", async () => {
       lost.code,
     );
     expect(p.owner.get(namespace, "issue:work-1")?.value).toMatchObject({
-      expectedFiles: ["src/alpha.ts"],
+      expectedFiles: wideFiles,
     });
   } finally {
     await p.close();

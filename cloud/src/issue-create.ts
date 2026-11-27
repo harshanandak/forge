@@ -69,22 +69,38 @@ export function createIssue(
         "issue:work-",
         (_key, number) => {
           const id = `work-${number}`;
-          return {
-            value: {
-              id,
-              prefix,
-              title: fields.title,
-              status: "open",
-              labels: fields.labels ?? [],
-              dependsOn: [],
-              createdAt: new Date(now).toISOString(),
-              ...(fields.kind ? { kind: fields.kind } : {}),
-              ...(fields.body === undefined ? {} : { body: fields.body }),
-              ...(fields.expectedFiles === undefined
-                ? {}
-                : { expectedFiles: fields.expectedFiles }),
-            },
+          const value = {
+            id,
+            prefix,
+            title: fields.title,
+            status: "open" as const,
+            labels: fields.labels ?? [],
+            dependsOn: [],
+            createdAt: new Date(now).toISOString(),
+            ...(fields.kind ? { kind: fields.kind } : {}),
+            ...(fields.body === undefined ? {} : { body: fields.body }),
+            ...(fields.expectedFiles === undefined
+              ? {}
+              : { expectedFiles: fields.expectedFiles }),
           };
+          boundedResult(
+            "issue.create",
+            shownItem(
+              {
+                namespace: NAMESPACE,
+                key: `issue:${id}`,
+                value,
+                revision: 1,
+                updatedAt: value.createdAt,
+                updatedBy: actor,
+              },
+              id,
+              undefined,
+              now,
+              prefix,
+            ),
+          );
+          return { value };
         },
         actor,
         { refuseMissing: FLOOR_MISSING },
