@@ -21,38 +21,64 @@ type Overlap = { path: string; leftPattern: string; rightPattern: string };
 
 const wildcard = /[*?]/u;
 
+function codePointWidth(path: string, offset: number): 1 | 2 {
+  return (path.codePointAt(offset) ?? 0) > 0xffff ? 2 : 1;
+}
+
 function patternMatcher(pattern: string): (path: string) => boolean {
   if (!wildcard.test(pattern)) return (path) => path === pattern;
   const tokens = pattern.match(/(?<![^/])\*\*\/|\*\*|[*?]|[^*?]+/gu)!;
   const first = tokens[0];
   const last = tokens[tokens.length - 1]!;
+  let required = "";
+  for (const token of tokens)
+    if (token.length > required.length && !wildcard.test(token))
+      required = token;
+  let buffers: [Uint8Array, Uint8Array] | undefined;
   return (path) => {
     if (!wildcard.test(first) && !path.startsWith(first)) return false;
     if (!wildcard.test(last) && !path.endsWith(last)) return false;
-    let reachable = new Uint8Array(path.length + 1);
-    let next = new Uint8Array(path.length + 1);
+    if (required && !path.includes(required)) return false;
+    const size = path.length + 1;
+    if (!buffers || buffers[0].length < size) {
+      const capacity = Math.max(size, (buffers?.[0].length ?? 0) * 2);
+      buffers = [new Uint8Array(capacity), new Uint8Array(capacity)];
+    }
+    let [reachable, next] = buffers;
+    reachable.fill(0, 0, size);
     reachable[0] = 1;
     for (const token of tokens) {
       let directory = false;
-      next.fill(0);
-      for (let i = 0; i <= path.length; i++) {
+      let hasReachableOffset = false;
+      const star = token === "*" || token === "**";
+      next.fill(0, 0, size);
+      for (let i = 0; i < size; i++) {
         if (token === "**/") {
           directory ||= reachable[i] === 1;
           if (reachable[i] || (directory && path[i - 1] === "/")) next[i] = 1;
-          continue;
-        }
-        const width = (path.codePointAt(i) ?? 0) > 0xffff ? 2 : 1;
-        if (token === "*" || token === "**") {
+        } else if (star) {
           if (reachable[i]) next[i] = 1;
           if (next[i] && i < path.length && (token === "**" || path[i] !== "/"))
-            next[i + width] = 1;
+            next[i + codePointWidth(path, i)] = 1;
         } else if (reachable[i]) {
           if (token === "?") {
-            if (i < path.length && path[i] !== "/") next[i + width] = 1;
-          } else if (path.startsWith(token, i)) next[i + token.length] = 1;
+            if (i < path.length && path[i] !== "/")
+              next[i + codePointWidth(path, i)] = 1;
+          } else {
+            const end = i + token.length;
+            if (
+              path.startsWith(token, i) &&
+              codePointWidth(path, end - 1) === 1
+            )
+              next[end] = 1;
+          }
         }
+        hasReachableOffset ||= next[i] === 1;
       }
-      [reachable, next] = [next, reachable];
+      if (!hasReachableOffset) return false;
+      const previous = reachable;
+      reachable = next;
+      next = previous;
     }
     return reachable[path.length] === 1;
   };
