@@ -9,7 +9,7 @@ const FLAG_KEYS = `${KEYS}|auth|pat`;
 const ASSIGN_HEAD = `\\b(?:${KEYS})\\s*[:=]\\s*`;
 const FLAG_HEAD = `(?<![\\w-])--?(?:${FLAG_KEYS})(?:\\s*[:=]\\s*|\\s+)`;
 const BEARER_HEAD = "\\bbearer\\s+";
-const CONTINUATION = `(?:[,;]+(?!-)(?![^\\s,;]*(?:${ASSIGN_HEAD}|${FLAG_HEAD}|${BEARER_HEAD})[^\\s,;])[^\\s,;]+)*`;
+const CONTINUATION = `(?:[,;]+(?!-(?!-?(?:${FLAG_KEYS})[:=]?(?=[\\s,;]|$)))(?![^\\s,;]*(?:${ASSIGN_HEAD}|${FLAG_HEAD}|${BEARER_HEAD})[^\\s,;])[^\\s,;]+)*`;
 const BEARER = new RegExp(`${BEARER_HEAD}[^\\s,;]+${CONTINUATION}`, "gi");
 const QUOTED =
   /"(?:\\(?:.|$)|[^"\\])*(?:"|$)|(?<!\p{L})'(?:\\(?:.|$)|[^'\\])*(?:'|$)|`(?:\\(?:.|$)|[^`\\])*(?:`|$)/gu;
