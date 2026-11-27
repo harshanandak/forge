@@ -3,6 +3,7 @@ import { normalizeFileDeclarations } from "./file-declarations.ts";
 type Declarations = {
   expectedFiles?: readonly string[];
   actualFiles?: readonly string[];
+  filesAt?: string;
 };
 
 export type GeneratedFileRule = {
@@ -58,11 +59,11 @@ function patternMatcher(pattern: string): (path: string) => boolean {
 }
 
 function readDeclarations(
-  declarations: Declarations,
+  { expectedFiles, actualFiles }: Declarations,
   side: Side,
   reasons: IncompleteReason[],
 ): Declarations {
-  const result = normalizeFileDeclarations(declarations, [
+  const result = normalizeFileDeclarations({ expectedFiles, actualFiles }, [
     "expectedFiles",
     "actualFiles",
   ]);

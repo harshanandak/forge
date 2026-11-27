@@ -202,7 +202,7 @@ test("omitted expected lists are unknown, while two explicit empty lists are com
 
 test("learned paths remain literal and available with an unknown expected list", () => {
   const result = resolveFileOverlap({
-    left: { actualFiles: ["src/name?.ts"] },
+    left: { actualFiles: ["src/name?.ts"], filesAt: "a".repeat(40) },
     right: { expectedFiles: ["src/*.ts", "src/name1.ts"] },
     trackedPaths: ["src/name1.ts"],
   });
