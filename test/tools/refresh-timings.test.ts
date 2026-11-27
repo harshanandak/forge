@@ -1,6 +1,9 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { type jobRecord } from "../../tools/ci/ci-record.ts";
-import { refreshTimings, selectCandidateRuns } from "../../tools/ci/refresh-timings.ts";
+import {
+  refreshTimings,
+  selectCandidateRuns,
+} from "../../tools/ci/refresh-timings.ts";
 
 setDefaultTimeout(30_000);
 

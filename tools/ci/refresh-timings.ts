@@ -17,7 +17,11 @@ export function selectCandidateRuns(
   return runs
     .toSorted((a, b) => b.databaseId - a.databaseId)
     .slice(0, limit)
-    .map((run) => ({ id: run.databaseId, head_sha: run.headSha, run_attempt: run.attempt }));
+    .map((run) => ({
+      id: run.databaseId,
+      head_sha: run.headSha,
+      run_attempt: run.attempt,
+    }));
 }
 
 export function median(values: number[]): number | undefined {
