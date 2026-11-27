@@ -53,12 +53,32 @@ export function parseLsTree(output: string): Map<string, string> {
     const tab = record.indexOf("\t");
     const file = tab < 0 ? "" : record.slice(tab + 1);
     const match = TREE_RECORD.exec(tab < 0 ? "" : record.slice(0, tab));
+    const mode = match?.[1];
     const oid = match?.[3];
-    if (!match || match[2] !== "blob" || !file || !oid || blobs.has(file))
+    if (
+      !match ||
+      (mode !== "100644" && mode !== "100755") ||
+      match[2] !== "blob" ||
+      !file ||
+      !oid ||
+      blobs.has(file)
+    )
       throw new Error("Incomplete committed blob listing");
     blobs.set(file, oid);
   }
   return blobs;
+}
+export function resolveBlobIds(
+  files: readonly string[],
+  blobs: ReadonlyMap<string, string>,
+): string[] {
+  if (blobs.size !== files.length)
+    throw new Error("Incomplete committed blob listing");
+  return files.map((file) => {
+    const oid = blobs.get(file);
+    if (oid === undefined) throw new Error("Incomplete committed blob listing");
+    return oid;
+  });
 }
 export function readCommittedTexts(
   root: string,
@@ -82,11 +102,7 @@ export function readCommittedTexts(
       },
     );
   const blobs = parseLsTree(git("ls-tree", "-r", "-z", head, "--", ...files));
-  const oids = files.map((file) => {
-    const oid = blobs.get(file);
-    if (oid === undefined) throw new Error("Incomplete committed blob listing");
-    return oid;
-  });
+  const oids = resolveBlobIds(files, blobs);
   const batch = spawnSync(
     executable,
     [
