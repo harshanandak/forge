@@ -36,9 +36,27 @@ runs:
             "FORGE_PACK_EXPECTED_SHA256=$SHA256" "FORGE_PACK_EXPECTED_VERSION=$VERSION" >> "$GITHUB_ENV"
         fi
     - if: runner.os == 'Windows'
+      name: Disable the Storage Service
       shell: pwsh
       run: |
-        & "$env:GITHUB_WORKSPACE/.github/scripts/disable-storsvc.ps1"
+        $ErrorActionPreference = 'Stop'
+        Set-Service StorSvc -StartupType Disabled
+        $service = Get-Service StorSvc
+        $stopError = 'none'
+        if ($service.Status -ne 'Stopped') {
+          try {
+            Stop-Service StorSvc -Force
+          } catch {
+            $stopError = $_.Exception.Message
+          }
+        }
+        $service = Get-Service StorSvc
+        if ($service.Status -ne 'Stopped' -or $service.StartType -ne 'Disabled') {
+          throw "StorSvc is $($service.Status) and $($service.StartType); stop error: $stopError"
+        }
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
         $env:TEMP = $env:RUNNER_TEMP
         $env:TMP = $env:RUNNER_TEMP
         "TEMP=$env:TEMP", "TMP=$env:TMP", "FORGE_HANDLE_EXE=", "FORGE_HANDLE_UNAVAILABLE=" >> $env:GITHUB_ENV

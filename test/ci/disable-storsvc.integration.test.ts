@@ -13,29 +13,74 @@ type CaseResult = {
 };
 
 const root = resolve(import.meta.dirname, "../..");
-const script = join(root, ".github", "scripts", "disable-storsvc.ps1");
-const psQuote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+const workflowPaths = [
+  ".github/actions/journey-setup/action.yml",
+  ".github/workflows/ci.yml",
+];
+const stepName = "Disable the Storage Service";
+
+function indentation(line: string) {
+  return line.length - line.trimStart().length;
+}
+
+function extractRunBody(path: string) {
+  const lines = readFileSync(join(root, path), "utf8").split(/\r?\n/);
+  const nameIndexes = lines.flatMap((line, index) =>
+    line.trim() === `name: ${stepName}` ? [index] : [],
+  );
+  if (nameIndexes.length !== 1)
+    throw new Error(`${path} has ${nameIndexes.length} ${stepName} steps`);
+  const runIndex = lines.findIndex(
+    (line, index) => index > nameIndexes[0]! && /^\s*run: \|\s*$/.test(line),
+  );
+  if (runIndex === -1) throw new Error(`${path} has no block run body`);
+  const runIndent = indentation(lines[runIndex]!);
+  const block: string[] = [];
+  for (let index = runIndex + 1; index < lines.length; index++) {
+    const line = lines[index]!;
+    if (line.trim() !== "" && indentation(line) <= runIndent) break;
+    block.push(line);
+  }
+  const first = block.find((line) => line.trim() !== "");
+  if (first === undefined) throw new Error(`${path} has an empty run body`);
+  const contentIndent = indentation(first);
+  return block
+    .map((line) => (line.trim() === "" ? "" : line.slice(contentIndent)))
+    .join("\n")
+    .replace(/\n+$/, "");
+}
+
+const bodies = workflowPaths.map(extractRunBody);
+const body = bodies[0]!;
+const encodedBody = Buffer.from(body, "utf8").toString("base64");
 const driver = `
-$ScriptPath = ${psQuote(script)}
-$ErrorActionPreference = 'Stop'
-$get = {
-  [pscustomobject]@{
-    Status = $global:ForgeStorSvcState
-    StartType = $global:ForgeStorSvcStartType
-  }
-}
-$disable = {
+$bodyText = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedBody}'))
+$body = [scriptblock]::Create($bodyText)
+function global:Set-Service {
+  param($Name, $StartupType)
+  if ($Name -ne 'StorSvc') { throw "unexpected service $Name" }
   if ($global:ForgeStorSvcDisableWorks) {
-    $global:ForgeStorSvcStartType = 'Disabled'
+    $global:ForgeStorSvcStartType = $StartupType
   }
 }
-$stop = {
+function global:Stop-Service {
+  param($Name, [switch]$Force)
+  if ($Name -ne 'StorSvc') { throw "unexpected service $Name" }
+  if (-not $Force) { throw 'missing Force' }
   $global:ForgeStorSvcStopCalls += 1
   if ($global:ForgeStorSvcStopMarksStopped) {
     $global:ForgeStorSvcState = 'Stopped'
   }
   if ($global:ForgeStorSvcStopThrows) {
     throw 'stop exploded'
+  }
+}
+function global:Get-Service {
+  param($Name)
+  if ($Name -ne 'StorSvc') { throw "unexpected service $Name" }
+  [pscustomobject]@{
+    Status = $global:ForgeStorSvcState
+    StartType = $global:ForgeStorSvcStartType
   }
 }
 function Invoke-Case($Name, $State, $StartType, $StopThrows, $StopMarksStopped, $DisableWorks) {
@@ -48,7 +93,7 @@ function Invoke-Case($Name, $State, $StartType, $StopThrows, $StopMarksStopped, 
   $message = ''
   $ok = $true
   try {
-    & $ScriptPath -Get $get -Disable $disable -Stop $stop
+    & $body
   } catch {
     $ok = $false
     $message = $_.Exception.Message
@@ -60,19 +105,18 @@ function Invoke-Case($Name, $State, $StartType, $StopThrows, $StopMarksStopped, 
     message = $message
   }
 }
-$cases = @(
-  Invoke-Case 'running stop succeeds' 'Running' 'Manual' $false $true $true
-  Invoke-Case 'already stopped and disabled' 'Stopped' 'Disabled' $false $false $true
-  Invoke-Case 'stop throws after stopping' 'Running' 'Manual' $true $true $true
-  Invoke-Case 'stop throws while running' 'Running' 'Manual' $true $false $true
-  Invoke-Case 'disable leaves start type manual' 'Stopped' 'Manual' $false $false $false
-)
-foreach ($case in $cases) {
-  $case | ConvertTo-Json -Compress
-}
+Invoke-Case 'running stop succeeds' 'Running' 'Manual' $false $true $true | ConvertTo-Json -Compress
+Invoke-Case 'already stopped and disabled' 'Stopped' 'Disabled' $false $false $true | ConvertTo-Json -Compress
+Invoke-Case 'stop throws after stopping' 'Running' 'Manual' $true $true $true | ConvertTo-Json -Compress
+Invoke-Case 'stop throws while running' 'Running' 'Manual' $true $false $true | ConvertTo-Json -Compress
+Invoke-Case 'disable leaves start type manual' 'Stopped' 'Manual' $false $false $false | ConvertTo-Json -Compress
 `;
 
-test("the shared StorSvc script verifies state with injected service adapters", () => {
+test("both Windows StorSvc steps have the same inline body", () => {
+  assert.equal(bodies[1], bodies[0]);
+}, 30_000);
+
+test("the inline StorSvc setup verifies state with shadowing service functions", () => {
   const pwsh = Bun.which("pwsh");
   if (pwsh === null) throw new Error("pwsh is required");
   const result = spawnSync(pwsh, powerShellArgs(driver), {
@@ -118,19 +162,4 @@ test("the shared StorSvc script verifies state with injected service adapters", 
       message: "StorSvc is Stopped and Manual; stop error: none",
     },
   ]);
-}, 30_000);
-
-test("both Windows CI setup steps call the shared StorSvc script", () => {
-  for (const path of [
-    ".github/actions/journey-setup/action.yml",
-    ".github/workflows/ci.yml",
-  ]) {
-    const text = readFileSync(join(root, path), "utf8");
-    assert.equal(
-      text.match(/\.github\/scripts\/disable-storsvc\.ps1/g)?.length ?? 0,
-      1,
-      path,
-    );
-    assert.equal(text.includes("Stop-Service StorSvc"), false, path);
-  }
 }, 30_000);
