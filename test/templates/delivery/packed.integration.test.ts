@@ -36,6 +36,7 @@ test("the delivery template ships in the npm package and runs the project's own 
       "agents/t3.yaml",
       "skills/forge-loop/SKILL.md",
       "skills/forge-intake/SKILL.md",
+      "skills/forge-intake/prior-art.md",
     ])
       expect(existsSync(join(installed, "templates/delivery", file))).toBe(
         true,
