@@ -7,7 +7,7 @@ import {
   type ThreadContextEntry,
 } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
-import { num, str } from "./thread.ts";
+import { num, str, UNCONFIRMED_MESSAGE_PREFIX } from "./thread.ts";
 
 export function deliveryContext(
   ctx: CoreContext,
@@ -45,9 +45,17 @@ export function deliveryContext(
       `SELECT t.*,p.display_name,count(*) OVER () AS eligible FROM thread_messages t
     LEFT JOIN people p ON p.person_id=t.person_id WHERE t.adapter = 'slack' AND t.chat_thread_id = ?
     AND t.seq > ? AND t.seq < ? AND t.deleted = 0 AND t.kind IN ('person','agent','outsider')
-    AND NOT (t.kind = 'agent' AND t.person_id = ?) ORDER BY t.seq DESC LIMIT ?`,
+    AND NOT (t.kind = 'agent' AND t.person_id = ?)
+    AND (t.chat_message_id IS NULL OR t.chat_message_id NOT LIKE ?) ORDER BY t.seq DESC LIMIT ?`,
     )
-    .all(chat.chatThreadId, first, last, chat.personId, LIMITS.contextMessages);
+    .all(
+      chat.chatThreadId,
+      first,
+      last,
+      chat.personId,
+      UNCONFIRMED_MESSAGE_PREFIX + "%",
+      LIMITS.contextMessages,
+    );
   const entries: ThreadContextEntry[] = [];
   let chars = 0;
   for (const row of rows) {

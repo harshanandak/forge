@@ -16,6 +16,7 @@ import {
   postLoopPause,
   recordAgentPost,
   str,
+  UNCONFIRMED_MESSAGE_PREFIX,
 } from "./thread.ts";
 
 export interface AgentPostInput {
@@ -75,7 +76,10 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
     )
       recordAgentPost(
         ctx,
-        { ...conversation, chatMessageId: "unconfirmed:" + randomUUID() },
+        {
+          ...conversation,
+          chatMessageId: UNCONFIRMED_MESSAGE_PREFIX + randomUUID(),
+        },
         conversation,
         sessionId,
         personId,

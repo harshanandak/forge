@@ -105,6 +105,8 @@ export function recordThread(
   );
 }
 
+export const UNCONFIRMED_MESSAGE_PREFIX = "unconfirmed:";
+
 export function recordAgentPost(
   ctx: CoreContext,
   ref: ChatMessageRef,

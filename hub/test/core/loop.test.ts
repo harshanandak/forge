@@ -4,12 +4,13 @@ import type { HubResult } from "../../src/contract/core.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
 import {
   baseFixture,
+  bellFor,
   seedThread,
   unknownUser,
   type BaseFixture,
 } from "./base-fixture.ts";
 import { refusal, until } from "./base-fakes.ts";
-import { a, p1, value } from "./fixture.ts";
+import { a, b, p1, value } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
 
 const timeout = 30_000;
@@ -303,6 +304,51 @@ test(
       pause,
     ]);
     expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+  },
+  timeout,
+);
+
+test(
+  "forge-1989 an unconfirmed row counts for the guard but stays out of delivered context",
+  async () => {
+    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const alpha = f.bind();
+    const beta = f.bind(b, "beta", "beta");
+    await f.emit("root");
+    await f.emit("beta-mention", {
+      slackUserId: slackB,
+      threadRootMessageId: "root",
+    });
+    const alphaFirst = f.read(alpha.sessionId).items[0]!;
+    f.ack(alpha.sessionId, [alphaFirst.itemId]);
+    const betaFirst = f.read(beta.sessionId, b).items[0]!;
+    f.ack(beta.sessionId, [betaFirst.itemId], b);
+    const betaConv = betaFirst.conversationId;
+    if (!betaConv) throw new Error("Expected a Slack conversation ID");
+    for (let index = 0; index < LIMITS.agentRunMax - 1; index++)
+      seedThread(
+        f,
+        "agent-" + index,
+        "run",
+        "agent",
+        a.personId,
+        alpha.sessionId,
+      );
+    const reply = (text: string) =>
+      f.core.reply(f.caller(b), {
+        sessionId: beta.sessionId,
+        conversationId: betaConv,
+        text,
+      });
+    f.chat.nextWrite = { kind: "unknown" };
+    refusal(await reply("unconfirmed beta answer"));
+    expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+    expectPaused(await reply("eleventh beta reply"));
+    await f.emit("a-second", { threadRootMessageId: "root" });
+    const read = f.read(alpha.sessionId);
+    expect(read.items).toHaveLength(1);
+    const entries = read.items[0]?.threadContext?.entries ?? [];
+    expect(entries.map((entry) => entry.text)).toEqual(["beta-mention"]);
   },
   timeout,
 );
