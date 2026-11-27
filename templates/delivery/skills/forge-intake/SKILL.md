@@ -11,7 +11,7 @@ This prevents building on a definition the repository contradicts, or waiting on
 ## Steps
 
 1. Create an intent issue with `forge issue create` if missing. Read it and linked context. Keep its map there: Destination, Decisions so far, Not yet specified, Out of scope. Track each decision's prerequisites and status.
-2. Investigate facts in code, tools or primary sources. A pending investigation blocks only its dependent decisions; continue with the others. Read [dispatch.md](../forge-loop/dispatch.md) before dispatching a subagent, using the intent issue as `<slice>`.
+2. Investigate facts in code, tools or primary sources. A pending investigation blocks only its dependent decisions; continue with the others. Read [dispatch.md](../forge-loop/dispatch.md) before dispatching a subagent, using the intent issue as `<slice>`. Read [prior-art.md](prior-art.md) before any feature design.
 3. Read [prototype.md](prototype.md) when only running code can answer a question. Name the question first.
 4. Read [rounds.md](rounds.md) when decisions are ready to ask or an answer changes.
 5. Show the settled map and answer digest. In an attended run, get confirmation of the shared understanding. Then route to `forge-cut` for framing and slicing.
@@ -28,5 +28,6 @@ This prevents building on a definition the repository contradicts, or waiting on
 ## Read on demand
 
 - [rounds.md](rounds.md): Question rounds, answer changes and the digest.
+- [prior-art.md](prior-art.md): Prior-art comment with copy sources, mistakes and decision.
 - [prototype.md](prototype.md): Prototype workspace, evidence and handoff.
 - [dispatch.md](../forge-loop/dispatch.md): Route selection, counted calls and timebox.

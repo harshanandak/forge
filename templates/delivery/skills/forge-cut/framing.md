@@ -4,3 +4,4 @@
 - Route open decisions to `forge-intake` before framing or slicing.
 - Record each answer: `forge decision propose --input '{"title":"...","text":"..."}'`. On `format_missing`, follow the returned `repair`, then propose again. Only after `proposed`, hand it to a human for adoption.
 - Plan in depth only for the one or two hard choices.
+- A feature is not framed until its prior-art comment exists: see [prior-art.md](../forge-intake/prior-art.md).
