@@ -10,6 +10,7 @@ import { fail } from "./errors.ts";
 import { refused } from "./inbox.ts";
 import {
   byConversation,
+  channelBindingRefusal,
   confirmAgentPost,
   conversation,
   enterThread,
@@ -301,8 +302,14 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       }
       const conv = result.conversation;
       releaseThread = await enterThread(ctx, conv.chatThreadId);
-      if (ctx.store.tx(() => paused(db, conv.chatThreadId)))
-        return refused("CONVERSATION_PAUSED");
+      const blocked = ctx.store.tx(() => {
+        if (paused(db, conv.chatThreadId))
+          return refused("CONVERSATION_PAUSED");
+        const fresh = byConversation(db, conv.conversationId);
+        if (!fresh) return refused("CONVERSATION_UNKNOWN");
+        return channelBindingRefusal(fresh, config.projects, fresh.projectId);
+      });
+      if (blocked) return blocked;
       const posted = await postAgentText(ctx, {
         ...postInput,
         target: { kind: "thread", chatThreadId: conv.chatThreadId },

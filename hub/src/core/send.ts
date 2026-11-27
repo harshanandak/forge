@@ -7,6 +7,7 @@ import { postAgentText } from "./reply.ts";
 import { frontSession, insertItem } from "./routing.ts";
 import {
   byConversation,
+  channelBindingRefusal,
   enterThread,
   paused,
   postLoopPause,
@@ -102,8 +103,14 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
     }
     const release = await enterThread(ctx, chat.chatThreadId);
     try {
-      if (ctx.store.tx(() => paused(db, chat.chatThreadId)))
-        return refused("CONVERSATION_PAUSED");
+      const blocked = ctx.store.tx(() => {
+        if (paused(db, chat.chatThreadId))
+          return refused("CONVERSATION_PAUSED");
+        const fresh = byConversation(db, chat.conversationId);
+        if (!fresh) return refused("CONVERSATION_UNKNOWN");
+        return channelBindingRefusal(fresh, config.projects, projectId);
+      });
+      if (blocked) return blocked;
       const item = storeItem();
       let threadPost: "posted" | "failed" = "posted";
       try {

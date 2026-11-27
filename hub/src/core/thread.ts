@@ -5,8 +5,29 @@ import type {
 } from "../contract/chat.ts";
 import type { Conversation } from "../contract/domain.ts";
 import { LIMITS } from "../contract/mcp.ts";
-import type { HubDb, SqlRow } from "../contract/runtime.ts";
+import type { HubDb, ProjectConfig, SqlRow } from "../contract/runtime.ts";
 import type { CoreContext } from "./core.ts";
+import { fail } from "./errors.ts";
+
+export function channelBindingRefusal(
+  conversation: Conversation,
+  projects: readonly ProjectConfig[],
+  projectId: string | undefined,
+) {
+  if (conversation.isDirect) return undefined;
+  const currentChannel = projects.find(
+    (entry) => entry.projectId === projectId,
+  )?.slackChannelId;
+  if (
+    conversation.projectId !== projectId ||
+    conversation.channelId !== currentChannel
+  )
+    return {
+      ok: false,
+      error: fail("INPUT_INVALID", "/conversationId"),
+    } as const;
+  return undefined;
+}
 
 export function str(value: unknown): string {
   if (typeof value !== "string") throw new Error("Invalid hub text column");

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { AGENT_MESSAGE_NOTICE, LIMITS } from "../../src/contract/mcp.ts";
 import { ID_PATTERN } from "../../src/contract/ids.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
+import { enterThread } from "../../src/core/thread.ts";
 import { baseFixture, bellFor, seedThread, thread } from "./base-fixture.ts";
 import { refusal, until } from "./base-fakes.ts";
 import { a, b, configPeople, p1, p2, value } from "./fixture.ts";
@@ -400,6 +401,72 @@ test(
     );
     expect(sent.threadPost).toBe("failed");
     expect(f.writes("postText")).toEqual([]);
+    expect(
+      f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
+    ).toHaveLength(1);
+  },
+  timeout,
+);
+
+test(
+  "SD1 visible send refuses when the project channel is rebound during the thread wait",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+    const beforeInbox = f.rows("inbox_items");
+    const beforeThreads = f.rows("thread_messages");
+    const beforeConvs = f.rows("conversations");
+    const beforeOwed = f.rows("reply_owed");
+    const beforeWrites = f.chat.writes.length;
+    const releaseGate = await enterThread(f.context, thread);
+    const pending = f.core.send(f.caller(), {
+      ...draft(alpha.sessionId),
+      conversationId,
+      text: "Race note",
+    });
+    await Bun.sleep(10);
+    (f.config as unknown as { projects: unknown }).projects =
+      f.config.projects.map((project) =>
+        project.projectId === p1
+          ? { ...project, slackChannelId: "C00000009" }
+          : project,
+      );
+    releaseGate();
+    expect(refusal(await pending)).toEqual({
+      code: "INPUT_INVALID",
+      message: "The input is invalid.",
+      retry: "never",
+      pointer: "/conversationId",
+    });
+    expect(f.rows("inbox_items")).toEqual(beforeInbox);
+    expect(f.rows("thread_messages")).toEqual(beforeThreads);
+    expect(f.rows("conversations")).toEqual(beforeConvs);
+    expect(f.rows("reply_owed")).toEqual(beforeOwed);
+    expect(f.chat.writes).toHaveLength(beforeWrites);
+  },
+  timeout,
+);
+
+test(
+  "SD1 visible send posts when the channel is unchanged across the thread wait",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+    const releaseGate = await enterThread(f.context, thread);
+    const pending = f.core.send(f.caller(), {
+      ...draft(alpha.sessionId),
+      conversationId,
+      text: "Held note",
+    });
+    await Bun.sleep(10);
+    releaseGate();
+    const sent = value(await pending);
+    expect(sent.threadPost).toBe("posted");
+    expect(f.writes("postText")).toHaveLength(1);
     expect(
       f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
     ).toHaveLength(1);
