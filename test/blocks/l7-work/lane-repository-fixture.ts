@@ -1,6 +1,15 @@
 import { expect } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acceptanceTable } from "./lane-brief-fixture.ts";
@@ -167,4 +176,30 @@ export async function laneCommands(root: string, repo: string) {
     return reply.result;
   };
   return { call, cli, good, dispose: () => assembly.close() };
+}
+
+type Commands = Awaited<ReturnType<typeof laneCommands>>;
+export async function advisoryProject(
+  brief: string,
+  use: (commands: Commands, repo: string, root: string) => Promise<void>,
+  configure = "",
+) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-advisory-")));
+  let commands: Commands | undefined;
+  try {
+    const { repo } = laneRepository(root, brief);
+    const path = join(repo, ".forge/config.yaml");
+    if (configure) writeFileSync(path, readFileSync(path, "utf8") + configure);
+    laneGit(["add", ".forge/config.yaml"], repo);
+    laneGit(["commit", "-m", "advisory policy"], repo);
+    laneGit(["push", "origin", "main"], repo);
+    commands = await laneCommands(root, repo);
+    await use(commands, repo, root);
+  } finally {
+    try {
+      await commands?.dispose();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 }

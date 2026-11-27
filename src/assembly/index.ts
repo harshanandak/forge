@@ -86,7 +86,7 @@ import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
 import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
 import { advisoryLeaseReader, WORK_MAP_LIMITS } from "./work-map-read.ts";
-import { pinAdvisoryExecutable } from "./work-map-process.ts";
+import { pinAdvisoryExecutable } from "../adapters/process/index.ts";
 import {
   blockCapture,
   resolveBlock,
