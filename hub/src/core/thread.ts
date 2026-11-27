@@ -172,20 +172,71 @@ export function isUnconfirmedMessage(id: unknown): boolean {
 
 export const LOOP_PAUSE_TEXT = "Paused: the agents need a person to reply.";
 
-function agentRunStart(db: HubDb, thread: string): number | undefined {
+type OrderedRow = {
+  seq: number;
+  kind: string;
+  id: string | undefined;
+  at: number;
+};
+type OrderKey = readonly [string, string];
+
+function orderedRow(row: SqlRow): OrderedRow {
+  const id = row.chat_message_id;
+  return {
+    seq: num(row.seq),
+    kind: str(row.kind),
+    id: typeof id === "string" ? id : undefined,
+    at: num(row.created_at),
+  };
+}
+
+function orderKey(id: string | undefined, at: number): OrderKey {
+  const match = id === undefined ? null : /^(\d+)\.(\d{6})$/.exec(id);
+  if (match) return [match[1]!, match[2]!];
+  const seconds = Math.trunc(at / 1000);
+  return [
+    String(seconds),
+    String((at - seconds * 1000) * 1000).padStart(6, "0"),
+  ];
+}
+
+function compareKeys(a: OrderKey, b: OrderKey): number {
+  return (
+    a[0].length - b[0].length ||
+    (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) ||
+    (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)
+  );
+}
+
+function compareRows(a: OrderedRow, b: OrderedRow): number {
+  return (
+    compareKeys(orderKey(a.id, a.at), orderKey(b.id, b.at)) || a.seq - b.seq
+  );
+}
+
+function agentRunStart(db: HubDb, thread: string): OrderedRow | undefined {
   const rows = db
     .prepare(
-      `SELECT seq,kind FROM thread_messages WHERE adapter = 'slack'
-    AND chat_thread_id = ? AND kind IN ('agent','person') ORDER BY seq DESC LIMIT ?`,
+      `SELECT seq,kind,chat_message_id,created_at FROM thread_messages WHERE adapter = 'slack'
+    AND chat_thread_id = ? AND kind IN ('agent','person')`,
     )
-    .all(thread, LIMITS.agentRunMax);
-  if (
-    rows.length !== LIMITS.agentRunMax ||
-    !rows.every(({ kind }) => kind === "agent")
-  )
-    return undefined;
-  const first = rows[rows.length - 1];
-  return first ? num(first.seq) : undefined;
+    .all(thread)
+    .map(orderedRow)
+    .toSorted((a, b) => compareRows(b, a));
+  const run: OrderedRow[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (row.id !== undefined) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+    }
+    run.push(row);
+    if (run.length === LIMITS.agentRunMax) break;
+  }
+  return run.length === LIMITS.agentRunMax &&
+    run.every(({ kind }) => kind === "agent")
+    ? run.at(-1)
+    : undefined;
 }
 
 export function paused(db: HubDb, thread: string): boolean {
@@ -211,14 +262,15 @@ export async function enterThread(
 function loopPauseDue(ctx: CoreContext, conversation: Conversation) {
   return ctx.store.tx(() => {
     const start = agentRunStart(ctx.deps.db, conversation.chatThreadId);
-    return (
-      start !== undefined &&
-      ctx.deps.db
-        .prepare(
-          `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq >= ? LIMIT 1`,
-        )
-        .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, start) === undefined
-    );
+    if (start === undefined) return false;
+    const noticed = ctx.deps.db
+      .prepare(
+        `SELECT seq,kind,chat_message_id,created_at FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ?`,
+      )
+      .all(conversation.chatThreadId, LOOP_PAUSE_TEXT)
+      .map(orderedRow)
+      .some((row) => compareRows(row, start) >= 0);
+    return !noticed;
   });
 }
 
