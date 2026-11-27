@@ -84,7 +84,7 @@ for (const shared of [false, true])
         if (op === "issue.show") return answer(issue);
         if (op !== "issue.claim") throw new Error(`Unexpected operation ${op}`);
         const lease: LeaseRecord = {
-          subject: `issue:${issue.id}`,
+          subject: `issue:${issue.id.replace("forge-", "work-")}`,
           generation: 1,
           holder: { actor, session },
           expiresAt: new Date(now() + 60_000).toISOString(),
@@ -151,7 +151,7 @@ for (const shared of [false, true])
             const row = warnings.find(
               ({ code }) => code === "WORK_FILE_OVERLAP",
             );
-            expect(row?.message).toContain(file);
+            expect(row?.message ?? "").toContain(file);
             expect(row?.message).toContain("forge-1");
             expect(row?.message).toContain("Incumbent lane");
             expect(row?.message).toContain("feat/forge-1");

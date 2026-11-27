@@ -76,7 +76,7 @@ for (const mode of ["disjoint", "shared", "racing"] as const)
           const row = mapWarnings(reply).find(
             ({ code }) => code === "WORK_FILE_OVERLAP",
           );
-          expect(row?.message).toContain(sharedFile);
+          expect(row?.message ?? "").toContain(sharedFile);
           expect(row?.message).toContain(first);
           expect(row?.message).toContain("Incumbent lane");
           expect(row?.message).toContain(`feat/${first}`);
