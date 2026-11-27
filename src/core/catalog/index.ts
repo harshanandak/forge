@@ -116,7 +116,12 @@ export class CapturedBlock {
       [...files.keys()].map((name) => [capturedUri(name, this.#base), name]),
     );
     const spend = schemaBudget();
-    const register = (name: string, depth = 0): void => {
+    const pending = new Set(
+      [...files.keys()].filter(
+        (name) => schemaPaths.has(name) || name.endsWith(".schema.json"),
+      ),
+    );
+    const register = (name: string): void => {
       const uri = capturedUri(name, this.#base);
       if (documents.has(uri)) return;
       const schema: unknown = JSON.parse(this.text(name));
@@ -135,7 +140,7 @@ export class CapturedBlock {
           const target = new URL(node.$ref, uri);
           target.hash = "";
           const dependency = pathsByUri.get(target.href);
-          if (dependency !== undefined) register(dependency, level + 1);
+          if (dependency !== undefined) pending.add(dependency);
         }
         for (const key of ["properties", "$defs"]) {
           const children = node[key];
@@ -157,11 +162,9 @@ export class CapturedBlock {
         ])
           if (node[key] !== undefined) descend(node[key]);
       };
-      visit(schema, depth);
+      visit(schema, 0);
     };
-    for (const name of files.keys())
-      if (schemaPaths.has(name) || name.endsWith(".schema.json"))
-        register(name);
+    for (const name of pending) register(name);
     this.#registry = new SchemaRegistry(
       [...SCHEMA_DOCUMENTS, ...documents.values()],
       this.#base,
