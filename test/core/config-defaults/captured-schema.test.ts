@@ -51,6 +51,39 @@ function capture(
   });
 }
 
+test("captured schema walks are document-local and independent of declaration order", () => {
+  const files: [string, JsonSchema][] = Array.from(
+    { length: 66 },
+    (_, index) => [
+      `part-${index}.schema.json`,
+      index === 65
+        ? { type: "object" }
+        : { $ref: `part-${index + 1}.schema.json` },
+    ],
+  );
+  for (const ordered of [files, [...files].reverse()]) {
+    const check = () =>
+      capture(
+        { $ref: "part-0.schema.json" },
+        Object.fromEntries(ordered),
+      ).problems("config.json", {});
+    expect(check).not.toThrow();
+    expect(check()).toEqual([]);
+  }
+  const recursive = capture(
+    { $ref: "first.schema.json" },
+    {
+      "first.schema.json": {
+        properties: { next: { $ref: "second.schema.json" } },
+      },
+      "second.schema.json": {
+        properties: { next: { $ref: "first.schema.json" } },
+      },
+    },
+  );
+  expect(recursive.problems("config.json", { next: { next: {} } })).toEqual([]);
+});
+
 test("captured root and property siblings compose in their own document bases", () => {
   const block = capture(
     {
