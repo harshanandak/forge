@@ -72,7 +72,7 @@ function repository(headFiles: Readonly<Record<string, string>>): string {
 }
 function subcommandOf(entry: unknown): string {
   if (!Array.isArray(entry)) return "";
-  const command = entry[3];
+  const command: unknown = entry[3];
   return typeof command === "string" ? command : "";
 }
 function blobSubcommands(): string[] {
@@ -134,11 +134,21 @@ beforeAll(async () => {
     ...nativeChildProcess,
     execFileSync: (...args: never[]) => {
       spawns.push(args[1]);
-      return Reflect.apply(nativeChildProcess.execFileSync, undefined, args);
+      const result: unknown = Reflect.apply(
+        nativeChildProcess.execFileSync,
+        undefined,
+        args,
+      );
+      return result;
     },
     spawnSync: (...args: never[]) => {
       spawns.push(args[1]);
-      return Reflect.apply(nativeChildProcess.spawnSync, undefined, args);
+      const result: unknown = Reflect.apply(
+        nativeChildProcess.spawnSync,
+        undefined,
+        args,
+      );
+      return result;
     },
   }));
   tested =
