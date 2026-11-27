@@ -59,6 +59,7 @@ export const createHubCore: CreateHubCore = (deps) => {
           throw new AggregateError(
             [error, cleanupError],
             "Hub startup and cleanup failed",
+            { cause: cleanupError },
           );
         }
         throw error;

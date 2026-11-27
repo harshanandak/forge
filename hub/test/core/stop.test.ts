@@ -123,6 +123,39 @@ test(
 );
 
 test(
+  "H1 Stop skips after an in-flight explicit reply succeeds",
+  async () => {
+    const f = await stopFixture();
+    const conversationId = await f.owe("question");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const post = f.chat.postText.bind(f.chat);
+    f.chat.postText = (...args) => {
+      entered.resolve();
+      return post(...args);
+    };
+    f.chat.nextWrite = { kind: "delay", until: release.promise };
+    const explicit = f.core.reply(caller, {
+      sessionId: f.sessionId,
+      conversationId,
+      text: "Explicit reply.",
+    });
+    await Promise.race([entered.promise, explicit]);
+    try {
+      expect(f.posts()).toEqual([expect.stringContaining("Explicit reply.")]);
+      const stop = f.stop("Automatic duplicate.");
+      release.resolve();
+      expect(value(await explicit).conversationId).toBe(conversationId);
+      expect(value(await stop)).toEqual({ result: "skipped" });
+      expect(f.posts()).toEqual([expect.stringContaining("Explicit reply.")]);
+    } finally {
+      release.resolve();
+    }
+  },
+  timeout,
+);
+
+test(
   "H1 Stop leaves ambiguous conversations for explicit replies",
   async () => {
     const f = await stopFixture();
