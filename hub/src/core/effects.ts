@@ -54,14 +54,16 @@ export function createEffectWorker(
   { chat, deps: { config, db, log, now }, store: { asks, tx } }: CoreContext,
   schedule: EffectSchedule = scheduleTimer,
 ): EffectWorker {
-  if (!chat || !asks)
+  if (!chat || !asks) {
+    let claim: WorkerClaim | undefined;
     return {
-      prepare: () => undefined,
+      prepare: () => void (claim ??= db.claimWorker()),
       start: () => Promise.resolve(),
-      close: () => Promise.resolve(),
+      close: () => Promise.resolve().then(() => claim?.release()),
       drain: () => Promise.resolve(),
       waitForSummary: () => Promise.resolve("queued"),
     };
+  }
   const chatPort = chat;
   const askStore = asks;
 

@@ -1,6 +1,5 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
-import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ChatPort } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import type { HubConfig, HubLog, RemoteHandler } from "../contract/runtime.ts";
@@ -15,14 +14,6 @@ export interface HubServiceDeps {
   readonly chat?: Pick<ChatPort, "handleWebhook">;
   readonly remote?: Pick<RemoteHandler, "handle">;
   readonly log: HubLog;
-}
-
-function closed(input: IncomingMessage, output: ServerResponse): Promise<void> {
-  if (input.closed || output.closed) return Promise.resolve();
-  return new Promise((resolve) => {
-    input.once("close", resolve);
-    output.once("close", resolve);
-  });
 }
 
 type Handle = (request: Request) => Promise<Response>;
@@ -44,7 +35,6 @@ export async function serveHub(deps: HubServiceDeps): Promise<void> {
   const stop = Promise.withResolvers<void>();
   const onSignal = () => stop.resolve();
   for (const signal of STOP_SIGNALS) process.once(signal, onSignal);
-  const active = new Map<ServerResponse, IncomingMessage>();
   const running = new Set<Promise<void>>();
   const { chat, remote } = deps;
   const listener = createHubHttpListener({
@@ -63,11 +53,7 @@ export async function serveHub(deps: HubServiceDeps): Promise<void> {
       },
     }),
   });
-  const server = createServer({ requireHostHeader: false }, (input, output) => {
-    active.set(output, input);
-    output.once("close", () => active.delete(output));
-    listener(input, output);
-  });
+  const server = createServer({ requireHostHeader: false }, listener);
   Object.defineProperty(server, "maxHeadersCount", {
     value: HEADER_FIELD_LIMIT,
     writable: false,
@@ -82,9 +68,7 @@ export async function serveHub(deps: HubServiceDeps): Promise<void> {
     await Promise.race([once(server, "listening"), failed]);
     await Promise.race([stop.promise, failed]);
     server.close();
-    const aborted = [...active].map(([output, input]) => closed(input, output));
     server.closeAllConnections();
-    await Promise.all(aborted);
     await Promise.all(running);
   } finally {
     for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
