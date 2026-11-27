@@ -18,6 +18,7 @@ import { exitCode } from "../../src/surface/result.ts";
 import {
   guardFixture,
   noWrites,
+  observeRestoreReset,
   type Portable,
   portableOf,
   portableUpload,
@@ -234,18 +235,14 @@ async function refusedRestore(target: Fixture, data: Portable) {
   const upload = portableUpload(target, data);
   for (const page of [0, 1])
     expect(await upload(page)).toMatchObject({ status: 200 });
-  const staged = target.snapshot();
-  for (const _try of [1, 2]) {
-    const effects = target.observeEffects();
+  const reset = observeRestoreReset(target);
+  for (const attempt of [1, 2]) {
+    const effects = attempt === 2 ? target.observeEffects() : undefined;
     const reply = await upload(2);
     expect(reply).toEqual(restoreRefusal);
     exited(reply, "RESTORE_INVALID_ROW");
-    expect(effects()).toEqual({
-      sqlWriteAttempts: 1,
-      alarmWrites: 0,
-      sqlAndKvIntact: true,
-    });
-    expect(target.snapshot()).toEqual(staged);
+    if (effects) expect(effects()).toEqual(noWrites);
+    else reset();
   }
 }
 

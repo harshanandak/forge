@@ -334,3 +334,100 @@ test(
   },
   timeout,
 );
+
+test(
+  "T1A-CFG1 selects off, Slack and Telegram and infers legacy Slack",
+  () => {
+    expect(load().chat).toEqual({ adapter: "slack" });
+    expect(load([["/chat", { adapter: "slack" }]]).slack).toEqual(
+      configFixture().slack,
+    );
+    for (const adapter of ["off", "telegram"] as const) {
+      expect(
+        load([
+          ["/slack", undefined],
+          ["/chat", { adapter }],
+        ]).chat,
+      ).toEqual({ adapter });
+      refuse([["/chat", { adapter }]], "/chat/adapter");
+    }
+    refuse(
+      [
+        ["/slack", undefined],
+        ["/chat", { adapter: "slack" }],
+      ],
+      "/slack",
+    );
+  },
+  timeout,
+);
+
+test(
+  "T1A-CFG2 accepts decimal Telegram text and refuses invalid IDs at their paths",
+  () => {
+    const user = "/people/0/telegramUserId";
+    const chat = "/projects/0/telegramChatId";
+    const config = load([
+      [user, "1234567890123"],
+      [chat, "-1001234567890"],
+    ]);
+    expect(config.people[0]?.telegramUserId).toBe("1234567890123");
+    expect(config.projects[0]?.telegramChatId).toBe("-1001234567890");
+    for (const pointer of [user, chat])
+      for (const value of [
+        123,
+        9007199254740992,
+        "9007199254740992",
+        "1e3",
+        "1.2",
+        " 123",
+        "0123",
+        ["123", "456"],
+      ])
+        refuse([[pointer, value]], pointer);
+    refuse([[user, "-123"]], user);
+  },
+  timeout,
+);
+
+test(
+  "T1A-CFG3 refuses duplicate Telegram users and multiple bindings per person",
+  () => {
+    const first = "/people/0/telegramUserId";
+    const second = "/people/1/telegramUserId";
+    expect(
+      refuse(
+        [
+          [first, "123"],
+          [second, "123"],
+        ],
+        second,
+      ).otherPointer,
+    ).toBe(first);
+    const person = { ...configFixture().people[0], telegramUserId: "456" };
+    refuse(
+      [
+        [first, "123"],
+        ["/people/3", person],
+      ],
+      "/people/3/personId",
+    );
+  },
+  timeout,
+);
+
+test(
+  "T1A-CFG4 accepts the Telegram secret name through ReadSecret and refuses token config without echoing it",
+  () => {
+    const token = "synthetic-bot-token";
+    const read: import("../../src/contract/runtime.ts").ReadSecret = (name) =>
+      name === "TELEGRAM_BOT_TOKEN" ? token : undefined;
+    expect(read("TELEGRAM_BOT_TOKEN")).toBe(token);
+    const error = refuse(
+      [["/chat", { adapter: "telegram", botToken: token }]],
+      "/chat/botToken",
+    );
+    expect(error.message).not.toContain(token);
+  },
+  timeout,
+);

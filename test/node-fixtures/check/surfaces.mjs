@@ -23,11 +23,12 @@ const honestScenario = process.argv[3]?.startsWith("honest:")
   : undefined;
 const honestOnly = process.argv[3] === "honest" || honestScenario !== undefined;
 const noHeadOnly = process.argv[3] === "no-head";
-const root = realpathSync(mkdtempSync(join(tmpdir(), "check-surfaces-")));
+const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "check-surfaces-")));
+const root = join(sandbox, "project");
 const bin = join(installed, "dist/bin/forge.js");
 const env = {
   ...process.env,
-  FORGE_DEVICE_ROOT: join(root, "device"),
+  FORGE_DEVICE_ROOT: join(sandbox, "device"),
   CHECK_PARENT_ONLY: "excluded",
 };
 const envNames = Object.keys(env).filter((name) =>
@@ -392,6 +393,7 @@ async function review() {
   );
 }
 try {
+  mkdirSync(root);
   git(["init", "-q"]);
   writeFileSync(join(root, "input.txt"), "exact input\n");
   writeFileSync(
@@ -544,5 +546,5 @@ try {
     );
   }
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  rmSync(sandbox, { recursive: true, force: true });
 }

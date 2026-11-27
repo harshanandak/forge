@@ -137,7 +137,8 @@ function fixture(
   ) => void,
   importBin = branchBin,
 ) {
-  const root = mkdtempSync(join(tmpdir(), "forge-agent-skills-"));
+  const sandbox = mkdtempSync(join(tmpdir(), "forge-agent-skills-"));
+  const root = join(sandbox, "project");
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) =>
       /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE)$/i.test(
@@ -145,7 +146,7 @@ function fixture(
       ),
     ),
   );
-  env.FORGE_DEVICE_ROOT = join(root, "device");
+  env.FORGE_DEVICE_ROOT = join(sandbox, "device");
   const cli = (args: string[], bin = branchBin, session?: string) =>
     spawnSync(Bun.which("node")!, [bin, ...args], {
       cwd: root,
@@ -155,6 +156,7 @@ function fixture(
       timeout: 45_000,
     });
   try {
+    mkdirSync(root);
     writeFileSync(
       join(root, "package.json"),
       '{"name":"skills-fixture","scripts":{"test":"node --version"}}',
@@ -177,7 +179,7 @@ function fixture(
     expect(imported.status, imported.stdout).toBe(0);
     run(root, cli);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(sandbox, { recursive: true, force: true });
   }
 }
 

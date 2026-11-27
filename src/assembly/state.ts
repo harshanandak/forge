@@ -1,7 +1,10 @@
 ﻿import { dirname, join } from "node:path";
 import { closeSync, existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
-import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
+import {
+  createSqliteStore,
+  openDeviceRecordStore,
+} from "../adapters/store-sqlite/index.ts";
 import { resolveIn } from "../adapters/fs/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import {
@@ -24,10 +27,14 @@ import { ForgeFailure } from "../contract/failure.ts";
 import type { Unavailable } from "../generated/types.ts";
 
 let security: PrivateFileGuard | undefined;
+function storeSecurity(): PrivateFileGuard | undefined {
+  if (process.platform === "win32")
+    security ??= privateFileGuard(windowsPrivateFiles());
+  return security;
+}
 const sqliteStore: StorePort = {
   open(options) {
-    if (process.platform === "win32")
-      security ??= privateFileGuard(windowsPrivateFiles());
+    const security = storeSecurity();
     return createSqliteStore(process.cwd(), security ? { security } : {}).open(
       options,
     );
@@ -68,6 +75,7 @@ export class LocalState {
   readonly #entries = new Map<boolean, Entry>();
   #queue: Promise<void> = Promise.resolve();
   #closed = false;
+  #deviceRecords = false;
   constructor(
     path: string,
     store: StorePort = sqliteStore,
@@ -82,6 +90,11 @@ export class LocalState {
     this.#directories = directories;
     this.#missing = missing;
     this.#beforeWrite = beforeWrite;
+  }
+  static deviceRecords(root: string): LocalState {
+    const state = new LocalState(join(root, "records.sqlite"));
+    state.#deviceRecords = true;
+    return state;
   }
   #resolveProjectPath(): void {
     try {
@@ -120,8 +133,7 @@ export class LocalState {
   async create<T>(initialize: (staged: LocalState) => Promise<T>): Promise<T> {
     const pending = await this.#serial(() => {
       this.validateCreate();
-      if (process.platform === "win32")
-        security ??= privateFileGuard(windowsPrivateFiles());
+      const security = storeSecurity();
       const files = security ? securedFileOps(security) : undefined;
       ensurePrivateDirectory(dirname(this.#path), this.#directories);
       if (existsSync(this.#path)) this.#alreadyExists();
@@ -170,15 +182,18 @@ export class LocalState {
       this.#entries.get(true) ??
       (!write ? this.#entries.get(false) : undefined);
     if (current) return current;
-    if (!existsSync(this.#path)) {
-      await this.#missing?.(write);
-      if (!write) return undefined;
+    let result: Awaited<ReturnType<StorePort["open"]>> | undefined;
+    if (this.#deviceRecords) {
+      result = await openDeviceRecordStore(this.#path, !write, storeSecurity);
+      if (!result) return undefined;
+    } else {
+      if (!existsSync(this.#path)) {
+        await this.#missing?.(write);
+        if (!write) return undefined;
+      }
+      if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
+      result = await this.#store.open({ path: this.#path, readOnly: !write });
     }
-    if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
-    const result = await this.#store.open({
-      path: this.#path,
-      readOnly: !write,
-    });
     if (!result.ok)
       throw new StateUnavailable({
         ...result.unavailable,

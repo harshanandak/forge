@@ -2,6 +2,7 @@ import { afterEach } from "bun:test";
 import { realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { PeopleDirectory } from "../../src/contract/domain.ts";
 import type { HubResult } from "../../src/contract/core.ts";
 import type { HubConfig, HubDb, HubLog } from "../../src/contract/runtime.ts";
 import { openHubDb, createPrivateDirectory } from "../../src/core/index.ts";
@@ -11,6 +12,7 @@ import { configFixture } from "./config-fixture.ts";
 
 const paths = new Set<string>();
 const handles = new Set<HubDb>();
+const cleanups = new Set<() => Promise<void>>();
 
 export const a = { personId: "per_a", displayName: "Fixture Alpha" };
 export const b = { personId: "per_b", displayName: "Fixture Beta" };
@@ -30,10 +32,23 @@ export function closeDb(db: HubDb): void {
 }
 
 afterEach(async () => {
-  for (const db of handles) closeDb(db);
-  for (const path of paths) await rm(path, { recursive: true, force: true });
-  paths.clear();
+  const pending = [...cleanups];
+  cleanups.clear();
+  try {
+    await Promise.all(pending.map((close) => close()));
+  } finally {
+    for (const db of handles) closeDb(db);
+    for (const path of paths) await rm(path, { recursive: true, force: true });
+    paths.clear();
+  }
 });
+
+export function onFixtureCleanup(close: () => Promise<void>): () => void {
+  cleanups.add(close);
+  return () => {
+    cleanups.delete(close);
+  };
+}
 
 export async function fixture(change: Partial<HubConfig> = {}) {
   const root = hubTestTemp("forge-hub-sessions-");
@@ -102,10 +117,16 @@ export function value<T>(result: HubResult<T>): T {
   return result.value;
 }
 
-export function configPeople(people: HubConfig["people"]) {
+export function configPeople(people: HubConfig["people"]): PeopleDirectory {
   return {
     all: () => people,
     byPersonId: (id: string) => people.find((person) => person.personId === id),
+    byChatUserId: (adapter, id) =>
+      people.find(
+        (person) =>
+          (adapter === "slack" ? person.slackUserId : person.telegramUserId) ===
+          id,
+      ),
     bySlackUserId: (id: string) =>
       people.find((person) => person.slackUserId === id),
   };

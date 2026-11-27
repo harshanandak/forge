@@ -19,3 +19,4 @@ Agents: use `forge <noun> <verb> --help --json` or `forge catalog describe <noun
 ## Standards
 
 Read [CODING_STANDARDS.md](CODING_STANDARDS.md) before writing or reviewing code, adding a dependency, adding a test, or retiring something. It holds the boundaries, dependency, test and platform rules; most are enforced by a guard in `test/structure`.
+Review guidelines: check every diff against [docs/review-guidelines.md](docs/review-guidelines.md).

@@ -6,13 +6,22 @@ import type {
   HubDb,
 } from "../contract/runtime.ts";
 
+export function isTelegramId(value: unknown, signed = false): value is string {
+  return (
+    typeof value === "string" &&
+    (signed ? /^-?[1-9][0-9]*$/ : /^[1-9][0-9]*$/).test(value) &&
+    Number.isSafeInteger(Number(value))
+  );
+}
+
 export const createPeopleDirectory: CreatePeopleDirectory = (entries) => {
   const byPerson = new Map<string, Person>();
   const bySlack = new Map<string, Person>();
+  const byTelegram = new Map<string, Person>();
   const prefix = ID_PREFIX.person + "_";
   const slackId = /^[UW][A-Z0-9]+$/;
   for (const entry of entries) {
-    const { personId, slackUserId } = entry;
+    const { personId, slackUserId, telegramUserId } = entry;
     const valid = ID_PATTERN.test(personId) && personId.startsWith(prefix);
     if (!valid || byPerson.has(personId))
       throw new Error("Invalid or duplicate personId.");
@@ -21,14 +30,26 @@ export const createPeopleDirectory: CreatePeopleDirectory = (entries) => {
       if (!validSlack || bySlack.has(slackUserId))
         throw new Error("Invalid or duplicate slackUserId.");
     }
+    if (
+      telegramUserId !== undefined &&
+      (!isTelegramId(telegramUserId) || byTelegram.has(telegramUserId))
+    )
+      throw new Error("Invalid or duplicate telegramUserId.");
     const person = Object.freeze({ ...entry });
     byPerson.set(personId, person);
     if (slackUserId !== undefined) bySlack.set(slackUserId, person);
+    if (telegramUserId !== undefined) byTelegram.set(telegramUserId, person);
   }
 
   return {
     all: () => [...byPerson.values()],
     byPersonId: (id) => byPerson.get(id),
+    byChatUserId: (adapter, id) =>
+      adapter === "slack"
+        ? bySlack.get(id)
+        : adapter === "telegram"
+          ? byTelegram.get(id)
+          : undefined,
     bySlackUserId: (id) => bySlack.get(id),
   };
 };
@@ -48,6 +69,15 @@ export function syncDirectory(db: HubDb, config: HubConfig): void {
     `);
     for (const p of config.people)
       person.run(p.personId, p.displayName, p.slackUserId ?? null);
+    const people = JSON.stringify(
+      config.people.map(({ personId }) => personId),
+    );
+    const revokedAt = Date.now();
+    for (const table of ["tokens", "host_keys"])
+      db.prepare(
+        `UPDATE ${table} SET revoked_at = ? WHERE revoked_at IS NULL
+        AND person_id NOT IN (SELECT value FROM json_each(?))`,
+      ).run(revokedAt, people);
     const project = db.prepare(`
       INSERT INTO projects (project_id, name, purpose, slack_channel_id, summary_channel_id, front_person_id)
       VALUES (?, ?, ?, ?, ?, ?)

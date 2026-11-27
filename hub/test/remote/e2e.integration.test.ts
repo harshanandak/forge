@@ -323,7 +323,10 @@ test(
         );
         if (!ready) await Bun.sleep(100);
       }
-      expect(ready).toBe(true);
+      const stderr = proc.exitCode === null ? "" : (await streams)[1];
+      const unavailable = stderr.split(/\r?\n/).includes("not_built");
+      const message = unavailable ? "forge-hub serve: not_built" : "Hub health";
+      expect(ready, message).toBe(true);
       const path = f.path("person-output");
       expect(
         (

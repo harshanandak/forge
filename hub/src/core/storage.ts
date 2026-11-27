@@ -2,8 +2,10 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, posix } from "node:path";
 import type { DoctorCheck, HubConfig } from "../contract/runtime.ts";
 import { protectPath } from "./protect.ts";
+import { probeHubSchema } from "./schema-probe.ts";
 import { schemaVersion } from "./schema.ts";
 import type { RefuseNetworkPath } from "./store.ts";
+import { workerLockPath } from "./worker-lock.ts";
 
 const refusal = "The data directory must be on a local filesystem.";
 const uninitialised = "The database is not initialised.";
@@ -67,9 +69,10 @@ function schema(dir: string): DoctorCheck {
   const path = join(dir, "hub.sqlite");
   const bad = "The database schema is incompatible.";
   const incompatible = row(schemaKey, "action", bad);
-  if (stat(path) === undefined) return row(schemaKey, "skipped", uninitialised);
+  const existing = stat(path);
+  if (existing === undefined) return row(schemaKey, "skipped", uninitialised);
   try {
-    if (!protectPath(path, "file"))
+    if (!existing || !protectPath(path, "file"))
       return row(schemaKey, "action", "The database file is not private.");
     for (const suffix of ["-wal", "-shm", "-journal"]) {
       const file = path + suffix;
@@ -80,13 +83,16 @@ function schema(dir: string): DoctorCheck {
     const sqlite: typeof import("node:sqlite") =
       process.getBuiltinModule("node:sqlite");
     if (!sqlite) return row(schemaKey, "action", "SQLite is unavailable.");
-    const db = new sqlite.DatabaseSync(path, { readOnly: true });
-    try {
-      if (schemaVersion(db) !== 1) return incompatible;
-      return row(schemaKey, "ok", "The database schema is compatible.");
-    } finally {
-      db.close();
-    }
+    const version = probeHubSchema(path, existing, (filename) => {
+      const db = new sqlite.DatabaseSync(filename, { readOnly: true });
+      try {
+        return schemaVersion(db);
+      } finally {
+        db.close();
+      }
+    });
+    if (version !== 1) return incompatible;
+    return row(schemaKey, "ok", "The database schema is compatible.");
   } catch {
     return incompatible;
   }
@@ -106,11 +112,12 @@ export function inspectStorage({ dataDir }: HubConfig): readonly DoctorCheck[] {
   const area = row("storage_placement", ...positions[location]);
   const note = missing ? uninitialised : "Cannot inspect the database here.";
   const version = safe ? schema(dataDir) : row(schemaKey, "skipped", note);
-  const noLock = safe && stat(join(dataDir, "serve.lock")) === undefined;
+  const noLock =
+    safe && stat(workerLockPath(join(dataDir, "hub.sqlite"))) === undefined;
   const lockFile = "service_lock";
-  const lockUnknown = "Cannot tell whether the service lock is held.";
+  const lockUnknown = "Cannot tell whether the effect worker lock is held.";
   const lock = noLock
-    ? row(lockFile, "ok", "The service lock file is absent.")
+    ? row(lockFile, "ok", "The effect worker lock file is absent.")
     : row(lockFile, "skipped", lockUnknown);
   return [dir, area, version, lock];
 }

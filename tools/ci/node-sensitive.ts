@@ -63,6 +63,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for config fallback coverage.",
   "test/assembly/deleted-store.integration.test.ts":
     "Launches selected Node for deleted store coverage.",
+  "test/assembly/device-store.integration.test.ts":
+    "Launches selected Node for device record permission and path checks.",
   "test/assembly/first-run/stateless.integration.test.ts":
     "Launches selected Node for stateless coverage.",
   "test/assembly/l7-prereqs/leased.integration.test.ts":
@@ -181,6 +183,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node to verify paired built-CLI memory measurements.",
   "test/tools/lane-run.integration.test.ts":
     "Launches selected Node for lane run coverage.",
+  "test/tools/lane-step.integration.test.ts":
+    "Prepares a recorded lane through the built Forge CLI on selected Node.",
   "test/tools/lane.integration.test.ts":
     "Launches selected Node for lane coverage.",
   "test/tools/pack-smoke/bounded.integration.test.ts":
@@ -211,4 +215,12 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node and npm on the built hub package.",
   "hub/test/node-entry.integration.test.ts":
     "Launches selected Node on the built hub entry.",
+  "hub/test/main/control.test.ts":
+    "Checks the hub entry's Node version gate before argument access.",
+  "hub/test/main/import-purity.integration.test.ts":
+    "Launches selected Node to check the hub source entry for import-time process and HTTP effects.",
+  "hub/test/core/node-sqlite.integration.test.ts":
+    "Launches selected Node on the built hub store to verify SQLite and answer locking.",
+  "hub/test/core/answers.test.ts":
+    "Launches two selected Node contenders to verify concurrent hub answer locking.",
 };

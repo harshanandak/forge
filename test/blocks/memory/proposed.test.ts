@@ -953,8 +953,13 @@ test("the owner's question shows the whole proposed text of every item", async (
   const secondItem = decisionItem(long.id, long);
   expect(revised).toMatchObject({ text: first, removedOwnerTags: ["rule"] });
   expect(secondItem.text).toBe(second);
-  const other = await propose(call, `${second}\u{e0020}`);
-  const otherItem = decisionItem(other.id, other);
+  const pendingOther = await propose(call, "A separate proposal for rejection");
+  const other = await call("memory.add", {
+    id: pendingOther.id,
+    expectRevision: pendingOther.note.revision,
+    text: `${second}\u{e0020}`,
+  });
+  const otherItem = decisionItem(pendingOther.id, other);
   const { removedOwnerTags: _tags, ...withoutTags } = revised;
   const mcp = createMcpHandlers(h.assembly.catalog, {}, localCall(h.assembly));
   const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));

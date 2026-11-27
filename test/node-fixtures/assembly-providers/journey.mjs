@@ -28,7 +28,7 @@ const mode = process.argv[2] ?? "all";
 const packageUrl = import.meta.resolve("forge-workflow/package.json");
 const bin = fileURLToPath(new URL("dist/bin/forge.js", packageUrl));
 const root = mkdtempSync(join(process.cwd(), "ap-"));
-const device = join(root, "device");
+const device = `${root}-device`;
 const env = {
   ...process.env,
   FORGE_DEVICE_ROOT: device,
@@ -730,4 +730,5 @@ try {
 } finally {
   await assembly.close();
   rmSync(root, { recursive: true, force: true });
+  rmSync(device, { recursive: true, force: true });
 }

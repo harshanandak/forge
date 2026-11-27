@@ -109,8 +109,8 @@ test("issue show loads none of the modules it never calls", () => {
 // tool listing must stay byte for byte the same until an intentional catalog change.
 const catalog = {
   help: "d082b65bcc5bf39a55c831265b1a0fa8f6ad5d33cad2c8f828bc6ab441b6a03b",
-  helpJson: "318ede42cc28c9a46876166a0366c01d06220eabc0d809e750311de1a35b14a8",
-  mcpTools: "dd16b68fe196ae6461800505c6794103a5bdf69fd573165dc73b092437cf4caf",
+  helpJson: "6dffd80d2ece0e3efec44bc074d12025fb23e83311ee1e50a553529720c98f4b",
+  mcpTools: "77c0367db5028c168088b5576bb32dec4a4e0483266cd783fa124d17ab8423e2",
 };
 
 async function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {

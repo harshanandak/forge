@@ -22,12 +22,13 @@ import { checkCrypto } from "../../../src/blocks/check/support.ts";
 import type { ProcessPort } from "../../../src/ports/process.ts";
 
 setDefaultTimeout(60000);
-const root = mkdtempSync(join(tmpdir(), "forge-pr-state-"));
+const sandbox = mkdtempSync(join(tmpdir(), "forge-pr-state-"));
+const root = join(sandbox, "project");
 const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 const node = Bun.which("node")!;
 const git = Bun.which("git")!;
 const fake = join(root, "fake");
-mkdirSync(fake);
+mkdirSync(fake, { recursive: true });
 if (process.platform === "win32") {
   copyFileSync(node, join(fake, "node.exe"));
   writeFileSync(join(fake, "git.cmd"), `@"${git}" %*\r\n`);
@@ -44,7 +45,7 @@ const env: NodeJS.ProcessEnv = Object.fromEntries(
   ),
 );
 env.PATH = `${fake}${delimiter}${process.env.PATH ?? ""}`;
-env.FORGE_DEVICE_ROOT = join(root, "device");
+env.FORGE_DEVICE_ROOT = join(sandbox, "device");
 const initialized = spawnSync(git, ["init", "--quiet", root], {
   env,
   encoding: "utf8",
@@ -155,7 +156,7 @@ async function closeMcpClients(
   if (failure) throw failure.reason;
 }
 afterAll(async () => {
-  await closeMcpClients(mcpClients.values(), root);
+  await closeMcpClients(mcpClients.values(), sandbox);
   console.log(
     JSON.stringify({
       file: "pr-state",

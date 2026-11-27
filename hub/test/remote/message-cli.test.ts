@@ -136,7 +136,7 @@ check(
 
 check("L6 core refusal never echoes input", async (f) => {
   f.state.stdin = token;
-  f.core.cliSend = () => fail("SECRET_IN_TEXT");
+  f.core.cliSend = () => Promise.resolve(fail("SECRET_IN_TEXT"));
   const result = await f.run(send("--stdin"));
   expect(result.status).toBe(1);
   expect(envelope(result.stdout)).toMatchObject({

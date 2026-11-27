@@ -19,7 +19,7 @@ test(
     const before = await readFile(path);
     const privateDir = "The data directory is private.";
     const compatible = "The database schema is compatible.";
-    const absent = "The service lock file is absent.";
+    const absent = "The effect worker lock file is absent.";
     const initial = rows();
     expect(initial).toHaveLength(4);
     expect(check("data_directory", initial)).toMatchObject({
@@ -39,12 +39,12 @@ test(
     });
     expect(await readFile(path)).toEqual(before);
 
-    const lock = await createPrivateFile(join(config.dataDir, "serve.lock"));
+    const lock = await createPrivateFile(path + ".worker.lock");
     if (!lock) throw new Error("Could not create the fixture lock file");
     await lock.close();
     expect(check("service_lock")).toMatchObject({
       status: "skipped",
-      detail: "Cannot tell whether the service lock is held.",
+      detail: "Cannot tell whether the effect worker lock is held.",
     });
     db.exec("UPDATE meta SET value = '99' WHERE key = 'schema_version'");
     const unsupported = await readFile(path);

@@ -84,9 +84,11 @@ export async function messages(
     const value = values[flag];
     if (value !== undefined && !ID_PATTERN.test(value)) return invalid(flag);
   }
-  const handle = (run: (person: Person) => HubResult<unknown>) => {
+  const handle = async (
+    run: (person: Person) => HubResult<unknown> | Promise<HubResult<unknown>>,
+  ) => {
     const person = deps.core.person(id);
-    return output(person ? run(person) : problem("PERSON_UNKNOWN"));
+    return output(person ? await run(person) : problem("PERSON_UNKNOWN"));
   };
   if (inbox) {
     const { limit: raw, ack } = values;

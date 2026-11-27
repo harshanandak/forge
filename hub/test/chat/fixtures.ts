@@ -95,10 +95,11 @@ const blockedDb: Runtime.HubDb = {
   exec: blockDb,
   prepare: blockDb,
   transaction: blockDb,
+  claimWorker: blockDb,
   close: blockDb,
 };
 
-function testDb(path: string, initialize: boolean): Runtime.HubDb {
+export function testDb(path: string, initialize: boolean): Runtime.HubDb {
   const database = new Database(path);
   if (initialize) for (const sql of CHAT_STATE_DDL) database.exec(sql);
   return {
@@ -112,6 +113,7 @@ function testDb(path: string, initialize: boolean): Runtime.HubDb {
       };
     },
     transaction: (work) => database.transaction(work).immediate(),
+    claimWorker: blockDb,
     close: () => database.close(),
   };
 }
@@ -305,6 +307,7 @@ export async function slackFixture(options: Options = {}, start = false) {
     people: {
       all: () => [],
       byPersonId: () => undefined,
+      byChatUserId: () => undefined,
       bySlackUserId: () => undefined,
     },
     db,

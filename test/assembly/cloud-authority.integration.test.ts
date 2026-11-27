@@ -23,7 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, relative, resolve } from "node:path";
+import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { createAssemblyProviders } from "../../src/assembly/providers.ts";
@@ -588,7 +588,7 @@ for (const row of [
 ] as const)
   test(`private attachment saved roots: ${row}`, async () => {
     const f = fx.persistedRootsFixture();
-    const deviceRoot = join(f.project, "device");
+    const deviceRoot = join(dirname(f.project), "device");
     const spies: { mockRestore(): void }[] = [];
     try {
       if (row === "Accept-legacy-record") {

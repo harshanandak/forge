@@ -16,6 +16,7 @@ import {
   type SummaryLookup,
 } from "../../src/contract/chat.ts";
 import type { Summary } from "../../src/contract/domain.ts";
+import { isTelegramId } from "../../src/core/directory.ts";
 
 type CallName =
   | keyof Omit<ChatPort, "capabilities">
@@ -29,7 +30,11 @@ type NextWrite =
       readonly retryAfterMs?: number;
       readonly reason?: ChatFailureReason;
     }
-  | { readonly kind: "unknown"; readonly reason?: ChatFailureReason }
+  | {
+      readonly kind: "unknown";
+      readonly reason?: ChatFailureReason;
+      readonly until?: Promise<void>;
+    }
   | { readonly kind: "delay"; readonly until: Promise<void> };
 type MessageDetails = Pick<
   ChatMessageEvent,
@@ -97,8 +102,10 @@ export class FakeChatPort implements ChatPort {
       );
     const value = apply();
     this.writes.push(call);
-    if (outcome?.kind === "unknown")
+    if (outcome?.kind === "unknown") {
+      if (outcome.until) await outcome.until;
       throw new ChatWriteFailure("unknown", undefined, outcome.reason);
+    }
     if (outcome?.kind === "delay") await outcome.until;
     return value;
   }
@@ -156,11 +163,11 @@ export class FakeChatPort implements ChatPort {
     return this.handlers().onMessageChange(event);
   }
 
-  postAskDm(slackUserId: string, card: AskCardView): Promise<ChatMessageRef> {
+  postAskDm(userId: string, card: AskCardView): Promise<ChatMessageRef> {
     this.askCards.push(card);
-    return this.write("postAskDm", [slackUserId, card], () =>
-      this.ref("dm-" + slackUserId),
-    );
+    const slackChannelId = "dm-" + userId;
+    const channelId = isTelegramId(userId) ? userId : slackChannelId;
+    return this.write("postAskDm", [userId, card], () => this.ref(channelId));
   }
 
   editAskDm(ref: ChatMessageRef, card: AskCardView): Promise<void> {

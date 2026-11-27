@@ -163,15 +163,18 @@ export function createSessionStore(deps: Deps): SessionStore {
     ))`;
   const order = "ORDER BY received_at, item_id LIMIT ?";
   const pending = `${eligible}
-    AND i.delivered_at IS NULL AND (i.target_session_id IS NULL OR i.target_session_id = ?) ${order}`;
+    AND i.delivered_at IS NULL AND (i.target_session_id = ? OR
+      (i.target_session_id IS NULL AND COALESCE(?, i.project_id) IS i.project_id)) ${order}`;
   const newItems = db.prepare("SELECT i.* " + pending);
   const sentItems = db.prepare(`SELECT i.* ${eligible}
     AND i.delivered_at IS NOT NULL AND i.delivered_to_session_id = ? ${order}`);
   const unreadItems = db.prepare(`SELECT item_id, count(*) OVER () AS unread,
     sum(not_your_owner) OVER () AS others ${pending}`);
   const hasPerson = (id: string) => people.byPersonId(id) !== undefined;
-  const queryItems = (stmt: HubStatement, s: Session, limit: number) =>
-    hasPerson(s.personId) ? stmt.all(s.personId, s.sessionId, limit) : [];
+  const queryPending = (stmt: HubStatement, s: Session, limit: number) =>
+    hasPerson(s.personId)
+      ? stmt.all(s.personId, s.sessionId, s.projectId ?? null, limit)
+      : [];
 
   const isMember = (projectId: string, personId: string) =>
     hasPerson(personId) && !!member.get(projectId, personId);
@@ -211,7 +214,7 @@ export function createSessionStore(deps: Deps): SessionStore {
   }
 
   function unreadCounts(s: Session) {
-    const rows = queryItems(unreadItems, s, LIMITS.inboxDefault);
+    const rows = queryPending(unreadItems, s, LIMITS.inboxDefault);
     const first = rows[0];
     return {
       unread: first ? integer(first.unread) : 0,
@@ -256,7 +259,8 @@ export function createSessionStore(deps: Deps): SessionStore {
         const active =
           existing?.value ?? create(insertUnbound, current, input.host, fields);
         if (existing) touch.run(now(), projectId ?? null, active.sessionId);
-        const { unread, unreadFromOthers } = unreadCounts(active);
+        const refreshed = session(active.sessionId) ?? active;
+        const { unread, unreadFromOthers } = unreadCounts(refreshed);
         return ok({
           sessionId: active.sessionId,
           person: { personId, name: current.displayName },
@@ -317,8 +321,11 @@ export function createSessionStore(deps: Deps): SessionStore {
     requireNormalMode: (s) =>
       s.mode === "normal" ? undefined : fail("REPLY_ONLY"),
     isMember,
-    deliverable: (s, limit) => queryItems(newItems, s, limit).map(readItem),
-    outstanding: (s, limit) => queryItems(sentItems, s, limit).map(readItem),
+    deliverable: (s, limit) => queryPending(newItems, s, limit).map(readItem),
+    outstanding: (s, limit) =>
+      hasPerson(s.personId)
+        ? sentItems.all(s.personId, s.sessionId, limit).map(readItem)
+        : [],
     unreadCounts,
   };
 }

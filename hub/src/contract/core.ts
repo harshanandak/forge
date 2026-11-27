@@ -116,6 +116,6 @@ export interface HubCore {
     input: HookStopInput,
   ): Promise<HubResult<HookStopOutput>>;
   cliInbox(person: Person, input: CliInboxInput): HubResult<CliInboxOutput>;
-  cliSend(person: Person, input: CliSendInput): HubResult<SendOutput>;
+  cliSend(person: Person, input: CliSendInput): Promise<HubResult<SendOutput>>;
   close(): Promise<void>;
 }

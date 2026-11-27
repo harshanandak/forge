@@ -225,7 +225,7 @@ export function fakeCore(settings = config()) {
         }),
     ),
     cliSend: record("cliSend", (..._args: Parameters<HubCore["cliSend"]>) =>
-      ok(message),
+      done(message),
     ),
   };
   return Object.assign(api, { calls, tokens, keys });

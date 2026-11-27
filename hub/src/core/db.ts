@@ -3,6 +3,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  realpathSync,
   type BigIntStats,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -13,9 +14,16 @@ import {
   protectDirectoryChain,
   protectPath,
 } from "./protect.ts";
-import { migrate, schemaVersion } from "./schema.ts";
+import { probeHubSchema } from "./schema-probe.ts";
+import {
+  CURRENT_SCHEMA_VERSION,
+  migrate,
+  readSchemaVersion,
+  schemaVersion,
+} from "./schema.ts";
+import { claimWorkerLock } from "./worker-lock.ts";
 
-function handle(raw: DatabaseSync): HubDb {
+function handle(raw: DatabaseSync, claimWorker: HubDb["claimWorker"]): HubDb {
   let active = false;
   return {
     exec: raw.exec.bind(raw),
@@ -49,6 +57,7 @@ function handle(raw: DatabaseSync): HubDb {
         active = false;
       }
     },
+    claimWorker,
     close: raw.close.bind(raw),
   };
 }
@@ -79,8 +88,8 @@ function assertIdentity(path: string, expected: BigIntStats): void {
 }
 
 export function createOpenHubDb(
-  connect = (path: string, options: DatabaseSyncOptions) =>
-    new DatabaseSync(path, options),
+  connect = (path: string, options: DatabaseSyncOptions, filename = path) =>
+    new DatabaseSync(filename, options),
 ): OpenHubDb {
   return (path) => {
     const target = resolve(path);
@@ -100,22 +109,35 @@ export function createOpenHubDb(
     const expected = existing ?? reserveFile(target);
     if (expected.ino === 0n)
       throw new Error("Hub database file identity is unavailable");
-    if (expected.size > 0n) {
-      const probe = handle(connect(target, { readOnly: true }));
+    if (expected.size > 0n)
+      probeHubSchema(target, expected, (filename) => {
+        const probe = connect(target, { readOnly: true }, filename);
+        try {
+          assertIdentity(target, expected);
+          probe.exec("PRAGMA busy_timeout=5000");
+          return schemaVersion(probe);
+        } finally {
+          probe.close();
+        }
+      });
+    assertIdentity(target, expected);
+    const db = handle(connect(target, {}), () => {
+      let canonical: string;
       try {
         assertIdentity(target, expected);
-        probe.exec("PRAGMA busy_timeout=5000");
-        schemaVersion(probe);
-      } finally {
-        probe.close();
+        canonical = realpathSync.native(target);
+        assertIdentity(canonical, expected);
+      } catch {
+        throw new Error(
+          "Hub effect worker lock requires the original database file",
+        );
       }
-    }
-    assertIdentity(target, expected);
-    const db = handle(connect(target, {}));
+      return claimWorkerLock(canonical);
+    });
     try {
       assertIdentity(target, expected);
       db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
-      if (schemaVersion(db) === 0) migrate(db);
+      if (readSchemaVersion(db) < CURRENT_SCHEMA_VERSION) migrate(db);
       const wal = db.prepare("PRAGMA journal_mode=WAL").get();
       if (wal?.journal_mode !== "wal")
         throw new Error("Hub database requires WAL mode");

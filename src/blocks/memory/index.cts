@@ -133,6 +133,7 @@ interface DecisionFormat {
 type LevelDefault = "required" | "nearest" | "project" | "device";
 interface MemoryConfig {
   readonly scope?: string;
+  readonly conflictThreshold?: number;
   readonly decisions?: DecisionFormat;
   readonly approval?: {
     readonly ownerTags?: readonly string[];
@@ -192,9 +193,9 @@ const RESTORE_RACE =
   "Another writer changed the memory store while this restore ran, so nothing was restored. Run the same restore again.";
 const DEFAULT_LIMIT = 10;
 const SNIPPET_LENGTH = 200;
-// Owner-tagged texts whose word sets overlap this much are reported as similar: a hint to the
-// agent, never a reason to drop a proposal, because word sets ignore order and negation.
 const NEAR_DUPLICATE_OVERLAP = 0.9;
+const DEFAULT_CONFLICT_THRESHOLD = 1.8;
+const CONFLICT_MATCHES = 3;
 const SIMILAR_LIMIT = 2;
 const PROPOSALS_DEFAULT = 7;
 const PROPOSALS_MAX = 10;
@@ -250,15 +251,20 @@ function words(text: string): string[] {
  * The same text after only trimming, collapsing runs of whitespace and folding case. Punctuation,
  * symbols, digits and signs are never touched: "replicas >= 3" and "replicas <= 3" differ.
  */
+function foldedText(text: string): string {
+  return text.trim().replace(/\s+/gu, " ").toLowerCase();
+}
 function sameText(a: string, b: string): boolean {
-  const flat = (text: string) =>
-    text.trim().replace(/\s+/gu, " ").toLowerCase();
-  return flat(a) === flat(b);
+  return foldedText(a) === foldedText(b);
 }
 /** Word sets (punctuation ignored) that overlap by NEAR_DUPLICATE_OVERLAP: a hint only. */
 function similarText(a: string, b: string): boolean {
-  const one = new Set(words(a));
-  const two = new Set(words(b));
+  return wordOverlap(new Set(words(a)), new Set(words(b)));
+}
+function wordOverlap(
+  one: ReadonlySet<string>,
+  two: ReadonlySet<string>,
+): boolean {
   let shared = 0;
   for (const word of one) if (two.has(word)) shared += 1;
   const union = one.size + two.size - shared;
@@ -543,6 +549,10 @@ function parseRef(
   return match[2] === undefined
     ? { level: "device", number: Number(match[3]) }
     : { level: "project", project: match[2], number: Number(match[3]) };
+}
+
+function noteNumberIn(source: Source, id: string): number | undefined {
+  return id.startsWith(source.prefix + "/") ? parseRef(id)?.number : undefined;
 }
 
 function deviceSource(state: ExtendedStateClient): Source {
@@ -968,6 +978,127 @@ function terms(text: string): string[] {
 }
 function stem(term: string): string {
   return term.length > 3 && term.endsWith("s") ? term.slice(0, -1) : term;
+}
+type DocumentTerms = { counts: Map<string, number>; length: number };
+function countTerms(text: string, wanted?: ReadonlySet<string>): DocumentTerms {
+  const words = terms(text);
+  const counts = new Map<string, number>();
+  for (const word of words) {
+    const key = stem(word);
+    if (wanted === undefined || wanted.has(key))
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return { counts, length: words.length };
+}
+function scoreDocuments<T extends DocumentTerms>(
+  documents: readonly T[],
+  wanted: Iterable<string>,
+) {
+  const total = documents.length;
+  const holders = new Map<string, number>();
+  for (const term of wanted) {
+    let count = 0;
+    for (const document of documents) if (document.counts.has(term)) count += 1;
+    holders.set(term, count);
+  }
+  const average =
+    documents.reduce((sum, document) => sum + document.length, 0) /
+    Math.max(1, total);
+  return documents
+    .map((document) => {
+      let score = 0;
+      for (const term of wanted) {
+        const frequency = document.counts.get(term);
+        if (frequency === undefined) continue;
+        const held = holders.get(term) ?? 0;
+        const rarity = Math.log(1 + (total - held + 0.5) / (held + 0.5));
+        const norm =
+          1.2 * (0.25 + (0.75 * document.length) / Math.max(1, average));
+        score += (rarity * frequency * 2.2) / (frequency + norm);
+      }
+      return { document, score };
+    })
+    .filter((entry) => entry.score > 0);
+}
+function checkNewNote(
+  source: Source,
+  value: NoteValue,
+  config: MemoryConfig,
+  input: {
+    replaces?: readonly string[];
+    coexistsWith?: readonly string[];
+    reason?: string;
+  },
+) {
+  const folded = foldedText(value.text);
+  const tokens = new Set(words(value.text));
+  const wanted = new Set(terms(value.text).map(stem));
+  const replacements: Replacements = new Map();
+  const documents: (DocumentTerms & { note: Note })[] = [];
+  const readSet: { key: string; expectRevision: number }[] = [];
+  let after = 0;
+  for (;;) {
+    const page = notePage(source, {
+      after,
+      limit: LIST_LIMIT,
+      descending: false,
+    });
+    indexNotes(page, replacements);
+    for (const note of page) {
+      const { record, value: old } = note;
+      readSet.push({ key: record.key, expectRevision: record.revision });
+      if (old.deleted) continue;
+      const texts: string[] = [];
+      for (const candidate of [old, old.proposal]) {
+        if (candidate === undefined || candidate.scope !== value.scope)
+          continue;
+        if (
+          foldedText(candidate.text) === folded ||
+          wordOverlap(tokens, new Set(words(candidate.text)))
+        )
+          fail(
+            "INPUT_INVALID",
+            `Note ${note.id} says the same thing; revise it with id and expectRevision instead.`,
+          );
+        texts.push(candidate.text, ...candidate.tags);
+      }
+      if (texts.length)
+        documents.push({ note, ...countTerms(texts.join(" "), wanted) });
+    }
+    const last = page.at(-1);
+    if (page.length < LIST_LIMIT || last === undefined) break;
+    after = last.number;
+  }
+  const threshold = config.conflictThreshold ?? DEFAULT_CONFLICT_THRESHOLD;
+  const conflicts = scoreDocuments(documents, wanted)
+    .filter(
+      ({ document, score }) =>
+        score > threshold &&
+        !replacers(replacements, document.note, config).length,
+    )
+    .sort(
+      (a, b) =>
+        b.score - a.score || b.document.note.number - a.document.note.number,
+    )
+    .slice(0, CONFLICT_MATCHES)
+    .map(({ document }) => document.note);
+  if (!conflicts.length) return readSet;
+  const acknowledged = new Set(
+    [...(input.replaces ?? []), ...(input.coexistsWith ?? [])].map((id) =>
+      noteNumberIn(source, id),
+    ),
+  );
+  const reason = input.reason ?? "";
+  if (
+    !reason.trim() ||
+    /[\r\n\u0085\u2028\u2029]/u.test(reason) ||
+    conflicts.some(({ number }) => !acknowledged.has(number))
+  )
+    fail(
+      "INPUT_INVALID",
+      `Notes ${conflicts.map(({ id }) => id).join(", ")} cover the same topic. Pass replaces to retire them or coexistsWith to keep both. Either option needs a nonblank single-line reason.`,
+    );
+  return readSet;
 }
 function snippet(text: string, query: readonly string[]): string {
   const lower = text.toLowerCase();
@@ -1662,12 +1793,22 @@ module.exports = {
       expectRevision?: number;
       approval?: Approval;
       replaces?: readonly string[];
+      coexistsWith?: readonly string[];
+      reason?: string;
     };
     config?: MemoryConfig;
     services: Services;
   }) => {
     if (input.id !== undefined && input.replaces !== undefined)
       fail("INPUT_INVALID", "Only a new note can replace other notes");
+    if (
+      input.id !== undefined &&
+      (input.coexistsWith !== undefined || input.reason !== undefined)
+    )
+      fail(
+        "INPUT_INVALID",
+        "Only a new note can supply coexistsWith or a conflict reason",
+      );
     // An edit is a partial update: a field left out keeps its stored value, and clearing is said
     // outright (null for the scope, an empty list for tags or links). A new note has nothing to keep.
     const at = new Date().toISOString();
@@ -1874,12 +2015,13 @@ module.exports = {
       );
       // An owner tag never reaches the served rules on an agent's say-so: the note starts proposed
       // and only the owner's relayed memory.accept activates it, whatever approval the add carries.
+      const readSet = checkNewNote(target, value, config, input);
       const targets = new Map<number, number>();
       if ((input.replaces?.length ?? 0) > 8)
         fail("INPUT_INVALID", "A note can replace at most eight notes");
       for (const id of input.replaces ?? []) {
-        const n = parseRef(id)?.number;
-        if (!n || n >= number || !id.startsWith(target.prefix + "/"))
+        const n = noteNumberIn(target, id);
+        if (!n || n >= number)
           fail(
             "INPUT_INVALID",
             `Expected an earlier note in this store: ${id}`,
@@ -1898,24 +2040,6 @@ module.exports = {
       const replaces = [...targets.keys()].map((n) => idIn(target, n));
       if (replaces.length) Object.assign(value, { replaces });
       const tag = ownerTag(value.tags, config);
-      const twins =
-        tag === undefined
-          ? undefined
-          : twinsOf(target, value.text, value.scope, config);
-      if (twins?.exact && replaces.length) {
-        const { id } = twins.exact;
-        const key = noteKey(parseRef(id)!.number);
-        const twin = target.state.get(key)?.value as NoteValue | undefined;
-        if (replaces.some((target) => !twin?.replaces?.includes(target)))
-          fail("INPUT_INVALID", `${id} lacks requested replacements`);
-      }
-      if (twins?.exact)
-        return {
-          status: "exists" as const,
-          id: twins.exact.id,
-          notice: twinNotice(twins.exact),
-        };
-      const hint = similarity(twins?.similar ?? []);
       const stored: NoteValue =
         tag === undefined ? value : { ...value, status: "proposed" };
       const expected = canonical(stored);
@@ -1931,7 +2055,6 @@ module.exports = {
           expectRevision: 0,
         },
       ];
-      const readSet: { key: string; expectRevision: number }[] = [];
       for (const [n, expectRevision] of targets) {
         const key = numberKey(numberKey(REPLACED_BY, n) + "/", number);
         entries.push({ key, value: number, expectRevision: 0 });
@@ -1962,10 +2085,7 @@ module.exports = {
         ...(tag === undefined
           ? {}
           : {
-              notice: `${id} has the owner tag ${tag}, so it waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
-              ...(hint.similarTo === undefined
-                ? {}
-                : { similarTo: hint.similarTo }),
+              notice: `${id} has the owner tag ${tag}, so it waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.`,
             }),
       };
     });
@@ -2058,60 +2178,23 @@ module.exports = {
               note.value.proposal?.tags.includes(input.tag) === true),
         )
         .map((note) => {
-          const counts = new Map<string, number>();
-          let length = 0;
-          for (const term of terms(
-            `${note.value.text} ${note.value.tags.join(" ")} ${note.value.proposal?.text ?? ""} ${note.value.proposal?.tags.join(" ") ?? ""}`,
-          )) {
-            const key = stem(term);
-            counts.set(key, (counts.get(key) ?? 0) + 1);
-            length += 1;
-          }
           return {
             note,
             source: page.source,
             order: page.index,
             hidden: replacers(page.replacements, note, config).length > 0,
-            counts,
-            length,
+            ...countTerms(
+              `${note.value.text} ${note.value.tags.join(" ")} ${note.value.proposal?.text ?? ""} ${note.value.proposal?.tags.join(" ") ?? ""}`,
+            ),
           };
         }),
     );
-    const total = documents.length;
-    // Corpus-wide facts are worked out once per query word, not once per note.
-    const holders = new Map<string, number>();
-    for (const term of wanted) {
-      let count = 0;
-      for (const document of documents)
-        if (document.counts.has(term)) count += 1;
-      holders.set(term, count);
-    }
-    const average =
-      documents.reduce((sum, document) => sum + document.length, 0) /
-      Math.max(1, total);
-    // Any query term may match (an agent's natural-language prompt never has every word in one
-    // note); notes that match more, rarer terms rank first, newest first on a tie.
-    const scored = documents
-      .map((document) => {
-        let score = 0;
-        for (const term of wanted) {
-          const frequency = document.counts.get(term);
-          if (frequency === undefined) continue;
-          const held = holders.get(term) ?? 0;
-          const rarity = Math.log(1 + (total - held + 0.5) / (held + 0.5));
-          const norm =
-            1.2 * (0.25 + (0.75 * document.length) / Math.max(1, average));
-          score += (rarity * frequency * 2.2) / (frequency + norm);
-        }
-        return { document, score };
-      })
-      .filter((entry) => entry.score > 0)
-      .sort(
-        (a, b) =>
-          b.score - a.score ||
-          b.document.note.number - a.document.note.number ||
-          a.document.order - b.document.order,
-      );
+    const scored = scoreDocuments(documents, wanted).sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.document.note.number - a.document.note.number ||
+        a.document.order - b.document.order,
+    );
     const limit = input.limit ?? DEFAULT_LIMIT;
     // The walk is pinned to where it began: the first page's cursor carries, per source, a bound
     // just above its newest note then, so notes written during the walk are never in a later page
@@ -3245,10 +3328,10 @@ module.exports = {
       }
       const added = adding.length;
       const counter = readCounter(state, NOTE_COUNTER);
-      if (counter.last < highest)
+      if (added > 0 || counter.last < highest)
         entries.push({
           key: NOTE_COUNTER,
-          value: { last: highest },
+          value: { last: Math.max(counter.last, highest) },
           expectRevision: counter.revision,
         });
       if (entries.length > 0) state.putMany(entries, { readSet: read });

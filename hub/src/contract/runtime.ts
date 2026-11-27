@@ -1,4 +1,4 @@
-import type { ChatMessageRef, ChatPort } from "./chat.ts";
+import type { ChatAdapter, ChatMessageRef, ChatPort } from "./chat.ts";
 import type { HubCore } from "./core.ts";
 import type { PeopleDirectory, TrackerReader } from "./domain.ts";
 import type { DoorbellPort } from "./hooks.ts";
@@ -15,10 +15,15 @@ export interface HubStatement {
   all(...params: SqlValue[]): SqlRow[];
 }
 
+export interface WorkerClaim {
+  release(): void;
+}
+
 export interface HubDb {
   exec(sql: string): void;
   prepare(sql: string): HubStatement;
   transaction<T>(work: () => T): T;
+  claimWorker(): WorkerClaim;
   close(): void;
 }
 
@@ -34,6 +39,7 @@ export interface PersonConfig {
   readonly personId: string;
   readonly displayName: string;
   readonly slackUserId?: string;
+  readonly telegramUserId?: string;
 }
 
 export interface ProjectConfig {
@@ -41,6 +47,7 @@ export interface ProjectConfig {
   readonly name: string;
   readonly purpose?: string;
   readonly slackChannelId?: string;
+  readonly telegramChatId?: string;
   readonly summaryChannelId?: string;
   readonly summaryMessage?: ChatMessageRef;
   readonly frontPersonId: string;
@@ -64,6 +71,7 @@ export interface HubConfig {
   readonly allowedHosts: readonly string[];
   readonly allowedOrigins: readonly string[];
   readonly dataDir: string;
+  readonly chat?: { readonly adapter: ChatAdapter | "off" };
   readonly slack: {
     readonly mode: SlackMode;
     readonly buttons: boolean;
@@ -91,6 +99,7 @@ export type SecretName =
   | "SLACK_BOT_TOKEN"
   | "SLACK_SIGNING_SECRET"
   | "SLACK_APP_TOKEN"
+  | "TELEGRAM_BOT_TOKEN"
   | `FORGE_DOORBELL_${string}`;
 
 export type ReadSecret = (name: SecretName) => string | undefined;
