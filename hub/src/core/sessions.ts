@@ -4,6 +4,7 @@ import type { HubErrorCode } from "../contract/errors.ts";
 import type { HookModeInput } from "../contract/hooks.ts";
 import { HUB_RULES, HUB_RULES_NO_SLACK, LIMITS } from "../contract/mcp.ts";
 import type { HubStatement, SqlRow, SqlValue } from "../contract/runtime.ts";
+import { unresolvedAgentPost } from "./agent-posts.ts";
 import { newStoreId } from "./credentials.ts";
 import { fail } from "./errors.ts";
 import type { SessionStore, StoreDeps } from "./store.ts";
@@ -136,13 +137,25 @@ export function createSessionStore(deps: Deps): SessionStore {
     UPDATE sessions SET last_seen_at = ?, project_id = COALESCE(project_id, ?)
       WHERE session_id = ?
   `);
-  const requeue = db.prepare(`
+  const foreignItems = `owner_person_id = ? AND acked_at IS NULL AND project_id IS NOT ?
+    AND (delivered_to_session_id = ? OR
+      (delivered_to_session_id IS NULL AND target_session_id = ?))`;
+  const attached = db.prepare(
+    `SELECT 1 FROM inbox_items WHERE ${foreignItems} LIMIT 1`,
+  );
+  const owed = db.prepare(`
+    SELECT 1 FROM reply_owed AS r JOIN conversations AS c USING (conversation_id)
+    WHERE r.session_id = ? AND (? IS NULL OR c.project_id IS NOT ?) LIMIT 1
+  `);
+  const unresolved = unresolvedAgentPost(db);
+  const replyWork = (sessionId: string, projectId: string | null) =>
+    !!owed.get(sessionId, projectId, projectId) ||
+    unresolved(sessionId, projectId);
+  const recoverLegacy = db.prepare(`
     UPDATE inbox_items
     SET target_session_id = CASE WHEN target_session_id = ? THEN NULL ELSE target_session_id END,
       delivered_at = NULL, delivered_to_session_id = NULL
-    WHERE owner_person_id = ? AND acked_at IS NULL AND project_id IS NOT ?
-      AND (delivered_to_session_id = ? OR
-        (delivered_to_session_id IS NULL AND target_session_id = ?))
+    WHERE ${foreignItems} AND (conversation_id IS NULL OR delivered_at IS NULL)
   `);
   const insertBound = db.prepare(`
     INSERT INTO sessions (session_id, person_id, host, host_instance_id, host_session_id, start_source,
@@ -266,16 +279,32 @@ export function createSessionStore(deps: Deps): SessionStore {
         const fields = [parentSessionId ?? null, projectId ?? null];
         const active =
           existing?.value ?? create(insertUnbound, current, input.host, fields);
+        const id = active.sessionId;
+        if (
+          existing &&
+          active.projectId === undefined &&
+          projectId !== undefined &&
+          (attached.get(personId, projectId, id, id) ||
+            replyWork(id, projectId))
+        )
+          return {
+            ok: false,
+            error: {
+              ...fail("INPUT_INVALID", "/projectId"),
+              message:
+                "This session has work from another project. Finish it in the original context or open a fresh session for the new project.",
+            },
+          };
+        if (
+          existing &&
+          active.projectId !== undefined &&
+          (projectId === undefined || projectId === active.projectId) &&
+          attached.get(personId, active.projectId, id, id) &&
+          !replyWork(id, null)
+        )
+          recoverLegacy.run(id, personId, active.projectId, id, id);
         if (existing) touch.run(now(), projectId ?? null, active.sessionId);
         const refreshed = session(active.sessionId) ?? active;
-        if (existing && refreshed.projectId !== undefined)
-          requeue.run(
-            active.sessionId,
-            personId,
-            refreshed.projectId,
-            active.sessionId,
-            active.sessionId,
-          );
         const { unread, unreadFromOthers } = unreadCounts(refreshed);
         return ok({
           sessionId: active.sessionId,

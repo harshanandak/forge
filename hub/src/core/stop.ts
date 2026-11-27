@@ -21,17 +21,14 @@ export function createStop(
     pendingAgentPosts,
     threadGates,
   } = ctx;
-  const delivered = `EXISTS (SELECT 1 FROM inbox_items AS i
-    WHERE i.item_id = reply_owed.item_id AND i.delivered_to_session_id = reply_owed.session_id)`;
   const owed = db.prepare(
     `SELECT DISTINCT conversation_id, chat_thread_id
      FROM reply_owed JOIN conversations USING (conversation_id)
-     WHERE reply_owed.session_id = ? AND answered = 0 AND ${delivered} LIMIT 2`,
+     WHERE reply_owed.session_id = ? AND answered = 0 LIMIT 2`,
   );
   const claim = db.prepare(
     `UPDATE reply_owed SET answered = 1
      WHERE session_id = ? AND conversation_id = ? AND answered = 0
-     AND ${delivered}
      RETURNING item_id`,
   );
   const restore = db.prepare(

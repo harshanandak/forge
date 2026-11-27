@@ -20,26 +20,22 @@ export function deliveryContext(
   if (!delivered)
     db.prepare(
       `INSERT INTO reply_owed(item_id,session_id,conversation_id,created_at)
-      VALUES (?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET session_id = excluded.session_id`,
+      VALUES (?,?,?,?) ON CONFLICT(item_id) DO NOTHING`,
     ).run(item.itemId, session.sessionId, chat.conversationId, now());
   if (chat.isDirect || item.chatMessageId === undefined) return;
-  const stored = db
-    .prepare(
-      `SELECT context_from_seq AS first, context_to_seq AS last FROM inbox_items
-       WHERE item_id = ? AND context_from_seq IS NOT NULL`,
-    )
-    .get(item.itemId);
-  const range =
-    stored ??
-    (delivered
-      ? undefined
-      : db
-          .prepare(
-            `SELECT c.context_seq AS first, t.seq AS last FROM conversations c
+  const range = delivered
+    ? db
+        .prepare(
+          "SELECT context_from_seq AS first, context_to_seq AS last FROM inbox_items WHERE item_id = ?",
+        )
+        .get(item.itemId)
+    : db
+        .prepare(
+          `SELECT c.context_seq AS first, t.seq AS last FROM conversations c
         JOIN thread_messages t ON t.adapter = c.adapter AND t.chat_thread_id = c.chat_thread_id
         WHERE c.conversation_id = ? AND t.chat_message_id = ?`,
-          )
-          .get(chat.conversationId, item.chatMessageId));
+        )
+        .get(chat.conversationId, item.chatMessageId);
   if (!range || range.first === null || range.last === null)
     return { entries: [] };
   const first = num(range.first);
@@ -79,7 +75,7 @@ export function deliveryContext(
       mentionedBot: num(row.mentioned_bot) === 1,
     });
   }
-  if (!stored && !delivered) {
+  if (!delivered) {
     const oldest = rows[entries.length - 1];
     const after = (oldest ? num(oldest.seq) : last) - 1;
     db.prepare(

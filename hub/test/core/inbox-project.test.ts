@@ -1,40 +1,171 @@
 import { expect, test } from "bun:test";
+import {
+  ChatWriteFailure,
+  type ChatMessageRef,
+} from "../../src/contract/chat.ts";
 import { createCli } from "../../src/core/cli.ts";
 import { insertItem } from "../../src/core/routing.ts";
 import { createStop } from "../../src/core/stop.ts";
-import { baseFixture, seedThread } from "./base-fixture.ts";
+import { baseFixture, type BaseFixture } from "./base-fixture.ts";
+import { refusal } from "./base-fakes.ts";
 import { a, b, p1, p2, seedItem, value } from "./fixture.ts";
 
 const timeout = 30_000;
 
+function refuseBinding(f: BaseFixture, sessionId: string) {
+  const snapshot = () =>
+    ["sessions", "inbox_items", "reply_owed", "meta", "thread_messages"].map(
+      (table) => f.rows(table),
+    );
+  const before = snapshot();
+  f.advance(1);
+  const result = f.core.hello(f.caller(), {
+    sessionId,
+    projectId: p2,
+    host: "claude",
+  });
+  const error = refusal(result);
+  expect(error).toMatchObject({ code: "INPUT_INVALID", pointer: "/projectId" });
+  expect(error.message).toContain("open a fresh session");
+  expect(snapshot()).toEqual(before);
+}
+
+async function owedChat(f: BaseFixture, sessionId: string) {
+  await f.emit("Project one task");
+  const [item] = f.read(sessionId).items;
+  if (!item) throw new Error("Expected project one chat delivery");
+  expect(f.ack(sessionId, [item.itemId]).items).toEqual([]);
+  expect(f.col("reply_owed", "answered")).toEqual([0]);
+}
+
 test(
-  "A requeued chat item keeps its thread context and moves its reply obligation",
+  "Acknowledged chat still blocks a conflicting bind while its reply is owed",
   async () => {
     const f = await baseFixture();
-    const hostSessionId = "scoped-chat";
-    const { sessionId } = f.bind(a, hostSessionId);
-    seedThread(f, "early", "Earlier reply", "person", b.personId);
-    await f.emit("current");
-    const [item] = f.read(sessionId).items;
-    if (!item) throw new Error("Expected project one chat delivery");
-    expect(item.threadContext?.entries).toMatchObject([
-      { text: "Earlier reply" },
+    const { sessionId } = f.bind();
+    await owedChat(f, sessionId);
+    refuseBinding(f, sessionId);
+    const reply = createStop(f.context, f.core.reply);
+    expect(
+      value(
+        await reply(
+          { person: a, hostInstanceId: "hst_" + a.personId },
+          {
+            host: "claude",
+            hostSessionId: "bound-a",
+            text: "Finished the work",
+          },
+        ),
+      ),
+    ).toEqual({ result: "posted" });
+    refuseBinding(f, sessionId);
+    seedItem(f.db, "itm_legacy", { target: sessionId });
+    f.db
+      .prepare("UPDATE sessions SET project_id = ? WHERE session_id = ?")
+      .run(p2, sessionId);
+    f.unbound({ sessionId });
+    expect(
+      f.col("inbox_items WHERE item_id = 'itm_legacy'", "target_session_id"),
+    ).toEqual([sessionId]);
+  },
+  timeout,
+);
+
+test(
+  "A claimed Stop keeps its original obligation across a refused bind and Slack failure",
+  async () => {
+    const f = await baseFixture();
+    const { sessionId } = f.bind();
+    await owedChat(f, sessionId);
+    const claimed = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const posting = Promise.withResolvers<ChatMessageRef>();
+    const write = f.chat.postText.bind(f.chat);
+    f.chat.postText = () => {
+      started.resolve();
+      return posting.promise;
+    };
+    const stop = createStop(f.context, async (caller, input) => {
+      await claimed.promise;
+      return f.core.reply(caller, input);
+    });
+    const host = { person: a, hostInstanceId: "hst_" + a.personId };
+    const input = {
+      host: "claude",
+      hostSessionId: "bound-a",
+      text: "Finished the work",
+    } as const;
+    const inFlight = stop(host, input);
+    try {
+      expect(f.col("reply_owed", "answered")).toEqual([1]);
+      refuseBinding(f, sessionId);
+      claimed.resolve();
+      await Promise.race([
+        started.promise,
+        inFlight.then(() => {
+          throw new Error("Expected a pending Slack post");
+        }),
+      ]);
+      refuseBinding(f, sessionId);
+    } finally {
+      claimed.resolve();
+      f.chat.postText = write;
+      posting.reject(new ChatWriteFailure("refused"));
+      void posting.promise.catch(() => undefined);
+    }
+    expect(refusal(await inFlight).retry).toBe("safe");
+    expect(f.rows("reply_owed", "session_id, answered")).toEqual([
+      { session_id: sessionId, answered: 0 },
     ]);
-    f.bindProject(sessionId, p2);
-    const stopped = await createStop(f.context, f.core.reply)(
-      { person: a, hostInstanceId: "hst_" + a.personId },
-      { host: "claude", hostSessionId, text: "Finished the work" },
-    );
-    expect(value(stopped)).toEqual({ result: "skipped" });
-    const original = f.unbound({ projectId: p1 }).sessionId;
-    expect(f.read(original).items).toMatchObject([
-      {
-        itemId: item.itemId,
-        redelivered: false,
-        threadContext: item.threadContext,
-      },
-    ]);
-    expect(f.col("reply_owed", "session_id")).toEqual([original]);
+    expect(value(await stop(host, input))).toEqual({ result: "posted" });
+  },
+  timeout,
+);
+
+test(
+  "Reserved and unconfirmed posts block a bind without an item or reply obligation",
+  async () => {
+    const f = await baseFixture();
+    const { sessionId } = f.unbound();
+    await f.emit("Project one task");
+    const [conversationId] = f.col("conversations", "conversation_id");
+    if (typeof conversationId !== "string")
+      throw new Error("Expected a conversation");
+    const posted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const write = f.chat.postText.bind(f.chat);
+    f.chat.postText = (...args) => {
+      posted.resolve();
+      return write(...args);
+    };
+    f.chat.nextWrite = { kind: "unknown", until: release.promise };
+    const inFlight = f.core.reply(f.caller(), {
+      sessionId,
+      conversationId,
+      text: "Working on the task",
+    });
+    try {
+      await Promise.race([
+        posted.promise,
+        inFlight.then(() => {
+          throw new Error("Expected a reserved post");
+        }),
+      ]);
+      expect(f.rows("reply_owed")).toEqual([]);
+      refuseBinding(f, sessionId);
+    } finally {
+      release.resolve();
+    }
+    expect(refusal(await inFlight).retry).toBe("reconcile_first");
+    refuseBinding(f, sessionId);
+    seedItem(f.db, "itm_uncertain", { target: sessionId });
+    f.db
+      .prepare("UPDATE sessions SET project_id = ? WHERE session_id = ?")
+      .run(p2, sessionId);
+    f.unbound({ sessionId });
+    expect(
+      f.col("inbox_items WHERE item_id = 'itm_uncertain'", "target_session_id"),
+    ).toEqual([sessionId]);
   },
   timeout,
 );
@@ -61,7 +192,7 @@ test(
 );
 
 test.each([false, true])(
-  "Binding to another project requeues a targeted item (previously delivered: %s)",
+  "Conflicting binding preserves the targeted item (previously delivered: %s)",
   async (delivered) => {
     const f = await baseFixture();
     const { sessionId } = f.unbound();
@@ -77,35 +208,18 @@ test.each([false, true])(
     if (delivered)
       f.expectItems(sessionId, [{ itemId, projectId: p1, redelivered: false }]);
 
-    const hello = f.bindProject(sessionId, p2);
-    const other = f.read(sessionId);
-    const ack = f.core.inbox(f.caller(), { sessionId, ackItemIds: [itemId] });
-    const original = f.unbound({ projectId: p1 }).sessionId;
-    const recovered = f.read(original);
-    expect({
-      unread: hello.unread,
-      otherItems: other.items.map((item) => item.itemId),
-      ack: ack.ok ? "accepted" : ack.error.code,
-      recovered: recovered.items.map((item) => ({
-        itemId: item.itemId,
-        projectId: item.projectId,
-        redelivered: item.redelivered,
-        text: item.text,
-      })),
-    }).toEqual({
-      unread: 0,
-      otherItems: [],
-      ack: "ACK_INVALID",
-      recovered: [
-        {
-          itemId,
-          projectId: p1,
-          redelivered: false,
-          text: "Project one message",
-        },
-      ],
-    });
-    expect(f.ack(original, [itemId]).items).toEqual([]);
+    refuseBinding(f, sessionId);
+    expect(f.read(f.unbound({ projectId: p2 }).sessionId).items).toEqual([]);
+    f.bindProject(sessionId, p1);
+    f.expectItems(sessionId, [
+      {
+        itemId,
+        projectId: p1,
+        redelivered: delivered,
+        text: "Project one message",
+      },
+    ]);
+    expect(f.ack(sessionId, [itemId]).items).toEqual([]);
   },
   timeout,
 );

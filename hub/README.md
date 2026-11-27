@@ -19,6 +19,20 @@ The server parses at most 1,000 header fields per request. The limit is fixed
 before the listener starts and cannot be changed afterwards, so the Host check
 always sees the same cutoff as the parser.
 
+## Recovering inbox items after a legacy project bind
+
+If a session was bound to the wrong project before project checks were added,
+resume that session with `hello` and then open an inbox in the item's original
+project. The hub returns queued items and non-chat deliveries to their original
+queue when the old session has no retained reply obligation or unresolved post.
+
+For prior chat deliveries or sessions with retained reply work, preserve the
+original rows. An operator can recover the original session binding while the
+hub is offline. Take a verified database backup, reconcile any unresolved chat
+posts, and confirm that the session has no attached work in other projects and
+that its owner still belongs to the original project. Correct the session's
+project without changing any item, delivery or reply obligation.
+
 ## Windows data directory
 
 Use `%USERPROFILE%\.forge-hub\data` under the Windows account that runs the
