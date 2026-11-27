@@ -7,6 +7,7 @@ export type SchemaObject = Readonly<Record<string, unknown>>;
 export type JsonSchema = boolean | SchemaObject;
 
 export const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+
 const DIRECT_SUBSCHEMAS: ReadonlySet<string> = new Set([
   "items",
   "additionalProperties",
@@ -18,35 +19,34 @@ const DIRECT_SUBSCHEMAS: ReadonlySet<string> = new Set([
 ]);
 
 class SchemaLimit extends Error {}
-type SchemaBudget = (depth: number) => void;
-type ValidationBudget = (depth: number, pointer?: string) => void;
+type SchemaBudget = (depth: number, units?: number) => void;
+type ValidationBudget = (
+  depth: number,
+  pointer?: string,
+  units?: number,
+) => void;
+type Charge = (units: number) => void;
 
 export function schemaBudget(maxDepth = 64, maxNodes = 20_000): SchemaBudget {
   let remaining = maxNodes;
-  return (depth) => {
+  return (depth, units = 1) => {
     if (depth > maxDepth)
       throw new SchemaLimit(`Schema depth limit exceeded (${maxDepth})`);
-    if (--remaining < 0)
+    remaining -= units;
+    if (remaining < 0)
       throw new SchemaLimit(`Schema work budget exceeded (${maxNodes} nodes)`);
   };
 }
 
 const MAX_VALIDATION_DEPTH = 256;
-function checkValidationDepth(depth: number): void {
-  if (depth > MAX_VALIDATION_DEPTH)
-    throw new SchemaLimit(
-      `Schema depth limit exceeded (${MAX_VALIDATION_DEPTH})`,
-    );
-}
-
 const MAX_VALIDATION_VISITS = 1_000_000;
 const MAX_SCHEMA_VISITS_PER_VALUE = 4_096;
 
 function validationBudget(): ValidationBudget {
   const spend = schemaBudget(MAX_VALIDATION_DEPTH, MAX_VALIDATION_VISITS);
   const visits = new Map<string, number>();
-  return (depth, pointer) => {
-    spend(depth);
+  return (depth, pointer, units) => {
+    spend(depth, units);
     if (pointer === undefined) return;
     const count = (visits.get(pointer) ?? 0) + 1;
     if (count > MAX_SCHEMA_VISITS_PER_VALUE) {
@@ -56,6 +56,49 @@ function validationBudget(): ValidationBudget {
     }
     visits.set(pointer, count);
   };
+}
+
+function diagnosticJson(
+  value: unknown,
+  spend: ValidationBudget,
+  depth: number,
+): string {
+  const inspect = (node: unknown, level: number): void => {
+    spend(
+      level,
+      undefined,
+      typeof node === "string" ? 1 + Math.ceil(node.length / 8) : 1,
+    );
+    if (Array.isArray(node))
+      for (const child of node as unknown[]) inspect(child, level + 1);
+    else if (isObject(node))
+      for (const key in node) {
+        if (!Object.hasOwn(node, key)) continue;
+        spend(level, undefined, 1 + Math.ceil(key.length / 8));
+        inspect(node[key], level + 1);
+      }
+  };
+  inspect(value, depth);
+  return JSON.stringify(value) ?? "missing";
+}
+
+function suggestionDistance(
+  name: string,
+  option: string,
+  charge?: Charge,
+  limit?: number,
+): number {
+  if (limit !== undefined && Math.abs(name.length - option.length) > limit) {
+    charge?.(1);
+    return limit + 1;
+  }
+  charge?.((name.length + 1) * (option.length + 1));
+  return nameDistance(name, option, limit);
+}
+
+function compareNames(a: string, b: string, charge?: Charge): number {
+  charge?.(1 + Math.ceil((a.length + b.length) / 8));
+  return a.localeCompare(b);
 }
 
 export interface SchemaProblem {
@@ -72,11 +115,19 @@ export interface SchemaProblem {
 }
 
 /** Closest declared spelling; the schema, rather than a list of special cases, owns the names. */
-export function closestNames(name: string, names: readonly string[]): string[] {
+export function closestNames(
+  name: string,
+  names: readonly string[],
+  charge?: Charge,
+): string[] {
+  const limit = Math.max(2, Math.floor(name.length / 3));
   return names
-    .map((key) => ({ key, score: nameDistance(name, key) }))
-    .filter(({ score }) => score <= Math.max(2, Math.floor(name.length / 3)))
-    .sort((a, b) => a.score - b.score || a.key.localeCompare(b.key))
+    .map((key) => ({
+      key,
+      score: suggestionDistance(name, key, charge, limit),
+    }))
+    .filter(({ score }) => score <= limit)
+    .sort((a, b) => a.score - b.score || compareNames(a.key, b.key, charge))
     .slice(0, 8)
     .map(({ key }) => key);
 }
@@ -196,6 +247,17 @@ export function isSchemaObject(value: unknown): value is SchemaObject {
 
 export function escapePointer(segment: string): string {
   return segment.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function budgetedPointer(
+  at: string,
+  key: string | number,
+  spend: ValidationBudget,
+  depth: number,
+): string {
+  const segment = String(key);
+  spend(depth, undefined, Math.ceil((at.length + 1 + 2 * segment.length) / 64));
+  return `${at}/${escapePointer(segment)}`;
 }
 
 function unescapePointer(segment: string): string {
@@ -441,12 +503,13 @@ export class SchemaRegistry {
     value: unknown,
     detailed: boolean,
   ): SchemaProblem[] {
+    const spend = validationBudget();
     const problems = this.#evaluate(
       located.schema,
       located.base,
       value,
       "",
-      validationBudget(),
+      spend,
       0,
       detailed,
     );
@@ -455,34 +518,46 @@ export class SchemaRegistry {
       located.schema,
       located.base,
       value,
+      spend,
     );
-    const protect = (entries: readonly SchemaProblem[]): SchemaProblem[] =>
+    const protect = (
+      entries: readonly SchemaProblem[],
+      depth = 0,
+    ): SchemaProblem[] =>
       entries.map((problem) => {
-        const alternatives = problem.alternatives?.map(protect);
+        spend(depth);
+        const alternatives = problem.alternatives?.map((branch) =>
+          protect(branch, depth + 1),
+        );
         if (problem.knownProperties === undefined)
           return alternatives === undefined
             ? problem
             : { ...problem, alternatives };
+        const charge = (units: number) => spend(depth, undefined, units);
+        charge(1 + Math.ceil(problem.pointer.length / 8));
         const parent = problem.pointer.slice(
           0,
           problem.pointer.lastIndexOf("/"),
         );
+        const otherNames = declared.get(parent);
+        charge(problem.knownProperties.length + (otherNames?.size ?? 0));
         const names = [
-          ...new Set([
-            ...problem.knownProperties,
-            ...(declared.get(parent) ?? []),
-          ]),
+          ...new Set([...problem.knownProperties, ...(otherNames ?? [])]),
         ];
         const key = unescapePointer(
           problem.pointer.slice(problem.pointer.lastIndexOf("/") + 1),
         );
-        const caseMatch = names.find(
-          (name) => name.toLowerCase() === key.toLowerCase(),
-        );
+        const lower = key.toLowerCase();
+        const caseMatch = names.find((name) => {
+          charge(1 + Math.ceil(name.length / 8));
+          return name.toLowerCase() === lower;
+        });
         const suggestion = names.includes(key)
           ? undefined
           : (caseMatch ??
-            (detailed ? closestName(key, names) : closestNames(key, names)[0]));
+            (detailed
+              ? closestName(key, names, charge)
+              : closestNames(key, names, charge)[0]));
         const { suggestion: _suggestion, ...rest } = problem;
         return {
           ...rest,
@@ -499,6 +574,7 @@ export class SchemaRegistry {
     schema: JsonSchema,
     base: string,
     value: unknown,
+    spend: ValidationBudget,
   ): ReadonlyMap<string, ReadonlySet<string>> {
     const declared = new Map<string, Set<string>>();
     const seen = new Set<string>();
@@ -509,7 +585,7 @@ export class SchemaRegistry {
       at: string,
       depth: number,
     ): void => {
-      checkValidationDepth(depth);
+      spend(depth);
       if (!isObject(node)) return;
       const descend = (
         child: unknown,
@@ -519,6 +595,11 @@ export class SchemaRegistry {
       ) => visit(child, base, value, pointer, depth + 1);
       if (typeof node.$ref === "string") {
         const reference = this.resolve(node.$ref, uri);
+        spend(
+          depth,
+          undefined,
+          Math.ceil((6 * (reference.length + at.length) + 7) / 8),
+        );
         const key = JSON.stringify([reference, at]);
         if (!seen.has(key)) {
           seen.add(key);
@@ -529,7 +610,10 @@ export class SchemaRegistry {
       if (isObject(current)) {
         const properties = isObject(node.properties) ? node.properties : {};
         const names = declared.get(at) ?? new Set<string>();
-        for (const name of Object.keys(properties)) names.add(name);
+        for (const name of Object.keys(properties)) {
+          spend(depth, undefined, 1 + Math.ceil(name.length / 8));
+          names.add(name);
+        }
         declared.set(at, names);
         for (const [key, child] of Object.entries(current))
           descend(
@@ -538,11 +622,16 @@ export class SchemaRegistry {
               : node.additionalProperties,
             uri,
             child,
-            `${at}/${escapePointer(key)}`,
+            budgetedPointer(at, key, spend, depth),
           );
       } else if (Array.isArray(current)) {
         current.forEach((child, index) =>
-          descend(node.items, uri, child, `${at}/${index}`),
+          descend(
+            node.items,
+            uri,
+            child,
+            budgetedPointer(at, index, spend, depth),
+          ),
         );
       }
       for (const keyword of ["allOf", "oneOf", "anyOf"])
@@ -779,32 +868,24 @@ export class SchemaRegistry {
   ): SchemaProblem[] {
     spend(depth, at);
     if (schema === true) return [];
-    if (schema === false) {
-      return [
-        {
-          pointer: at,
-          keyword: "false",
-          message: "no value is allowed here",
-          ...(detailed
-            ? {
-                expected: "no value",
-                received: JSON.stringify(value) ?? "missing",
-              }
-            : {}),
-        },
-      ];
-    }
+    const charge = (units: number) => spend(depth, undefined, units);
+    const render = (data: unknown) => diagnosticJson(data, spend, depth);
     const problems: SchemaProblem[] = [];
+    const append = (entries: readonly SchemaProblem[]) => {
+      charge(entries.length);
+      for (const entry of entries) problems.push(entry);
+    };
     const add = (
       keyword: string,
       message: string,
       pointer = at,
-      expected = message,
-      received = detailed ? (JSON.stringify(value) ?? "missing") : "",
+      expected: string | (() => string) = message,
+      received: string | (() => string) = () => render(value),
       suggestion?: string,
       knownProperties?: readonly string[],
       alternatives?: readonly (readonly SchemaProblem[])[],
     ): void => {
+      spend(depth);
       problems.push({
         pointer,
         keyword,
@@ -814,24 +895,35 @@ export class SchemaRegistry {
         ...(alternatives === undefined ? {} : { alternatives }),
         ...(detailed
           ? {
-              expected,
-              received,
+              expected: typeof expected === "string" ? expected : expected(),
+              received: typeof received === "string" ? received : received(),
             }
           : {}),
       });
     };
+    if (schema === false) {
+      add("false", "no value is allowed here", at, "no value");
+      return problems;
+    }
     const sub = (s: unknown, v: unknown, p: string): SchemaProblem[] =>
       this.#evaluate(s as JsonSchema, base, v, p, spend, depth + 1, detailed);
     const equal = (left: unknown, right: unknown) =>
-      equalJson(left, right, spend, depth + 1);
+      equalJson(
+        left,
+        right,
+        (level, units) => spend(level, undefined, units),
+        depth + 1,
+      );
 
     if (typeof schema.$ref === "string") {
       const uri = this.resolve(schema.$ref, base);
       const target = this.#locate(uri);
-      if (target === undefined) add("$ref", `unresolvable reference ${uri}`);
-      else
-        problems.push(
-          ...this.#evaluate(
+      if (target === undefined) {
+        charge(Math.ceil(uri.length / 8));
+        add("$ref", `unresolvable reference ${uri}`);
+      } else
+        append(
+          this.#evaluate(
             target.schema,
             target.base,
             value,
@@ -861,6 +953,7 @@ export class SchemaRegistry {
       Array.isArray(schema.enum) &&
       !schema.enum.some((e) => equal(e, value))
     ) {
+      charge(schema.enum.length);
       const suggested =
         typeof value === "string"
           ? closestNames(
@@ -868,24 +961,22 @@ export class SchemaRegistry {
               schema.enum.filter(
                 (entry): entry is string => typeof entry === "string",
               ),
+              charge,
             )[0]
           : undefined;
+      const options = render(schema.enum);
       add(
         "enum",
-        `expected one of ${JSON.stringify(schema.enum)}`,
+        `expected one of ${options}`,
         at,
-        `one of ${JSON.stringify(schema.enum)}`,
-        detailed ? (JSON.stringify(value) ?? "missing") : "",
+        `one of ${options}`,
+        undefined,
         suggested,
       );
     }
     if ("const" in schema && !equal(schema.const, value)) {
-      add(
-        "const",
-        `expected ${JSON.stringify(schema.const)}`,
-        at,
-        JSON.stringify(schema.const),
-      );
+      const expected = render(schema.const);
+      add("const", `expected ${expected}`, at, expected);
     }
 
     if (typeof value === "string") {
@@ -956,12 +1047,18 @@ export class SchemaRegistry {
           return false;
         });
         if (duplicate !== -1) {
-          add("uniqueItems", "items must be unique", `${at}/${duplicate}`);
+          add(
+            "uniqueItems",
+            "items must be unique",
+            budgetedPointer(at, duplicate, spend, depth),
+          );
         }
       }
       if (schema.items !== undefined) {
         value.forEach((item, index) => {
-          problems.push(...sub(schema.items, item, `${at}/${index}`));
+          append(
+            sub(schema.items, item, budgetedPointer(at, index, spend, depth)),
+          );
         });
       }
     }
@@ -990,21 +1087,27 @@ export class SchemaRegistry {
       if (Array.isArray(schema.required)) {
         for (const name of schema.required) {
           if (typeof name === "string" && !Object.hasOwn(value, name)) {
+            charge(Math.ceil(name.length / 8));
             add(
               "required",
               `missing required property "${name}"`,
-              `${at}/${escapePointer(name)}`,
-              this.#expected(properties[name] as JsonSchema | undefined, base),
+              budgetedPointer(at, name, spend, depth),
+              () =>
+                this.#expected(
+                  properties[name] as JsonSchema | undefined,
+                  base,
+                  render,
+                ),
               "missing",
             );
           }
         }
       }
       for (const key of keys) {
-        spend(depth);
-        const pointer = `${at}/${escapePointer(key)}`;
+        const pointer = budgetedPointer(at, key, spend, depth);
         if (schema.propertyNames !== undefined) {
           for (const problem of sub(schema.propertyNames, key, pointer)) {
+            charge(Math.ceil((key.length + problem.message.length) / 8));
             add(
               "propertyNames",
               `property name "${key}": ${problem.message}`,
@@ -1013,31 +1116,30 @@ export class SchemaRegistry {
           }
         }
         if (Object.hasOwn(properties, key)) {
-          problems.push(...sub(properties[key], value[key], pointer));
+          append(sub(properties[key], value[key], pointer));
         } else if (schema.additionalProperties !== undefined) {
           if (schema.additionalProperties === false) {
+            charge(Math.ceil(key.length / 8));
+            const known = Object.keys(properties);
+            for (const name of known) charge(1 + Math.ceil(name.length / 8));
             add(
               "additionalProperties",
               `unknown property "${key}"`,
               pointer,
-              `one of ${Object.keys(properties).join(", ") || "no properties"}`,
-              detailed ? (JSON.stringify(value[key]) ?? "missing") : "",
-              detailed
-                ? closestName(key, Object.keys(properties))
-                : closestNames(key, Object.keys(properties))[0],
-              Object.keys(properties),
+              () => `one of ${known.join(", ") || "no properties"}`,
+              () => render(value[key]),
+              undefined,
+              known,
             );
           } else {
-            problems.push(
-              ...sub(schema.additionalProperties, value[key], pointer),
-            );
+            append(sub(schema.additionalProperties, value[key], pointer));
           }
         }
       }
     }
 
     if (Array.isArray(schema.allOf)) {
-      for (const part of schema.allOf) problems.push(...sub(part, value, at));
+      for (const part of schema.allOf) append(sub(part, value, at));
     }
     if (Array.isArray(schema.anyOf)) {
       const results = schema.anyOf.map((part) => sub(part, value, at));
@@ -1052,7 +1154,7 @@ export class SchemaRegistry {
           undefined,
           isObject(value) ? results : undefined,
         );
-        problems.push(...closest(results));
+        append(closest(results));
       }
     }
     if (Array.isArray(schema.oneOf)) {
@@ -1069,7 +1171,7 @@ export class SchemaRegistry {
           undefined,
           isObject(value) ? results : undefined,
         );
-        problems.push(...closest(results));
+        append(closest(results));
       } else if (matches > 1) {
         add("oneOf", `matches ${matches} alternatives; exactly one is allowed`);
       }
@@ -1080,20 +1182,25 @@ export class SchemaRegistry {
     if (schema.if !== undefined) {
       const branch =
         sub(schema.if, value, at).length === 0 ? schema.then : schema.else;
-      if (branch !== undefined) problems.push(...sub(branch, value, at));
+      if (branch !== undefined) append(sub(branch, value, at));
     }
     return problems;
   }
 
-  #expected(schema: JsonSchema | undefined, base: string, hops = 0): string {
+  #expected(
+    schema: JsonSchema | undefined,
+    base: string,
+    render: (value: unknown) => string,
+    hops = 0,
+  ): string {
     if (!isObject(schema)) return schema === false ? "no value" : "a value";
-    if (Array.isArray(schema.enum))
-      return `one of ${JSON.stringify(schema.enum)}`;
+    if (Array.isArray(schema.enum)) return `one of ${render(schema.enum)}`;
     if (typeof schema.type === "string") return schema.type;
     if (Array.isArray(schema.type)) return schema.type.join(" or ");
     if (typeof schema.$ref === "string" && hops < 8) {
       const target = this.#locate(this.resolve(schema.$ref, base));
-      if (target) return this.#expected(target.schema, target.base, hops + 1);
+      if (target)
+        return this.#expected(target.schema, target.base, render, hops + 1);
     }
     return "a value matching the declared schema";
   }
@@ -1102,13 +1209,16 @@ export class SchemaRegistry {
 function closestName(
   name: string,
   choices: readonly string[],
+  charge: Charge,
 ): string | undefined {
   return choices
     .map((candidate) => ({
       name: candidate,
-      score: nameDistance(name, candidate),
+      score: suggestionDistance(name, candidate, charge),
     }))
-    .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))[0]?.name;
+    .sort(
+      (a, b) => a.score - b.score || compareNames(a.name, b.name, charge),
+    )[0]?.name;
 }
 
 /** The problems of the alternative that came closest, so a refusal says what to fix. */
