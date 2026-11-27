@@ -10,11 +10,13 @@ import { fail } from "./errors.ts";
 import { refused } from "./inbox.ts";
 import {
   byConversation,
+  confirmAgentPost,
   conversation,
   enterThread,
   paused,
   postLoopPause,
   recordAgentPost,
+  releaseAgentPost,
   str,
   UNCONFIRMED_MESSAGE_PREFIX,
 } from "./thread.ts";
@@ -60,31 +62,39 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
     }
   }
   const posted = fitSection(input.prefix + " ", body);
+  const { conversation, sessionId, personId } = input;
+  const slot =
+    conversation && sessionId && personId
+      ? UNCONFIRMED_MESSAGE_PREFIX + randomUUID()
+      : undefined;
+  if (conversation && sessionId && personId && slot)
+    recordAgentPost(
+      ctx,
+      { ...conversation, chatMessageId: slot },
+      conversation,
+      sessionId,
+      personId,
+      posted,
+    );
   try {
     const ref = await ctx.chat.postText(input.target, posted, {
       agentLabel: input.label,
     });
+    if (conversation && slot)
+      try {
+        confirmAgentPost(ctx, conversation, slot, ref.chatMessageId);
+      } catch {}
     return { ref, text: posted };
   } catch (error) {
-    const { conversation, sessionId, personId } = input;
     if (
-      error instanceof ChatWriteFailure &&
-      error.effect !== "refused" &&
       conversation &&
-      sessionId &&
-      personId
+      slot &&
+      error instanceof ChatWriteFailure &&
+      error.effect === "refused"
     )
-      recordAgentPost(
-        ctx,
-        {
-          ...conversation,
-          chatMessageId: UNCONFIRMED_MESSAGE_PREFIX + randomUUID(),
-        },
-        conversation,
-        sessionId,
-        personId,
-        posted,
-      );
+      try {
+        releaseAgentPost(ctx, conversation, slot);
+      } catch {}
     throw error;
   }
 }
@@ -293,15 +303,6 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         personId: person.personId,
       });
       ctx.store.tx(() => {
-        if (!conv.isDirect)
-          recordAgentPost(
-            ctx,
-            posted.ref,
-            conv,
-            result.sessionId,
-            person.personId,
-            posted.text,
-          );
         if (result.owed.length > 0)
           db.prepare(
             "UPDATE reply_owed SET answered = 1 WHERE item_id IN (" +

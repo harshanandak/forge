@@ -10,7 +10,6 @@ import {
   enterThread,
   paused,
   postLoopPause,
-  recordAgentPost,
 } from "./thread.ts";
 
 export function createSend(ctx: CoreContext): HubCore["send"] {
@@ -122,16 +121,6 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
           sessionId,
           personId: person.personId,
         });
-        ctx.store.tx(() =>
-          recordAgentPost(
-            ctx,
-            posted.ref,
-            chat,
-            sessionId,
-            person.personId,
-            posted.text,
-          ),
-        );
         if (chat.projectId !== undefined)
           await postLoopPause(ctx, chat, chat.projectId);
       } catch (error) {

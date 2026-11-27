@@ -137,6 +137,33 @@ export function recordAgentPost(
   );
 }
 
+export function confirmAgentPost(
+  ctx: CoreContext,
+  conversation: Conversation,
+  reservedId: string,
+  chatMessageId: string,
+) {
+  ctx.deps.db
+    .prepare(
+      `UPDATE thread_messages SET chat_message_id = ?
+    WHERE adapter = 'slack' AND chat_thread_id = ? AND chat_message_id = ?`,
+    )
+    .run(chatMessageId, conversation.chatThreadId, reservedId);
+}
+
+export function releaseAgentPost(
+  ctx: CoreContext,
+  conversation: Conversation,
+  reservedId: string,
+) {
+  ctx.deps.db
+    .prepare(
+      `DELETE FROM thread_messages
+    WHERE adapter = 'slack' AND chat_thread_id = ? AND chat_message_id = ?`,
+    )
+    .run(conversation.chatThreadId, reservedId);
+}
+
 export const LOOP_PAUSE_TEXT = "Paused: the agents need a person to reply.";
 
 function agentRunStart(db: HubDb, thread: string): number | undefined {
