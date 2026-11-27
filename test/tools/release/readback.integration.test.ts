@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { version } from "../../../src/version.ts";
+import { assertRunId, sourceSha } from "../../../tools/release/source.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "forge-release-readback-"));
 const repository = "https://github.com/harshanandak/forge";
@@ -52,18 +53,10 @@ const release = parse(
     new URL("../../../.github/workflows/release.yml", import.meta.url),
     "utf8",
   ),
-) as { jobs: Record<string, { steps: { run?: string }[] }> };
+) as { jobs: Record<string, { steps: { run?: string; uses?: string }[] }> };
 
-test("release source shell validates the run and emits its original SHA", () => {
-  const step = release.jobs.verify!.steps.find((s) =>
-    s.run?.includes("actions/runs/"),
-  )!;
-  const bash =
-    process.platform === "win32"
-      ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git/bin/bash.exe")
-      : "bash";
+test("release source validation emits its original SHA in-process", () => {
   const repo = "harshanandak/forge";
-  const output = join(dir, "source-output.txt");
   const ci = {
     repository: { full_name: repo },
     head_repository: { full_name: repo },
@@ -75,35 +68,60 @@ test("release source shell validates the run and emits its original SHA", () => 
     conclusion: "success",
   };
   const source = (run: unknown, mode: string, sha = commit, id = "12345") => {
-    const curl = `curl() { printf '%s\\n' '${JSON.stringify(run)}'; }\n`;
-    writeFileSync(output, "");
-    return Bun.spawnSync([bash, "-eo", "pipefail"], {
-      stdin: Buffer.from(curl + step.run!),
-      env: {
-        ...process.env,
-        RUN_ID: id,
-        READBACK_ONLY: mode,
-        GITHUB_SHA: sha,
-        GITHUB_REPOSITORY: repo,
-        GITHUB_OUTPUT: output,
-      },
-      timeout: 2_000,
-    });
+    assertRunId(id);
+    return sourceSha(run, { repo, sha, recovery: mode === "true" });
   };
-  const rejects = (result: ReturnType<typeof source>, label: string) => {
-    const stderr = result.stderr.toString();
-    expect(result.exitCode, `${label}\n${stderr}`).not.toBe(0);
+  const rejection = (check: () => unknown): string => {
+    try {
+      check();
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    throw new Error("expected rejection");
+  };
+  const fieldErrors: Record<string, string> = {
+    repository: "release source: repository.full_name mismatch",
+    head_repository: "release source: head_repository.full_name mismatch",
+    path: "release source: path mismatch",
+    event: "release source: event mismatch",
+    head_branch: "release source: head_branch mismatch",
+    head_sha: "release source: head_sha invalid",
+    status: "release source: status mismatch",
+    conclusion: "release source: conclusion mismatch",
   };
   const older = "a".repeat(40);
   for (const mode of ["true", "false"]) {
-    const result = source(ci, mode, mode === "true" ? older : commit);
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    expect(readFileSync(output, "utf8").trim()).toBe("source_sha=" + commit);
-    rejects(source(ci, mode, commit, "invalid"), "invalid run ID");
+    expect(source(ci, mode, mode === "true" ? older : commit)).toBe(commit);
+    expect(rejection(() => source(ci, mode, commit, "invalid"))).toBe(
+      "release source: invalid run id",
+    );
     for (const field of Object.keys(ci))
-      rejects(source({ ...ci, [field]: "wrong" }, mode), field);
+      expect(rejection(() => source({ ...ci, [field]: "wrong" }, mode))).toBe(
+        fieldErrors[field]!,
+      );
   }
-  rejects(source(ci, "false", older), "different dispatch SHA");
+  expect(rejection(() => source(ci, "false", older))).toBe(
+    "release source: head_sha differs from dispatch sha",
+  );
+}, 15_000);
+
+test("release workflow validates the source run with Bun after setup", () => {
+  const steps = release.jobs.verify!.steps;
+  const sourceIndex = steps.findIndex(
+    (step) => step.run?.trim() === "bun tools/release/source.ts",
+  );
+  const setupIndex = steps.findIndex((step) =>
+    step.uses?.startsWith(
+      "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    ),
+  );
+  expect({
+    run: steps[sourceIndex]?.run?.trim(),
+    setupBeforeSource: setupIndex !== -1 && setupIndex < sourceIndex,
+  }).toEqual({
+    run: "bun tools/release/source.ts",
+    setupBeforeSource: true,
+  });
 }, 15_000);
 
 test("inline readback sends unique nonces and rejects unverifiable HTTP 200s", () => {
