@@ -8,6 +8,18 @@ import { discoverSourceFiles } from "./test-shards.ts";
 
 type Entry = ReturnType<typeof jobRecord>;
 
+const LOOKBACK = 100;
+
+export function selectCandidateRuns(
+  runs: { databaseId: number; headSha: string; attempt: number }[],
+  limit: number,
+): { id: number; head_sha: string; run_attempt: number }[] {
+  return runs
+    .toSorted((a, b) => b.databaseId - a.databaseId)
+    .slice(0, limit)
+    .map((run) => ({ id: run.databaseId, head_sha: run.headSha, run_attempt: run.attempt }));
+}
+
 export function median(values: number[]): number | undefined {
   if (values.length === 0) return undefined;
   const sorted = values.toSorted((a, b) => a - b);
@@ -52,24 +64,31 @@ if (import.meta.main) {
   if (!Number.isInteger(count) || count <= 0)
     throw new Error("expected --runs=<positive integer>");
   const repo = "harshanandak/forge";
-  const candidates = JSON.parse(
-    execFileSync(
-      "gh",
-      [
-        "run",
-        "list",
-        "--repo",
-        repo,
-        "--workflow",
-        "ci.yml",
-        "--json",
-        "databaseId,headSha,headBranch,conclusion,attempt",
-        "--jq",
-        'map(select(.headBranch == "main" and .conclusion == "success")) | sort_by(.databaseId) | reverse | .[0:30] | map({id: .databaseId, head_sha: .headSha, run_attempt: .attempt})',
-      ],
-      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true },
-    ),
-  ) as { id: number; head_sha: string; run_attempt: number }[];
+  const candidates = selectCandidateRuns(
+    JSON.parse(
+      execFileSync(
+        "gh",
+        [
+          "run",
+          "list",
+          "--repo",
+          repo,
+          "--workflow",
+          "ci.yml",
+          "--branch",
+          "main",
+          "--status",
+          "success",
+          "--json",
+          "databaseId,headSha,attempt",
+          "--limit",
+          String(LOOKBACK),
+        ],
+        { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true },
+      ),
+    ) as { databaseId: number; headSha: string; attempt: number }[],
+    LOOKBACK,
+  );
   const kept: Entry[] = [];
   const used: number[] = [];
   for (const run of candidates) {
@@ -92,7 +111,7 @@ if (import.meta.main) {
   }
   if (used.length < count)
     throw new Error(
-      `only ${used.length}/${count} successful main runs have Windows Node 24 test-shard records`,
+      `only ${used.length}/${count} successful main runs with Windows Node 24 test-shard records in the last ${LOOKBACK} runs`,
     );
   const selected = selectSourceFiles(discoverSourceFiles(), "24");
   const path = "test/timings.json";

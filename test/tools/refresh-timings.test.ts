@@ -1,6 +1,6 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { type jobRecord } from "../../tools/ci/ci-record.ts";
-import { refreshTimings } from "../../tools/ci/refresh-timings.ts";
+import { refreshTimings, selectCandidateRuns } from "../../tools/ci/refresh-timings.ts";
 
 setDefaultTimeout(30_000);
 
@@ -19,6 +19,23 @@ const entry = (files: Record<string, number | null>, shard = "1/3"): Entry => ({
       { durationMs, status: durationMs === null ? "skip" : "pass" },
     ]),
   ),
+});
+
+test("candidate runs keep the newest runs first", () => {
+  expect(
+    selectCandidateRuns(
+      [
+        { databaseId: 2, headSha: "b", attempt: 1 },
+        { databaseId: 5, headSha: "e", attempt: 1 },
+        { databaseId: 3, headSha: "c", attempt: 2 },
+      ],
+      2,
+    ),
+  ).toEqual([
+    { id: 5, head_sha: "e", run_attempt: 1 },
+    { id: 3, head_sha: "c", run_attempt: 2 },
+  ]);
+  expect(selectCandidateRuns([], 10)).toEqual([]);
 });
 
 test("odd and even medians round to whole milliseconds", () => {
