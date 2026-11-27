@@ -135,11 +135,17 @@ test("valid MCP session answers initialize and exits cleanly", () => {
     expect(JSON.parse(line)).toMatchObject({ jsonrpc: "2.0" });
 }, 60_000);
 
-test("MCP exits nonzero after an asynchronous stdout write failure", () => {
-  const preload = `
+for (const afterCleanup of [false, true])
+  test(
+    afterCleanup
+      ? "MCP exits nonzero when an accepted stdout write fails after command cleanup"
+      : "MCP exits nonzero after an asynchronous stdout write failure",
+    () => {
+      const preload = `
     import { PassThrough, Writable } from "node:stream";
     const input = new PassThrough();
     const stdout = process.stdout;
+    const afterCleanup = ${afterCleanup};
     let writes = 0;
     let failed = false;
     const output = new Writable({
@@ -149,15 +155,26 @@ test("MCP exits nonzero after an asynchronous stdout write failure", () => {
           stdout.write(chunk, encoding, callback);
           input.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\\n');
           input.write('{"jsonrpc":"2.0","id":2,"method":"ping"}\\n');
-          input.write('{"jsonrpc":"2.0","id":3,"method":"ping"}\\n');
+          if (!afterCleanup) input.write('{"jsonrpc":"2.0","id":3,"method":"ping"}\\n');
         } else {
-          setImmediate(() => {
+          const fail = () => {
             failed = true;
-            callback(new Error("private stdout fixture payload"));
-            setImmediate(() => {
-              if (!input.destroyed) input.end('{"jsonrpc":"2.0","id":4,"method":"ping"}\\n');
+            callback(Object.assign(new Error("private stdout fixture payload"), { code: "EPIPE" }));
+          };
+          if (afterCleanup) {
+            process.once("beforeExit", () => {
+              if (process.exitCode !== 0) process.stderr.write("command cleanup did not finish\\n");
+              fail();
             });
-          });
+            input.end();
+          } else {
+            setImmediate(() => {
+              fail();
+              setImmediate(() => {
+                if (!input.destroyed) input.end('{"jsonrpc":"2.0","id":4,"method":"ping"}\\n');
+              });
+            });
+          }
         }
       },
     });
@@ -170,16 +187,18 @@ test("MCP exits nonzero after an asynchronous stdout write failure", () => {
     Object.defineProperty(process, "stdout", { value: output });
     input.write(${JSON.stringify(JSON.stringify(initialize) + "\n")});
   `;
-  const result = run("blocks: {}\n", ["--mcp"], undefined, preload);
-  expect(JSON.parse(result.stdout)).toMatchObject({
-    jsonrpc: "2.0",
-    id: initialize.id,
-    result: { protocolVersion: initialize.params.protocolVersion },
-  });
-  expect(result.status).toBeGreaterThan(0);
-  const lines = result.stderr.trimEnd().split(/\r?\n/);
-  expect(lines).toHaveLength(1);
-  expect(result.stderr).toContain("MCP stdout write failed.");
-  expect(result.stderr).not.toContain("private stdout fixture payload");
-  expect(result.stderr.length).toBeLessThan(256);
-}, 60_000);
+      const result = run("blocks: {}\n", ["--mcp"], undefined, preload);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        jsonrpc: "2.0",
+        id: initialize.id,
+        result: { protocolVersion: initialize.params.protocolVersion },
+      });
+      expect(result.status).toBeGreaterThan(0);
+      const lines = result.stderr.trimEnd().split(/\r?\n/);
+      expect(lines).toHaveLength(1);
+      expect(result.stderr).toContain("MCP stdout write failed.");
+      expect(result.stderr).not.toContain("private stdout fixture payload");
+      expect(result.stderr.length).toBeLessThan(256);
+    },
+    60_000,
+  );
