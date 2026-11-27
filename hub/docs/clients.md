@@ -20,7 +20,7 @@ Add this to the client MCP configuration. Claude Code expands the environment re
 }
 ```
 
-When the hub's hooks are enabled, install the following hook settings. Replace the placeholder with the absolute installation path. Keep the quotes around each script path.
+When the hub's hooks are enabled, install the following hook settings. The `node` command on the hook host's PATH must be Node 24 or newer. Replace the placeholder with the absolute installation path. Keep the quotes around each script path.
 
 ```json
 {
@@ -66,6 +66,8 @@ Set `FORGE_HUB_HOST_KEY_FILE` to the protected key file outside any repository o
 The PreToolUse setting requires Claude Code 2.1.295 or newer. The hooks are a local guard against accidental execution after an untrusted read. The server boundary checks person credentials and the named session's mode. An agent acting deliberately as the same OS user can access files its user can read, and the owner can remove the hooks. Codex and OpenCode do not provide this Forge fail-closed guard. While the hub is unavailable, the Claude guard still permits reads that resolve inside the working directory. Other tools need a fresh hub response.
 
 SessionStart prints the registered Forge session id. Pass that `sessionId` to every Forge tool in the hooked session. Stop prefers the host's final assistant text. If that field is unavailable, the transcript fallback can lag behind the current turn.
+
+For a forked Claude Code session (`source: "fork"`), SessionStart prints `Forge hub unavailable: INVALID_INPUT` and leaves the session unregistered.
 
 ## Codex
 
