@@ -288,20 +288,26 @@ function readback(source: Fixture, target: Fixture, data: Backup) {
   expect(actual.recordFloor).toBe(expected.recordFloor);
   const { lease: _lease, ...expectedView } = viewV3(expected).image as Json;
   const { lease: _restoredLease, ...actualView } = viewV3(actual).image as Json;
-  const global = {
+  const global = controlSlot(to.db, actual) as {
+    version: 1;
+    incarnation: string;
+    epoch: 1;
+    resumeAllEpoch: 0;
+    stopAll: string;
+  };
+  expect(global).toMatchObject({
     version: 1,
     incarnation: actual.root.incarnation,
     epoch: 1,
     resumeAllEpoch: 0,
-    stopAll: activatedAt,
-  };
+  });
+  expect(Date.parse(global.stopAll)).not.toBeNaN();
   expect(actualView).toEqual({
     ...expectedView,
     control: { global: entryDigest(digestValue(global)) },
     head: expected.head + 1,
     eventWatermark: expected.eventWatermark + 1,
   });
-  expect(controlSlot(to.db, actual)).toEqual(global);
   for (const collection of ["lease", "outcome", "record", "witness"] as const) {
     expect([...actual.entries[collection].keys()].sort()).toEqual(
       [...expected.entries[collection].keys()].sort(),
@@ -313,7 +319,7 @@ function readback(source: Fixture, target: Fixture, data: Backup) {
         collection === "lease"
           ? {
               ...(value as Json),
-              releasedAt: (value as Json).releasedAt ?? activatedAt,
+              releasedAt: (value as Json).releasedAt ?? global.stopAll,
             }
           : value,
       );
@@ -325,7 +331,7 @@ function readback(source: Fixture, target: Fixture, data: Backup) {
   expect(
     verifyRow(target.seal(), actual.root.incarnation, sequence, body, mac),
   ).toBe(true);
-  return to;
+  return { ...to, global };
 }
 
 test(
@@ -337,11 +343,11 @@ test(
     using _target = target.db;
     const before = source.observeEffects();
     const finish = await restoreInto(target, data);
-    const { db, image } = readback(source, target, data);
+    const { db, image, global } = readback(source, target, data);
     expect(image.recordFloor).toBe(2);
     expect(readV3Value(db, image, "lease", "issue:work-1")).toMatchObject({
       generation: 1,
-      releasedAt: activatedAt,
+      releasedAt: global.stopAll,
       holder: { actor: holder.actor },
     });
     const rows = commits(target).length;

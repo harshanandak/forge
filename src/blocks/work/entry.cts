@@ -781,8 +781,27 @@ function atomicRuntime<Input, Output>(
   };
 }
 const MAX_OUTPUT_BYTES = 1_048_576;
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (
+      code >= 0xd800 &&
+      code <= 0xdbff &&
+      index + 1 < text.length &&
+      text.charCodeAt(index + 1) >= 0xdc00 &&
+      text.charCodeAt(index + 1) <= 0xdfff
+    ) {
+      bytes += 4;
+      index++;
+    } else bytes += 3;
+  }
+  return bytes;
+}
 function boundedOutput(value: TrackerItem): void {
-  if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_OUTPUT_BYTES)
+  if (utf8Bytes(JSON.stringify(value)) > MAX_OUTPUT_BYTES)
     fail("LIMIT_EXCEEDED", `output exceeds maxOutputBytes ${MAX_OUTPUT_BYTES}`);
 }
 function outputCandidate(

@@ -234,7 +234,7 @@ test(
       ).status,
     ).toBe(200);
     expect((await f.command(claim)).status).toBe(200);
-    const before = await f.command(show);
+    let before = await f.command(show);
     const stale = await f.command(
       update("stale", { expectedFiles: ["src/beta.ts"] }, 2),
     );
@@ -255,6 +255,7 @@ test(
     }
     const wide = await f.command(update("wide", { expectedFiles: wideFiles }));
     expect(wide.status).toBe(200);
+    before = await f.command(show);
     const large = await f.command(
       update("large", { actualFiles: longFiles }, 2),
     );
