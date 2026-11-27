@@ -412,10 +412,9 @@ journey(
     const file = f.path("host-output");
     const created = await f.create("host", file);
     expect(created.status).toBe(0);
-    expect(await f.hook("session-start", session, file)).toMatchObject({
-      status: 0,
-      stdout: /^Forge hub session ses_/,
-    });
+    const registered = await f.hook("session-start", session, file);
+    expect(registered.status).toBe(0);
+    expect(registered.stdout).toMatch(/^Forge hub session ses_/);
     expect(
       (await f.cli(["host", "revoke", created.stdout.split(" ")[0] ?? ""]))
         .status,
