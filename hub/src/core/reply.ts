@@ -83,7 +83,11 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
     if (conversation && slot)
       try {
         confirmAgentPost(ctx, conversation, slot, ref.chatMessageId);
-      } catch {}
+      } catch (error) {
+        ctx.deps.log.warn("agent_post_confirm_failed", {
+          reason: error instanceof Error ? error.message : "unknown",
+        });
+      }
     return { ref, text: posted };
   } catch (error) {
     if (
@@ -94,7 +98,11 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
     )
       try {
         releaseAgentPost(ctx, conversation, slot);
-      } catch {}
+      } catch (error) {
+        ctx.deps.log.warn("agent_post_release_failed", {
+          reason: error instanceof Error ? error.message : "unknown",
+        });
+      }
     throw error;
   }
 }

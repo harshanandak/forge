@@ -107,7 +107,7 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
       const item = storeItem();
       let threadPost: "posted" | "failed" = "posted";
       try {
-        const posted = await postAgentText(ctx, {
+        await postAgentText(ctx, {
           target: { kind: "thread", chatThreadId: chat.chatThreadId },
           channelId: chat.channelId,
           projectName:
