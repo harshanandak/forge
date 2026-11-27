@@ -7,7 +7,7 @@ import {
   type ThreadContextEntry,
 } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
-import { num, str, UNCONFIRMED_MESSAGE_PREFIX } from "./thread.ts";
+import { isUnconfirmedMessage, num, str } from "./thread.ts";
 
 export function deliveryContext(
   ctx: CoreContext,
@@ -46,16 +46,9 @@ export function deliveryContext(
     LEFT JOIN people p ON p.person_id=t.person_id WHERE t.adapter = 'slack' AND t.chat_thread_id = ?
     AND t.seq > ? AND t.seq < ? AND t.deleted = 0 AND t.kind IN ('person','agent','outsider')
     AND NOT (t.kind = 'agent' AND t.person_id = ?)
-    AND (t.chat_message_id IS NULL OR t.chat_message_id NOT LIKE ?) ORDER BY t.seq DESC LIMIT ?`,
+    ORDER BY t.seq DESC LIMIT ?`,
     )
-    .all(
-      chat.chatThreadId,
-      first,
-      last,
-      chat.personId,
-      UNCONFIRMED_MESSAGE_PREFIX + "%",
-      LIMITS.contextMessages,
-    );
+    .all(chat.chatThreadId, first, last, chat.personId, LIMITS.contextMessages);
   const entries: ThreadContextEntry[] = [];
   let chars = 0;
   for (const row of rows) {
@@ -70,8 +63,11 @@ export function deliveryContext(
     if (chars > LIMITS.contextChars) break;
     const name =
       kind === "outsider" ? "a person outside Forge" : str(row.display_name);
+    const suffix = isUnconfirmedMessage(row.chat_message_id)
+      ? " (delivery unconfirmed)"
+      : "";
     entries.push({
-      from: kind === "agent" ? name + "'s agent" : name,
+      from: (kind === "agent" ? name + "'s agent" : name) + suffix,
       senderKind: kind,
       text,
       notYourOwner: kind !== "person" || row.person_id !== chat.personId,

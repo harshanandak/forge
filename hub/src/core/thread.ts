@@ -137,6 +137,10 @@ export function recordAgentPost(
   );
 }
 
+export function isUnconfirmedMessage(id: unknown): boolean {
+  return typeof id === "string" && id.startsWith(UNCONFIRMED_MESSAGE_PREFIX);
+}
+
 export function confirmAgentPost(
   ctx: CoreContext,
   conversation: Conversation,

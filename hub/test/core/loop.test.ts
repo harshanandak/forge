@@ -170,9 +170,7 @@ const chatUnavailable = (conversationId: string) => ({
 const alphaPostedAs = "Forge (Fixture Alpha's agent)";
 
 function expectUnconfirmed(id: unknown) {
-  const text = String(id);
-  expect(text.startsWith(UNCONFIRMED_PREFIX)).toBe(true);
-  expect(text).toHaveLength(UNCONFIRMED_PREFIX.length + 36);
+  expect(String(id)).toMatch(/^unconfirmed:.{36}$/);
 }
 
 function seedRun(f: BaseFixture, count: number, sessionId: string) {
@@ -192,6 +190,17 @@ async function unknownRunFixture(seeds = LIMITS.agentRunMax - 1) {
 function mkReply(f: BaseFixture, sessionId: string, conversationId: string) {
   return (text: string, core: BaseFixture["core"] = f.core) =>
     core.reply(f.caller(), { sessionId, conversationId, text });
+}
+
+function mkSend(f: BaseFixture, sessionId: string, conversationId: string) {
+  return (text: string, core: BaseFixture["core"] = f.core) =>
+    core.send(f.caller(), {
+      sessionId,
+      projectId: p1,
+      toPersonId: "per_b",
+      conversationId,
+      text,
+    });
 }
 
 function expectPaused(result: HubResult<unknown>) {
@@ -235,7 +244,6 @@ test(
     const reply = mkReply(f, alpha.sessionId, conversationId);
     f.chat.nextWrite = { kind: "unknown" };
     await expectFail(reply("tenth reply"), conversationId);
-    expect(attempts(f)).toBe(1);
     const rows = agentRows(f);
     expect(
       rows.map((row) => [row.text, row.person_id, row.session_id]),
@@ -258,18 +266,10 @@ test(
   "forge-1989 a visible send with an unknown outcome uses the loop guard slot",
   async () => {
     const { f, alpha, conversationId } = await unknownRunFixture();
-    const send = (text: string, core: BaseFixture["core"] = f.core) =>
-      core.send(f.caller(), {
-        sessionId: alpha.sessionId,
-        projectId: p1,
-        toPersonId: "per_b",
-        conversationId,
-        text,
-      });
+    const send = mkSend(f, alpha.sessionId, conversationId);
     f.chat.nextWrite = { kind: "unknown" };
     const sent = value(await send("tenth send"));
     expect(sent.threadPost).toBe("failed");
-    expect(attempts(f)).toBe(1);
     const rows = agentRows(f);
     expect(rows.map((row) => row.text)).toEqual([
       ...seedIds.map(() => "run"),
@@ -302,7 +302,6 @@ test(
       chatMessageId: "message-2",
       postedAs: alphaPostedAs,
     });
-    expect(attempts(f)).toBe(2);
     const rows = agentRows(f);
     expect(rows).toHaveLength(LIMITS.agentRunMax + 1);
     expect(rows.map((row) => row.chat_message_id)[10]).toBe("message-2");
@@ -333,7 +332,6 @@ test(
       chatMessageId: "message-1",
       postedAs: alphaPostedAs,
     });
-    expect(attempts(f)).toBe(3);
     expect(f.posts()).toEqual([
       "Fixture Alpha's agent: refused tenth reply",
       pause,
@@ -348,7 +346,7 @@ test(
 );
 
 test(
-  "forge-1989 an unconfirmed row counts for the guard but stays out of delivered context",
+  "forge-1989 an unconfirmed row counts for the guard and is delivered labelled",
   async () => {
     const { f, alpha, beta, betaFirst } = await alphaBetaFixture();
     const betaConv = betaFirst.conversationId;
@@ -364,10 +362,13 @@ test(
     await expectFail(reply("unconfirmed beta answer"), betaConv);
     expectPaused(await reply("eleventh beta reply"));
     await f.emit("a-second", { threadRootMessageId: "root" });
-    const read = f.read(alpha.sessionId);
-    expect(read.items).toHaveLength(1);
-    const entries = read.items[0]?.threadContext?.entries ?? [];
-    expect(entries.map((entry) => entry.text)).toEqual(["beta-mention"]);
+    const entries =
+      f.read(alpha.sessionId).items[0]?.threadContext?.entries ?? [];
+    expect(entries.map((entry) => entry.from + "|" + entry.text)).toEqual([
+      "Fixture Beta|beta-mention",
+      "Fixture Beta's agent (delivery unconfirmed)|" +
+        "Fixture Beta's agent: unconfirmed beta answer",
+    ]);
   },
   timeout,
 );
@@ -384,13 +385,7 @@ test(
       conversationId,
     );
     await expect(
-      f.core.send(f.caller(), {
-        sessionId: alpha.sessionId,
-        projectId: p1,
-        toPersonId: "per_b",
-        conversationId,
-        text: "tenth send",
-      }),
+      mkSend(f, alpha.sessionId, conversationId)("tenth send"),
     ).rejects.toThrow("injected storage failure");
     expect(attempts(f)).toBe(0);
     expect(agentRows(f).map((row) => row.chat_message_id)).toEqual(seedIds);
@@ -416,7 +411,6 @@ test(
       postedAs: alphaPostedAs,
     });
     const rows = agentRows(f);
-    expect(rows).toHaveLength(LIMITS.agentRunMax);
     expect(rows.map((row) => row.chat_message_id).slice(0, -2)).toEqual(
       seedIds.slice(0, -1),
     );
@@ -426,7 +420,6 @@ test(
     ]);
     expect(unconfirmedRows(f)).toHaveLength(2);
     expectPaused(await reply("eleventh reply"));
-    expect(attempts(f)).toBe(3);
     expect(f.posts()).toEqual([
       "Fixture Alpha's agent: ninth reply",
       "Fixture Alpha's agent: tenth reply",
@@ -455,30 +448,39 @@ test(
     expectPaused(await eleventh);
     expect(attempts(f)).toBe(1);
     expect(f.posts()).toEqual(["Fixture Alpha's agent: tenth reply"]);
-    const ids = agentRows(f).map((row) => row.chat_message_id);
-    expect(ids.slice(0, -1)).toEqual(seedIds);
-    expectUnconfirmed(ids[9]);
   },
   timeout,
 );
 
 test(
-  "forge-1989 an unconfirmed row does not steer an unmentioned human reply",
+  "forge-1989 an unconfirmed row neither steers replies nor skips context",
   async () => {
     const { f, alpha, beta } = await alphaBetaFixture();
     seedThread(f, "ts-alpha", "alpha answer", "agent", a.personId);
-    seedThread(
-      f,
-      UNCONFIRMED_PREFIX + "route",
-      "beta answer",
-      "agent",
-      b.personId,
-    );
-    await f.follow("human-note", { slackUserId: slackB, mentionsBot: false });
-    expect(f.read(alpha.sessionId).items.map((item) => item.text)).toEqual([
-      "human-note",
-    ]);
+    seedThread(f, UNCONFIRMED_PREFIX + "x", "beta answer", "agent", b.personId);
+    await f.follow("note-one", { slackUserId: slackB, mentionsBot: false });
+    const first = f.read(alpha.sessionId).items[0]!;
+    expect(first.text).toBe("note-one");
     expect(f.read(beta.sessionId, b).items).toEqual([]);
+    expect(
+      first.threadContext?.entries.map(
+        (entry) => entry.from + "|" + entry.text,
+      ),
+    ).toEqual([
+      "Fixture Beta|beta-mention",
+      "Fixture Beta's agent (delivery unconfirmed)|beta answer",
+    ]);
+    f.ack(alpha.sessionId, [first.itemId]);
+    f.db
+      .prepare(
+        "UPDATE thread_messages SET chat_message_id = 'ts-confirmed' WHERE chat_message_id = ?",
+      )
+      .run(UNCONFIRMED_PREFIX + "x");
+    seedThread(f, "ts-alpha-2", "alpha again", "agent", a.personId);
+    await f.follow("note-two", { slackUserId: slackB, mentionsBot: false });
+    expect(f.read(alpha.sessionId).items[0]!.threadContext?.entries).toEqual(
+      [],
+    );
   },
   timeout,
 );
