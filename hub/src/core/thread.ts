@@ -188,53 +188,49 @@ function compareKeys(a: OrderKey, b: OrderKey): number {
   );
 }
 
-function guardState(
-  db: HubDb,
-  thread: string,
-): { readonly paused: boolean; readonly boundarySeq: number } {
+function pausedBoundary(db: HubDb, thread: string): number | undefined {
   const rows = db
     .prepare(
       `SELECT seq,kind,chat_message_id FROM thread_messages WHERE adapter = 'slack'
-    AND chat_thread_id = ? AND kind IN ('agent','person') ORDER BY seq`,
+    AND chat_thread_id = ? AND (kind IN ('agent','person') OR (kind = 'system' AND text = ?))
+    ORDER BY seq DESC`,
     )
-    .all(thread);
+    .all(thread, LOOP_PAUSE_TEXT);
   let personKey: OrderKey | undefined;
-  let personKeySeq = -1;
-  let anyPersonSeq = -1;
-  for (const row of rows) {
-    if (str(row.kind) !== "person") continue;
-    const seq = num(row.seq);
-    anyPersonSeq = seq;
-    const key = tsKey(row.chat_message_id);
-    if (
-      key !== undefined &&
-      (personKey === undefined || compareKeys(key, personKey) > 0)
-    ) {
+  let boundary = -1;
+  for (const { seq, kind, chat_message_id: id } of rows) {
+    if (kind !== "person") continue;
+    if (boundary === -1) boundary = num(seq);
+    const key = tsKey(id);
+    if (key && (!personKey || compareKeys(key, personKey) > 0)) {
       personKey = key;
-      personKeySeq = seq;
+      boundary = num(seq);
     }
   }
-  const boundarySeq = personKey === undefined ? anyPersonSeq : personKeySeq;
+  const rootId = thread.slice(thread.lastIndexOf(":") + 1);
+  let earlierSlackPost = false;
   let count = 0;
   const seen = new Set<string>();
-  for (const row of rows) {
-    if (str(row.kind) !== "agent") continue;
-    const id = row.chat_message_id;
+  for (const { seq, kind, chat_message_id: id } of rows) {
+    if (kind === "person") continue;
+    const key = tsKey(id);
+    const order = key && personKey ? compareKeys(key, personKey) : undefined;
+    if (order !== undefined && order < 0 && id !== rootId)
+      earlierSlackPost = true;
+    if (kind !== "agent") continue;
     if (typeof id === "string") {
       if (seen.has(id)) continue;
       seen.add(id);
     }
-    const seq = num(row.seq);
-    const key = tsKey(id);
-    if (key !== undefined && personKey !== undefined) {
-      if (compareKeys(key, personKey) > 0) count += 1;
-    } else if (seq > boundarySeq) count += 1;
+    let inRun = num(seq) > boundary;
+    if (personKey) inRun = order === undefined ? !earlierSlackPost : order > 0;
+    if (inRun && ++count === LIMITS.agentRunMax) return boundary;
   }
-  return { paused: count >= LIMITS.agentRunMax, boundarySeq };
+  return undefined;
 }
 
 export function paused(db: HubDb, thread: string): boolean {
-  return guardState(db, thread).paused;
+  return pausedBoundary(db, thread) !== undefined;
 }
 
 export async function enterThread(
@@ -253,19 +249,20 @@ export async function enterThread(
   };
 }
 
-function loopPauseDue(ctx: CoreContext, conversation: Conversation) {
-  return ctx.store.tx(() => {
-    const state = guardState(ctx.deps.db, conversation.chatThreadId);
-    if (!state.paused) return false;
-    return (
-      ctx.deps.db
-        .prepare(
-          `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq > ? LIMIT 1`,
-        )
-        .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, state.boundarySeq) ===
-      undefined
-    );
-  });
+function unannouncedBoundary(db: HubDb, thread: string, noticeKey: string) {
+  const boundary = pausedBoundary(db, thread);
+  if (boundary === undefined) return;
+  const notice = db
+    .prepare("SELECT value FROM meta WHERE key = ?")
+    .get(noticeKey);
+  if (notice) return notice.value === String(boundary) ? undefined : boundary;
+  const legacy = db
+    .prepare(
+      `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ?
+      AND kind = 'system' AND text = ? AND seq > ? LIMIT 1`,
+    )
+    .get(thread, LOOP_PAUSE_TEXT, boundary);
+  return legacy ? undefined : boundary;
 }
 
 export async function postLoopPause(ctx: CoreContext, pending: Conversation) {
@@ -276,12 +273,16 @@ export async function postLoopPause(ctx: CoreContext, pending: Conversation) {
     const conversation = byConversation(db, pending.conversationId);
     if (conversation?.chatThreadId !== pending.chatThreadId) return;
     if (channelBindingRefusal(db, conversation, projectId)) return;
-    if (!loopPauseDue(ctx, conversation)) return;
+    const noticeKey = "loop-pause:" + conversation.chatThreadId;
+    const boundary = ctx.store.tx(() =>
+      unannouncedBoundary(db, conversation.chatThreadId, noticeKey),
+    );
+    if (boundary === undefined) return;
     const ref = await ctx.chat.postText(
       { kind: "thread", chatThreadId: conversation.chatThreadId },
       LOOP_PAUSE_TEXT,
     );
-    ctx.store.tx(() =>
+    ctx.store.tx(() => {
       recordThread(
         ctx,
         {
@@ -292,8 +293,11 @@ export async function postLoopPause(ctx: CoreContext, pending: Conversation) {
         projectId,
         "system",
         LOOP_PAUSE_TEXT,
-      ),
-    );
+      );
+      db.prepare(
+        "INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      ).run(noticeKey, String(boundary));
+    });
   } catch {
     ctx.deps.log.warn("chat_notice_failed");
   }
