@@ -55,7 +55,7 @@ function scanWarnings(snapshot: Snapshot, branchFor?: Branch): Scan {
   let remaining: number = WORK_MAP_LIMITS.patternWork;
   for (const holder of snapshot.holders) {
     const other = holder.issue;
-    if (!candidate || other.id !== candidate.id) continue;
+    if (!candidate || other.id === candidate.id) continue;
     const declarations = [
       ...(candidate.expectedFiles ?? []),
       ...(other.expectedFiles ?? []),
