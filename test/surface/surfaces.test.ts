@@ -391,8 +391,8 @@ test("stable budget is configurable; discovery preserves human and read-only bou
   ).not.toContain("sample.private");
   const readonly = createMcpHandlers(catalog, { readOnly: true });
   expect(
-    (await readonly.callTool("catalog_call", { op: "sample.write" }))?.ok,
-  ).toBe(false);
+    await readonly.callTool("catalog_call", { op: "sample.write" }),
+  ).toBeUndefined();
   const write = createMcpHandlers(catalog, {
     expose: ["sample.write"],
   }).listTools()[0];

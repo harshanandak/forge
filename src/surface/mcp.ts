@@ -105,6 +105,8 @@ export function createMcpHandlers(
           name === mcpToolName(entry.op),
       );
       if (core !== undefined) {
+        if (exposure.readOnly && core.declaration.effects.length > 0)
+          return undefined;
         return dispatch(restricted, core.op, args, {
           ...options,
           caller: "agent",

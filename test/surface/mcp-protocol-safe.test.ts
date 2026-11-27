@@ -208,25 +208,25 @@ test("unissued cursors fail while absent and empty cursors list", async () => {
   }
 }, 30_000);
 
-test("invalid input and gated catalog calls stay domain failures", async () => {
+test("invalid input and hidden targets stay domain failures", async () => {
   await exchange("2025-11-25", true, async (rpc) => {
     const bad = await rpc("tools/call", {
-      name: "catalog_call",
+      name: "catalog_describe",
       arguments: {},
     });
     expect(bad.error ?? null).toBeNull();
     expect(bad.result ?? null).toMatchObject({
       isError: true,
-      structuredContent: { ok: false },
+      structuredContent: { ok: false, error: { code: "INPUT_INVALID" } },
     });
     const gated = await rpc("tools/call", {
-      name: "catalog_call",
+      name: "catalog_describe",
       arguments: { op: "sample.write" },
     });
     expect(gated.error ?? null).toBeNull();
     expect(gated.result ?? null).toMatchObject({
       isError: true,
-      structuredContent: { ok: false },
+      structuredContent: { ok: false, error: { code: "UNKNOWN_COMMAND" } },
     });
   });
 }, 30_000);
