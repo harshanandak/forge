@@ -322,9 +322,9 @@ test(
     };
     f.chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
     expect(refusal(await f.core.reply(f.caller(), input))).toEqual({
-      code: "CHAT_UNAVAILABLE",
+      code: "CHAT_UNAVAILABLE" as const,
       message: "Chat is unavailable.",
-      retry: "safe",
+      retry: "safe" as const,
     });
     expect(agentRows(f).map((row) => row.chat_message_id)).toEqual(seedIds);
     expect(unconfirmedRows(f)).toEqual([]);
