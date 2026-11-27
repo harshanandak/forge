@@ -59,7 +59,19 @@ test("schema validation refuses when composition exhausts the work budget", () =
   expect(problems[0]?.message).toMatch(/limit|budget/i);
 }, 30_000);
 
-test("schema validation bounds compound equality work and accepts a large distinct scalar array", () => {
+test("schema validation budgets const, enum, and uniqueItems comparisons", () => {
+  const nested = (): unknown => {
+    let value: unknown = "value";
+    for (let depth = 0; depth < 20; depth++) value = [value, value];
+    return value;
+  };
+  const expected = nested();
+  const actual = nested();
+  for (const schema of [{ const: expected }, { enum: [expected] }]) {
+    expect(new SchemaRegistry([schema]).validate("#", actual)[0]?.keyword).toBe(
+      "budget",
+    );
+  }
   const registry = new SchemaRegistry([{ type: "array", uniqueItems: true }]);
   const scalars = Array.from({ length: 1500 }, (_, n) => n);
   expect(registry.validate("#", scalars)).toEqual([]);
