@@ -5208,6 +5208,7 @@ test("the cloud issue.create agrees with the local handler on whole results, row
       { title: "F", kind: "feature" },
       { title: "E", kind: "epic" },
       { title: "Full", body: 'é\n"x"', labels: ["x", "y"], kind: "task" },
+      { title: "Files", expectedFiles: ["./src//planned-*.ts"] },
       { title: "Bare" },
     ];
     for (const [i, input] of inputs.entries()) {
@@ -6654,7 +6655,15 @@ test("the cloud issue.update agrees with the local handler on whole results, row
         patch({ id: "work-12", title: "t".repeat(500), expectRevision: 5 }),
       ],
       ["u-5", patch({ id: "forge-20", title: "Graph kept" })],
-      ["u-6", { id: "forge-12", expectRevision: 6 }],
+      [
+        "u-6",
+        patch({
+          expectedFiles: ["src/./planned-*.ts"],
+          actualFiles: ["src//delivered.ts"],
+          filesAt: "0123456789abcdef0123456789abcdef01234567",
+        }),
+      ],
+      ["u-7", { id: "forge-12", expectRevision: 7 }],
     ];
     for (const [i, [requestId, input]] of cases.entries()) {
       const got = await f.send(revise(requestId, input), {

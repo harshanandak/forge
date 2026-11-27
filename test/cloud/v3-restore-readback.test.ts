@@ -57,7 +57,7 @@ const headers = {
 const create = {
   op: "issue.create",
   requestId: "create",
-  input: { title: "Before" },
+  input: { title: "Before", expectedFiles: ["./src//planned-*.ts"] },
   context: { actor: holder.actor },
 };
 const refusedCreate = {
@@ -74,7 +74,14 @@ const claim = {
 const update = {
   op: "issue.update",
   requestId: "update",
-  input: { id: "forge-1", expectRevision: 1, title: "After" },
+  input: {
+    id: "forge-1",
+    expectRevision: 1,
+    title: "After",
+    expectedFiles: ["src/./planned-*.ts"],
+    actualFiles: ["src//delivered.ts"],
+    filesAt: "0123456789abcdef0123456789abcdef01234567",
+  },
   context: { ...holder, leaseGeneration: 1 },
 };
 const error = (status: number, code: string) => ({
