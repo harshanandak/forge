@@ -13,7 +13,7 @@ type Result =
   | { readonly ok: false; readonly message: string };
 
 const limit = 1024;
-const unsupported = /[\[\]{}()]/;
+const unsupported = /[[\]{}()]/;
 const problem = (field: string, maximum: number) => ({
   ok: false as const,
   message: `${field} must be an array of at most ${maximum} repo-relative paths of at most ${limit} characters, using only / separators and the *, ** and ? glob operators`,
