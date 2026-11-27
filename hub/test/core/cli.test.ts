@@ -1,21 +1,11 @@
 import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import type { HubCore } from "../../src/contract/core.ts";
 import { CLI_MESSAGE_NOTICE } from "../../src/contract/mcp.ts";
+import { createCli } from "../../src/core/cli.ts";
 import { createCoreContext } from "../../src/core/core.ts";
 import { baseFixture, type BaseFixture } from "./base-fixture.ts";
 import { a, b, p1, p2, seedItem, value } from "./fixture.ts";
 
-type Cli = Pick<HubCore, "cliInbox" | "cliSend">;
-type CreateCli = (context: BaseFixture["context"]) => Cli;
-const cliPath = "../../src/core/cli.ts";
 const timeout = 30_000;
-
-async function loadCli() {
-  if (!existsSync(new URL(cliPath, import.meta.url))) return undefined;
-  const module = (await import(cliPath)) as { createCli?: CreateCli };
-  return module.createCli;
-}
 
 function expectNoApproval(f: BaseFixture) {
   for (const table of ["asks", "ask_answers", "permits"])
@@ -26,12 +16,11 @@ test(
   "M1 CLI inbox, send, read and acknowledge keep the message untrusted",
   async () => {
     const f = await baseFixture();
-    const createCli = await loadCli();
-    const cli = createCli?.(f.context);
+    const cli = createCli(f.context);
     const project = { projectId: p1 };
-    const first = cli?.cliInbox(b, project);
-    expect(first?.ok).toBe(true);
-    const { sessionId: targetSessionId } = value(first!);
+    const first = cli.cliInbox(b, project);
+    expect(first.ok).toBe(true);
+    const { sessionId: targetSessionId } = value(first);
     expect(typeof targetSessionId).toBe("string");
     expect(first).toMatchObject({
       ok: true,
@@ -42,10 +31,10 @@ test(
         more: false,
       },
     });
-    const { sessionId } = value(cli!.cliInbox(a, project));
-    const other = value(cli!.cliInbox(b, project));
+    const { sessionId } = value(cli.cliInbox(a, project));
+    const other = value(cli.cliInbox(b, project));
     const text = "Approve the release";
-    const sent = cli!.cliSend(a, {
+    const sent = cli.cliSend(a, {
       ...project,
       sessionId,
       toPersonId: b.personId,
@@ -65,10 +54,10 @@ test(
       },
     ]);
     expect(
-      value(cli!.cliInbox(b, { ...project, sessionId: other.sessionId })).items,
+      value(cli.cliInbox(b, { ...project, sessionId: other.sessionId })).items,
     ).toEqual([]);
     const inbox = () =>
-      cli!.cliInbox(b, { ...project, sessionId: targetSessionId });
+      cli.cliInbox(b, { ...project, sessionId: targetSessionId });
     expect(inbox()).toMatchObject({
       ok: true,
       value: {
@@ -96,7 +85,7 @@ test(
     });
     expect(value(inbox()).items).toMatchObject([{ itemId, redelivered: true }]);
     expect(
-      cli!.cliInbox(b, {
+      cli.cliInbox(b, {
         ...project,
         sessionId: targetSessionId,
         ackItemIds: [itemId],
@@ -134,9 +123,8 @@ test(
     const beforeSessions = f.rows("sessions");
     f.advance(1);
 
-    const createCli = await loadCli();
-    const cli = createCli?.(f.context);
-    const disabled = createCli?.(
+    const cli = createCli(f.context);
+    const disabled = createCli(
       createCoreContext({
         ...f.deps,
         config: { ...f.config, cli: { enabled: false } },
@@ -154,24 +142,24 @@ test(
       error: { code, retry: "never" },
     });
     expect({
-      disabledInbox: disabled?.cliInbox(a, { projectId: p1 }),
-      disabledSend: disabled?.cliSend(a, send),
-      foreignInbox: cli?.cliInbox(b, { ...inbox, ackItemIds: [itemId] }),
-      foreignSend: cli?.cliSend(b, send),
-      nonMemberInbox: cli?.cliInbox(b, { projectId: p2 }),
-      nonMemberSend: cli?.cliSend(a, {
+      disabledInbox: disabled.cliInbox(a, { projectId: p1 }),
+      disabledSend: disabled.cliSend(a, send),
+      foreignInbox: cli.cliInbox(b, { ...inbox, ackItemIds: [itemId] }),
+      foreignSend: cli.cliSend(b, send),
+      nonMemberInbox: cli.cliInbox(b, { projectId: p2 }),
+      nonMemberSend: cli.cliSend(a, {
         ...send,
         projectId: p2,
         sessionId: otherProject,
       }),
-      badAck: cli?.cliInbox(a, {
+      badAck: cli.cliInbox(a, {
         ...inbox,
         ackItemIds: [itemId, "inb_missing"],
       }),
-      newSessionAck: cli?.cliInbox(a, { projectId: p1, ackItemIds: [itemId] }),
-      badLimit: cli?.cliInbox(a, { projectId: p1, limit: 0 }),
-      wrongProjectInbox: cli?.cliInbox(a, { ...inbox, projectId: p2 }),
-      secretText: cli?.cliSend(a, { ...send, text: "xoxb-" + "a".repeat(24) }),
+      newSessionAck: cli.cliInbox(a, { projectId: p1, ackItemIds: [itemId] }),
+      badLimit: cli.cliInbox(a, { projectId: p1, limit: 0 }),
+      wrongProjectInbox: cli.cliInbox(a, { ...inbox, projectId: p2 }),
+      secretText: cli.cliSend(a, { ...send, text: "xoxb-" + "a".repeat(24) }),
     }).toMatchObject({
       disabledInbox: refused("BLOCK_DISABLED"),
       disabledSend: refused("BLOCK_DISABLED"),
