@@ -12,7 +12,8 @@ function probe(scenario: string): unknown {
     windowsHide: true,
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(result.stderr);
+  if (result.status !== 0)
+    throw new Error(result.stderr || String(result.signal));
   return JSON.parse(result.stdout);
 }
 
@@ -110,6 +111,47 @@ test(
   timeout,
 );
 
+for (const [scenario, name, middle] of [
+  ["early", "a stop during slow startup skips binding an occupied port", []],
+  ["late", "signals during delayed remote and core cleanup", ["listening"]],
+  [
+    "signals",
+    "repeated real signals during drain",
+    ["listening", "abort", "handler.settled"],
+  ],
+  [
+    "pipelined",
+    "shutdown cancels a queued pipelined request that never sees close",
+    ["listening", "abort", "abort", "handler.settled", "handler.settled"],
+  ],
+  [
+    "stream",
+    "shutdown awaits a streaming body's async cancel",
+    ["listening", "cancel", "cancel.settled"],
+  ],
+] as const) {
+  test(
+    "S1 " + name + " keeps remote, core and database open until it settles",
+    () => {
+      expect(probe(scenario)).toMatchObject({
+        code: 0,
+        stderr: [],
+        events: [
+          "db.open",
+          "claim",
+          ...middle,
+          "remote.close",
+          "core.close",
+          "release",
+          "db.close",
+        ],
+        listeningAfter: false,
+      });
+    },
+    timeout,
+  );
+}
+
 for (const [scenario, startup] of [
   ["port", ["claim"]],
   ["chat", ["claim", "chat.start", "chat.stop", "release"]],
@@ -152,7 +194,13 @@ test(
 test(
   "H-limit the Node service fixes its limit and rejects a saturated header view before dispatch",
   () => {
-    expect(probe("headers")).toMatchObject({
+    const result = probe("headers") as { node: string };
+    const [major = 0, minor = 0, patch = 0] = result.node
+      .split(".")
+      .map(Number);
+    const at = major * 1e6 + minor * 1e3 + patch;
+    const patched = at >= 26_005_001 || (major === 24 && at >= 24_018_001);
+    expect(result).toMatchObject({
       code: 0,
       events: [
         "db.open",
@@ -169,7 +217,7 @@ test(
       headers: {
         fixed: true,
         atLimit: 403,
-        hiddenHost: 431,
+        hiddenHost: patched ? 431 : 403,
         chatCalls: 0,
         remoteCalls: 0,
         belowLimit: 200,

@@ -4,6 +4,7 @@ import { realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import http, { type Server } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { MCP_PATH } from "../../src/contract/mcp.ts";
 import type { HubConfig, HubDb } from "../../src/contract/runtime.ts";
@@ -22,8 +23,9 @@ const mcp = basePath + MCP_PATH;
 const slack =
   scenario === "chat" || scenario === "reconcile" || scenario === "headers";
 const remoteEnabled = scenario !== "lifecycle" && scenario !== "telegram";
-const admitted =
-  scenario === "shutdown" || scenario === "drain" || scenario === "error";
+const admitted = /^(shutdown|drain|error|signals|pipelined)$/.test(
+  scenario ?? "",
+);
 const config: HubConfig = {
   ...configFixture(),
   listen: { host, port: 0 },
@@ -41,6 +43,19 @@ const config: HubConfig = {
 };
 const createServer = http.createServer;
 const log = { info() {}, warn() {}, error() {} };
+const waiting: ((response: Response) => void)[] = [];
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+const raise = (name: NodeJS.Signals) =>
+  process.platform === "win32"
+    ? process.emit(name)
+    : process.kill(process.pid, name);
+
+async function interrupt(): Promise<void> {
+  raise("SIGTERM");
+  raise("SIGINT");
+  await turn();
+  await turn();
+}
 
 function port(server: Server): number {
   const address = server.address();
@@ -66,6 +81,18 @@ function status(
       })
       .once("error", reject);
   });
+}
+
+function send(server: Server, count: number): Promise<unknown> {
+  const socket = connect(port(server), host);
+  socket.on("error", () => {});
+  socket.once("close", () => {
+    for (const resolve of waiting) resolve(new Response());
+  });
+  socket.write(
+    ("GET " + mcp + " HTTP/1.1\r\nhost: " + host + "\r\n\r\n").repeat(count),
+  );
+  return once(socket, "data");
 }
 
 async function listen(server: Server): Promise<void> {
@@ -114,7 +141,8 @@ async function probe() {
   const stderr: string[] = [];
   const root = realpathSync(hubTestTemp("forge-hub-serve-"));
   const dataDir = join(root, "data");
-  const occupied = scenario === "port" ? createServer() : undefined;
+  const occupied =
+    scenario === "port" || scenario === "early" ? createServer() : undefined;
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const listening = Promise.withResolvers<Server>();
@@ -157,6 +185,16 @@ async function probe() {
     },
   );
   syncBuiltinESMExports();
+  if (scenario === "pipelined")
+    Reflect.set(
+      http.ServerResponse.prototype,
+      "destroy",
+      function (this: http.ServerResponse, error?: Error) {
+        return this.socket
+          ? http.OutgoingMessage.prototype.destroy.call(this, error)
+          : this;
+      },
+    );
   try {
     ok(await core.createPrivateDirectory(dataDir));
     if (occupied) await listen(occupied);
@@ -184,27 +222,45 @@ async function probe() {
       createRemoteHandler: () => ({
         handle(request) {
           remoteCalls++;
+          if (scenario === "stream")
+            return Promise.resolve(
+              new Response(
+                new ReadableStream({
+                  start(controller) {
+                    controller.enqueue(new Uint8Array(1));
+                  },
+                  async cancel() {
+                    events.push("cancel");
+                    await turn();
+                    db?.transaction(() => events.push("cancel.settled"));
+                  },
+                }),
+              ),
+            );
           if (!admitted) return Promise.resolve(new Response());
           const pending = Promise.withResolvers<Response>();
+          waiting.push(pending.resolve);
           request.signal.addEventListener(
             "abort",
             () => {
               events.push("abort");
               if (scenario === "shutdown") pending.resolve(new Response());
               else
-                setImmediate(() => {
-                  events.push("handler.settled");
-                  pending.resolve(new Response());
-                });
+                void (scenario === "signals" ? interrupt() : turn()).then(
+                  () => {
+                    events.push("handler.settled");
+                    pending.resolve(new Response());
+                  },
+                );
             },
             { once: true },
           );
-          dispatch.resolve();
+          if (scenario !== "pipelined" || remoteCalls === 2) dispatch.resolve();
           return pending.promise;
         },
         close() {
           events.push("remote.close");
-          return Promise.resolve();
+          return scenario === "late" ? interrupt() : Promise.resolve();
         },
       }),
       loadCore: () =>
@@ -248,11 +304,13 @@ async function probe() {
               ...built,
               async start() {
                 entered.resolve();
-                if (scenario === "lifecycle") await release.promise;
+                if (scenario === "lifecycle" || scenario === "early")
+                  await release.promise;
                 await built.start();
               },
-              close() {
+              async close() {
                 events.push("core.close");
+                if (scenario === "late") await interrupt();
                 return built.close();
               },
             };
@@ -266,6 +324,7 @@ async function probe() {
     try {
       await Promise.race([entered.promise, run]);
       const readyBeforeStartup = server?.listening ?? false;
+      if (scenario === "early") process.emit("SIGTERM");
       release.resolve();
       const active = await Promise.race([listening.promise, run]);
       let ready: number | undefined;
@@ -294,15 +353,18 @@ async function probe() {
             belowLimit: await status(active, mcp, 997),
           };
         }
-        if (admitted) {
-          pending = status(active, mcp).catch(() => "closed");
-          await Promise.race([dispatch.promise, pending]);
-        }
+        if (scenario === "stream") await send(active, 1);
+        if (scenario === "pipelined") void send(active, 2).catch(() => {});
+        else if (admitted) pending = status(active, mcp).catch(() => "closed");
+        if (admitted)
+          await Promise.race([dispatch.promise, pending ?? dispatch.promise]);
         if (scenario === "error") active.emit("error", privateFailure);
+        else if (scenario === "signals") raise("SIGTERM");
         else process.emit("SIGTERM");
       }
       const code = await run;
       return {
+        node: process.versions.node,
         code,
         stderr,
         events,
