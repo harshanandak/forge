@@ -1,5 +1,5 @@
 // [integration] The release policy consumes npm's verified bundles, never an advertised predicate alone.
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { hash, X509Certificate } from "node:crypto";
 import {
   existsSync,
@@ -13,6 +13,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { version } from "../../../src/version.ts";
+import {
+  assertRunId,
+  runSource,
+  sourceSha,
+  type SourceFetch,
+} from "../../../tools/release/source.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "forge-release-readback-"));
 const repository = "https://github.com/harshanandak/forge";
@@ -52,58 +58,191 @@ const release = parse(
     new URL("../../../.github/workflows/release.yml", import.meta.url),
     "utf8",
   ),
-) as { jobs: Record<string, { steps: { run?: string }[] }> };
+) as { jobs: Record<string, { steps: { run?: string; uses?: string }[] }> };
 
-test("release source shell validates the run and emits its original SHA", () => {
-  const step = release.jobs.verify!.steps.find((s) =>
-    s.run?.includes("actions/runs/"),
-  )!;
-  const bash =
-    process.platform === "win32"
-      ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git/bin/bash.exe")
-      : "bash";
-  const repo = "harshanandak/forge";
-  const output = join(dir, "source-output.txt");
-  const ci = {
-    repository: { full_name: repo },
-    head_repository: { full_name: repo },
-    path: ".github/workflows/ci.yml",
-    event: "push",
-    head_branch: "main",
-    head_sha: commit,
-    status: "completed",
-    conclusion: "success",
-  };
+const repoName = "harshanandak/forge";
+const validRun = () => ({
+  repository: { full_name: repoName },
+  head_repository: { full_name: repoName },
+  path: ".github/workflows/ci.yml",
+  event: "push",
+  head_branch: "main",
+  head_sha: commit,
+  status: "completed",
+  conclusion: "success",
+});
+const cliEnv = (): NodeJS.ProcessEnv => ({
+  RUN_ID: "12345",
+  READBACK_ONLY: "false",
+  GH_TOKEN: "token",
+  GITHUB_API_URL: "https://api.github.com",
+  GITHUB_REPOSITORY: repoName,
+  GITHUB_SHA: commit,
+  GITHUB_OUTPUT: "output.txt",
+});
+const quiet = async (run: () => Promise<number>) => {
+  const lines: string[] = [];
+  const spy = spyOn(console, "error").mockImplementation(
+    (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    },
+  );
+  try {
+    return { code: await run(), log: lines.join("\n") };
+  } finally {
+    spy.mockRestore();
+  }
+};
+
+test("release source validation emits its original SHA in-process", () => {
+  const repo = repoName;
+  const ci = validRun();
   const source = (run: unknown, mode: string, sha = commit, id = "12345") => {
-    const curl = `curl() { printf '%s\\n' '${JSON.stringify(run)}'; }\n`;
-    writeFileSync(output, "");
-    return Bun.spawnSync([bash, "-eo", "pipefail"], {
-      stdin: Buffer.from(curl + step.run!),
-      env: {
-        ...process.env,
-        RUN_ID: id,
-        READBACK_ONLY: mode,
-        GITHUB_SHA: sha,
-        GITHUB_REPOSITORY: repo,
-        GITHUB_OUTPUT: output,
-      },
-      timeout: 2_000,
-    });
+    assertRunId(id);
+    return sourceSha(run, { repo, sha, recovery: mode === "true" });
   };
-  const rejects = (result: ReturnType<typeof source>, label: string) => {
-    const stderr = result.stderr.toString();
-    expect(result.exitCode, `${label}\n${stderr}`).not.toBe(0);
+  const rejection = (check: () => unknown): string => {
+    try {
+      check();
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    throw new Error("expected rejection");
+  };
+  const fieldErrors: Record<string, string> = {
+    repository: "release source: repository.full_name mismatch",
+    head_repository: "release source: head_repository.full_name mismatch",
+    path: "release source: path mismatch",
+    event: "release source: event mismatch",
+    head_branch: "release source: head_branch mismatch",
+    head_sha: "release source: head_sha invalid",
+    status: "release source: status mismatch",
+    conclusion: "release source: conclusion mismatch",
   };
   const older = "a".repeat(40);
   for (const mode of ["true", "false"]) {
-    const result = source(ci, mode, mode === "true" ? older : commit);
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    expect(readFileSync(output, "utf8").trim()).toBe("source_sha=" + commit);
-    rejects(source(ci, mode, commit, "invalid"), "invalid run ID");
+    expect(source(ci, mode, mode === "true" ? older : commit)).toBe(commit);
+    expect(rejection(() => source(ci, mode, commit, "invalid"))).toBe(
+      "release source: invalid run id",
+    );
     for (const field of Object.keys(ci))
-      rejects(source({ ...ci, [field]: "wrong" }, mode), field);
+      expect(rejection(() => source({ ...ci, [field]: "wrong" }, mode))).toBe(
+        fieldErrors[field]!,
+      );
   }
-  rejects(source(ci, "false", older), "different dispatch SHA");
+  expect(rejection(() => source(ci, "false", older))).toBe(
+    "release source: head_sha differs from dispatch sha",
+  );
+}, 15_000);
+
+test("release source CLI writes the exact output contract in-process", async () => {
+  const writes: string[] = [];
+  const calls: Parameters<SourceFetch>[] = [];
+  const fetchRun: SourceFetch = (url, init) => {
+    calls.push([url, init]);
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(validRun()),
+    });
+  };
+  const result = await quiet(() =>
+    runSource(cliEnv(), fetchRun, (text) => writes.push(text)),
+  );
+  expect(result.code).toBe(0);
+  expect(writes).toEqual([`source_sha=${commit}\n`]);
+  expect(calls).toEqual([
+    [
+      "https://api.github.com/repos/harshanandak/forge/actions/runs/12345",
+      { headers: { Authorization: "Bearer token" }, redirect: "manual" },
+    ],
+  ]);
+}, 15_000);
+
+test("release source CLI policy rejection writes nothing and exits nonzero", async () => {
+  const writes: string[] = [];
+  const fetchRun: SourceFetch = () =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ...validRun(), conclusion: "failure" }),
+    });
+  const result = await quiet(() =>
+    runSource(cliEnv(), fetchRun, (text) => writes.push(text)),
+  );
+  expect({ code: result.code, writes, log: result.log }).toEqual({
+    code: 1,
+    writes: [],
+    log: "release source: conclusion mismatch",
+  });
+}, 15_000);
+
+test("release source CLI rejects non-2xx and redirect responses", async () => {
+  for (const status of [500, 302]) {
+    const writes: string[] = [];
+    const fetchRun: SourceFetch = () =>
+      Promise.resolve({
+        ok: false,
+        status,
+        json: () => Promise.resolve(validRun()),
+      });
+    const result = await quiet(() =>
+      runSource(cliEnv(), fetchRun, (text) => writes.push(text)),
+    );
+    expect({ code: result.code, writes, log: result.log }).toEqual({
+      code: 1,
+      writes: [],
+      log: `release source: GitHub API HTTP ${status}`,
+    });
+  }
+}, 15_000);
+
+test("release source CLI never logs response text from unreadable JSON", async () => {
+  const writes: string[] = [];
+  const fetchRun: SourceFetch = () =>
+    Promise.resolve(new Response("DEPLOYMENT_DETAIL", { status: 200 }));
+  const result = await quiet(() =>
+    runSource(cliEnv(), fetchRun, (text) => writes.push(text)),
+  );
+  expect(result.code).toBe(1);
+  expect(writes).toEqual([]);
+  expect(result.log).toBe("release source: unreadable JSON");
+  expect(result.log).not.toContain("DEPLOYMENT_DETAIL");
+}, 15_000);
+
+test("release source CLI never logs fetch failure details", async () => {
+  const writes: string[] = [];
+  const fetchRun: SourceFetch = () =>
+    Promise.reject(
+      new Error("proxy saw DEPLOYMENT_DETAIL at https://api.github.com"),
+    );
+  const result = await quiet(() =>
+    runSource(cliEnv(), fetchRun, (text) => writes.push(text)),
+  );
+  expect(result.code).toBe(1);
+  expect(writes).toEqual([]);
+  expect(result.log).toBe("release source: GitHub API request failed");
+  expect(result.log).not.toContain("DEPLOYMENT_DETAIL");
+  expect(result.log).not.toContain("https://api.github.com");
+}, 15_000);
+
+test("release workflow validates the source run with Bun after setup", () => {
+  const steps = release.jobs.verify!.steps;
+  const sourceIndex = steps.findIndex(
+    (step) => step.run?.trim() === "bun tools/release/source.ts",
+  );
+  const setupIndex = steps.findIndex((step) =>
+    step.uses?.startsWith(
+      "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    ),
+  );
+  expect({
+    run: steps[sourceIndex]?.run?.trim(),
+    setupBeforeSource: setupIndex !== -1 && setupIndex < sourceIndex,
+  }).toEqual({
+    run: "bun tools/release/source.ts",
+    setupBeforeSource: true,
+  });
 }, 15_000);
 
 test("inline readback sends unique nonces and rejects unverifiable HTTP 200s", () => {

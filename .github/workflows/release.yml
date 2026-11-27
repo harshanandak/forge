@@ -29,20 +29,15 @@ jobs:
       source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with: { bun-version: "1.4.4" }
       - name: Validate the successful main CI run
         id: source
         env:
           RUN_ID: ${{ inputs.run_id }}
           READBACK_ONLY: ${{ inputs.readback_only }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || exit 1
-          curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" |
-            jq -er --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg recovery "$READBACK_ONLY" \
-              'select(.repository.full_name == $repo and .head_repository.full_name == $repo and .path == ".github/workflows/ci.yml" and .event == "push" and .head_branch == "main" and .status == "completed" and .conclusion == "success")
-               | select((.head_sha | test("\\A[a-f0-9]{40}\\z")) and ($recovery == "true" or .head_sha == $sha))
-               | "source_sha=\(.head_sha)"' >> "$GITHUB_OUTPUT"
+        run: bun tools/release/source.ts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           {
@@ -53,8 +48,6 @@ jobs:
           }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "24" }
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with: { bun-version: "1.4.4" }
       - run: npm install --global npm@11.21.0
       - id: check
         env:
