@@ -174,3 +174,105 @@ test(
   },
   timeout,
 );
+
+type ValidationFixture = Awaited<ReturnType<typeof baseFixture>>;
+type ReplyForTest = (
+  threadId: string,
+  text: string,
+) => ReturnType<ValidationFixture["core"]["reply"]>;
+
+async function holdConfirmedJournal(
+  f: ValidationFixture,
+  reply: ReplyForTest,
+  threadId: string,
+  text: string,
+) {
+  f.db.exec(
+    "CREATE TRIGGER block_cleanup BEFORE DELETE ON meta WHEN OLD.key LIKE 'agent-post:%' BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END",
+  );
+  try {
+    return value(await reply(threadId, text)).chatMessageId;
+  } finally {
+    f.db.exec("DROP TRIGGER block_cleanup");
+  }
+}
+
+function rewriteJournal(
+  f: BaseFixture,
+  key: string,
+  rewrite: (value: string) => string,
+) {
+  const stored = journalValues(f, key)[0];
+  if (stored === undefined) throw new Error("Journal row missing");
+  const replacement = rewrite(stored);
+  if (replacement === stored) throw new Error("Journal rewrite did not apply");
+  f.db.prepare("UPDATE meta SET value = ? WHERE key = ?").run(replacement, key);
+}
+
+test(
+  "startup keeps a row whose projection fails and recovers other threads",
+  async () => {
+    const { f, reply } = await setupThreads();
+    expect(f.db.prepare("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
+    expect(await holdConfirmedJournal(f, reply, thread, "bad outcome")).toBe(
+      "message-1",
+    );
+    expect(await holdConfirmedJournal(f, reply, threadB, "valid outcome")).toBe(
+      "message-2",
+    );
+    rewriteJournal(f, journalKey(thread), (stored) => {
+      const parsed = JSON.parse(stored) as Record<string, unknown>;
+      parsed.sessionId = "missing-session";
+      return JSON.stringify(parsed);
+    });
+
+    createCoreContext(f.deps);
+
+    expect(transcriptIds(f, thread)).toEqual([]);
+    expect(transcriptIds(f, threadB)).toEqual(["message-2"]);
+    expect(journalValues(f, journalKey(thread))).toHaveLength(1);
+    expect(journalValues(f, journalKey(threadB))).toEqual([]);
+    expect(f.logged).toContainEqual([
+      "agent_post_journal_projection_failed",
+      { key: journalKey(thread) },
+    ]);
+  },
+  timeout,
+);
+
+for (const at of ["0.5", "1e400"]) {
+  test(
+    `an invalid journal timestamp ${at} is kept warned and fails closed`,
+    async () => {
+      const { f, reply } = await setupThreads();
+      expect(
+        await holdConfirmedJournal(f, reply, thread, "timed outcome"),
+      ).toBe("message-1");
+      rewriteJournal(f, journalKey(thread), (stored) =>
+        stored.replace(/"at":\d+/, `"at":${at}`),
+      );
+
+      createCoreContext(f.deps);
+
+      expect(f.logged).toContainEqual([
+        "agent_post_journal_invalid",
+        { key: journalKey(thread) },
+      ]);
+      expect(journalValues(f, journalKey(thread))[0]).toContain(`"at":${at}`);
+      const failure = caught(() => recoverAgentPosts(f.context, thread));
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure instanceof Error ? failure.name : "").toBe(
+        "AgentPostJournalError",
+      );
+      const writes = f.posts().length;
+      const blocked = await reply(thread, "blocked");
+      expect(blocked).toMatchObject({
+        ok: false,
+        error: { code: "CHAT_UNAVAILABLE" },
+      });
+      expect(f.posts()).toHaveLength(writes);
+      expect(journalValues(f, journalKey(thread))).toHaveLength(1);
+    },
+    timeout,
+  );
+}
