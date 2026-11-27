@@ -1,4 +1,4 @@
-import type { Buffer } from "node:buffer";
+import { Buffer } from "node:buffer";
 import { execFileSync, spawnSync } from "node:child_process";
 import { gitExecutable } from "../git-executable.ts";
 
@@ -96,7 +96,6 @@ export function readCommittedTexts(
     {
       cwd: root,
       input: oids.map((oid) => `${oid}\n`).join(""),
-      encoding: "buffer",
       timeout: 15_000,
       maxBuffer: oids.length * (MAX_BLOB_BYTES + 64) + 1024,
       windowsHide: true,
@@ -110,7 +109,10 @@ export function readCommittedTexts(
         ? batch.stderr.toString("utf8")
         : "Incomplete committed blob read",
     );
-  const bodies = parseCatFileBatch(batch.stdout, oids);
+  const output: unknown = batch.stdout;
+  if (!Buffer.isBuffer(output))
+    throw new Error("Incomplete committed blob read");
+  const bodies = parseCatFileBatch(output, oids);
   for (const [index, file] of files.entries()) {
     const body = bodies[index];
     if (body === undefined) throw new Error("Incomplete batch blob output");
