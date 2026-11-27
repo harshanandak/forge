@@ -7,7 +7,7 @@ import type {
   OperationDeclaration,
   OperationDocs,
 } from "../generated/types.ts";
-import type { SchemaObject } from "./schema.ts";
+import { withDateTimeAssertion, type SchemaObject } from "./schema.ts";
 import { mcpToolName, parseOperationName } from "./naming.ts";
 
 export const DEFAULT_MCP_BUDGET = 40;
@@ -104,10 +104,10 @@ export function projectMcpTool(
     name,
     title: docs.title,
     description: `${notice}${description}`,
-    inputSchema: candidate.inputSchema,
+    inputSchema: withDateTimeAssertion(candidate.inputSchema),
     ...(candidate.outputSchema === undefined
       ? {}
-      : { outputSchema: candidate.outputSchema }),
+      : { outputSchema: withDateTimeAssertion(candidate.outputSchema) }),
     annotations: mcpAnnotations(declaration),
   };
 }

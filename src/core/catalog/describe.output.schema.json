@@ -11,6 +11,9 @@
     "admitted": {
       "type": "boolean"
     },
+    "builtin": {
+      "type": "boolean"
+    },
     "docs": {
       "type": "object"
     },
