@@ -36,7 +36,6 @@ if (!("timingSafeEqual" in crypto.subtle))
 
 const timeout = 30_000;
 const time = Date.now();
-const activatedAt = new Date(time + 1).toISOString();
 const env = { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" };
 const open = () => guardFixture(env);
 type Fixture = ReturnType<typeof open>;

@@ -14,6 +14,10 @@ const actor = { kind: "agent", id: "fixture" } as const;
 const session = { id: "fixture" } as const;
 const sha = "0123456789abcdef0123456789abcdef01234567";
 const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(486)}`);
+const mediumFiles = Array.from(
+  { length: 1024 },
+  () => `src/${"a".repeat(450)}`,
+);
 const wideFiles = Array.from({ length: 256 }, () => `src/${"é".repeat(996)}`);
 const globals = globalThis as Record<string, unknown>;
 const hadFail = "fail" in globals;
@@ -214,13 +218,24 @@ test("file declaration updates keep the revision and lease fence", async () => {
       expectRevision: 1,
       expectedFiles: wideFiles,
     });
+    await p.call("issue.update", {
+      id: "forge-1",
+      expectRevision: 2,
+      actualFiles: mediumFiles,
+    });
     const beforeLarge = p.owner.get(namespace, "issue:work-1")?.value;
     const large = await p.refusal("issue.update", {
       id: "forge-1",
-      expectRevision: 2,
+      expectRevision: 3,
       actualFiles: longFiles,
     });
     expect(large.code).toBe("LIMIT_EXCEEDED");
+    expect(p.owner.get(namespace, "issue:work-1")?.value).toEqual(beforeLarge);
+    const close = await p.refusal("issue.close", {
+      id: "forge-1",
+      withoutReceipt: "c".repeat(2_000),
+    });
+    expect(close.code).toBe("LIMIT_EXCEEDED");
     expect(p.owner.get(namespace, "issue:work-1")?.value).toEqual(beforeLarge);
     await p.call("issue.release", { id: "forge-1" });
     const lost = await p.refusal("issue.update", {

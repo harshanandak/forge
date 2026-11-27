@@ -6983,10 +6983,22 @@ const operations: Operations<WorkOperations> = {
         : { receipt: input.receipt }),
       ...(input.reason === undefined ? {} : { closeReason: input.reason }),
     };
-    const written = persist(state, key(id), value, record.revision);
-    const { closeReason: _reason, ...view } = written.value as Stored & {
+    const { closeReason: _reason, ...view } = value as Stored & {
       closeReason?: string;
     };
+    boundedOutput(
+      item(
+        state,
+        outputCandidate(
+          key(id),
+          view,
+          record.revision + 1,
+          new Date(state.now()).toISOString(),
+        ),
+        ids,
+      ),
+    );
+    const written = persist(state, key(id), value, record.revision);
     return item(state, { ...written, value: view }, ids);
   },
   "issue.comment": ({ input, services, config }) => {
