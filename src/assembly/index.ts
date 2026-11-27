@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { Buffer } from "node:buffer";
 import {
   createConfig,
   createConfigOperations,
@@ -69,6 +70,8 @@ import type {
   BoundContext,
   McpExposure,
   ResultEnvelope,
+  StateRecord,
+  TrackerItem,
 } from "../generated/types.ts";
 import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { record } from "../surface/dispatch.ts";
@@ -79,6 +82,8 @@ import { missingOperationHint } from "./stale-build.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
 import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
+import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
+import { WORK_MAP_LIMITS } from "./work-map-read.ts";
 import {
   blockCapture,
   resolveBlock,
@@ -148,6 +153,9 @@ import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
   createAssemblyProviders,
+  createGitScope,
+  gitCapability,
+  resolveOutside,
   createReceiptsService,
   processCleanupBudgetMs,
   idPrefixObservation,
@@ -448,6 +456,7 @@ export async function createAssembly(
     inProject: boolean;
     operatorExport: boolean;
     warnings: Array<ResultEnvelope["warnings"][number]>;
+    workMap?: Awaited<ReturnType<typeof readWorkWarnings>>;
     configWarningsCollected: boolean;
     warnUnknownConfig: (name: string, paths: readonly string[]) => void;
     captured(source: BlockSource): CapturedBlock;
@@ -687,6 +696,169 @@ export async function createAssembly(
     if (exposure?.readOnly && declaration.effects.length > 0)
       refuse("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
   }
+  async function workAdvisory(
+    candidateId: string,
+    workInstance: string,
+    command: (
+      op: string,
+      input: object,
+      signal: AbortSignal,
+    ) => Promise<unknown>,
+    deadline = Infinity,
+    parent?: AbortSignal,
+  ): ReturnType<typeof readWorkWarnings> {
+    const timeoutMs = 5000;
+    try {
+      if (deadline - Date.now() < 4 * timeoutMs)
+        throw new Error("Insufficient advisory time");
+      const timer = AbortSignal.timeout(timeoutMs);
+      const signal = parent ? AbortSignal.any([parent, timer]) : timer;
+      const scope = {
+        op: "work-file-map",
+        effects: ["environment:read", "external:process", "files:read"],
+        signal,
+        deadline: Date.now() + timeoutMs,
+        processContainment: "supervised" as const,
+      };
+      const process = providers.process(scope);
+      const environment = providers.environment(scope);
+      const env = environment.select([
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "WINDIR",
+        "ComSpec",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+      ]);
+      const git = gitCapability(process, env, createGitScope(stateRoot, root));
+      const run = { cwd: stateRoot, env, signal, timeoutMs };
+      let bytes: number = WORK_MAP_LIMITS.outputBytes;
+      const charge = (size: number) => {
+        bytes -= size;
+        if (bytes < 0) throw new Error("Work map output limit reached");
+      };
+      const read = async (op: string, input: object) => {
+        if (bytes <= 0) throw new Error("Work map output limit reached");
+        const result = await command(op, input, signal);
+        charge(Buffer.byteLength(JSON.stringify(result)));
+        return result;
+      };
+      const branches = new Map<string, string>();
+      const files = await providers.openFiles(scope).catch(() => undefined);
+      if (files) {
+        try {
+          const { boundLaneRegistry } =
+            await import("../blocks/work/bound-lane.ts");
+          for (const lane of boundLaneRegistry(files.value).lanes)
+            branches.set(
+              lane.issueId ?? lane.issue.replace(/^.*-/, "work-"),
+              lane.branch,
+            );
+        } catch {
+          branches.clear();
+        } finally {
+          await files.close().catch(() => {});
+        }
+      }
+      return await readWorkWarnings(
+        {
+          now: options.providers?.cloudLogin?.now ?? Date.now,
+          process: {
+            resolve: () => git.executable(),
+            run: process.run.bind(process),
+          },
+          async issues({ limit }) {
+            const page = (await read("issue.list", {
+              status: "open",
+              limit,
+            })) as {
+              items: TrackerItem[];
+              truncated?: boolean;
+            };
+            return { items: page.items, truncated: page.truncated === true };
+          },
+          async deliveries(id, { limit }) {
+            const { records } = (await read("issue.links", { id })) as {
+              records: StateRecord[];
+            };
+            const urls = records.flatMap(({ value }) => {
+              const link = record(value);
+              return link?.relation === "delivers" &&
+                typeof link.url === "string"
+                ? [link.url]
+                : [];
+            });
+            return {
+              items: urls.slice(0, limit),
+              truncated: urls.length > limit,
+            };
+          },
+          async pull(url, { maxBytes }) {
+            if (
+              bytes <= 0 ||
+              !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*$/i.test(
+                url,
+              )
+            )
+              throw new Error("PR lookup unavailable");
+            const gh = resolveOutside(process, "gh", env, [stateRoot, root]);
+            if (gh.kind !== "resolved")
+              throw new Error("GitHub CLI unavailable");
+            const result = await process.run(
+              gh,
+              ["pr", "view", url, "--json", "state,headRefName"],
+              {
+                ...run,
+                env: {
+                  ...env,
+                  ...environment.select(["GH_TOKEN", "GITHUB_TOKEN"]),
+                },
+                maxOutputBytes: Math.min(maxBytes, bytes),
+              },
+            );
+            charge(Buffer.byteLength(result.stdout + result.stderr));
+            if (result.exitCode !== 0 || result.timedOut || result.truncated)
+              throw new Error("PR state unavailable");
+            const row = record(JSON.parse(result.stdout) as unknown);
+            const state = row?.state;
+            if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED")
+              throw new Error("Unknown PR state");
+            return {
+              state,
+              ...(typeof row?.headRefName === "string"
+                ? { branch: row.headRefName }
+                : {}),
+            };
+          },
+        },
+        {
+          ...run,
+          defaultRef: "refs/remotes/origin/HEAD",
+          workInstance,
+          candidateId,
+        },
+        (id) => branches.get(id.replace(/^.*-/, "work-")),
+      );
+    } catch {
+      return {
+        warnings: [
+          {
+            code: "WORK_FILE_MAP_INCOMPLETE",
+            message:
+              "File overlap map incomplete (read unavailable). Some overlap may be missing.",
+          },
+        ],
+        omitted: 0,
+      };
+    }
+  }
+
   function withCallWarnings(
     call: CallScope,
     result: ResultEnvelope,
@@ -698,7 +870,7 @@ export async function createAssembly(
         // Preserve recovery operations when the project file is unreadable.
       }
     }
-    return {
+    const envelope = {
       ...result,
       warnings: [
         ...call.warnings.filter(
@@ -712,6 +884,12 @@ export async function createAssembly(
         ),
       ],
     };
+    if (envelope.ok && call.workMap)
+      envelope.warnings = appendWorkMapWarnings(
+        envelope.warnings,
+        call.workMap,
+      );
+    return envelope;
   }
   function collectCompatibilityWarnings(
     call: CallScope,
@@ -1984,6 +2162,50 @@ export async function createAssembly(
           if (context.variant === "device" && context.device.id !== deviceRoot)
             refuse("INPUT_CONFLICT", "State context belongs to another device");
         };
+        const workOperation =
+          target?.builtin === true && target.blockId === "forge/work"
+            ? target.declaredOp
+            : undefined;
+        const findWork = (op: string) =>
+          current.candidates.find(
+            (entry) =>
+              entry.builtin === true &&
+              entry.blockId === "forge/work" &&
+              entry.declaredOp === op,
+          );
+        const adviseWork = async (
+          id: string,
+          deadline?: number,
+          parent = signal,
+        ) => {
+          call.workMap = await workAdvisory(
+            id,
+            current.catalog.resolve(request.op).operation.instance,
+            async (op, input, signal) => {
+              const nested = findWork(op);
+              if (!nested)
+                refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
+              const answer = await (mcp ? mcpCatalog : catalog).invoke(
+                { ...request, op: nested.op, input },
+                signal,
+              );
+              if (!answer.ok) throw new ForgeFailure(answer.error);
+              return answer.result;
+            },
+            deadline,
+            parent,
+          );
+        };
+        const afterClaim = async (result: ResultEnvelope) => {
+          const id = result.ok && record(result.result)?.id;
+          if (
+            workOperation === "issue.claim" &&
+            typeof id === "string" &&
+            !request.dryRun
+          )
+            await adviseWork(id);
+          return result;
+        };
         const fromCloud = (runtime: Pick<Runtime, "preflight">) =>
           selectCloud(
             {
@@ -1999,12 +2221,7 @@ export async function createAssembly(
                   project,
                   deviceState,
                   async (op, input, generation, release) => {
-                    const nested = current.candidates.find(
-                      (entry) =>
-                        entry.builtin === true &&
-                        entry.blockId === "forge/work" &&
-                        entry.declaredOp === op,
-                    );
+                    const nested = findWork(op);
                     if (!nested)
                       refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
                     const nestedRequest = {
@@ -2032,6 +2249,9 @@ export async function createAssembly(
                     env,
                     deviceRoot,
                     now: options.providers?.cloudLogin?.now ?? Date.now,
+                    ...(workOperation === "lane.start"
+                      ? { beforeAttach: adviseWork }
+                      : {}),
                     ...(signal === undefined ? {} : { signal }),
                   },
                 ),
@@ -2048,7 +2268,7 @@ export async function createAssembly(
         const routed = route === "cloud" || route === "coordinator";
         if (routed) {
           const cloud = await fromCloud(new Runtime(current.catalog, trust));
-          if (cloud) return cloud;
+          if (cloud) return afterClaim(cloud);
         }
         // The owner's words for memory forget, restore and adopt are relayed through Forge's own
         // approval: a request for these exact arguments, then the reply and where it was said.
@@ -2355,6 +2575,12 @@ export async function createAssembly(
                   );
                 }
               }
+              if (
+                workOperation === "lane.start" ||
+                workOperation === "lane.attempt"
+              )
+                clients.adviseWork = (id: string) =>
+                  adviseWork(id, scope.deadline, scope.signal);
               return {
                 ownership: "owned",
                 value: Object.freeze(clients),
@@ -2468,7 +2694,7 @@ export async function createAssembly(
         }
         if (!routed) {
           const cloud = await fromCloud(runtime);
-          if (cloud) return cloud;
+          if (cloud) return afterClaim(cloud);
         }
         const result = await runtime.invoke(
           request,
@@ -2477,7 +2703,7 @@ export async function createAssembly(
         return checkResult(
           runtimeCatalog,
           request.op,
-          result,
+          await afterClaim(result),
           mergeOutcome.result(),
         );
       } catch (error) {
