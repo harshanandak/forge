@@ -10,6 +10,7 @@ export const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
 
 class SchemaLimit extends Error {}
 type SchemaBudget = (depth: number) => void;
+type ValidationBudget = (depth: number, pointer?: string) => void;
 
 export function schemaBudget(maxDepth = 64, maxNodes = 20_000): SchemaBudget {
   let remaining = maxNodes;
@@ -18,6 +19,26 @@ export function schemaBudget(maxDepth = 64, maxNodes = 20_000): SchemaBudget {
       throw new SchemaLimit(`Schema depth limit exceeded (${maxDepth})`);
     if (--remaining < 0)
       throw new SchemaLimit(`Schema work budget exceeded (${maxNodes} nodes)`);
+  };
+}
+
+const MAX_VALIDATION_DEPTH = 256;
+const MAX_VALIDATION_VISITS = 1_000_000;
+const MAX_SCHEMA_VISITS_PER_VALUE = 4_096;
+
+function validationBudget(): ValidationBudget {
+  const spend = schemaBudget(MAX_VALIDATION_DEPTH, MAX_VALIDATION_VISITS);
+  const visits = new Map<string, number>();
+  return (depth, pointer) => {
+    spend(depth);
+    if (pointer === undefined) return;
+    const count = (visits.get(pointer) ?? 0) + 1;
+    if (count > MAX_SCHEMA_VISITS_PER_VALUE) {
+      throw new SchemaLimit(
+        `Schema work budget exceeded at ${pointer || "/"} (${MAX_SCHEMA_VISITS_PER_VALUE} visits)`,
+      );
+    }
+    visits.set(pointer, count);
   };
 }
 
@@ -377,7 +398,7 @@ export class SchemaRegistry {
     value: unknown,
     detailed: boolean,
   ): SchemaProblem[] {
-    const spend = schemaBudget(256, 100_000);
+    const spend = validationBudget();
     const problems = this.#evaluate(
       located.schema,
       located.base,
@@ -437,7 +458,7 @@ export class SchemaRegistry {
     schema: JsonSchema,
     base: string,
     value: unknown,
-    spend: SchemaBudget,
+    spend: ValidationBudget,
   ): ReadonlyMap<string, ReadonlySet<string>> {
     const declared = new Map<string, Set<string>>();
     const seen = new Set<string>();
@@ -448,7 +469,7 @@ export class SchemaRegistry {
       at: string,
       depth: number,
     ): void => {
-      spend(depth);
+      spend(depth, at);
       if (!isObject(node)) return;
       const descend = (
         child: unknown,
@@ -705,11 +726,11 @@ export class SchemaRegistry {
     base: string,
     value: unknown,
     at: string,
-    spend: SchemaBudget,
+    spend: ValidationBudget,
     depth: number,
     detailed = false,
   ): SchemaProblem[] {
-    spend(depth);
+    spend(depth, at);
     if (schema === true) return [];
     if (schema === false) {
       return [
