@@ -52,8 +52,9 @@ export function visible(
 
 /** Core entries carry their block and operation for admission only; their public listing shows neither, as before. */
 function publicEntry(entry: McpCandidate): McpCandidate {
-  if (!discoveryOperations.includes(entry)) return entry;
-  const { blockId: _block, declaredOp: _declared, ...shown } = entry;
+  const { projectSchema: _project, ...candidate } = entry;
+  if (!discoveryOperations.includes(entry)) return candidate;
+  const { blockId: _block, declaredOp: _declared, ...shown } = candidate;
   return shown;
 }
 

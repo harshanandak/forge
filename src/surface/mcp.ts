@@ -4,47 +4,67 @@ import {
   type McpCandidate,
 } from "../contract/mcp.ts";
 import { mcpToolName } from "../contract/naming.ts";
-import type { McpExposure } from "../generated/types.ts";
+import { bundleSchema } from "../contract/schema-bundle.ts";
+import { SchemaRegistry, type JsonSchema } from "../contract/schema.ts";
+import { SCHEMA_DOCUMENTS } from "../generated/schemas.ts";
+import type { McpExposure, McpTool } from "../generated/types.ts";
 import type { McpHandlers } from "../ports/mcp-transport.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import { dispatch, type CallOptions } from "./dispatch.ts";
 import { discoveryOperations } from "./discovery.ts";
 
 /** MCP output schemas describe the shared result envelope, including failures. */
-function enveloped(candidate: McpCandidate): McpCandidate {
+function enveloped(tool: McpTool, candidate: McpCandidate): McpTool {
+  const project = (side: "input" | "output", schema: JsonSchema) => {
+    if (candidate.projectSchema !== undefined)
+      return candidate.projectSchema(side);
+    const document = typeof schema === "boolean" ? { allOf: [schema] } : schema;
+    const id =
+      typeof document.$id === "string"
+        ? document.$id
+        : "https://mcp.invalid/schema";
+    return bundleSchema(
+      new SchemaRegistry([...SCHEMA_DOCUMENTS, { ...document, $id: id }]),
+      id,
+    );
+  };
+  const inputSchema = project("input", tool.inputSchema);
+  if (tool.outputSchema === undefined) return { ...tool, inputSchema };
+  const output = project("output", tool.outputSchema);
   // The generic dispatcher already returns the target's canonical envelope.
   if (candidate.op === "catalog.call")
     return {
-      ...candidate,
-      outputSchema: { type: "object", ...candidate.outputSchema },
+      ...tool,
+      inputSchema,
+      outputSchema: { type: "object", ...output },
     };
+  const { $defs, $schema, ...result } = output;
   return {
-    ...candidate,
-    ...(candidate.outputSchema === undefined
-      ? {}
-      : {
-          outputSchema: {
-            type: "object",
-            oneOf: [
-              {
-                properties: {
-                  ok: { const: true },
-                  status: { const: "OK" },
-                  result: candidate.outputSchema,
-                },
-                required: ["ok", "op", "status", "result", "warnings"],
-              },
-              {
-                properties: {
-                  ok: { const: false },
-                  status: { enum: ["FAIL", "INCOMPLETE"] },
-                  result: candidate.outputSchema,
-                },
-                required: ["ok", "status", "error", "warnings"],
-              },
-            ],
+    ...tool,
+    inputSchema,
+    outputSchema: {
+      type: "object",
+      $schema,
+      ...($defs === undefined ? {} : { $defs }),
+      oneOf: [
+        {
+          properties: {
+            ok: { const: true },
+            status: { const: "OK" },
+            result,
           },
-        }),
+          required: ["ok", "op", "status", "result", "warnings"],
+        },
+        {
+          properties: {
+            ok: { const: false },
+            status: { enum: ["FAIL", "INCOMPLETE"] },
+            result,
+          },
+          required: ["ok", "status", "error", "warnings"],
+        },
+      ],
+    },
   };
 }
 
@@ -60,7 +80,7 @@ export function createMcpHandlers(
   )
     throw new RangeError("MCP budget must be a non-negative safe integer.");
   const candidates = catalog.list();
-  const selected = selectMcpTools(candidates.map(enveloped), exposure);
+  const selected = selectMcpTools(candidates, exposure);
   const byName = new Map(
     selected.tools.map((tool) => [
       tool.name,
@@ -91,11 +111,11 @@ export function createMcpHandlers(
   };
   return {
     listTools: () => [
-      ...selected.tools,
+      ...selected.tools.map((tool) => enveloped(tool, byName.get(tool.name)!)),
       ...discoveryOperations.flatMap((c) => {
         if (exposure.readOnly && c.declaration.effects.length > 0) return [];
-        const tool = projectMcpTool(enveloped(c));
-        return tool === undefined ? [] : [tool];
+        const tool = projectMcpTool(c);
+        return tool === undefined ? [] : [enveloped(tool, c)];
       }),
     ],
     callTool: async (name, args, signal) => {

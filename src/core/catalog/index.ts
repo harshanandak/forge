@@ -2,12 +2,14 @@ import type { BorrowedHandle } from "../../ports/lifetime.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { inputError } from "../../contract/input-error.ts";
 import { SCHEMA_BASE } from "../../contract/documents.ts";
+import { bundleSchema } from "../../contract/schema-bundle.ts";
 import {
   checkProvidedInterface,
   resolveComposition,
 } from "../../contract/composition.ts";
 import {
   type JsonSchema,
+  type SchemaObject,
   type SchemaProblem,
   SchemaRegistry,
   isSchemaObject,
@@ -122,6 +124,15 @@ export class CapturedBlock {
       const schema: unknown = JSON.parse(this.text(name));
       if (!isSchemaObject(schema) && typeof schema !== "boolean")
         refuse("INPUT_INVALID", "schema must be an object or boolean");
+      if (
+        isSchemaObject(schema) &&
+        schema.$id !== undefined &&
+        schema.$id !== uri
+      )
+        refuse(
+          "INPUT_INVALID",
+          `Unsupported schema $id in ${name}; relative references use the captured path`,
+        );
       const document = {
         ...(typeof schema === "boolean" ? { allOf: [schema] } : schema),
         $id: uri,
@@ -246,6 +257,10 @@ export class CapturedBlock {
 
   schema(path: string): unknown {
     return freeze(JSON.parse(this.text(path)) as unknown);
+  }
+
+  mcpSchema(path: string): SchemaObject {
+    return bundleSchema(this.#registry, capturedUri(path, this.#base));
   }
 }
 

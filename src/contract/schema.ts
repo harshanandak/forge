@@ -7,6 +7,20 @@ export type SchemaObject = Readonly<Record<string, unknown>>;
 export type JsonSchema = boolean | SchemaObject;
 
 export const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+export const COMPOSITION_KEYWORDS: ReadonlySet<string> = new Set([
+  "allOf",
+  "anyOf",
+  "oneOf",
+]);
+export const SCHEMA_CHILD_KEYWORDS: ReadonlySet<string> = new Set([
+  "items",
+  "additionalProperties",
+  "propertyNames",
+  "not",
+  "if",
+  "then",
+  "else",
+]);
 
 class SchemaLimit extends Error {}
 type SchemaBudget = (depth: number) => void;
@@ -546,9 +560,25 @@ export class SchemaRegistry {
     const segments = pointerFragment(hash === -1 ? "" : uri.slice(hash + 1));
     if (segments === undefined) return undefined;
     let node: unknown = document;
-    for (const segment of segments) {
-      if (!isObject(node) || !Object.hasOwn(node, segment)) return undefined;
-      node = node[segment];
+    for (let index = 0; index < segments.length;) {
+      const keyword = segments[index++]!;
+      if (!isObject(node) || !Object.hasOwn(node, keyword)) return undefined;
+      node = node[keyword];
+      if (keyword === "$defs" || keyword === "properties") {
+        const name = segments[index++];
+        if (name === undefined || !isObject(node) || !Object.hasOwn(node, name))
+          return undefined;
+        node = node[name];
+      } else if (COMPOSITION_KEYWORDS.has(keyword)) {
+        const position = segments[index++];
+        if (
+          !Array.isArray(node) ||
+          position === undefined ||
+          !/^(0|[1-9][0-9]*)$/.test(position)
+        )
+          return undefined;
+        node = node[Number(position)];
+      } else if (!SCHEMA_CHILD_KEYWORDS.has(keyword)) return undefined;
     }
     return typeof node === "boolean" || isObject(node)
       ? { schema: node, base }
