@@ -68,7 +68,10 @@ async function openServer(
       },
     },
   });
-  const server = createServer({ requireHostHeader: false }, listener);
+  const server = createServer(
+    { requireHostHeader: false },
+    (input, output) => void listener(input, output),
+  );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();

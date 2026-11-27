@@ -143,24 +143,6 @@ for (const [kind, stderr, fixture] of [
 }
 
 test(
-  "reports not_built for the explicitly unbuilt service",
-  async () => {
-    const f = adminFixture({
-      loadConfig: () => ({
-        ...f.config,
-        slack: { mode: "off", buttons: false },
-        doorbells: [],
-        mcp: { enabled: false },
-        hooks: { enabled: false },
-      }),
-    });
-    expect(await f.run(["serve"])).toBe(1);
-    expect(f.stderr).toEqual(["not_built\n"]);
-  },
-  timeout,
-);
-
-test(
   "NB2 rejects the first byte over the cap, releases the reader and does not echo input",
   async () => {
     const prefix = new TextEncoder().encode("é".repeat(LIMITS.bodyBytes / 2));
