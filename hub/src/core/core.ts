@@ -1,6 +1,7 @@
 import type { ChatInboundHandlers, ChatPort } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import type { CoreDeps } from "../contract/runtime.ts";
+import { recoverAgentPosts, type SettledAgentPost } from "./agent-posts.ts";
 import { bestEffort, type Notice, notify, postNotice } from "./doorbell.ts";
 import { delivery, refused } from "./inbox.ts";
 import { createReply } from "./reply.ts";
@@ -24,6 +25,7 @@ export interface CoreContext {
   readonly store: CoreStore;
   readonly chat: ChatPort | undefined;
   readonly waiters: ReturnType<typeof createWaiters>;
+  readonly pendingAgentPosts: Map<string, SettledAgentPost>;
   readonly threadGates: Map<string, Promise<void>>;
   readonly notify: (notice: Notice) => Promise<void>;
 }
@@ -42,11 +44,13 @@ export const createCoreContext: CreateCoreContext = (deps) => {
     chat: deps.config.slack.mode === "off" ? undefined : deps.chat,
     waiters: createWaiters(),
     threadGates: new Map(),
+    pendingAgentPosts: new Map(),
     notify: (notice) =>
       notify(ctx, notice).catch(() =>
         deps.log.warn("delivery_notification_failed"),
       ),
   };
+  recoverAgentPosts(ctx);
   return ctx;
 };
 

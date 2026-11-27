@@ -305,7 +305,7 @@ test(
     expectPaused(await reply("eleventh reply"));
     const restarted = createCoreBase(createCoreContext(f.deps));
     expectPaused(await reply("rebuilt eleventh reply", restarted));
-    expect(attempts(f)).toBe(1);
+    expect(attempts(f)).toBe(2);
   },
   timeout,
 );
@@ -329,7 +329,7 @@ test(
     expectPaused(await send("eleventh send"));
     const restarted = createCoreBase(createCoreContext(f.deps));
     expectPaused(await send("rebuilt eleventh send", restarted));
-    expect(attempts(f)).toBe(1);
+    expect(attempts(f)).toBe(2);
   },
   timeout,
 );
@@ -347,12 +347,12 @@ test(
     });
     expect(value(await reply("after member"))).toEqual({
       conversationId,
-      chatMessageId: "message-2",
+      chatMessageId: "message-3",
       postedAs: alphaPostedAs,
     });
     const rows = agentRows(f);
     expect(rows).toHaveLength(LIMITS.agentRunMax + 1);
-    expect(rows.map((row) => row.chat_message_id)[10]).toBe("message-2");
+    expect(rows.map((row) => row.chat_message_id)[10]).toBe("message-3");
     expect(unconfirmedRows(f)).toHaveLength(1);
   },
   timeout,
@@ -426,7 +426,7 @@ test(
   async () => {
     const { f, alpha, conversationId } = await unknownRunFixture();
     f.db.exec(
-      "CREATE TRIGGER block_reserve BEFORE INSERT ON thread_messages WHEN NEW.chat_message_id LIKE 'unconfirmed:%' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END",
+      "CREATE TRIGGER block_reserve BEFORE INSERT ON meta WHEN NEW.key LIKE 'agent-post:%' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END",
     );
     await expectFail(
       mkReply(f, alpha.sessionId, conversationId)("tenth reply"),
@@ -437,6 +437,7 @@ test(
     ).rejects.toThrow("injected storage failure");
     expect(attempts(f)).toBe(0);
     expect(agentRows(f).map((row) => row.chat_message_id)).toEqual(seedIds);
+    expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toEqual([]);
   },
   timeout,
 );
@@ -451,13 +452,15 @@ test(
     f.chat.nextWrite = { kind: "unknown" };
     await expectFail(reply("ninth reply"), conversationId);
     f.db.exec(
-      "CREATE TRIGGER block_confirm BEFORE UPDATE ON thread_messages BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END",
+      "CREATE TRIGGER block_confirm BEFORE INSERT ON thread_messages WHEN NEW.chat_message_id = 'message-2' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END",
     );
     expect(value(await reply("tenth reply"))).toEqual({
       conversationId,
       chatMessageId: "message-2",
       postedAs: alphaPostedAs,
     });
+    f.db.exec("DROP TRIGGER block_confirm");
+    expectPaused(await reply("eleventh reply"));
     const rows = agentRows(f);
     expect(rows.map((row) => row.chat_message_id).slice(0, -2)).toEqual(
       seedIds.slice(0, -1),
@@ -466,8 +469,8 @@ test(
       "Fixture Alpha's agent: ninth reply",
       "Fixture Alpha's agent: tenth reply",
     ]);
-    expect(unconfirmedRows(f)).toHaveLength(2);
-    expectPaused(await reply("eleventh reply"));
+    expect(unconfirmedRows(f)).toHaveLength(1);
+    expect(rows.at(-1)?.chat_message_id).toBe("message-2");
     expect(f.posts()).toEqual([
       "Fixture Alpha's agent: ninth reply",
       "Fixture Alpha's agent: tenth reply",
@@ -499,8 +502,8 @@ test(
     release();
     await expectFail(ninth, conversationId);
     expectPaused(await tenth);
-    expect(attempts(f)).toBe(1);
-    expect(f.posts()).toEqual(["Fixture Alpha's agent: ninth reply"]);
+    expect(attempts(f)).toBe(2);
+    expect(f.posts()).toEqual(["Fixture Alpha's agent: ninth reply", pause]);
   },
   timeout,
 );
@@ -537,3 +540,326 @@ test(
   },
   timeout,
 );
+
+function holdAgentPost(
+  f: BaseFixture,
+  outcome: "confirmed" | "unknown" | "refused",
+) {
+  const enter = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const post = f.chat.postText.bind(f.chat);
+  f.chat.postText = async (...args) => {
+    f.chat.postText = post;
+    enter.resolve();
+    await release.promise;
+    if (outcome !== "confirmed") f.chat.nextWrite = { kind: outcome };
+    return post(...args);
+  };
+  return { entered: enter.promise, release: release.resolve };
+}
+
+for (const kind of ["reply", "send"] as const) {
+  for (const outcome of ["confirmed", "unknown"] as const) {
+    test(
+      `a post settled after a concurrent member starts the new run (${kind}, ${outcome})`,
+      async () => {
+        const { f, alpha, conversationId } = await unknownRunFixture();
+        const post = (kind === "reply" ? mkReply : mkSend)(
+          f,
+          alpha.sessionId,
+          conversationId,
+        );
+        const held = holdAgentPost(f, outcome);
+        const tenth = post("in flight");
+        await held.entered;
+        await f.follow("member during write");
+        held.release();
+        await tenth;
+        const member = f.rows(
+          "thread_messages WHERE chat_message_id = 'member during write'",
+        )[0]!;
+        expect(Number(agentRows(f).at(-1)?.seq)).toBeGreaterThan(
+          Number(member.seq),
+        );
+        for (const id of seedIds) value<unknown>(await post("new " + id));
+        expectPaused(await post("over limit"));
+        expect(f.posts().filter((text) => text !== pause)).toHaveLength(
+          LIMITS.agentRunMax,
+        );
+      },
+      timeout,
+    );
+  }
+}
+
+for (const outcome of ["confirmed", "unknown"] as const) {
+  test(
+    `settlement never redelivers transcript context (${outcome})`,
+    async () => {
+      const { f, alpha, beta, betaFirst } = await alphaBetaFixture();
+      const held = holdAgentPost(f, outcome);
+      const attempt = f.core.reply(f.caller(b), {
+        sessionId: beta.sessionId,
+        conversationId: betaFirst.conversationId!,
+        text: "held context",
+      });
+      const read = async (id: string) => {
+        await f.follow(id);
+        const item = f.read(alpha.sessionId).items[0]!;
+        f.ack(alpha.sessionId, [item.itemId]);
+        return item.threadContext!.entries.map((entry) => entry.text);
+      };
+      await held.entered;
+      const during = await read("during");
+      held.release();
+      await attempt;
+      const settled = agentRows(f);
+      const later = [...(await read("later")), ...(await read("last"))];
+      expect(during).not.toContain("Fixture Beta's agent: held context");
+      expect(later.filter((text) => text.endsWith("held context"))).toEqual([
+        "Fixture Beta's agent: held context",
+      ]);
+      expect(agentRows(f)).toEqual(settled);
+    },
+    timeout,
+  );
+}
+
+for (const first of ["reply", "send"] as const) {
+  for (const second of ["reply", "send"] as const) {
+    for (const outcome of ["confirmed", "unknown", "refused"] as const) {
+      test(
+        `a queued caller ${outcome === "refused" ? "proceeds when the pending tenth attempt is refused" : "refuses after a delivered or unknown tenth attempt"} (${first}, ${second}, ${outcome})`,
+        async () => {
+          const { f, alpha, conversationId } = await unknownRunFixture();
+          const post = {
+            reply: mkReply(f, alpha.sessionId, conversationId),
+            send: mkSend(f, alpha.sessionId, conversationId),
+          };
+          const held = holdAgentPost(f, outcome);
+          const tenth = post[first]("pending tenth");
+          await held.entered;
+          const occupied = f.context.threadGates.get(thread);
+          const next = post[second]("queued text");
+          const queued = f.context.threadGates.get(thread);
+          const agentTexts = () =>
+            f.chat.calls
+              .filter(
+                (call) =>
+                  call.name === "postText" &&
+                  (call.args[1] !== pause || call.args[2] !== undefined),
+              )
+              .map((call) => [call.args[1], call.args[2]]);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          const whileHeld = agentTexts();
+          held.release();
+          await tenth;
+          const result = await next;
+          expect(occupied).toBeDefined();
+          expect(queued).toBeDefined();
+          expect(queued).not.toBe(occupied);
+          expect(whileHeld).toEqual([]);
+          if (outcome === "refused") expect(result.ok).toBe(true);
+          else expectPaused(result);
+          const agentText = (kind: "reply" | "send", text: string) =>
+            (kind === "reply"
+              ? "Fixture Alpha's agent: "
+              : "Fixture Alpha's agent asked Fixture Beta's agent: ") + text;
+          const call = (kind: "reply" | "send", text: string) => [
+            agentText(kind, text),
+            { agentLabel: alphaPostedAs },
+          ];
+          const expected = [call(first, "pending tenth")];
+          if (outcome === "refused") expected.push(call(second, "queued text"));
+          expect(agentTexts()).toEqual(expected);
+          expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+        },
+        timeout,
+      );
+    }
+  }
+}
+
+test(
+  "the original inbound member message survives a failed confirmed-post projection",
+  async () => {
+    const { f, alpha, beta, betaFirst } = await alphaBetaFixture();
+    seedRun(f, LIMITS.agentRunMax - 1, alpha.sessionId);
+    f.db.exec(
+      "CREATE TRIGGER block_agent BEFORE INSERT ON thread_messages WHEN NEW.kind = 'agent' BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END",
+    );
+    const posted = value(
+      await f.core.reply(f.caller(b), {
+        sessionId: beta.sessionId,
+        conversationId: betaFirst.conversationId!,
+        text: "beta answer",
+      }),
+    );
+    const reply = mkReply(
+      f,
+      alpha.sessionId,
+      f.col(
+        "conversations WHERE person_id = 'per_a'",
+        "conversation_id",
+      )[0] as string,
+    );
+    for (const text of ["first retry", "second retry"])
+      expect(refusal(await reply(text))).toMatchObject({
+        code: "CHAT_UNAVAILABLE",
+        retry: "reconcile_first",
+      });
+    const inbound = () => f.follow("beta follow-up", { mentionsBot: false });
+    await inbound();
+    const items = () =>
+      f
+        .read(beta.sessionId, b)
+        .items.map(({ itemId, text }) => ({ itemId, text }));
+    const delivered = items();
+    expect(delivered.map(({ text }) => text)).toEqual(["beta follow-up"]);
+    expect(f.read(alpha.sessionId).items).toEqual([]);
+    const members = () =>
+      f.rows(
+        "thread_messages WHERE chat_message_id = 'beta follow-up' AND kind = 'person'",
+      );
+    expect(members()).toHaveLength(1);
+    expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
+    expect(attempts(f)).toBe(1);
+    f.db.exec("DROP TRIGGER block_agent");
+    await inbound();
+    expect(items()).toEqual(delivered);
+    expect(members()).toHaveLength(1);
+    expect(agentRows(f).at(-1)?.chat_message_id).toBe(posted.chatMessageId);
+    expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toEqual([]);
+    expect(attempts(f)).toBe(1);
+  },
+  timeout,
+);
+
+test(
+  "an outsider triggers one pause notice after the recovered tenth post",
+  async () => {
+    const { f, alpha, conversationId } = await unknownRunFixture();
+    f.db.exec(
+      "CREATE TRIGGER block_agent BEFORE INSERT ON thread_messages WHEN NEW.kind = 'agent' BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END",
+    );
+    const reply = mkReply(f, alpha.sessionId, conversationId);
+    const { chatMessageId } = value(await reply("tenth"));
+    expect(f.posts()).toEqual(["Fixture Alpha's agent: tenth"]);
+    f.db.exec("DROP TRIGGER block_agent");
+    const outsider = () =>
+      f.follow("outsider recovery", {
+        slackUserId: unknownUser,
+        mentionsBot: false,
+      });
+    const post = f.chat.postText.bind(f.chat);
+    f.chat.postText = (...args) => {
+      if (args[1] === pause)
+        expect(
+          f.rows(
+            "thread_messages WHERE chat_message_id = 'outsider recovery' AND kind = 'outsider'",
+          ),
+        ).toHaveLength(1);
+      return post(...args);
+    };
+    await outsider();
+    expect(f.posts()).toEqual(["Fixture Alpha's agent: tenth", pause]);
+    expect(agentRows(f).at(-1)?.chat_message_id).toBe(chatMessageId);
+    await outsider();
+    expectPaused(await reply("eleventh"));
+    expect(f.posts()).toEqual(["Fixture Alpha's agent: tenth", pause]);
+  },
+  timeout,
+);
+
+test(
+  "a confirmed reply clears its owed rows before awaiting the pause notice",
+  async () => {
+    const { f, alpha, conversationId } = await unknownRunFixture();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const post = f.chat.postText.bind(f.chat);
+    f.chat.postText = async (...args) => {
+      if (args[1] === pause) {
+        entered.resolve();
+        await release.promise;
+      }
+      return post(...args);
+    };
+    const result = mkReply(f, alpha.sessionId, conversationId)("tenth");
+    await entered.promise;
+    const owed = f.col("reply_owed", "answered");
+    release.resolve();
+    value(await result);
+    expect(owed).toEqual([1]);
+  },
+  timeout,
+);
+
+test(
+  "a failed refusal cleanup is recovered before the next pause check",
+  async () => {
+    const { f, alpha, conversationId } = await unknownRunFixture();
+    const reply = mkReply(f, alpha.sessionId, conversationId);
+    f.db.exec(
+      "CREATE TRIGGER block_cleanup BEFORE DELETE ON meta WHEN OLD.key LIKE 'agent-post:%' BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END",
+    );
+    f.chat.nextWrite = { kind: "refused" };
+    expect(refusal(await reply("refused tenth")).retry).toBe("safe");
+    expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
+    await expectFail(reply("blocked by storage"), conversationId);
+    expect(attempts(f)).toBe(1);
+    f.db.exec("DROP TRIGGER block_cleanup");
+    value(await reply("replacement tenth"));
+    expectPaused(await reply("extra"));
+    expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+    expect(unconfirmedRows(f)).toEqual([]);
+  },
+  timeout,
+);
+
+for (const kind of ["reply", "send"] as const) {
+  for (const failNotice of [false, true]) {
+    test(
+      `${failNotice ? "a failed pause notice preserves the original post result and a later paused caller retries a missing notice once" : "an unknown tenth reply or send posts one pause notice"} (${kind})`,
+      async () => {
+        const { f, alpha, conversationId } = await unknownRunFixture();
+        const post = (kind === "reply" ? mkReply : mkSend)(
+          f,
+          alpha.sessionId,
+          conversationId,
+        );
+        const transport = f.chat.postText.bind(f.chat);
+        f.chat.postText = (target, text, options) => {
+          if (text !== pause) f.chat.nextWrite = { kind: "unknown" };
+          else if (failNotice && attempts(f) === 1)
+            f.chat.nextWrite = { kind: "refused" };
+          return transport(target, text, options);
+        };
+        if (kind === "reply")
+          await expectFail(post("unknown tenth"), conversationId);
+        else
+          expect(await post("unknown tenth")).toMatchObject({
+            ok: true,
+            value: { threadPost: "failed" },
+          });
+        expect(attempts(f)).toBe(2);
+        expect(f.posts().filter((text) => text === pause)).toHaveLength(
+          failNotice ? 0 : 1,
+        );
+        expectPaused(await post("retry notice"));
+        expectPaused(await post("notice already recorded"));
+        expect(attempts(f)).toBe(failNotice ? 3 : 2);
+        expect(unconfirmedRows(f)).toHaveLength(1);
+        expect(
+          f.rows(
+            "thread_messages WHERE kind = 'system' AND text = ?",
+            "*",
+            pause,
+          ),
+        ).toHaveLength(1);
+        expect(f.posts().filter((text) => text !== pause)).toHaveLength(1);
+      },
+      timeout,
+    );
+  }
+}

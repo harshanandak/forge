@@ -1,11 +1,14 @@
 import type { ChatMessageEvent } from "../contract/chat.ts";
+import { agentPost, recoverAgentPosts } from "./agent-posts.ts";
 import type { Conversation, Person, Session } from "../contract/domain.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
 import { bestEffort, type Notice, postNotice } from "./doorbell.ts";
 import {
   conversation,
+  enterThread,
   messageText,
+  postLoopPause,
   recordThread,
   str,
   UNCONFIRMED_MESSAGE_PREFIX,
@@ -162,6 +165,7 @@ export async function route(
   let react = false;
   const { channelId, chatThreadId, chatMessageId, isDirect, mentionsBot } =
     event;
+  const post = isDirect ? undefined : agentPost(ctx, chatThreadId);
   const ref = { channelId, chatThreadId, chatMessageId };
   const ephemeral = ctx.store.tx(() => {
     const existing = db
@@ -358,8 +362,12 @@ export async function route(
         ORDER BY seq DESC LIMIT 1`,
         )
         .get(chatThreadId, UNCONFIRMED_MESSAGE_PREFIX + "%");
+      const author =
+        post?.phase === "confirmed" && post.conversation.channelId === channelId
+          ? post.personId
+          : latest?.person_id;
       const recipient =
-        existing.find((entry) => entry.personId === latest?.person_id) ?? root;
+        existing.find((entry) => entry.personId === author) ?? root;
       const owner = recipient && people.byPersonId(recipient.personId);
       if (owner && member(projectId, owner)) recipients = [owner];
     }
@@ -423,4 +431,10 @@ export async function route(
     await bestEffort(ctx, () => postNotice(chat, ref, text));
   if (react) await bestEffort(ctx, () => chat.react(ref, "eyes"));
   for (const notice of queue) await ctx.notify(notice);
+  if (!post || post.phase === "reserved") return;
+  const release = await enterThread(ctx, chatThreadId);
+  await bestEffort(ctx, async () => {
+    const recovered = recoverAgentPosts(ctx, chatThreadId);
+    if (recovered) await postLoopPause(ctx, recovered);
+  }).finally(release);
 }

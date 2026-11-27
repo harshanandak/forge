@@ -1,9 +1,14 @@
-import { randomUUID } from "node:crypto";
 import { ChatWriteFailure, type ChatPostTarget } from "../contract/chat.ts";
+import type { ChatMessageRef } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import type { Conversation } from "../contract/domain.ts";
 import type { HubError } from "../contract/errors.ts";
 import { LIMITS } from "../contract/mcp.ts";
+import {
+  recoverAgentPosts,
+  reserveAgentPost,
+  settleAgentPost,
+} from "./agent-posts.ts";
 import { fitSection, splitAnswer } from "./answer.ts";
 import type { CoreContext } from "./core.ts";
 import { fail } from "./errors.ts";
@@ -11,15 +16,12 @@ import { refused } from "./inbox.ts";
 import {
   byConversation,
   channelBindingRefusal,
-  confirmAgentPost,
   conversation,
   enterThread,
   paused,
   postLoopPause,
   recordAgentPost,
-  releaseAgentPost,
   str,
-  UNCONFIRMED_MESSAGE_PREFIX,
 } from "./thread.ts";
 
 export interface AgentPostInput {
@@ -64,48 +66,31 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
   }
   const posted = fitSection(input.prefix + " ", body);
   const { conversation, sessionId, personId } = input;
-  const slot =
+  const reservation =
     conversation && sessionId && personId
-      ? UNCONFIRMED_MESSAGE_PREFIX + randomUUID()
+      ? reserveAgentPost(ctx, conversation, sessionId, personId, posted)
       : undefined;
-  if (conversation && sessionId && personId && slot)
-    recordAgentPost(
-      ctx,
-      { ...conversation, chatMessageId: slot },
-      conversation,
-      sessionId,
-      personId,
-      posted,
-    );
+  let ref: ChatMessageRef;
   try {
-    const ref = await ctx.chat.postText(input.target, posted, {
+    ref = await ctx.chat.postText(input.target, posted, {
       agentLabel: input.label,
     });
-    if (conversation && slot)
-      try {
-        confirmAgentPost(ctx, conversation, slot, ref.chatMessageId);
-      } catch (error) {
-        ctx.deps.log.warn("agent_post_confirm_failed", {
-          reason: error instanceof Error ? error.message : "unknown",
-        });
-      }
-    return { ref, text: posted };
   } catch (error) {
-    if (
-      conversation &&
-      slot &&
-      error instanceof ChatWriteFailure &&
-      error.effect === "refused"
-    )
-      try {
-        releaseAgentPost(ctx, conversation, slot);
-      } catch (error) {
-        ctx.deps.log.warn("agent_post_release_failed", {
-          reason: error instanceof Error ? error.message : "unknown",
-        });
-      }
+    if (reservation) {
+      const refused =
+        error instanceof ChatWriteFailure && error.effect === "refused";
+      const projected = settleAgentPost(ctx, reservation, {
+        phase: refused ? "refused" : "unknown",
+      });
+      if (projected && !refused)
+        await postLoopPause(ctx, reservation.conversation);
+    }
     throw error;
   }
+  const projected =
+    reservation &&
+    settleAgentPost(ctx, reservation, { phase: "confirmed", ref });
+  return { ref, text: posted, projected };
 }
 
 export function createReply(ctx: CoreContext): HubCore["reply"] {
@@ -161,8 +146,6 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         return refused("CONVERSATION_NOT_YOURS");
       const binding = channelBindingRefusal(db, existing, existing.projectId);
       if (binding) return binding;
-      if (paused(db, existing.chatThreadId))
-        return refused("CONVERSATION_PAUSED");
       if (!text.length || text.length > LIMITS.replyText)
         return refused("INPUT_INVALID", "/text");
       const error = guards.outboundText(text, "/text");
@@ -299,11 +282,14 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         if (!fresh) return refused("CONVERSATION_UNKNOWN");
         const binding = channelBindingRefusal(db, fresh, fresh.projectId);
         if (binding) return binding;
-        if (paused(db, conv.chatThreadId))
-          return refused("CONVERSATION_PAUSED");
         return undefined;
       });
       if (blocked) return blocked;
+      if (!conv.isDirect) recoverAgentPosts(ctx, conv.chatThreadId);
+      if (paused(db, conv.chatThreadId)) {
+        await postLoopPause(ctx, conv);
+        return refused("CONVERSATION_PAUSED");
+      }
       const posted = await postAgentText(ctx, {
         ...postInput,
         target: { kind: "thread", chatThreadId: conv.chatThreadId },
@@ -319,8 +305,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
               ")",
           ).run(...result.owed);
       });
-      if (conv.projectId !== undefined)
-        await postLoopPause(ctx, conv, conv.projectId);
+      if (posted.projected) await postLoopPause(ctx, conv);
       return {
         ok: true,
         value: {
