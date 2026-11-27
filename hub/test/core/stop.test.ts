@@ -184,14 +184,12 @@ test(
         retry: "safe",
       });
       expect(value(await explicit).conversationId).toBe(conversationId);
-      const onePost = [expect.stringContaining("Explicit answer.")];
-      expect(f.posts()).toEqual(onePost);
       expect(f.owed()).toEqual(deliverWhileQueued ? [1, 0] : [1]);
-      if (deliverWhileQueued) continue;
-      expect(value(await f.stop("Later automatic answer."))).toEqual({
-        result: "skipped",
-      });
-      expect(f.posts()).toEqual(onePost);
+      if (!deliverWhileQueued) {
+        const later = await f.stop("Later automatic answer.");
+        expect(value(later)).toEqual({ result: "skipped" });
+      }
+      expect(f.posts()).toEqual([expect.stringContaining("Explicit answer.")]);
     }
   },
   timeout,

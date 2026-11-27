@@ -172,9 +172,9 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       const owedCandidates = db
         .prepare(
           `SELECT item_id FROM reply_owed
-    WHERE conversation_id = ? AND session_id = ?`,
+    WHERE conversation_id = ?`,
         )
-        .all(existing.conversationId, own.value.sessionId)
+        .all(existing.conversationId)
         .map((row) => str(row.item_id));
       return {
         ok: true,
