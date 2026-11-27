@@ -10,11 +10,20 @@ import type { HubConfig, HubLog } from "../contract/runtime.ts";
 
 type Route = { target: string; handle(request: Request): Promise<Response> };
 type MatchRoute = (target: string) => Route | undefined;
+const DEFAULT_HEADER_FIELDS = 1_000;
 
 function allowedHost(
   input: IncomingMessage,
   hosts: HubConfig["allowedHosts"],
 ): string | undefined {
+  const server = "server" in input.socket ? input.socket.server : null;
+  const fields =
+    server && typeof server === "object" && "maxHeadersCount" in server
+      ? server.maxHeadersCount
+      : null;
+  const cutoff =
+    (typeof fields === "number" ? fields : DEFAULT_HEADER_FIELDS) << 1;
+  if (cutoff > 0 && input.rawHeaders.length >= cutoff) return;
   let host: string | undefined;
   for (let index = 0; index < input.rawHeaders.length; index += 2) {
     if (input.rawHeaders[index]?.toLowerCase() !== "host") continue;
@@ -67,20 +76,22 @@ async function writeResponse(
   output: ServerResponse,
   response: Response,
   signal: AbortSignal,
+  headersOnly: boolean,
 ): Promise<void> {
-  for (const [name, value] of response.headers) {
-    if (name !== "set-cookie") output.setHeader(name, value);
-  }
-  const cookies = response.headers.getSetCookie();
-  if (cookies.length > 0) output.setHeader("set-cookie", cookies);
-  output.writeHead(response.status);
-  if (response.body) output.flushHeaders();
-  const reader: ReadableStreamDefaultReader<unknown> | undefined =
-    response.body?.getReader();
-  if (reader) {
-    const cancel = () => void reader.cancel().catch(() => {});
-    signal.addEventListener("abort", cancel, { once: true });
-    try {
+  const body = response.body;
+  let reader: ReadableStreamDefaultReader<unknown> | undefined;
+  const cancel = () => void (reader ?? body)?.cancel().catch(() => {});
+  try {
+    for (const [name, value] of response.headers) {
+      if (name !== "set-cookie") output.setHeader(name, value);
+    }
+    const cookies = response.headers.getSetCookie();
+    if (cookies.length > 0) output.setHeader("set-cookie", cookies);
+    output.writeHead(response.status);
+    if (body && !headersOnly) {
+      output.flushHeaders();
+      reader = body.getReader();
+      signal.addEventListener("abort", cancel, { once: true });
       while (!signal.aborted) {
         const { done, value } = await reader.read();
         if (done || signal.aborted) break;
@@ -88,13 +99,13 @@ async function writeResponse(
           throw new TypeError("Expected response bytes");
         if (!output.write(value)) await once(output, "drain", { signal });
       }
-    } finally {
-      signal.removeEventListener("abort", cancel);
-      cancel();
-      reader.releaseLock();
     }
+    if (!signal.aborted) output.end();
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    cancel();
+    reader?.releaseLock();
   }
-  if (!signal.aborted) output.end();
 }
 
 export function createHttpListener(
@@ -108,8 +119,12 @@ export function createHttpListener(
     input.once("close", () => {
       if (!input.complete) controller.abort();
     });
+    let finished = false;
+    output.once("finish", () => {
+      finished = true;
+    });
     output.once("close", () => {
-      if (!output.writableFinished) controller.abort();
+      if (!finished) controller.abort();
     });
 
     try {
@@ -141,12 +156,15 @@ export function createHttpListener(
         void response.body?.cancel().catch(() => {});
         return;
       }
-      await writeResponse(output, response, signal);
+      await writeResponse(output, response, signal, request.method === "HEAD");
     } catch {
       if (signal.aborted || (input.destroyed && !input.complete)) return;
       log.error("hub.http.failed");
       if (output.headersSent) output.destroy();
-      else reject(output, 500);
+      else {
+        for (const name of output.getHeaderNames()) output.removeHeader(name);
+        reject(output, 500);
+      }
     }
   }
   return (input, output) => void serve(input, output);

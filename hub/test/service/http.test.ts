@@ -75,7 +75,12 @@ async function openServer(
   if (!address || typeof address === "string")
     throw new Error("TCP address expected");
   const port = address.port;
-  return { server, port, chatCalls, remoteCalls };
+  function sendMcp(method = "GET") {
+    const { client, response } = startRequest(port, mcp, method);
+    client.end();
+    return response;
+  }
+  return { server, port, chatCalls, remoteCalls, sendMcp };
 }
 
 async function rawStatus(port: number, target: string, headers: string[]) {
@@ -133,9 +138,11 @@ async function readResponse(input: IncomingMessage, slow = false) {
   return Buffer.concat(chunks);
 }
 
+const cutoffCase = "a header view at the field cutoff";
 const ingress = [
   ["malformed Host", mcp, ["Host: hub.example.test/path"], 403],
   ["duplicate Host", mcp, ["Host: " + host, "hOsT: " + host], 403],
+  [cutoffCase, mcp, ["Host: " + host], 403],
   ["missing Host", mcp, [], 403],
   ["unlisted Host", mcp, ["Host: elsewhere.example.test"], 403],
   [
@@ -156,7 +163,13 @@ for (const [label, target, headers, status] of ingress) {
   test(
     "S2 rejects " + label + " and keeps serving",
     async () => {
-      await withServer(async ({ port, chatCalls, remoteCalls }) => {
+      await withServer(async ({ server, port, chatCalls, remoteCalls }) => {
+        if (label === cutoffCase)
+          server.prependOnceListener("request", (input) => {
+            const rawHeaders = [...input.rawHeaders];
+            while (rawHeaders.length < 2_000) rawHeaders.push("X-Test", "a");
+            Object.defineProperty(input, "rawHeaders", { value: rawHeaders });
+          });
         expect(await rawStatus(port, target, [...headers])).toBe(status);
         expect(chatCalls).toHaveLength(0);
         expect(remoteCalls).toHaveLength(0);
@@ -171,22 +184,6 @@ for (const [label, target, headers, status] of ingress) {
     timeout,
   );
 }
-
-test(
-  "S2 rejects a header view at the field cutoff before dispatch",
-  () =>
-    withServer(async ({ server, port, chatCalls, remoteCalls }) => {
-      server.prependOnceListener("request", (input) => {
-        const rawHeaders = [...input.rawHeaders];
-        while (rawHeaders.length < 2_000) rawHeaders.push("X-Test", "a");
-        Object.defineProperty(input, "rawHeaders", { value: rawHeaders });
-      });
-      expect(await rawStatus(port, mcp, ["Host: " + host])).toBe(403);
-      expect(chatCalls).toHaveLength(0);
-      expect(remoteCalls).toHaveLength(0);
-    }),
-  timeout,
-);
 
 test(
   "S2 accepts mixed-case Host and routes exact MCP and hook paths",
@@ -410,8 +407,8 @@ test(
 
 test(
   "S3 aborts when end is followed by close without finish",
-  async () => {
-    await withServer(async ({ server, port, remoteCalls }) => {
+  () =>
+    withServer(async ({ server, sendMcp, remoteCalls }) => {
       const closed = Promise.withResolvers<void>();
       server.prependOnceListener("request", (_input, output) => {
         output.end = () => {
@@ -421,88 +418,61 @@ test(
           return output;
         };
       });
-      const { client, response } = startRequest(port, mcp, "GET");
-      void response.catch(() => {});
-      try {
-        client.end();
-        await closed.promise;
-        expect(remoteCalls[0]?.signal.aborted).toBe(true);
-      } finally {
-        client.destroy();
-      }
-    });
-  },
+      void sendMcp().catch(() => {});
+      await closed.promise;
+      expect(remoteCalls[0]?.signal.aborted).toBe(true);
+    }),
   timeout,
 );
 
-test(
-  "S3 completes HEAD and cancels an unread response stream",
-  async () => {
-    const streamUse = Promise.withResolvers<string>();
-    const body = new ReadableStream<Uint8Array>(
-      {
-        pull() {
-          streamUse.resolve("read");
+for (const method of ["HEAD", "GET"]) {
+  const head = method === "HEAD";
+  const name = head
+    ? "S3 completes HEAD and cancels an unread response stream"
+    : "S3 cancels the response stream and sends a complete 500 for invalid headers";
+  test(
+    name,
+    async () => {
+      const streamUse = Promise.withResolvers<string>();
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull: () => streamUse.resolve("read"),
+          cancel() {
+            cancelled = true;
+            streamUse.resolve("cancelled");
+          },
         },
-        cancel() {
-          streamUse.resolve("cancelled");
+        { highWaterMark: 0 },
+      );
+      const badHeaders = { "Content-Length": "1", "X-Bad": "\u0001" };
+      await withServer(
+        async ({ server, sendMcp }) => {
+          if (!head)
+            server.prependOnceListener("request", (_input, output) => {
+              const setHeader = output.setHeader.bind(output);
+              output.setHeader = (name, value) => {
+                if (name === "x-bad" && value === badHeaders["X-Bad"])
+                  throw new TypeError("Invalid response header");
+                return setHeader(name, value);
+              };
+            });
+          const response = sendMcp(method);
+          void response.catch(() => {});
+          if (head) expect(await streamUse.promise).toBe("cancelled");
+          const incoming = await response;
+          expect(incoming.statusCode).toBe(head ? 200 : 500);
+          if (!head) expect(incoming.headers["content-length"]).not.toBe("1");
+          expect(cancelled).toBe(true);
+          expect(await readResponse(incoming)).toHaveLength(0);
         },
-      },
-      { highWaterMark: 0 },
-    );
-    await withServer(
-      async ({ port }) => {
-        const { client, response } = startRequest(port, mcp, "HEAD");
-        void response.catch(() => {});
-        client.end();
-        expect(await streamUse.promise).toBe("cancelled");
-        const incoming = await response;
-        expect(incoming.statusCode).toBe(200);
-        expect(await readResponse(incoming)).toHaveLength(0);
-      },
-      {},
-      () => new Response(body),
-    );
-  },
-  timeout,
-);
-
-test(
-  "S3 cancels the response stream and sends a complete 500 for invalid headers",
-  async () => {
-    let cancelled = false;
-    const body = new ReadableStream<Uint8Array>({
-      cancel() {
-        cancelled = true;
-      },
-    });
-    await withServer(
-      async ({ server, port }) => {
-        server.prependOnceListener("request", (_input, output) => {
-          const setHeader = output.setHeader.bind(output);
-          output.setHeader = (name, value) => {
-            if (name === "x-bad" && value === "\u0001")
-              throw new TypeError("Invalid response header");
-            return setHeader(name, value);
-          };
-        });
-        const { client, response } = startRequest(port, mcp, "GET");
-        client.end();
-        const incoming = await response;
-        expect(incoming.statusCode).toBe(500);
-        expect(incoming.headers["content-length"]).not.toBe("1");
-        expect(cancelled).toBe(true);
-        expect(await readResponse(incoming)).toHaveLength(0);
-      },
-      {},
-      () =>
-        new Response(body, {
-          headers: { "Content-Length": "1", "X-Bad": "\u0001" },
-        }),
-    );
-  },
-  timeout,
-);
+        {},
+        () => new Response(body, head ? {} : { headers: badHeaders }),
+      );
+    },
+    timeout,
+  );
+}
 
 test(
   "S3 delivers a large streamed response to a slow reader",
@@ -511,10 +481,8 @@ test(
     const count = 64;
     let sent = 0;
     await withServer(
-      async ({ port }) => {
-        const { client, response } = startRequest(port, mcp, "GET");
-        client.end();
-        const incoming = await response;
+      async ({ sendMcp }) => {
+        const incoming = await sendMcp();
         expect(incoming.statusCode).toBe(200);
         expect(await readResponse(incoming, true)).toEqual(
           Buffer.alloc(chunk.length * count, 0x61),
