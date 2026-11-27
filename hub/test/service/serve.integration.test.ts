@@ -145,6 +145,7 @@ test(
       headers: {
         fixed: true,
         atLimit: 403,
+        hiddenHost: 431,
         chatCalls: 0,
         remoteCalls: 0,
         belowLimit: 200,

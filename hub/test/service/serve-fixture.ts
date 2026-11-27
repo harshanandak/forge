@@ -277,7 +277,8 @@ async function probe() {
           const fixed =
             !Reflect.set(active, "maxHeadersCount", 0) &&
             active.maxHeadersCount === 1_000;
-          const atLimit = await status(
+          const atLimit = await status(active, mcp, 998);
+          const hiddenHost = await status(
             active,
             mcp,
             998,
@@ -286,6 +287,7 @@ async function probe() {
           headers = {
             fixed,
             atLimit,
+            hiddenHost,
             chatCalls,
             remoteCalls,
             belowLimit: await status(active, mcp, 997),
