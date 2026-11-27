@@ -85,6 +85,16 @@ test(
     const reply = mkReply(f, alpha.sessionId, root.conversationId);
     for (let index = 0; index < LIMITS.agentRunMax - 1; index++)
       value(await reply("reply " + index));
+    expect(
+      f.col(
+        "thread_messages WHERE kind IN ('agent','person') ORDER BY seq",
+        "chat_message_id",
+      ),
+    ).toEqual([
+      ts(2),
+      ts(1),
+      ...Array.from({ length: LIMITS.agentRunMax - 1 }, (_, i) => ts(i + 3)),
+    ]);
     expect(f.posts().filter((text) => text === pause)).toHaveLength(0);
   },
   timeout,
