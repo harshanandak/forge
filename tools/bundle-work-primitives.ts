@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { writeGenerated } from "./gen/write.ts";
 
 async function inlineModule(
@@ -26,11 +26,20 @@ async function inlineModule(
   );
 }
 
-export function inlineWorkPrimitives(
+export async function inlineWorkPrimitives(
   entry: string,
   path: string,
 ): Promise<string> {
-  return inlineModule(entry, path, 'require("./record-primitives.ts")');
+  const records = await inlineModule(
+    entry,
+    path,
+    'require("./record-primitives.ts")',
+  );
+  return inlineModule(
+    records,
+    join(dirname(path), "file-declarations.ts"),
+    'require("./file-declarations.ts")',
+  );
 }
 
 if (import.meta.main) {
@@ -40,6 +49,11 @@ if (import.meta.main) {
       block: "work",
       module: "blocks/work/record-primitives.ts",
       specifier: "./record-primitives",
+    },
+    {
+      block: "work",
+      module: "blocks/work/file-declarations.ts",
+      specifier: "./file-declarations",
     },
     {
       block: "accounts",
