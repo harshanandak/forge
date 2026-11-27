@@ -19,6 +19,7 @@ const DIRECT_SUBSCHEMAS: ReadonlySet<string> = new Set([
 
 class SchemaLimit extends Error {}
 type SchemaBudget = (depth: number) => void;
+type ValidationBudget = (depth: number, pointer?: string) => void;
 
 export function schemaBudget(maxDepth = 64, maxNodes = 20_000): SchemaBudget {
   let remaining = maxNodes;
@@ -36,6 +37,25 @@ function checkValidationDepth(depth: number): void {
     throw new SchemaLimit(
       `Schema depth limit exceeded (${MAX_VALIDATION_DEPTH})`,
     );
+}
+
+const MAX_VALIDATION_VISITS = 1_000_000;
+const MAX_SCHEMA_VISITS_PER_VALUE = 4_096;
+
+function validationBudget(): ValidationBudget {
+  const spend = schemaBudget(MAX_VALIDATION_DEPTH, MAX_VALIDATION_VISITS);
+  const visits = new Map<string, number>();
+  return (depth, pointer) => {
+    spend(depth);
+    if (pointer === undefined) return;
+    const count = (visits.get(pointer) ?? 0) + 1;
+    if (count > MAX_SCHEMA_VISITS_PER_VALUE) {
+      throw new SchemaLimit(
+        `Schema work budget exceeded (${MAX_SCHEMA_VISITS_PER_VALUE} visits)`,
+      );
+    }
+    visits.set(pointer, count);
+  };
 }
 
 export interface SchemaProblem {
@@ -192,22 +212,49 @@ export function pointerFragment(fragment: string): string[] | undefined {
 
 /** Structural equality for JSON values. */
 export function jsonEqual(a: unknown, b: unknown): boolean {
+  return equalJson(a, b);
+}
+
+function equalJson(
+  a: unknown,
+  b: unknown,
+  spend?: SchemaBudget,
+  depth = 0,
+): boolean {
+  spend?.(depth);
   if (a === b) return true;
   if (Array.isArray(a)) {
     return (
       Array.isArray(b) &&
       a.length === b.length &&
-      a.every((item, index) => jsonEqual(item, b[index]))
+      a.every((item, index) => equalJson(item, b[index], spend, depth + 1))
     );
   }
   if (isObject(a) && isObject(b)) {
-    const keys = Object.keys(a);
+    const keys = equalityKeys(a, spend, depth);
     return (
-      keys.length === Object.keys(b).length &&
-      keys.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]))
+      keys.length === equalityKeys(b, spend, depth).length &&
+      keys.every(
+        (key) =>
+          Object.hasOwn(b, key) && equalJson(a[key], b[key], spend, depth + 1),
+      )
     );
   }
   return false;
+}
+
+function equalityKeys(
+  value: SchemaObject,
+  spend: SchemaBudget | undefined,
+  depth: number,
+): string[] {
+  if (spend === undefined) return Object.keys(value);
+  const keys: string[] = [];
+  for (const key in value) {
+    spend(depth);
+    if (Object.hasOwn(value, key)) keys.push(key);
+  }
+  return keys;
 }
 
 const hasPrototype = (value: object, prototype: object | null): boolean =>
@@ -399,6 +446,7 @@ export class SchemaRegistry {
       located.base,
       value,
       "",
+      validationBudget(),
       0,
       detailed,
     );
@@ -725,10 +773,11 @@ export class SchemaRegistry {
     base: string,
     value: unknown,
     at: string,
+    spend: ValidationBudget,
     depth: number,
     detailed = false,
   ): SchemaProblem[] {
-    checkValidationDepth(depth);
+    spend(depth, at);
     if (schema === true) return [];
     if (schema === false) {
       return [
@@ -772,7 +821,9 @@ export class SchemaRegistry {
       });
     };
     const sub = (s: unknown, v: unknown, p: string): SchemaProblem[] =>
-      this.#evaluate(s as JsonSchema, base, v, p, depth + 1, detailed);
+      this.#evaluate(s as JsonSchema, base, v, p, spend, depth + 1, detailed);
+    const equal = (left: unknown, right: unknown) =>
+      equalJson(left, right, spend, depth + 1);
 
     if (typeof schema.$ref === "string") {
       const uri = this.resolve(schema.$ref, base);
@@ -785,6 +836,7 @@ export class SchemaRegistry {
             target.base,
             value,
             at,
+            spend,
             depth + 1,
             detailed,
           ),
@@ -807,7 +859,7 @@ export class SchemaRegistry {
     }
     if (
       Array.isArray(schema.enum) &&
-      !schema.enum.some((e) => jsonEqual(e, value))
+      !schema.enum.some((e) => equal(e, value))
     ) {
       const suggested =
         typeof value === "string"
@@ -827,7 +879,7 @@ export class SchemaRegistry {
         suggested,
       );
     }
-    if ("const" in schema && !jsonEqual(schema.const, value)) {
+    if ("const" in schema && !equal(schema.const, value)) {
       add(
         "const",
         `expected ${JSON.stringify(schema.const)}`,
@@ -890,9 +942,19 @@ export class SchemaRegistry {
         add("maxItems", `must have at most ${schema.maxItems} items`);
       }
       if (schema.uniqueItems === true) {
-        const duplicate = value.findIndex((item, index) =>
-          value.slice(0, index).some((earlier) => jsonEqual(earlier, item)),
-        );
+        const scalars = new Set<unknown>();
+        const compounds: object[] = [];
+        const duplicate = value.findIndex((item: unknown) => {
+          spend(depth);
+          if (typeof item === "object" && item !== null) {
+            if (compounds.some((earlier) => equal(earlier, item))) return true;
+            compounds.push(item);
+          } else {
+            if (scalars.has(item)) return true;
+            scalars.add(item);
+          }
+          return false;
+        });
         if (duplicate !== -1) {
           add("uniqueItems", "items must be unique", `${at}/${duplicate}`);
         }
@@ -939,6 +1001,7 @@ export class SchemaRegistry {
         }
       }
       for (const key of keys) {
+        spend(depth);
         const pointer = `${at}/${escapePointer(key)}`;
         if (schema.propertyNames !== undefined) {
           for (const problem of sub(schema.propertyNames, key, pointer)) {
