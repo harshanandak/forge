@@ -3,6 +3,7 @@ import {
   readWorkMap,
   WORK_MAP_LIMITS,
 } from "../../src/assembly/work-map-read.ts";
+import { readWorkWarnings } from "../../src/assembly/work-map.ts";
 import { resolveFileOverlap } from "../../src/blocks/work/file-overlap.ts";
 import type { ProcessResult } from "../../src/ports/process.ts";
 
@@ -181,6 +182,53 @@ test("an unavailable issue authority is incomplete", async () => {
     reasons: [{ kind: "issues-unavailable" }],
   });
 });
+
+test("an unparseable lease expiry makes the snapshot incomplete", async () => {
+  const healthy = issue("work-1", { lease: { expiresAt: future } });
+  const damaged = issue("work-2", { lease: { expiresAt: "unreadable" } });
+  expect(await fixture([healthy, damaged]).read()).toMatchObject({
+    complete: false,
+    holders: [{ issue: healthy, leaseExpiresAt: future }],
+    reasons: [{ kind: "issues-unavailable", issue: damaged.id }],
+  });
+});
+
+test.each(["releasedAt", "expiresAt"] as const)(
+  "a date-only %s makes the map incomplete and preserves the healthy overlap",
+  async (field) => {
+    const expectedFiles = ["src/ui/ask.rs"];
+    const damaged = issue("work-1", {
+      expectedFiles,
+      lease: { expiresAt: future, [field]: "2026-12-01" },
+    });
+    const candidate = issue("work-2", { expectedFiles });
+    const healthy = issue("work-3", {
+      expectedFiles,
+      lease: { expiresAt: future },
+    });
+    const { ports } = fixture([damaged, candidate, healthy]);
+    const options = {
+      cwd: "/project",
+      env: {},
+      timeoutMs: 5000,
+      defaultRef,
+      candidateId: candidate.id,
+    };
+    const snapshot = await readWorkMap(ports, options);
+    const { warnings } = await readWorkWarnings(ports, options);
+    expect({ snapshot, codes: warnings.map(({ code }) => code) }).toMatchObject(
+      {
+        snapshot: {
+          complete: false,
+          reasons: [{ kind: "issues-unavailable", issue: damaged.id }],
+          holders: [{ issue: healthy }],
+        },
+        codes: ["WORK_FILE_MAP_INCOMPLETE", "WORK_FILE_OVERLAP"],
+      },
+    );
+    expect(warnings[1]?.message).toContain(`overlaps ${healthy.id}`);
+  },
+);
 
 test("issue truncation preserves the visible holders and is incomplete", async () => {
   const incumbent = issue("work-1", { lease: { expiresAt: future } });

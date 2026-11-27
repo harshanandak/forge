@@ -259,6 +259,11 @@ test("disjoint and generated paths leave the advisory empty", async () => {
   expect(await f.read()).toEqual({ warnings: [], omitted: 0 });
 });
 
+test("issues with overlapping declarations and no leases leave the advisory empty", async () => {
+  const f = fixture([issue(incumbentId), issue(candidateId)]);
+  expect(await f.read()).toEqual({ warnings: [], omitted: 0 });
+});
+
 test("the envelope reserves a final row and reports the exact number of omitted warnings", async () => {
   const paths = Array.from({ length: 34 }, (_, i) => `src/${i}.rs`);
   const f = fixture([

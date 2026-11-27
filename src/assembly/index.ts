@@ -85,7 +85,7 @@ import { withCheckRunBudget } from "./check-budget.ts";
 import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
 import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
-import { WORK_MAP_LIMITS } from "./work-map-read.ts";
+import { advisoryLeaseReader, WORK_MAP_LIMITS } from "./work-map-read.ts";
 import {
   blockCapture,
   resolveBlock,
@@ -721,7 +721,7 @@ export async function createAssembly(
       op: string,
       input: object,
       signal: AbortSignal,
-    ) => Promise<unknown>,
+    ) => Promise<{ result: unknown; leaseUnavailable?: true }>,
     signal: AbortSignal,
   ): ReturnType<typeof readWorkWarnings> {
     const scope = {
@@ -757,9 +757,9 @@ export async function createAssembly(
     const read = async (op: string, input: object) => {
       signal.throwIfAborted();
       if (bytes <= 0) throw new Error("Work map output limit reached");
-      const result = await command(op, input, signal);
-      charge(Buffer.byteLength(JSON.stringify(result)));
-      return result;
+      const answer = await command(op, input, signal);
+      charge(Buffer.byteLength(JSON.stringify(answer.result)));
+      return answer;
     };
     const lanes = await providers
       .openFiles(scope)
@@ -778,19 +778,23 @@ export async function createAssembly(
         now: Date.now,
         process: { ...process, resolve: () => git.executable() },
         async issues({ limit }) {
-          const page = (await read("issue.list", {
+          const { result, leaseUnavailable } = await read("issue.list", {
             status: "open",
             limit,
-          })) as {
+          });
+          const page = result as {
             items: TrackerItem[];
             truncated?: boolean;
           };
-          return { items: page.items, truncated: page.truncated === true };
+          return {
+            items: page.items,
+            truncated: page.truncated === true,
+            ...(leaseUnavailable ? { leaseUnavailable } : {}),
+          };
         },
         async deliveries(id, { limit }) {
-          const { records } = (await read("issue.links", { id })) as {
-            records: StateRecord[];
-          };
+          const { result } = await read("issue.links", { id });
+          const { records } = result as { records: StateRecord[] };
           const urls = records.flatMap(({ value }) => {
             const link = record(value);
             return link?.relation === "delivers" && typeof link.url === "string"
@@ -2299,6 +2303,8 @@ export async function createAssembly(
           request.input,
           processCleanupBudgetMs(options.providers?.supervision),
         );
+        let advisoryIssues:
+          { op: string; leaseUnavailable: boolean } | undefined;
         const runtime = new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           drainServicePreparation: true,
@@ -2533,12 +2539,25 @@ export async function createAssembly(
                   write: scope.effects.includes(`${noun}:write`),
                   requestId: request.requestId,
                 });
+                const scan = advisoryIssues;
+                const stateClient =
+                  namespace === "forge/work" && scope.op === scan?.op
+                    ? Object.freeze({
+                        ...client,
+                        lease: advisoryLeaseReader(
+                          (subject) => client.lease(subject),
+                          () => {
+                            scan.leaseUnavailable = true;
+                          },
+                        ),
+                      })
+                    : client;
                 clients[binding.slot] = interfaceSatisfies(
                   "forge.state@2.0.0",
                   binding.interface,
                 )
-                  ? createLocalAsyncStateClient(client)
-                  : client;
+                  ? createLocalAsyncStateClient(stateClient)
+                  : stateClient;
                 if (
                   namespace === "forge/work" &&
                   current.catalog.resolve(scope.op).operation.declaredOp ===
@@ -2710,12 +2729,26 @@ export async function createAssembly(
                 });
                 if (!nested)
                   refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
-                const answer = await runtime.invoke(
-                  { ...request, op: nested, input },
-                  { signal },
-                );
-                if (!answer.ok) throw new ForgeFailure(answer.error);
-                return answer.result;
+                const scan =
+                  op === "issue.list"
+                    ? { op: nested, leaseUnavailable: false }
+                    : undefined;
+                advisoryIssues = scan;
+                try {
+                  const answer = await runtime.invoke(
+                    { ...request, op: nested, input },
+                    { signal },
+                  );
+                  if (!answer.ok) throw new ForgeFailure(answer.error);
+                  return {
+                    result: answer.result,
+                    ...(scan?.leaseUnavailable
+                      ? { leaseUnavailable: true }
+                      : {}),
+                  };
+                } finally {
+                  advisoryIssues = undefined;
+                }
               };
               call.workMap = await Promise.race([
                 delay(advisoryMs, unavailableMap("read timed out"), {

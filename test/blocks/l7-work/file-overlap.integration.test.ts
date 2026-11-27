@@ -279,6 +279,58 @@ const laneInput = (id: string) => ({ id, brief, branch: `feat/${id}` });
 const hasIncompleteMap = (reply: object) =>
   mapWarnings(reply).some(({ code }) => code === "WORK_FILE_MAP_INCOMPLETE");
 
+for (const [fault, replacement] of Object.entries({
+  "I/O error":
+    'throw Object.assign(new Error("Lease read failed"), { code: "EIO" });',
+  "missing expiry": "return {};",
+  "wrong subject":
+    'return { ...read.call(this, namespace, subject), subject: "issue:work-3" };',
+}))
+  test(`an advisory with a lease ${fault} preserves the healthy overlap`, async () => {
+    await project(async ({ good }, repo, root) => {
+      const damaged = String((await good("issue.create", planned)).id);
+      const candidate = String((await good("issue.create", planned)).id);
+      await good("issue.create", planned);
+      const incumbent = String((await good("issue.create", planned)).id);
+      await good("issue.claim", { id: incumbent });
+      await good("issue.claim", { id: damaged });
+      const state = new URL(
+        "../../../dist/src/core/state/index.js",
+        import.meta.url,
+      );
+      const preload = `data:text/javascript,${encodeURIComponent(`
+        import { StateOwner } from ${JSON.stringify(state.href)};
+        const read = StateOwner.prototype.lease;
+        StateOwner.prototype.lease = function (namespace, subject) {
+          if (namespace === "forge/work" && subject === "issue:work-1") {
+            ${replacement}
+          }
+          return read.call(this, namespace, subject);
+        };
+      `)}`;
+      const result = laneCli(
+        root,
+        repo,
+        ["issue", "claim", candidate],
+        "reader",
+        {
+          NODE_OPTIONS: `--import=${preload}`,
+        },
+      );
+      expect(result).toMatchObject({
+        exit: 0,
+        ok: true,
+        result: { id: candidate },
+      });
+      const warnings = mapWarnings(result);
+      expect(warnings.map(({ code }) => code)).toEqual([
+        "WORK_FILE_MAP_INCOMPLETE",
+        "WORK_FILE_OVERLAP",
+      ]);
+      expect(warnings[1]?.message).toContain(`overlaps ${incumbent}`);
+    });
+  }, 30_000);
+
 test("the later concurrent one-shot CLI claim reports overlap before lane start", async () => {
   await project(async ({ good }, repo, root) => {
     const first = String((await good("issue.create", planned)).id);
