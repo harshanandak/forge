@@ -1,8 +1,8 @@
 import { spyOn, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, open, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, mkdir, open, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { adminWith } from "../../src/remote/index.ts";
+import { hubTestTemp } from "../temp.ts";
 import { config, fakeCore, safeOutput } from "./fixtures.ts";
 
 async function capture(run: () => Promise<number>) {
@@ -23,7 +23,7 @@ async function capture(run: () => Promise<number>) {
 }
 
 async function fixture(settings: ReturnType<typeof config>) {
-  const root = await mkdtemp(join(tmpdir(), "forge-admin-"));
+  const root = await realpath(hubTestTemp("forge-admin-"));
   const core = fakeCore(settings);
   const checks: Array<[string, "file" | "dir"]> = [];
   const sizes: number[] = [];
