@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
   laneCommands,
@@ -87,45 +88,100 @@ for (const mode of [
         );
       };
       if (mode === "racing") {
-        const both = Promise.withResolvers<void>();
-        let arrivals = 0;
-        const spy = spyOn(launch, "runProcess").mockImplementation(
-          async (...args) => {
-            if (
-              advisoryGit(args[1]) &&
-              args[1][1] === "rev-parse" &&
-              arrivals < 2
-            ) {
-              if (++arrivals === 2) both.resolve();
-              await both.promise;
-            }
-            return runProcess(...args);
+        const { createAssembly, localContext } = (await import(
+          new URL("../../../dist/src/assembly/index.js", import.meta.url).href
+        )) as typeof import("../../../src/assembly/index.ts");
+        const tree = (await import(
+          new URL(
+            "../../../dist/src/adapters/process/process-tree.js",
+            import.meta.url,
+          ).href
+        )) as typeof import("../../../src/adapters/process/process-tree.ts");
+        const containment = (await import(
+          new URL(
+            "../../../dist/src/adapters/process/containment.js",
+            import.meta.url,
+          ).href
+        )) as typeof import("../../../src/adapters/process/containment.ts");
+        const host = await createAssembly({
+          root: repo,
+          deviceRoot: join(root, "device"),
+        });
+        const context = localContext(
+          host,
+          { kind: "human", id: "local-cli" },
+          "coordinator",
+        );
+        const mcp = createMcpHandlers(
+          host.mcpCatalog,
+          { expose: ["lane"] },
+          {
+            context: {
+              ...context,
+              session: {
+                ...context.session,
+                id: "coordinator",
+                device: "lane-fixture",
+              },
+            },
           },
         );
-        const replies = await Promise.all([
-          claim(first),
-          claim(second),
-        ]).finally(() => spy.mockRestore());
-        for (const reply of replies)
-          expect(reply.ok, JSON.stringify(reply)).toBe(true);
-        expect(
-          mapWarnings(replies[0]).some(
-            ({ code }) => code === "WORK_FILE_OVERLAP",
+        for (const issue of [first, second])
+          expect((await claim(issue)).ok).toBe(true);
+        const entered = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        let arm = false;
+        let held = false;
+        const pause = async () => {
+          if (!arm || held) return;
+          held = true;
+          entered.resolve();
+          await resume.promise;
+        };
+        const open = containment.openContainment;
+        const runTree = tree.runProcessTree;
+        const spies = [
+          spyOn(launch, "runProcess").mockImplementation((...args) => {
+            if (advisoryGit(args[1])) arm = true;
+            return runProcess(...args);
+          }),
+          spyOn(containment, "openContainment").mockImplementation(
+            async (...args) => {
+              await pause();
+              return open(...args);
+            },
           ),
-        ).toBe(true);
-        expect(
-          mapWarnings(replies[1]).some(
-            ({ code }) => code === "WORK_FILE_OVERLAP",
-          ),
-        ).toBe(true);
-        const lane = await start(second);
-        checkLane(lane);
-        const repeated = await start(second);
-        checkLane(repeated);
-        expect(repeated.result.worktree).toBe(lane.result.worktree);
-        expect(
-          mapWarnings(lane).some(({ code }) => code === "WORK_FILE_OVERLAP"),
-        ).toBe(true);
+          spyOn(tree, "runProcessTree").mockImplementation(async (...args) => {
+            await pause();
+            return runTree(...args);
+          }),
+        ];
+        const attach = (id: string) =>
+          mcp.callTool("lane_start", {
+            id,
+            brief,
+            branch: "feat/" + id,
+          });
+        const admitting = attach(first);
+        try {
+          await Promise.race([entered.promise, admitting]);
+          const secondStart = await attach(second);
+          expect(secondStart?.ok, JSON.stringify(secondStart)).toBe(true);
+          resume.resolve();
+          const lane = await admitting;
+          expect(lane?.ok, JSON.stringify(lane)).toBe(true);
+          expect(mapWarnings(lane!)).toContainEqual({
+            code: "WORK_FILE_MAP_INCOMPLETE",
+            message:
+              "File overlap map incomplete (advisory skipped: shared process runner). Some overlap may be missing.",
+          });
+          expect(held).toBe(false);
+        } finally {
+          resume.resolve();
+          await admitting;
+          for (const spy of spies) spy.mockRestore();
+          await host.close();
+        }
         return;
       }
       expect((await claim(first)).ok).toBe(true);
