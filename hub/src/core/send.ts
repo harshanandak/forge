@@ -131,11 +131,11 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
           personId: person.personId,
         });
       } catch (error) {
-        if (error instanceof AgentPostOutcomeError) {
-          await deliver(item);
-          return refused("CHAT_UNAVAILABLE");
-        }
-        if (!(error instanceof ChatWriteFailure)) throw error;
+        if (!(
+          error instanceof ChatWriteFailure ||
+          error instanceof AgentPostOutcomeError
+        ))
+          throw error;
         threadPost = "failed";
       }
       await deliver(item);

@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
+import { LIMITS } from "../../src/contract/mcp.ts";
 import { createCoreContext } from "../../src/core/core.ts";
-import { baseFixture, type BaseFixture } from "./base-fixture.ts";
+import { baseFixture, seedThread, type BaseFixture } from "./base-fixture.ts";
 import { refusal } from "./base-fakes.ts";
-import { value } from "./fixture.ts";
+import { a, b, p1, value } from "./fixture.ts";
 
 const timeout = 30_000;
 const journal = (f: BaseFixture) =>
@@ -27,7 +28,7 @@ async function setup() {
       conversationId,
       text,
     });
-  return { f, reply };
+  return { f, alpha, conversationId, reply };
 }
 
 for (const abandon of [false, true]) {
@@ -156,3 +157,53 @@ for (const failures of [1, 2]) {
     timeout,
   );
 }
+
+test(
+  "a visible send keeps its inbox receipt when the outcome cannot be journaled",
+  async () => {
+    const { f, alpha, conversationId, reply } = await setup();
+    const beta = f.bind(b, "bound-b", "beta");
+    for (let index = 0; index < LIMITS.agentRunMax - 1; index++)
+      seedThread(
+        f,
+        "agent-" + index,
+        "run",
+        "agent",
+        a.personId,
+        alpha.sessionId,
+      );
+    f.db.exec(
+      "CREATE TRIGGER block_outcome BEFORE UPDATE ON meta WHEN NEW.key LIKE 'agent-post:%' BEGIN SELECT RAISE(ABORT, 'injected outcome failure'); END",
+    );
+    const sent = await f.core.send(f.caller(), {
+      sessionId: alpha.sessionId,
+      projectId: p1,
+      toPersonId: b.personId,
+      conversationId,
+      text: "agent note",
+    });
+    const items = f.read(beta.sessionId, b).items;
+    expect(items.map((item) => item.text)).toEqual(["agent note"]);
+    expect(sent).toEqual({
+      ok: true,
+      value: { itemId: items[0]!.itemId, threadPost: "failed" },
+    });
+    expect(transcripts(f)).toHaveLength(LIMITS.agentRunMax - 1);
+    expect(journal(f)).toHaveLength(1);
+    f.db.exec("DROP TRIGGER block_outcome");
+    expect(refusal(await reply("over limit"))).toMatchObject({
+      code: "CONVERSATION_PAUSED",
+      retry: "never",
+    });
+    expect(transcripts(f)).toHaveLength(LIMITS.agentRunMax);
+    expect(transcripts(f).filter((id) => id === "message-1")).toEqual([
+      "message-1",
+    ]);
+    expect(journal(f)).toEqual([]);
+    expect(f.posts()).toEqual([
+      "Fixture Alpha's agent asked Fixture Beta's agent: agent note",
+      "Paused: the agents need a person to reply.",
+    ]);
+  },
+  timeout,
+);
