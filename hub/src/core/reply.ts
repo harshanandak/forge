@@ -1,8 +1,5 @@
-import {
-  ChatWriteFailure,
-  type ChatMessageRef,
-  type ChatPostTarget,
-} from "../contract/chat.ts";
+import { ChatWriteFailure, type ChatPostTarget } from "../contract/chat.ts";
+import type { ChatMessageRef } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import type { Conversation } from "../contract/domain.ts";
 import type { HubError } from "../contract/errors.ts";
@@ -70,11 +67,7 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
   const posted = fitSection(input.prefix + " ", body);
   const { conversation, sessionId, personId } = input;
   const reservation =
-    conversation &&
-    !conversation.isDirect &&
-    conversation.projectId !== undefined &&
-    sessionId &&
-    personId
+    conversation && sessionId && personId
       ? reserveAgentPost(ctx, conversation, sessionId, personId, posted)
       : undefined;
   let ref: ChatMessageRef;
@@ -86,15 +79,18 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
     if (reservation) {
       const refused =
         error instanceof ChatWriteFailure && error.effect === "refused";
-      await settleAgentPost(ctx, reservation, {
+      const projected = settleAgentPost(ctx, reservation, {
         phase: refused ? "refused" : "unknown",
       });
+      if (projected && !refused)
+        await postLoopPause(ctx, reservation.conversation);
     }
     throw error;
   }
-  if (reservation)
-    await settleAgentPost(ctx, reservation, { phase: "confirmed", ref });
-  return { ref, text: posted };
+  const projected =
+    reservation &&
+    settleAgentPost(ctx, reservation, { phase: "confirmed", ref });
+  return { ref, text: posted, projected };
 }
 
 export function createReply(ctx: CoreContext): HubCore["reply"] {
@@ -309,6 +305,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
               ")",
           ).run(...result.owed);
       });
+      if (posted.projected) await postLoopPause(ctx, conv);
       return {
         ok: true,
         value: {

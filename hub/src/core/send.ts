@@ -116,7 +116,7 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
       const item = storeItem();
       let threadPost: "posted" | "failed" = "posted";
       try {
-        await postAgentText(ctx, {
+        const posted = await postAgentText(ctx, {
           target: { kind: "thread", chatThreadId: chat.chatThreadId },
           channelId: chat.channelId,
           projectName:
@@ -130,6 +130,7 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
           sessionId,
           personId: person.personId,
         });
+        if (posted.projected) await postLoopPause(ctx, chat);
       } catch (error) {
         if (!(
           error instanceof ChatWriteFailure ||

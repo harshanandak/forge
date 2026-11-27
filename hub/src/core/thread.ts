@@ -208,25 +208,29 @@ export async function enterThread(
   };
 }
 
-export async function postLoopPause(
-  ctx: CoreContext,
-  conversation: Conversation,
-): Promise<void> {
-  const { projectId } = conversation;
+function loopPauseDue(ctx: CoreContext, conversation: Conversation) {
+  return ctx.store.tx(() => {
+    const start = agentRunStart(ctx.deps.db, conversation.chatThreadId);
+    return (
+      start !== undefined &&
+      ctx.deps.db
+        .prepare(
+          `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq >= ? LIMIT 1`,
+        )
+        .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, start) === undefined
+    );
+  });
+}
+
+export async function postLoopPause(ctx: CoreContext, pending: Conversation) {
+  const { projectId } = pending;
   if (!ctx.chat || projectId === undefined) return;
   try {
-    const due = ctx.store.tx(() => {
-      const start = agentRunStart(ctx.deps.db, conversation.chatThreadId);
-      return (
-        start !== undefined &&
-        ctx.deps.db
-          .prepare(
-            `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq >= ? LIMIT 1`,
-          )
-          .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, start) === undefined
-      );
-    });
-    if (!due) return;
+    const db = ctx.deps.db;
+    const conversation = byConversation(db, pending.conversationId);
+    if (conversation?.chatThreadId !== pending.chatThreadId) return;
+    if (channelBindingRefusal(db, conversation, projectId)) return;
+    if (!loopPauseDue(ctx, conversation)) return;
     const ref = await ctx.chat.postText(
       { kind: "thread", chatThreadId: conversation.chatThreadId },
       LOOP_PAUSE_TEXT,

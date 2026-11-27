@@ -2,12 +2,7 @@
 import type { ChatMessageRef } from "../contract/chat.ts";
 import type { Conversation } from "../contract/domain.ts";
 import type { CoreContext } from "./core.ts";
-import {
-  postLoopPause,
-  recordAgentPost,
-  str,
-  UNCONFIRMED_MESSAGE_PREFIX,
-} from "./thread.ts";
+import { recordAgentPost, str, UNCONFIRMED_MESSAGE_PREFIX } from "./thread.ts";
 
 type Reservation = {
   id: string;
@@ -35,7 +30,8 @@ export function reserveAgentPost(
   sessionId: string,
   personId: string,
   text: string,
-): Reservation {
+) {
+  if (conversation.isDirect || conversation.projectId === undefined) return;
   const post = {
     id: UNCONFIRMED_MESSAGE_PREFIX + randomUUID(),
     conversation,
@@ -79,56 +75,55 @@ function projectPost(ctx: CoreContext, post: JournalPost) {
   });
 }
 
-export async function settleAgentPost(
+export function settleAgentPost(
   ctx: CoreContext,
   reservation: Reservation,
   outcome: Outcome,
-) {
+): boolean {
   const post = { ...reservation, ...outcome };
-  try {
-    writeOutcome(ctx, post);
-  } catch {
+  for (const retry of [true, false]) {
     try {
       writeOutcome(ctx, post);
-    } catch (error) {
+      break;
+    } catch (cause) {
+      if (retry) continue;
       ctx.pendingAgentPosts.set(post.conversation.chatThreadId, post);
-      throw new AgentPostOutcomeError(
-        "Could not journal the agent post outcome",
-        {
-          cause: error,
-        },
-      );
+      throw new AgentPostOutcomeError("Journal write failed", { cause });
     }
   }
   try {
     projectPost(ctx, post);
+    return true;
   } catch {
     ctx.deps.log.warn("agent_post_projection_failed");
+    return false;
   }
-  if (post.phase !== "refused") await postLoopPause(ctx, post.conversation);
 }
 
-export function recoverAgentPosts(
-  ctx: CoreContext,
-  thread?: string,
-  recoverReserved = true,
-) {
+export function agentPost(ctx: CoreContext, thread: string) {
+  const pending = ctx.pendingAgentPosts.get(thread);
+  if (pending) return pending;
+  const row = ctx.deps.db
+    .prepare("SELECT value FROM meta WHERE key=?")
+    .get(journalPrefix + thread);
+  return row && (JSON.parse(str(row.value)) as JournalPost);
+}
+
+export function recoverAgentPosts(ctx: CoreContext, thread?: string) {
   if (thread !== undefined) {
     const pending = ctx.pendingAgentPosts.get(thread);
     if (pending) {
       writeOutcome(ctx, pending);
       ctx.pendingAgentPosts.delete(thread);
     }
+    const post = pending ?? agentPost(ctx, thread);
+    if (!post) return;
+    projectPost(ctx, post);
+    return post.conversation;
   }
-  const { db } = ctx.deps;
-  const rows =
-    thread === undefined
-      ? db.prepare("SELECT value FROM meta WHERE key GLOB 'agent-post:*'").all()
-      : db
-          .prepare("SELECT value FROM meta WHERE key = ?")
-          .all(journalPrefix + thread);
-  for (const row of rows) {
-    const post = JSON.parse(str(row.value)) as JournalPost;
-    if (post.phase !== "reserved" || recoverReserved) projectPost(ctx, post);
-  }
+  const rows = ctx.deps.db
+    .prepare("SELECT value FROM meta WHERE key GLOB 'agent-post:*'")
+    .all();
+  for (const row of rows)
+    projectPost(ctx, JSON.parse(str(row.value)) as JournalPost);
 }
