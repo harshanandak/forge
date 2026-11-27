@@ -86,6 +86,30 @@ test(
   timeout,
 );
 
+test(
+  "S4 a server error after listen drains an aborted handler before closing resources",
+  () => {
+    expect(probe("error")).toMatchObject({
+      code: 1,
+      stderr: ["could not run hub service\n"],
+      events: [
+        "db.open",
+        "claim",
+        "listening",
+        "abort",
+        "handler.settled",
+        "remote.close",
+        "core.close",
+        "release",
+        "db.close",
+      ],
+      pending: "closed",
+      listeningAfter: false,
+    });
+  },
+  timeout,
+);
+
 for (const [scenario, startup] of [
   ["port", ["claim"]],
   ["chat", ["claim", "chat.start", "chat.stop", "release"]],
