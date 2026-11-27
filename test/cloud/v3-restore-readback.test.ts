@@ -98,7 +98,8 @@ const commits = (f: Fixture) =>
 test(
   "v3 admits a declaration at the shared boundary and records typed refusals",
   async () => {
-    using f = open();
+    const f = open();
+    using _db = f.db;
     await provision(f);
     const expectedFiles = Array.from(
       { length: 80 },
@@ -124,7 +125,8 @@ test(
 test(
   "v3 records and replays typed refusals for invalid declaration paths",
   async () => {
-    using f = open();
+    const f = open();
+    using _db = f.db;
     await provision(f);
     expect((await typed(f, create)).status).toBe(200);
     expect((await typed(f, claim)).status).toBe(200);
