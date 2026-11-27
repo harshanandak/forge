@@ -20,7 +20,8 @@ test("repeated string assertions use the work budget", () => {
   expect(registry.validate("#", "x".repeat(120_000))[0]?.keyword).toBe(
     "budget",
   );
-  expect(registry.validate("#", "😀")).toEqual([]);
+  const unicode = new SchemaRegistry([{ minLength: 1, maxLength: 1 }]);
+  expect(unicode.validate("#", "\u{1F600}")).toEqual([]);
 }, 30_000);
 
 test("name suggestions respect the shared work budget", () => {
