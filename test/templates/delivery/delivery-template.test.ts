@@ -837,7 +837,6 @@ test("rendered review checks the base run log for the same failure signature", a
     const step = red.split("\n").find((line) => line.startsWith("3.")) ?? "";
     expect(step).toContain("--log-failed");
     expect(step).toContain("same signature");
-    expect(step).toContain("goes to step 4");
   });
 }, 30_000);
 
