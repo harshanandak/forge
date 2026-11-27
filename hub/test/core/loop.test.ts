@@ -205,15 +205,36 @@ function expectPaused(result: HubResult<unknown>) {
   });
 }
 
+async function expectFail(
+  call: Promise<HubResult<unknown>>,
+  conversationId: string,
+) {
+  expect(refusal(await call)).toEqual(chatUnavailable(conversationId));
+}
+
+async function alphaBetaFixture() {
+  const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+  const alpha = f.bind();
+  const beta = f.bind(b, "beta", "beta");
+  await f.emit("root");
+  await f.emit("beta-mention", {
+    slackUserId: slackB,
+    threadRootMessageId: "root",
+  });
+  const alphaFirst = f.read(alpha.sessionId).items[0]!;
+  f.ack(alpha.sessionId, [alphaFirst.itemId]);
+  const betaFirst = f.read(beta.sessionId, b).items[0]!;
+  f.ack(beta.sessionId, [betaFirst.itemId], b);
+  return { f, alpha, beta, betaFirst };
+}
+
 test(
   "forge-1989 a reply post with an unknown outcome uses the loop guard slot",
   async () => {
     const { f, alpha, conversationId } = await unknownRunFixture();
     const reply = mkReply(f, alpha.sessionId, conversationId);
     f.chat.nextWrite = { kind: "unknown" };
-    expect(refusal(await reply("tenth reply"))).toEqual(
-      chatUnavailable(conversationId),
-    );
+    await expectFail(reply("tenth reply"), conversationId);
     expect(attempts(f)).toBe(1);
     const rows = agentRows(f);
     expect(
@@ -271,9 +292,7 @@ test(
     const { f, alpha, conversationId } = await unknownRunFixture();
     const reply = mkReply(f, alpha.sessionId, conversationId);
     f.chat.nextWrite = { kind: "unknown" };
-    expect(refusal(await reply("tenth reply"))).toEqual(
-      chatUnavailable(conversationId),
-    );
+    await expectFail(reply("tenth reply"), conversationId);
     await f.follow("member-release", {
       slackUserId: slackB,
       mentionsBot: false,
@@ -331,18 +350,7 @@ test(
 test(
   "forge-1989 an unconfirmed row counts for the guard but stays out of delivered context",
   async () => {
-    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
-    const alpha = f.bind();
-    const beta = f.bind(b, "beta", "beta");
-    await f.emit("root");
-    await f.emit("beta-mention", {
-      slackUserId: slackB,
-      threadRootMessageId: "root",
-    });
-    const alphaFirst = f.read(alpha.sessionId).items[0]!;
-    f.ack(alpha.sessionId, [alphaFirst.itemId]);
-    const betaFirst = f.read(beta.sessionId, b).items[0]!;
-    f.ack(beta.sessionId, [betaFirst.itemId], b);
+    const { f, alpha, beta, betaFirst } = await alphaBetaFixture();
     const betaConv = betaFirst.conversationId;
     if (!betaConv) throw new Error("Expected a Slack conversation ID");
     seedRun(f, LIMITS.agentRunMax - 1, alpha.sessionId);
@@ -353,9 +361,7 @@ test(
         text,
       });
     f.chat.nextWrite = { kind: "unknown" };
-    expect(refusal(await reply("unconfirmed beta answer"))).toEqual(
-      chatUnavailable(betaConv),
-    );
+    await expectFail(reply("unconfirmed beta answer"), betaConv);
     expectPaused(await reply("eleventh beta reply"));
     await f.emit("a-second", { threadRootMessageId: "root" });
     const read = f.read(alpha.sessionId);
@@ -373,9 +379,10 @@ test(
     f.db.exec(
       "CREATE TRIGGER block_reserve BEFORE INSERT ON thread_messages WHEN NEW.chat_message_id LIKE 'unconfirmed:%' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END",
     );
-    expect(
-      refusal(await mkReply(f, alpha.sessionId, conversationId)("tenth reply")),
-    ).toEqual(chatUnavailable(conversationId));
+    await expectFail(
+      mkReply(f, alpha.sessionId, conversationId)("tenth reply"),
+      conversationId,
+    );
     await expect(
       f.core.send(f.caller(), {
         sessionId: alpha.sessionId,
@@ -399,9 +406,7 @@ test(
     );
     const reply = mkReply(f, alpha.sessionId, conversationId);
     f.chat.nextWrite = { kind: "unknown" };
-    expect(refusal(await reply("ninth reply"))).toEqual(
-      chatUnavailable(conversationId),
-    );
+    await expectFail(reply("ninth reply"), conversationId);
     f.db.exec(
       "CREATE TRIGGER block_confirm BEFORE UPDATE ON thread_messages BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END",
     );
@@ -446,13 +451,34 @@ test(
     const eleventh = reply("eleventh reply");
     await new Promise<void>((resolve) => setImmediate(resolve));
     release();
-    expect(refusal(await tenth)).toEqual(chatUnavailable(conversationId));
+    await expectFail(tenth, conversationId);
     expectPaused(await eleventh);
     expect(attempts(f)).toBe(1);
     expect(f.posts()).toEqual(["Fixture Alpha's agent: tenth reply"]);
     const ids = agentRows(f).map((row) => row.chat_message_id);
     expect(ids.slice(0, -1)).toEqual(seedIds);
     expectUnconfirmed(ids[9]);
+  },
+  timeout,
+);
+
+test(
+  "forge-1989 an unconfirmed row does not steer an unmentioned human reply",
+  async () => {
+    const { f, alpha, beta } = await alphaBetaFixture();
+    seedThread(f, "ts-alpha", "alpha answer", "agent", a.personId);
+    seedThread(
+      f,
+      UNCONFIRMED_PREFIX + "route",
+      "beta answer",
+      "agent",
+      b.personId,
+    );
+    await f.follow("human-note", { slackUserId: slackB, mentionsBot: false });
+    expect(f.read(alpha.sessionId).items.map((item) => item.text)).toEqual([
+      "human-note",
+    ]);
+    expect(f.read(beta.sessionId, b).items).toEqual([]);
   },
   timeout,
 );

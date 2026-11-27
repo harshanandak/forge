@@ -3,7 +3,13 @@ import type { Conversation, Person, Session } from "../contract/domain.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
 import { bestEffort, type Notice, postNotice } from "./doorbell.ts";
-import { conversation, messageText, recordThread, str } from "./thread.ts";
+import {
+  conversation,
+  messageText,
+  recordThread,
+  str,
+  UNCONFIRMED_MESSAGE_PREFIX,
+} from "./thread.ts";
 
 export function frontSession(
   ctx: CoreContext,
@@ -334,9 +340,11 @@ export async function route(
       const latest = db
         .prepare(
           `SELECT person_id FROM thread_messages WHERE adapter='slack'
-        AND chat_thread_id=? AND kind='agent' ORDER BY seq DESC LIMIT 1`,
+        AND chat_thread_id=? AND kind='agent'
+        AND (chat_message_id IS NULL OR chat_message_id NOT LIKE ?)
+        ORDER BY seq DESC LIMIT 1`,
         )
-        .get(chatThreadId);
+        .get(chatThreadId, UNCONFIRMED_MESSAGE_PREFIX + "%");
       const recipient =
         existing.find((entry) => entry.personId === latest?.person_id) ?? root;
       const owner = recipient && people.byPersonId(recipient.personId);
