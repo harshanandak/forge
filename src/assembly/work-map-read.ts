@@ -116,6 +116,11 @@ export async function readWorkMap(
     snapshot.reasons.push({ kind, ...detail });
   const { defaultRef, workInstance = "work", ...spawn } = options;
   const limits = WORK_MAP_LIMITS;
+  const env = Object.fromEntries(
+    Object.entries(spawn.env).filter(([name]) => !/^GIT_/i.test(name)),
+  );
+  env.GIT_NO_LAZY_FETCH = "1";
+  const gitSpawn = { ...spawn, env, maxOutputBytes: limits.outputBytes };
   let processes = 0;
   let authorityBytes: number = limits.outputBytes;
   const budget = (): Budget => ({
@@ -155,15 +160,10 @@ export async function readWorkMap(
   ): Promise<string | undefined> {
     processes++;
     try {
-      const env = { ...spawn.env, GIT_NO_LAZY_FETCH: "1" };
       const git = ports.process.resolve("git", env);
       if (git.kind !== "resolved") throw new Error("Git unavailable");
       const command = ["--no-replace-objects", ...args];
-      const result = await ports.process.run(git, command, {
-        ...spawn,
-        env,
-        maxOutputBytes: limits.outputBytes,
-      });
+      const result = await ports.process.run(git, command, gitSpawn);
       const bytes = Buffer.byteLength(result.stdout + result.stderr);
       if (result.truncated || bytes > limits.outputBytes) {
         note("output-budget", { source });
@@ -270,15 +270,12 @@ export async function readWorkMap(
       (input) => ports.deliveries(issue.id, input),
       issue.id,
     );
+    let lookupCut: "output-budget" | "process-budget" | undefined;
     for (const url of new Set(links)) {
       if (!pulls.has(url)) {
-        if (authorityBytes <= 0) {
-          note("output-budget", { source: "pull", issue: issue.id });
-          break;
-        }
-        if (processes >= limits.processes) {
-          note("process-budget", { source: "pull", issue: issue.id });
-          break;
+        if (authorityBytes <= 0 || processes >= limits.processes) {
+          lookupCut = authorityBytes <= 0 ? "output-budget" : "process-budget";
+          continue;
         }
         processes++;
         pulls.set(url, await lookupPull(url, issue.id));
@@ -287,6 +284,7 @@ export async function readWorkMap(
       if (state === "OPEN")
         openPulls.push(branch === undefined ? { url } : { url, branch });
     }
+    if (lookupCut) note(lookupCut, { source: "pull", issue: issue.id });
     if (leaseExpiresAt !== undefined || openPulls.length > 0)
       snapshot.holders.push({
         issue,
