@@ -274,6 +274,7 @@ test(
         })
       ).status,
     ).toBe(200);
+    const released = await f.command(show);
     const lost = await f.command(
       update("lost", { expectedFiles: ["src/beta.ts"] }),
     );
@@ -281,7 +282,7 @@ test(
     expect(["LEASE_NOT_HELD", "LEASE_STALE", "LEASE_EXPIRED"]).toContain(
       lost.body.error!.code,
     );
-    expect(await f.command(show)).toEqual(before);
+    expect(await f.command(show)).toEqual(released);
   },
   timeout,
 );

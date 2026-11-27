@@ -18,7 +18,7 @@ import {
   storedId,
 } from "./issue-read.ts";
 import { fence, heldReplay, shownWrite } from "./issue-update.ts";
-import { receipted, type WriteCall } from "./issue-write.ts";
+import { boundedResult, receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 const close = manifest.operations["issue.close"];
@@ -113,19 +113,30 @@ export function closeIssue(
           "RECEIPT_REQUIRED",
           "Supply a PASS receipt or an explicit withoutReceipt reason",
         );
-      const written = owner.put(
-        NAMESPACE,
-        held.subject,
-        {
-          ...previous,
-          status: "closed",
-          ...(receipt === undefined ? { withoutReceipt } : { receipt }),
-          ...(reason === undefined ? {} : { closeReason: reason }),
-        },
-        actor,
-        { expectRevision: record.revision, fence: held, readSet: reads },
+      const value = {
+        ...previous,
+        status: "closed" as const,
+        ...(receipt === undefined ? { withoutReceipt } : { receipt }),
+        ...(reason === undefined ? {} : { closeReason: reason }),
+      };
+      const candidate = {
+        namespace: NAMESPACE,
+        key: held.subject,
+        value,
+        revision: record.revision + 1,
+        updatedAt: new Date(Date.now()).toISOString(),
+        updatedBy: actor,
+      };
+      boundedResult("issue.close", shownWrite(owner, candidate, id, prefix));
+      const written = owner.put(NAMESPACE, held.subject, value, actor, {
+        expectRevision: record.revision,
+        fence: held,
+        readSet: reads,
+      });
+      return boundedResult(
+        "issue.close",
+        shownWrite(owner, written, id, prefix),
       );
-      return shownWrite(owner, written, id, prefix);
     },
     heldReplay(owner, "issue.close"),
   );
