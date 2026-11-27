@@ -61,6 +61,14 @@ export const SECRET_PATTERNS: readonly RegExp[] = [
 
 export const SECRET_REMOVED_TEXT = "[possible secret removed]";
 
+export function hasSecretPattern(text: string): boolean {
+  return SECRET_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+export function redactSecretText(text: string): string {
+  return hasSecretPattern(text) ? SECRET_REMOVED_TEXT : text;
+}
+
 export const HTTP_STATUS: Readonly<Record<HubErrorCode, number>> = {
   UNAUTHENTICATED: 401,
   INPUT_INVALID: 400,

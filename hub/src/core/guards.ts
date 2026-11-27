@@ -2,7 +2,7 @@ import { SUMMARY_KEY_MARKER } from "../contract/chat.ts";
 import { AUTHORITY_ACTIONS } from "../contract/domain.ts";
 import {
   AUTHORITY_PATTERN,
-  SECRET_PATTERNS,
+  hasSecretPattern,
   type HubError,
 } from "../contract/errors.ts";
 import { LIMITS, type AskInput } from "../contract/mcp.ts";
@@ -13,8 +13,7 @@ export function createGuards(): Guards {
   return {
     fail,
     outboundText(text, pointer) {
-      if (SECRET_PATTERNS.some((pattern) => pattern.test(text)))
-        return fail("SECRET_IN_TEXT", pointer);
+      if (hasSecretPattern(text)) return fail("SECRET_IN_TEXT", pointer);
       if (text.includes(SUMMARY_KEY_MARKER))
         return fail("INPUT_INVALID", pointer);
       return undefined;

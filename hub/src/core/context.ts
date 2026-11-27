@@ -1,5 +1,5 @@
 import type { Conversation, InboxItem, Session } from "../contract/domain.ts";
-import { SECRET_PATTERNS, SECRET_REMOVED_TEXT } from "../contract/errors.ts";
+import { redactSecretText } from "../contract/errors.ts";
 import {
   LIMITS,
   THREAD_CONTEXT_NOTICE,
@@ -55,10 +55,7 @@ export function deliveryContext(
     const { kind } = row;
     if (kind !== "person" && kind !== "agent" && kind !== "outsider")
       throw new Error("Invalid context sender");
-    const raw = str(row.text);
-    const text = SECRET_PATTERNS.some((pattern) => pattern.test(raw))
-      ? SECRET_REMOVED_TEXT
-      : raw;
+    const text = redactSecretText(str(row.text));
     chars += text.length;
     if (chars > LIMITS.contextChars) break;
     const name =
