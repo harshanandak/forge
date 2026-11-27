@@ -155,10 +155,18 @@ async function dispatchRaw(
       return failure("INPUT_INVALID", "Invalid catalog invocation request.");
     const request = checked.value;
     return dispatch(catalog, request.op, request.input, {
-      ...options,
+      caller: options.caller,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.confirmHuman === undefined
+        ? {}
+        : { confirmHuman: options.confirmHuman }),
+      ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
       context: request.context,
       explicitContext:
         options.explicitContext === true || args.context !== undefined,
+      ...(options.resolveContext === undefined
+        ? {}
+        : { resolveContext: options.resolveContext }),
       requestId: request.requestId,
       ...(options.dryRun === undefined && request.dryRun === undefined
         ? {}

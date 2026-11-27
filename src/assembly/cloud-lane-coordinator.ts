@@ -74,9 +74,13 @@ export async function coordinateLane(
     signal?: AbortSignal;
   },
 ): Promise<unknown> {
-  const owner = await device.open(false);
   const { signal } = options;
-  signal?.throwIfAborted();
+  const open = async (write: boolean) => {
+    const owner = await device.open(write, signal);
+    signal?.throwIfAborted();
+    return owner;
+  };
+  const owner = await open(false);
   const state = owner && {
     get: (key: string) => owner.get("forge/work", key),
     list: (prefix?: string) => owner.list("forge/work", prefix),
@@ -98,13 +102,13 @@ export async function coordinateLane(
     const save = async (
       record: import("../blocks/work/bound-lane-state.ts").BoundLaneRecord,
       revision: number,
-    ) => {
-      signal?.throwIfAborted();
-      const store = (await device.open(true))!;
-      signal?.throwIfAborted();
-      const client = store.client("forge/work", flight.request.context.actor!);
-      return writeBoundLane(client, project, record, revision);
-    };
+    ) =>
+      writeBoundLane(
+        (await open(true))!.client("forge/work", flight.request.context.actor!),
+        project,
+        record,
+        revision,
+      );
     if (["lane.next", "lane.record"].includes(flight.operation.declaredOp)) {
       // Serialize this device's reservations; StateOwner revisions fence other processes.
       const key = boundLaneKey(project);
@@ -155,8 +159,7 @@ export async function coordinateLane(
       state,
       command,
       async (id) => {
-        signal?.throwIfAborted();
-        const client = (await device.open(true))!.client(
+        const client = (await open(true))!.client(
           "forge/work",
           flight.request.context.actor!,
         );

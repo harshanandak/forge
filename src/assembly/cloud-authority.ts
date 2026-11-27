@@ -219,6 +219,7 @@ export async function selectCloud(
   declaredOp?: string,
   blockId?: string,
 ): Promise<ResultEnvelope | undefined> {
+  deps.signal?.throwIfAborted();
   if (blockId === "forge/work") admitPrClose(deps, declaredOp, request.input);
   const home = deps.env.HOME ?? deps.env.USERPROFILE;
   const binding = () => cloudBinding(deps.root, home);

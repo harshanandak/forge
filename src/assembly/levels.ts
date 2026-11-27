@@ -211,8 +211,9 @@ export async function requireRegisteredStore(
   deviceState: LocalState,
   root: string,
   remedy?: (path: string) => string | undefined,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const lease = await deviceState.acquire(false);
+  const lease = await deviceState.acquire(false, signal);
   try {
     if (wasRegisteredAt(lease.value, root))
       refuse(
@@ -244,20 +245,22 @@ export function openLevels(options: {
   readonly caller: Caller;
   /** The operation declared its record write effect; its stores open writable. */
   readonly write: boolean;
+  readonly signal?: AbortSignal | undefined;
   readonly checking?: () => void;
   readonly requestId: string;
   readonly warnings?: readonly Warning[];
   /** Only the explicit recovery invocation replaces registrations for this root. */
   readonly replaceRegistration?: boolean;
 }): { readonly levels: StoreLevels; close(): Promise<void> } {
-  const { root, actor, namespace, requestId } = options;
+  const { root, actor, namespace, requestId, signal } = options;
   const handles: OwnedHandle<unknown>[] = [];
   const peers: LocalState[] = [];
   let own: Promise<ProjectStore | undefined> | undefined;
   let device: Promise<StateOwner | undefined> | undefined;
+  const acquire = (state: LocalState) => state.acquire(options.write, signal);
   /** The device store, opened once and only when a registration or a lookup needs it. */
   const deviceOwner = (): Promise<StateOwner | undefined> =>
-    (device ??= options.deviceState.acquire(options.write).then((lease) => {
+    (device ??= acquire(options.deviceState).then((lease) => {
       handles.push(lease);
       return lease.value;
     }));
@@ -273,6 +276,7 @@ export function openLevels(options: {
       const current = owner.get(IDENTITY_NAMESPACE, IDENTITY_KEY);
       const existing = storeIdOf(current?.value);
       if (existing) return existing;
+      signal?.throwIfAborted();
       try {
         owner.put(
           IDENTITY_NAMESPACE,
@@ -297,6 +301,7 @@ export function openLevels(options: {
       const winner = recordedProjectId(snapshot?.value);
       if (winner === projectId) return;
       if (winner !== undefined) throw projectIdConflict(winner, projectId);
+      signal?.throwIfAborted();
       try {
         owner.put(
           IDENTITY_NAMESPACE,
@@ -326,6 +331,7 @@ export function openLevels(options: {
     const known = registered(current?.value);
     const where = canonicalRoot(options.stateRoot);
     if (known?.name === name && relative(known.root, where) === "") return;
+    signal?.throwIfAborted();
     try {
       device.put(REGISTRY_NAMESPACE, key, { name, root: where }, actor, {
         expectRevision: current?.revision ?? 0,
@@ -346,10 +352,16 @@ export function openLevels(options: {
         });
         for (const record of page) {
           const entry = registered(record.value);
-          if (record.key !== key && entry && relative(entry.root, where) === "")
+          if (
+            record.key !== key &&
+            entry &&
+            relative(entry.root, where) === ""
+          ) {
+            signal?.throwIfAborted();
             device.delete(REGISTRY_NAMESPACE, record.key, actor, {
               expectRevision: record.revision,
             });
+          }
         }
         if (page.length < REGISTRY_PAGE) break;
         from = `${page.at(-1)!.key}\0`;
@@ -358,7 +370,7 @@ export function openLevels(options: {
   }
   async function openOwn(): Promise<ProjectStore | undefined> {
     options.checking?.();
-    const lease = await options.projectState.acquire(options.write);
+    const lease = await acquire(options.projectState);
     handles.push(lease);
     const owner = lease.value;
     const name = projectName(options.stateRoot);
@@ -508,7 +520,7 @@ export function openLevels(options: {
         );
       const state = new LocalState(join(found.root, ".forge", "state.sqlite"));
       peers.push(state);
-      const lease = await state.acquire(false);
+      const lease = await state.acquire(false, signal);
       handles.push(lease);
       // A folder that moved, or now holds a different project, is not the one the caller named.
       if (identityOf(lease.value) !== found.identity.id)

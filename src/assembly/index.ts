@@ -326,14 +326,14 @@ export async function createAssembly(
   const deviceState = LocalState.deviceRecords(deviceRoot);
   const env = options.providers?.env ?? process.env;
   const home = env.HOME ?? env.USERPROFILE;
+  const missingStore = (path: string) =>
+    boundMissingStoreRemedy(root, home, path);
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
     undefined,
     undefined,
-    () =>
-      requireRegisteredStore(deviceState, stateRoot, (path) =>
-        boundMissingStoreRemedy(root, home, path),
-      ),
+    (_write, signal) =>
+      requireRegisteredStore(deviceState, stateRoot, missingStore, signal),
     stateRoot,
     () => refuseUnsupportedProjectWrite(root, home),
   );
@@ -406,12 +406,12 @@ export async function createAssembly(
       method: "attended",
     });
   }
-  async function approve(
+  async function approveWithSignal(
+    signal: AbortSignal | undefined,
     request: Parameters<Assembly["catalog"]["invoke"]>[0],
     ask: string,
     displayAsk: string,
     relayedOnly = false,
-    signal?: AbortSignal,
   ) {
     const { direct, input } = await openApproval(request);
     checkCancellation(signal);
@@ -1458,6 +1458,7 @@ export async function createAssembly(
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
         checkCancellation(signal);
+        const approve = approveWithSignal.bind(undefined, signal);
         const checked = validateInvocationRequest(request);
         if (!checked.ok) refuse("INPUT_INVALID", "Invalid invocation");
         const entry = [
@@ -1523,12 +1524,8 @@ export async function createAssembly(
               request,
               ask(stateRoot),
               ask(quoteDisplayText(stateRoot)),
-              false,
-              signal,
             );
-            checkCancellation(signal);
-            return await recovery.create(async (staged) => {
-              checkCancellation(signal);
+            const initialize = async (staged: LocalState) => {
               const opened = openLevels({
                 root,
                 manifestRoot,
@@ -1542,6 +1539,7 @@ export async function createAssembly(
                 write: true,
                 requestId: request.requestId,
                 replaceRegistration: true,
+                signal,
               });
               try {
                 const project = await opened.levels.project();
@@ -1549,7 +1547,8 @@ export async function createAssembly(
               } finally {
                 await opened.close();
               }
-            });
+            };
+            return await recovery.create(initialize, signal);
           }
           if (request.op === "project.init") {
             if (bound.context.variant !== "project")
@@ -1562,8 +1561,6 @@ export async function createAssembly(
               request,
               ask(manifestRoot),
               ask(quoteDisplayText(manifestRoot)),
-              false,
-              signal,
             );
             checkCancellation(signal);
             const made = initProjectManifest(
@@ -1870,13 +1867,7 @@ export async function createAssembly(
             const unattended = input.unattended as string[];
             const ask = (format: (text: string) => string) =>
               `Let scripts and CI with no agent session run ${unattended.map(format).join(", ") || "no operations"} without asking, by writing owner.json in the device folder.`;
-            await approve(
-              request,
-              ask(String),
-              ask(quoteDisplayText),
-              false,
-              signal,
-            );
+            await approve(request, ask(String), ask(quoteDisplayText));
             checkCancellation(signal);
             writePrivateTextAtomic(
               join(deviceRoot, "owner.json"),
@@ -1918,8 +1909,6 @@ export async function createAssembly(
               request,
               ask(String),
               ask(quoteDisplayText),
-              false,
-              signal,
             );
             checkCancellation(signal);
             trustActor = request.context.actor;
@@ -1995,9 +1984,8 @@ export async function createAssembly(
           if (context.variant === "device" && context.device.id !== deviceRoot)
             refuse("INPUT_CONFLICT", "State context belongs to another device");
         };
-        const fromCloud = async (runtime: Pick<Runtime, "preflight">) => {
-          checkCancellation(signal);
-          return selectCloud(
+        const fromCloud = (runtime: Pick<Runtime, "preflight">) =>
+          selectCloud(
             {
               root,
               deviceRoot,
@@ -2053,7 +2041,6 @@ export async function createAssembly(
             target?.declaredOp,
             target?.blockId,
           );
-        };
         const route =
           target?.blockId === "forge/work"
             ? cloudRoute(target.blockId, target.declaredOp ?? "")
@@ -2116,6 +2103,7 @@ export async function createAssembly(
         );
         const runtime = new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
+          drainServicePreparation: true,
           async services(instance, context, scope) {
             const clients: Record<string, unknown> = {};
             const leases: import("../ports/lifetime.ts").OwnedHandle<unknown>[] =
@@ -2193,7 +2181,7 @@ export async function createAssembly(
                       "CONTEXT_MISSING",
                       "Store export requires project context",
                     );
-                  const lease = await projectState.acquire(false);
+                  const lease = await projectState.acquire(false, scope.signal);
                   leases.push(lease);
                   clients[binding.slot] = (
                     await import("./store-export.ts")
@@ -2214,7 +2202,7 @@ export async function createAssembly(
                   const configured = [...current.blocks.values()].some(
                     (block) => block.manifest.id === "forge/check",
                   );
-                  const lease = await projectState.acquire(false);
+                  const lease = await projectState.acquire(false, scope.signal);
                   leases.push(lease);
                   clients[binding.slot] = createReceiptsService(scope, {
                     get: (key) =>
@@ -2297,6 +2285,7 @@ export async function createAssembly(
                     deviceRoot,
                     projectState,
                     deviceState,
+                    signal: scope.signal,
                     namespace,
                     actor: context.actor,
                     servesProject: call.inProject,
@@ -2335,6 +2324,7 @@ export async function createAssembly(
                   .operation.declaredOp.split(".")[0]!;
                 const lease = await storage.acquire(
                   scope.effects.includes(`${noun}:write`),
+                  scope.signal,
                 );
                 leases.push(lease);
                 const owner = lease.value;
@@ -2440,7 +2430,6 @@ export async function createAssembly(
             ask(false),
             ask(true),
             laneOwned,
-            signal,
           );
           if (owned.relayed && !laneOwned)
             request = {

@@ -134,7 +134,8 @@ Wait for a call to finish, then try again. Protocol checks, tool listing, and
 
 Cancelling a request stops its runtime invocation and releases its slot after
 cleanup. Any writes already committed at the cancellation point remain in
-place. Check the affected state before repeating a cancelled write.
+place. A command already sent to cloud authority may still run after the local
+wait ends. Check the affected state before repeating a cancelled write.
 
 ## Owner approval
 

@@ -70,23 +70,20 @@ export function createMcpTransport(): McpTransportPort {
                 })),
               };
             });
-            server.setRequestHandler(
-              "tools/call",
-              async (request, { mcpReq }) => {
-                const result = await callTool(
-                  request.params.name,
-                  request.params.arguments ?? {},
-                  mcpReq.signal,
-                );
-                if (result === undefined)
-                  throw new ProtocolError(-32602, "Unknown tool.");
-                return {
-                  content: [{ type: "text", text: JSON.stringify(result) }],
-                  structuredContent: { ...result },
-                  isError: !result.ok,
-                };
-              },
-            );
+            server.setRequestHandler("tools/call", async (request, ctx) => {
+              const result = await callTool(
+                request.params.name,
+                request.params.arguments ?? {},
+                ctx.mcpReq.signal,
+              );
+              if (result === undefined)
+                throw new ProtocolError(-32602, "Unknown tool.");
+              return {
+                content: [{ type: "text", text: JSON.stringify(result) }],
+                structuredContent: { ...result },
+                isError: !result.ok,
+              };
+            });
             return server;
           },
           { transport },

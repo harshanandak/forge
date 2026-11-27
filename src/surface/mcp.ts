@@ -98,15 +98,8 @@ export function createMcpHandlers(
         return tool === undefined ? [] : [tool];
       }),
     ],
-    callTool: async (name, args, signal = options.signal) => {
-      const call: CallOptions = {
-        ...options,
-        caller: "agent",
-        ...(signal === undefined ? {} : { signal }),
-        ...(exposure.readOnly === undefined
-          ? {}
-          : { readOnly: exposure.readOnly }),
-      };
+    callTool: async (name, args, signal) => {
+      const call = signal === undefined ? options : { ...options, signal };
       const core = discoveryOperations.find(
         (entry) =>
           entry.declaration.callers.includes("agent") &&
@@ -115,12 +108,24 @@ export function createMcpHandlers(
       if (core !== undefined) {
         if (exposure.readOnly && core.declaration.effects.length > 0)
           return undefined;
-        return dispatch(restricted, core.op, args, call);
+        return dispatch(restricted, core.op, args, {
+          ...call,
+          caller: "agent",
+          ...(exposure.readOnly === undefined
+            ? {}
+            : { readOnly: exposure.readOnly }),
+        });
       }
       const candidate = byName.get(name);
       return candidate === undefined
         ? undefined
-        : dispatch(catalog, candidate.op, args, call);
+        : dispatch(catalog, candidate.op, args, {
+            ...call,
+            caller: "agent",
+            ...(exposure.readOnly === undefined
+              ? {}
+              : { readOnly: exposure.readOnly }),
+          });
     },
   };
 }
