@@ -332,7 +332,6 @@ test(
   "E5 the Slack-off Node hub round-trips a CLI message",
   async () => {
     const f = await workspace(false);
-    const { origin } = f;
     const node = Bun.which("node");
     if (!node) throw new Error("Selected Node is unavailable");
     const env = Object.fromEntries(
@@ -357,14 +356,18 @@ test(
       new Response(proc.stderr).text(),
     ]);
     try {
-      const healthy = await ready(origin, () => proc.exitCode !== null);
-      expect(healthy, "Hub health (exit " + proc.exitCode + ")").toBe(true);
+      const healthy = await ready(f.origin, () => proc.exitCode !== null);
+      if (!healthy && proc.exitCode === null) proc.kill();
+      const stderr = healthy ? "" : (await streams)[1].trim();
+      safeOutput(stderr);
+      expect(healthy, `serve exit ${proc.exitCode}: ${stderr}`).toBe(true);
       const path = f.path("person-output");
-      expect((await f.create("token", path)).status).toBe(0);
+      const created = await f.create("token", path);
+      expect(created.status, created.stderr.trim()).toBe(0);
       const bearer = (await readFile(path, "utf8"))
         .trim()
         .slice("FORGE_HUB_TOKEN=".length);
-      const handle = requestAt(origin, bearer);
+      const handle = requestAt(f.origin, bearer);
       const tool = async (name: string, args: object) =>
         (await rpc(handle, name, args)).tool.structuredContent;
       const hello = result<Mcp.HelloOutput>(
@@ -372,26 +375,23 @@ test(
       );
       const flags = ["--person", b.personId, "--project", projectId];
       const inbox = await f.cli(["inbox", ...flags]);
-      expect(inbox.status).toBe(0);
+      expect(inbox.status, inbox.stderr.trim()).toBe(0);
       const { sessionId } = result<{ sessionId: string }>(json(inbox.stdout));
-      expect(
-        (
-          await f.cli(
-            [
-              "send",
-              ...flags,
-              "--session",
-              sessionId,
-              "--to",
-              a.personId,
-              "--target-session",
-              hello.sessionId,
-              "--stdin",
-            ],
-            "CLI fixture",
-          )
-        ).status,
-      ).toBe(0);
+      const sent = await f.cli(
+        [
+          "send",
+          ...flags,
+          "--session",
+          sessionId,
+          "--to",
+          a.personId,
+          "--target-session",
+          hello.sessionId,
+          "--stdin",
+        ],
+        "CLI fixture",
+      );
+      expect(sent.status, sent.stderr.trim()).toBe(0);
       const delivered = result<Mcp.InboxOutput>(
         await tool("inbox", { sessionId: hello.sessionId }),
       );
@@ -415,14 +415,16 @@ journey(
   async (f) => {
     const file = f.path("host-output");
     const created = await f.create("host", file);
-    expect(created.status).toBe(0);
+    expect(created.status, created.stderr.trim()).toBe(0);
     const registered = await f.hook("session-start", session, file);
-    expect(registered.status).toBe(0);
+    expect(registered.status, registered.stderr.trim()).toBe(0);
     expect(registered.stdout).toMatch(/^Forge hub session ses_/);
-    expect(
-      (await f.cli(["host", "revoke", created.stdout.split(" ")[0] ?? ""]))
-        .status,
-    ).toBe(0);
+    const revoked = await f.cli([
+      "host",
+      "revoke",
+      created.stdout.split(" ")[0] ?? "",
+    ]);
+    expect(revoked.status, revoked.stderr.trim()).toBe(0);
     expect(await f.hook("session-start", session, file)).toEqual({
       ...silence,
       stdout: "Forge hub unavailable: UNAUTHENTICATED\n",
