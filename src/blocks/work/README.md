@@ -49,7 +49,7 @@ Forge follows known dependencies, including indirect ones. Otherwise, finish the
 `WORK_FILE_MAP_INCOMPLETE` means some overlaps may be missing. The result carries at most 32 warnings, with messages
 limited to 2,000 characters. `WORK_FILE_MAP_TRUNCATED` reports how many warning rows were omitted.
 
-Embedded hosts and MCP skip advisory processes to keep the shared runner free. Local lane starts report incomplete evidence when no trusted default policy snapshot is available.
+Embedded hosts and MCP skip advisory processes to keep the shared runner free. Local lane starts report incomplete evidence until Forge can reuse the admitted default policy snapshot (forge-2052).
 Short grants and failed registry or issue reads also report incomplete evidence. Cloud-bound calls and direct cloud HTTP claims are outside this scope.
 
 The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue link ...` and `forge issue close --input '{"id":"<id>","receipt":"<receipt>"}'` need no explicit context:

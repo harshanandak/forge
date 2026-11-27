@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { consumeDirectRequest } from "../../bin/forge.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { Buffer } from "node:buffer";
@@ -336,13 +337,6 @@ function checkCancellation(signal?: AbortSignal): void {
 /** First-party detection is registered here; it enables no block and executes no project command. */
 export async function createAssembly(
   options: AssemblyOptions,
-): Promise<Assembly> {
-  return assemble(options, false);
-}
-
-async function assemble(
-  options: AssemblyOptions,
-  cliAdvisories: boolean,
 ): Promise<Assembly> {
   const root = resolve(options.root);
   const deviceRoot = resolve(options.deviceRoot);
@@ -1491,6 +1485,7 @@ async function assemble(
       return [...configCandidates(), grantCandidate, ...candidates];
     },
     async invoke(request, signal) {
+      const cliAdvisories = !mcp && consumeDirectRequest(request);
       const derived: DetectionObservation[] = [];
       const deviceMemory =
         !mcp && deviceMemoryRequest(request.op, request.input);
@@ -1621,6 +1616,7 @@ async function assemble(
         request,
         mcp,
         deviceMemory,
+        cliAdvisories,
         signal,
       );
       if (
@@ -1649,6 +1645,7 @@ async function assemble(
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
       mcp: boolean,
       deviceMemory: boolean,
+      cliAdvisories: boolean,
       signal?: AbortSignal,
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
@@ -2893,14 +2890,11 @@ export async function withLocalCommandAssembly<T>(
   run: (assembly: Assembly) => Promise<T>,
 ): Promise<T> {
   const root = process.cwd();
-  const assembly = await assemble(
-    {
-      root,
-      deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
-      oneShot,
-    },
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
     oneShot,
-  );
+  });
   try {
     return await run(assembly);
   } finally {
