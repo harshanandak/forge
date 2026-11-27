@@ -3,10 +3,16 @@ import { AGENT_MESSAGE_NOTICE, LIMITS } from "../../src/contract/mcp.ts";
 import { ID_PATTERN } from "../../src/contract/ids.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
 import { enterThread } from "../../src/core/thread.ts";
-import { baseFixture, bellFor, seedThread, thread } from "./base-fixture.ts";
+import {
+  baseFixture,
+  bellFor,
+  channel,
+  seedThread,
+  thread,
+} from "./base-fixture.ts";
 import { refusal, until } from "./base-fakes.ts";
 import { a, b, configPeople, p1, p2, value } from "./fixture.ts";
-import { slackB } from "./fakes.ts";
+import { slackA, slackB } from "./fakes.ts";
 
 const timeout = 30_000;
 const c = { personId: "per_c", displayName: "Fixture Gamma" };
@@ -193,7 +199,10 @@ test(
 test(
   "SD2 send refuses unknown, foreign and paused conversations",
   async () => {
-    const f = await baseFixture({ bells: [bellFor(b.personId, "beta")] });
+    const f = await baseFixture({
+      ring: true,
+      bells: [bellFor(b.personId, "beta")],
+    });
     const alpha = f.bind();
     const beta = f.bind(b, "bound-b", "beta");
     await f.emit("root");
@@ -211,6 +220,7 @@ test(
         a.personId,
         alpha.sessionId,
       );
+    f.advance(LIMITS.doorbellDebounceMs + 1);
     const before = f.rows("inbox_items");
     const writes = f.chat.writes.length;
     const rings = f.rings.length;
@@ -257,14 +267,25 @@ test(
         text,
         ...(conversationId === undefined ? {} : { conversationId }),
       });
+    const channelTarget = { kind: "thread", chatThreadId: thread };
+    const dmTarget = { kind: "thread", chatThreadId: "dm-" + slackA };
+    const picker =
+      "Which project? Reply with one of:\nFixture One: Shared project context\nFixture Two";
+    const postAttempts = () =>
+      f.chat.calls
+        .filter((call) => call.name === "postText")
+        .map((call) => [call.args[0], call.args[1]]);
     const posted = value(await send("Visible question", channelConversation));
     expect(posted.threadPost).toBe("posted");
     expect(f.writes("postText")).toHaveLength(1);
+    const visiblePost =
+      "Fixture Alpha's agent asked Fixture Beta's agent: Visible question";
     expect(f.writes("postText")[0]!.args).toEqual([
       { kind: "thread", chatThreadId: thread },
-      "Fixture Alpha's agent asked Fixture Beta's agent: Visible question",
+      visiblePost,
       { agentLabel: "Forge (Fixture Alpha's agent)" },
     ]);
+    expect(postAttempts()).toEqual([[channelTarget, visiblePost]]);
     expect(f.col("reply_owed", "answered")).toEqual([0]);
     await f.dm("alpha-dm", "Alpha note");
     const dm = f.rows(
@@ -278,21 +299,62 @@ test(
     expect(direct.threadPost).toBeUndefined();
     const privateSend = value(await send("Private note"));
     expect(privateSend.threadPost).toBeUndefined();
-    const visible = (call: { readonly args: readonly unknown[] }) =>
-      typeof call.args[1] === "string" &&
-      call.args[1].startsWith("Fixture Alpha's agent asked");
-    const attempts = () =>
-      f.chat.calls.filter((call) => call.name === "postText" && visible(call))
-        .length;
-    expect(attempts()).toBe(1);
+    expect(postAttempts()).toEqual([
+      [channelTarget, visiblePost],
+      [dmTarget, picker],
+    ]);
+    const longText = "Long summary\n---\n" + "detail ".repeat(400);
+    const longPosted = value(await send(longText, channelConversation));
+    expect(longPosted.threadPost).toBe("posted");
+    expect(f.writes("createLongAnswer")).toHaveLength(1);
+    expect(f.writes("createLongAnswer")[0]!.args).toEqual([
+      channel,
+      "Fixture One: Long summary",
+      longText,
+    ]);
+    const longPost =
+      "Fixture Alpha's agent asked Fixture Beta's agent: " +
+      "Long summary\nFull answer: https://example.test/canvas/message-3";
+    expect(f.writes("postText")[2]!.args[1]).toBe(longPost);
+    expect(postAttempts()).toEqual([
+      [channelTarget, visiblePost],
+      [dmTarget, picker],
+      [channelTarget, longPost],
+    ]);
+    const itemsBefore = f.rows(
+      "inbox_items WHERE kind = 'agent_message'",
+      "item_id",
+    );
+    expect(refusal(await send("token xoxb-0123456789abcdef"))).toEqual({
+      code: "SECRET_IN_TEXT",
+      message: "The text contains a possible secret.",
+      retry: "never",
+      pointer: "/text",
+    });
+    expect(postAttempts()).toEqual([
+      [channelTarget, visiblePost],
+      [dmTarget, picker],
+      [channelTarget, longPost],
+    ]);
+    expect(
+      f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
+    ).toEqual(itemsBefore);
     f.chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
     const failed = value(await send("Refused visible", channelConversation));
     expect(failed.threadPost).toBe("failed");
-    expect(attempts()).toBe(2);
-    expect(f.writes("postText").filter(visible)).toHaveLength(1);
+    expect(postAttempts()).toEqual([
+      [channelTarget, visiblePost],
+      [dmTarget, picker],
+      [channelTarget, longPost],
+      [
+        channelTarget,
+        "Fixture Alpha's agent asked Fixture Beta's agent: Refused visible",
+      ],
+    ]);
+    expect(f.writes("postText")).toHaveLength(3);
     expect(
       f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   },
   timeout,
 );

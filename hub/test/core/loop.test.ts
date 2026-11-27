@@ -23,7 +23,8 @@ test(
     const f = await baseFixture();
     f.bind();
     await f.emit("root");
-    await f.follow("mapped-bot", { isBot: true });
+    await f.follow("mapped-bot-mention", { isBot: true, mentionsBot: true });
+    await f.follow("mapped-bot-quiet", { isBot: true, mentionsBot: false });
     for (const table of ["inbox_items", "thread_messages"])
       expect(f.sql("SELECT chat_message_id FROM " + table)).toEqual([
         { chat_message_id: "root" },
@@ -53,16 +54,17 @@ test(
         conversationId,
         text,
       });
-    for (let index = 0; index < LIMITS.agentRunMax; index++) {
+    for (let index = 0; index < 9; index++) {
       if (index % 3 === 0)
         seedThread(f, "system-" + index, "system " + index, "system");
       if (index % 2 === 0) value(await reply("reply " + index));
       else value(await send("send " + index));
     }
+    expect(f.posts().filter((text) => text === pause)).toHaveLength(0);
+    expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(9);
+    value(await send("send 9"));
     expect(f.posts().filter((text) => text === pause)).toHaveLength(1);
-    expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(
-      LIMITS.agentRunMax,
-    );
+    expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(10);
     const pauseRows = () =>
       f.sql(
         "SELECT seq FROM thread_messages WHERE kind = 'system' AND text = ?",
@@ -86,6 +88,7 @@ test(
     });
     expect(attempts()).toBe(before);
     expect(pauseRows()).toHaveLength(1);
+    expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(10);
     await f.follow("member-release", {
       slackUserId: slackB,
       mentionsBot: false,
@@ -143,57 +146,73 @@ test(
   timeout,
 );
 
-test(
-  "B1B-LOOP1 a concurrent reply is rechecked inside the thread gate",
-  async () => {
-    const f = await baseFixture();
-    const alpha = f.bind();
-    await f.emit("root");
-    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
-    for (let index = 0; index < LIMITS.agentRunMax - 1; index++)
-      seedThread(
-        f,
-        "agent-" + index,
-        "run",
-        "agent",
-        a.personId,
-        alpha.sessionId,
-      );
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    f.chat.nextWrite = { kind: "delay", until: gate };
-    const reply = (text: string) =>
-      f.core.reply(f.caller(), {
-        sessionId: alpha.sessionId,
-        conversationId,
-        text,
-      });
-    const tenth = reply("tenth");
-    const attempts = () =>
-      f.chat.calls.filter((call) => call.name === "postText").length;
-    await until(() => attempts() === 1, timeout);
-    const eleventh = reply("eleventh");
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const racedAttempts = attempts();
-    release();
-    value(await tenth);
-    const second = await eleventh;
-    expect(racedAttempts).toBe(1);
-    expect(second.ok).toBe(false);
-    if (!second.ok)
-      expect(second.error).toMatchObject({
-        code: "CONVERSATION_PAUSED",
-        retry: "never",
-      });
-    expect(f.posts()).toEqual(["Fixture Alpha's agent: tenth", pause]);
-    expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(
-      LIMITS.agentRunMax,
+for (const first of ["reply", "send"] as const) {
+  for (const second of ["reply", "send"] as const) {
+    test(
+      `B1B-LOOP1 a delayed ${first} admits once while a queued ${second} pauses`,
+      async () => {
+        const f = await baseFixture();
+        const alpha = f.bind();
+        await f.emit("root");
+        const conversationId = f.read(alpha.sessionId).items[0]!
+          .conversationId!;
+        for (let index = 0; index < 9; index++)
+          seedThread(
+            f,
+            "agent-" + index,
+            "run",
+            "agent",
+            a.personId,
+            alpha.sessionId,
+          );
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        f.chat.nextWrite = { kind: "delay", until: gate };
+        const post = (kind: "reply" | "send", text: string) =>
+          kind === "reply"
+            ? f.core.reply(f.caller(), {
+                sessionId: alpha.sessionId,
+                conversationId,
+                text,
+              })
+            : f.core.send(f.caller(), {
+                sessionId: alpha.sessionId,
+                projectId: p1,
+                toPersonId: b.personId,
+                conversationId,
+                text,
+              });
+        const tenth = post(first, "tenth " + first);
+        const attempts = () =>
+          f.chat.calls.filter((call) => call.name === "postText").length;
+        await until(() => attempts() === 1, timeout);
+        const eleventh = post(second, "eleventh " + second);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const racedAttempts = attempts();
+        release();
+        expect((await tenth).ok).toBe(true);
+        const result = await eleventh;
+        expect(racedAttempts).toBe(1);
+        expect(result.ok).toBe(false);
+        if (!result.ok)
+          expect(result.error).toMatchObject({
+            code: "CONVERSATION_PAUSED",
+            retry: "never",
+          });
+        expect(f.posts()).toEqual([
+          first === "reply"
+            ? "Fixture Alpha's agent: tenth reply"
+            : "Fixture Alpha's agent asked Fixture Beta's agent: tenth send",
+          pause,
+        ]);
+        expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(10);
+      },
+      timeout,
     );
-  },
-  timeout,
-);
+  }
+}
 
 const attempts = (f: BaseFixture) =>
   f.chat.calls.filter((call) => call.name === "postText").length;
