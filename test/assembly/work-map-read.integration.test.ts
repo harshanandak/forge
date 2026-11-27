@@ -236,7 +236,7 @@ test("a missing promisor policy blob never starts a Git fetch even without GIT_N
       policyObject,
     ]);
     expect(policyExit ?? 0).not.toBe(0);
-    expect(policyError).toMatch(/object/i);
+    expect(policyError).toMatch(/bad file|could not get object info/i);
     expect(snapshot).toMatchObject({
       complete: false,
       defaultSha: base,
