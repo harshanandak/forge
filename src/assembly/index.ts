@@ -86,6 +86,7 @@ import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
 import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
 import { advisoryLeaseReader, WORK_MAP_LIMITS } from "./work-map-read.ts";
+import { proveAdvisoryGit } from "../adapters/process/index.ts";
 import {
   blockCapture,
   resolveBlock,
@@ -157,7 +158,6 @@ import {
   createAssemblyProviders,
   createGitScope,
   gitCapability,
-  resolveOutside,
   createReceiptsService,
   processCleanupBudgetMs,
   idPrefixObservation,
@@ -748,6 +748,12 @@ export async function createAssembly(
       "LOCALAPPDATA",
     ]);
     const git = gitCapability(process, env, createGitScope(stateRoot, root));
+    const gitExecutable = git.executable();
+    const { platform } = environment;
+    if (gitExecutable.kind !== "resolved")
+      return unavailableMap("advisory Git executable unavailable");
+    const gitPin = await proveAdvisoryGit(gitExecutable, platform, signal);
+    if (!gitPin) return unavailableMap("advisory Git process cost unavailable");
     const run = { cwd: stateRoot, env, signal, timeoutMs: advisoryMs };
     let bytes: number = WORK_MAP_LIMITS.outputBytes;
     const charge = (size: number) => {
@@ -762,7 +768,7 @@ export async function createAssembly(
       return answer;
     };
     const lanes = await providers
-      .openFiles(scope)
+      .openFiles(scope, gitPin)
       .then(async (files) => {
         try {
           const { boundLaneRegistry } =
@@ -776,7 +782,17 @@ export async function createAssembly(
     const map = await readWorkWarnings(
       {
         now: Date.now,
-        process: { ...process, resolve: () => git.executable() },
+        process: {
+          ...process,
+          resolve() {
+            const current = git.executable();
+            if (current.kind !== "resolved") return current;
+            if (current.path !== gitExecutable.path || !gitPin.unchanged())
+              throw new Error("Advisory Git changed");
+            return gitPin.executable;
+          },
+        },
+        gitProcessCost: 1,
         async issues({ limit }) {
           const { result, leaseUnavailable } = await read("issue.list", {
             status: "open",
@@ -804,48 +820,6 @@ export async function createAssembly(
           return {
             items: urls.slice(0, limit),
             truncated: urls.length > limit,
-          };
-        },
-        async pull(url, { maxBytes }) {
-          if (
-            bytes <= 0 ||
-            !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?$/i.test(
-              url,
-            )
-          )
-            throw new Error("PR lookup unavailable");
-          const gh = resolveOutside(process, "gh", env, [stateRoot, root]);
-          if (gh.kind !== "resolved") throw new Error("GitHub CLI unavailable");
-          const result = await process.run(
-            gh,
-            [
-              "pr",
-              "view",
-              url.replace(/\/$/, ""),
-              "--json",
-              "state,headRefName",
-            ],
-            {
-              ...run,
-              env: {
-                ...env,
-                ...environment.select(["GH_TOKEN", "GITHUB_TOKEN"]),
-              },
-              maxOutputBytes: Math.min(maxBytes, bytes),
-            },
-          );
-          charge(Buffer.byteLength(result.stdout + result.stderr));
-          if (result.exitCode !== 0 || result.timedOut || result.truncated)
-            throw new Error("PR state unavailable");
-          const row = record(JSON.parse(result.stdout) as unknown);
-          const state = row?.state;
-          if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED")
-            throw new Error("Unknown PR state");
-          return {
-            state,
-            ...(typeof row?.headRefName === "string"
-              ? { branch: row.headRefName }
-              : {}),
           };
         },
       },

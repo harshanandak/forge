@@ -103,6 +103,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for lane private-ref fetch coverage.",
   "test/blocks/l7-work/map-cli.integration.test.ts":
     "Launches selected Node for map cli coverage.",
+  "test/blocks/l7-work/work-map-process.integration.test.ts":
+    "Launches the built CLI with the selected Node to observe advisory processes.",
   "test/blocks/memory/move-scope.integration.test.ts":
     "Launches selected Node for move scope coverage.",
   "test/blocks/memory/moved.integration.test.ts":

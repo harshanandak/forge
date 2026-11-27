@@ -38,13 +38,17 @@ The work-map snapshot records its observation time and reads tracked paths and g
 
 An open issue holds files while its claim lease is live or any delivered PR is open, including after lease release. The reader checks each delivered PR within its budgets. Closed issues and leftover worktrees hold no files.
 
-The reader allows up to 1,000 issues, 128 delivered links per issue, 20,000 tracked paths and 64 Git commands and distinct PR lookups combined. Git output is capped at 1 MiB per command, and authority and PR results share a 1 MiB budget. Glob checks also share a work budget. Failed reads, cuts and unresolved or missing active declarations mark the snapshot incomplete and list the reasons. Previously observed open PRs still count when the lookup budget runs out.
+The reader allows up to 1,000 issues, 128 delivered links per issue, 20,000 tracked paths and 64 processes. Git output is capped at 1 MiB per command, and authority results share a 1 MiB budget. Glob checks also share a work budget. Failed reads, cuts and unresolved or missing active declarations mark the snapshot incomplete and list the reasons.
 
 ### Claim and lane advisories
 
 In local projects, the dedicated single-command Forge CLI checks for overlapping files after a successful claim.
-`WORK_FILE_OVERLAP` names the path, the other issue's ID and title, its branch when known, and the live lease or open PR.
+`WORK_FILE_OVERLAP` names the path, the other issue's ID and title, its branch when known, and its live lease.
 Forge follows known dependencies, including indirect ones. Otherwise, finish the incumbent lane first.
+
+The advisory runs only direct Linux `/usr/bin/git` that matches protected Debian package records and supports
+`--no-lazy-fetch`. Other Git installations, including macOS and Windows, report incomplete evidence before discovery.
+Delivered PR links report incomplete evidence. Forge still reports overlaps it can establish from live leases.
 
 `WORK_FILE_MAP_INCOMPLETE` means some overlaps may be missing. The result carries at most 32 warnings, with messages
 limited to 2,000 characters. `WORK_FILE_MAP_TRUNCATED` reports how many warning rows were omitted.

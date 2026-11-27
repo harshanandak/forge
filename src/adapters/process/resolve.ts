@@ -6,6 +6,8 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { windowsProcessStartTime } from "./windows-job.ts";
@@ -301,4 +303,80 @@ export function resolveExecutable(
     `Git is unavailable (${skipped} skipped PATH entries).`,
     "Install Git outside any repository, temporary directory and node_modules/.bin, and add its absolute directory to PATH.",
   );
+}
+
+const systemGit = "/usr/bin/git";
+const gitManifest = "/var/lib/dpkg/info/git.md5sums";
+
+async function readManagedFile(path: string, max: number) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = await handle.stat({ bigint: true });
+    if (
+      !info.isFile() ||
+      info.uid !== 0n ||
+      info.mode & 0o022n ||
+      info.size > max
+    )
+      return;
+    const data = await handle.readFile();
+    if (BigInt(data.length) === info.size) return { data, info };
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function proveAdvisoryGit(
+  executable: ResolvedExecutable,
+  platform: NodeJS.Platform,
+  signal: AbortSignal,
+): Promise<
+  { executable: ResolvedExecutable; unchanged(): boolean } | undefined
+> {
+  if (platform !== "linux" || executable.path !== systemGit) return;
+  try {
+    for (const path of [
+      "/usr",
+      "/usr/bin",
+      "/var",
+      "/var/lib",
+      "/var/lib/dpkg",
+      "/var/lib/dpkg/info",
+    ]) {
+      const stat = await lstat(path);
+      if (!stat.isDirectory() || stat.uid !== 0 || stat.mode & 0o022) return;
+    }
+    const manifest = await readManagedFile(gitManifest, 128 * 1024);
+    const expected = manifest?.data
+      .toString("ascii")
+      .match(/^([a-f0-9]{32}) {2}usr\/bin\/git$/m)?.[1];
+    if (!expected || signal.aborted) return;
+    const git = await readManagedFile(systemGit, 16 * 1024 * 1024);
+    if (
+      !git ||
+      signal.aborted ||
+      git.data.readUInt32BE(0) !== 0x7f454c46 ||
+      createHash("md5").update(git.data).digest("hex") !== expected
+    )
+      return;
+    const unchanged = () => {
+      try {
+        const current = lstatSync(systemGit, { bigint: true });
+        const previous = git.info;
+        return (
+          current.isFile() &&
+          current.dev === previous.dev &&
+          current.ino === previous.ino &&
+          current.size === previous.size &&
+          current.mtimeNs === previous.mtimeNs &&
+          current.ctimeNs === previous.ctimeNs
+        );
+      } catch {
+        return false;
+      }
+    };
+    if (unchanged()) return { executable, unchanged };
+  } catch {
+    return;
+  }
 }

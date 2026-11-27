@@ -1,6 +1,15 @@
 import { expect } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acceptanceTable } from "./lane-brief-fixture.ts";
@@ -14,9 +23,33 @@ type LaneReply = {
 
 const built = (name: string) =>
   new URL(`../../../dist/src/${name}.js`, import.meta.url).href;
-export const { processStartTime } = (await import(
+const { createProcessPort, processStartTime, proveAdvisoryGit } = (await import(
   built("adapters/process/index")
 )) as typeof import("../../../src/adapters/process/index.ts");
+export { processStartTime };
+
+export async function advisoryGitAvailable(
+  repo: string,
+  overrides: NodeJS.ProcessEnv = {},
+): Promise<boolean> {
+  if (process.platform !== "linux") return false;
+  const { createGitScope, gitCapability } = (await import(
+    built("assembly/providers")
+  )) as typeof import("../../../src/assembly/providers.ts");
+  const { realFileProbe } = (await import(
+    built("adapters/process/resolve")
+  )) as typeof import("../../../src/adapters/process/resolve.ts");
+  const env = Object.fromEntries(
+    Object.entries({ ...process.env, ...overrides }).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+  const port = createProcessPort({ probe: { ...realFileProbe } });
+  const git = gitCapability(port, env, createGitScope(repo)).executable();
+  if (git.kind !== "resolved") return false;
+  const signal = new AbortController().signal;
+  return Boolean(await proveAdvisoryGit(git, "linux", signal));
+}
 
 export const laneBin = fileURLToPath(
   new URL("../../../dist/bin/forge.js", import.meta.url),
@@ -167,4 +200,30 @@ export async function laneCommands(root: string, repo: string) {
     return reply.result;
   };
   return { call, cli, good, dispose: () => assembly.close() };
+}
+
+type Commands = Awaited<ReturnType<typeof laneCommands>>;
+export async function advisoryProject(
+  brief: string,
+  use: (commands: Commands, repo: string, root: string) => Promise<void>,
+  configure = "",
+) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-advisory-")));
+  let commands: Commands | undefined;
+  try {
+    const { repo } = laneRepository(root, brief);
+    const path = join(repo, ".forge/config.yaml");
+    if (configure) writeFileSync(path, readFileSync(path, "utf8") + configure);
+    laneGit(["add", ".forge/config.yaml"], repo);
+    laneGit(["commit", "-m", "advisory policy"], repo);
+    laneGit(["push", "origin", "main"], repo);
+    commands = await laneCommands(root, repo);
+    await use(commands, repo, root);
+  } finally {
+    try {
+      await commands?.dispose();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 }
