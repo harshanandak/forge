@@ -18,6 +18,7 @@ export interface CommandOptions {
   readonly input?: Readable;
   readonly output?: Writable;
   readonly errorOutput?: Writable;
+  readonly onMcpOutputFailure?: (exitCode: number) => void;
 }
 
 /** Assembly injects the catalog and transport; no block or adapter is selected here. */
@@ -43,6 +44,7 @@ export async function runCommand(
       errorOutput.write(escapeDisplayText(response.stdout));
       return response.exitCode;
     }
+    let outputFailureCode: number | undefined;
     const opened = await options.mcp.open({
       handlers: createMcpHandlers(
         options.catalog,
@@ -53,6 +55,15 @@ export async function runCommand(
       serverVersion: options.version,
       input: Readable.toWeb(input),
       output: Writable.toWeb(output),
+      onOutputError: () => {
+        if (outputFailureCode !== undefined) return;
+        const response = respond(
+          failure("UNAVAILABLE", "MCP stdout write failed."),
+        );
+        outputFailureCode = response.exitCode;
+        options.onMcpOutputFailure?.(response.exitCode);
+        errorOutput.write(escapeDisplayText(response.stdout));
+      },
     });
     if (!opened.ok) {
       const response = respond(
@@ -66,7 +77,7 @@ export async function runCommand(
       else input.once("close", resolve).once("end", resolve);
     });
     await opened.handle.close();
-    return 0;
+    return outputFailureCode ?? 0;
   }
   const response =
     argv[0] === "--hook"

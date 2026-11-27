@@ -10,7 +10,6 @@ import {
 } from "@modelcontextprotocol/server/stdio";
 import type { McpTransportPort } from "../../ports/mcp-transport.ts";
 import type { FailureEnvelope } from "../../generated/types.ts";
-import { ForgeFailure } from "../../contract/failure.ts";
 
 const MCP_TOOL_CONCURRENCY_LIMIT = 8;
 const MCP_BUSY: FailureEnvelope = {
@@ -50,10 +49,9 @@ export function createMcpTransport(): McpTransportPort {
         const input = Readable.fromWeb(options.input);
         const output = Writable.fromWeb(options.output);
         const transport = new StdioServerTransport(input, output);
-        let stdoutFailed = false;
         output.once("error", () => {
-          stdoutFailed = true;
           input.destroy();
+          options.onOutputError?.();
         });
         const handle = serveStdio(
           () => {
@@ -111,12 +109,6 @@ export function createMcpTransport(): McpTransportPort {
               if (!closed) {
                 closed = true;
                 await handle.close();
-                if (stdoutFailed)
-                  throw new ForgeFailure({
-                    code: "UNAVAILABLE",
-                    message: "MCP stdout write failed.",
-                    retry: "never",
-                  });
               }
             },
           },

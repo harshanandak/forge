@@ -25,7 +25,12 @@ async function main(): Promise<void> {
   const { runLocalCommand, dispatchLocalCommand, localCommandResult } =
     await import("../src/assembly/command.ts");
   if (argv[0] === "--mcp") {
-    process.exitCode = await runLocalCommand(argv);
+    let outputFailureCode: number | undefined;
+    const exitCode = await runLocalCommand(argv, (code) => {
+      outputFailureCode = code;
+      process.exitCode = code;
+    });
+    process.exitCode = outputFailureCode ?? exitCode;
     return;
   }
   const { withLocalCommandAssembly } = await import("../src/assembly/index.ts");

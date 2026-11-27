@@ -11,10 +11,16 @@ import { assemblyMcp } from "./mcp.ts";
 /** Keep host bootstrap and its failures inside the CLI's response boundary. */
 export async function runLocalCommand(
   argv: readonly string[],
+  onMcpOutputFailure?: (exitCode: number) => void,
 ): Promise<number> {
   return await localCommandResult(argv, () =>
     withLocalCommandAssembly(argv[0] !== "--mcp", (assembly) =>
-      dispatchLocalCommand(argv, assembly),
+      dispatchLocalCommand(
+        argv,
+        assembly,
+        assembly.catalog,
+        onMcpOutputFailure,
+      ),
     ),
   );
 }
@@ -23,12 +29,14 @@ export function dispatchLocalCommand(
   argv: readonly string[],
   assembly: Assembly,
   catalog: SurfaceCatalog = assembly.catalog,
+  onMcpOutputFailure?: (exitCode: number) => void,
 ): Promise<number> {
   return runCommand(argv, {
     catalog,
     version,
     call: localCall(assembly),
     mcp: assemblyMcp(assembly),
+    ...(onMcpOutputFailure === undefined ? {} : { onMcpOutputFailure }),
   });
 }
 
