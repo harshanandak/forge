@@ -6,6 +6,7 @@ import {
   baseFixture,
   bellFor,
   seedThread,
+  thread,
   unknownUser,
   type BaseFixture,
 } from "./base-fixture.ts";
@@ -161,9 +162,9 @@ const seedIds = Array.from(
   (_, index) => "agent-" + index,
 );
 const chatUnavailable = (conversationId: string) => ({
-  code: "CHAT_UNAVAILABLE",
+  code: "CHAT_UNAVAILABLE" as const,
   message: "Chat is unavailable.",
-  retry: "reconcile_first",
+  retry: "reconcile_first" as const,
   repair: "Inspect that Slack thread before repeating the text.",
   conversationId,
 });
@@ -432,22 +433,27 @@ test(
 test(
   "forge-1989 a queued caller sees the slot an unknown-outcome write consumed",
   async () => {
-    const { f, alpha, conversationId } = await unknownRunFixture();
+    const { f, alpha, conversationId } = await unknownRunFixture(
+      LIMITS.agentRunMax - 2,
+    );
     const reply = mkReply(f, alpha.sessionId, conversationId);
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     f.chat.nextWrite = { kind: "unknown", until: gate };
-    const tenth = reply("tenth reply");
+    const ninth = reply("ninth reply");
     await until(() => attempts(f) === 1, timeout);
-    const eleventh = reply("eleventh reply");
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    const gates = f.context.threadGates;
+    const occupied = gates.get(thread);
+    const tenth = reply("tenth reply");
+    await until(() => gates.get(thread) !== occupied, timeout);
+    seedThread(f, "agent-conc", "run", "agent", a.personId, alpha.sessionId);
     release();
-    await expectFail(tenth, conversationId);
-    expectPaused(await eleventh);
+    await expectFail(ninth, conversationId);
+    expectPaused(await tenth);
     expect(attempts(f)).toBe(1);
-    expect(f.posts()).toEqual(["Fixture Alpha's agent: tenth reply"]);
+    expect(f.posts()).toEqual(["Fixture Alpha's agent: ninth reply"]);
   },
   timeout,
 );
