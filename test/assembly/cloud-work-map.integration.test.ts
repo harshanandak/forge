@@ -31,6 +31,9 @@ import {
 const { createAssembly, localContext } = (await import(
   new URL("../../dist/src/assembly/index.js", import.meta.url).href
 )) as typeof import("../../src/assembly/index.ts");
+const { runCli } = (await import(
+  new URL("../../dist/src/surface/cli.js", import.meta.url).href
+)) as typeof import("../../src/surface/cli.ts");
 const brief = "brief.md";
 const file = "src/ui/ask.rs";
 const mapRows = (reply: {
@@ -46,9 +49,10 @@ for (const mode of [
   "racing",
   "clock skew",
   "published",
+  "shared process runner",
 ] as const)
   test(
-    "bound MCP overlap: " + mode,
+    "bound work overlap: " + mode,
     async () => {
       const root = realpathSync(
         mkdtempSync(join(tmpdir(), "forge-bound-overlap-")),
@@ -94,6 +98,7 @@ for (const mode of [
           }),
         );
         const bothGranted = Promise.withResolvers<void>();
+        const firstClaimRead = Promise.withResolvers<void>();
         const listEntered = Promise.withResolvers<boolean>();
         const finishList = Promise.withResolvers<void>();
         let pauseList = false;
@@ -134,6 +139,7 @@ for (const mode of [
           if (mode === "racing") {
             if (issues.every((row) => row.lease)) bothGranted.resolve();
             await bothGranted.promise;
+            if (issue.id === "forge-2") await firstClaimRead.promise;
           }
           return answer({
             id: issue.id,
@@ -143,6 +149,7 @@ for (const mode of [
         });
         const deviceRoot = join(root, "device");
         const lanes = [];
+        const sharedRunner = mode === "shared process runner";
         for (const { id } of issues) {
           const worktree = join(root, id);
           const branch = "feat/" + id;
@@ -150,6 +157,7 @@ for (const mode of [
           const assembly = await createAssembly({
             root: worktree,
             deviceRoot,
+            oneShot: !sharedRunner,
             providers: {
               env: {
                 ...process.env,
@@ -163,22 +171,31 @@ for (const mode of [
             },
           });
           assemblies.push(assembly);
+          const context = {
+            ...localContext(assembly, actor, session.id),
+            session,
+          };
           const handlers = createMcpHandlers(
             assembly.mcpCatalog,
             { expose: ["issue", "lane"] },
-            {
-              context: {
-                ...localContext(assembly, actor, session.id),
-                session,
-              },
-            },
+            { context },
           );
+          const invoke = async (noun: string, verb: string, input: object) =>
+            sharedRunner
+              ? (await handlers.callTool(noun + "_" + verb, input))!
+              : (
+                  await runCli(
+                    assembly.catalog,
+                    [noun, verb, "--input", JSON.stringify(input)],
+                    { caller: "human", context },
+                  )
+                ).envelope;
           lanes.push({
             id,
             branch,
             worktree,
             claim: async () => {
-              const reply = (await handlers.callTool("issue_claim", { id }))!;
+              const reply = await invoke("issue", "claim", { id });
               expect(reply, JSON.stringify(reply)).toMatchObject({
                 ok: true,
                 result: { id, generation: 1 },
@@ -186,11 +203,11 @@ for (const mode of [
               return reply;
             },
             start: async () => {
-              const reply = (await handlers.callTool("lane_start", {
+              const reply = await invoke("lane", "start", {
                 id,
                 branch,
                 brief,
-              }))!;
+              });
               expect(reply, JSON.stringify(reply)).toMatchObject({
                 ok: true,
                 result: { issue: id, branch, lease: { generation: 1 } },
@@ -204,7 +221,10 @@ for (const mode of [
         }
         const [first, second] = lanes;
         if (mode === "racing") {
-          const claims = await Promise.all([first!.claim(), second!.claim()]);
+          const claims = await Promise.all([
+            first!.claim().finally(() => firstClaimRead.resolve()),
+            second!.claim(),
+          ]);
           expect(overlap(claims[0])).toContain(second!.id);
           expect(overlap(claims[1])).toContain(first!.id);
           expect(overlap(await first!.start())).toContain(second!.id);
@@ -227,6 +247,13 @@ for (const mode of [
             finishList.resolve();
             await firstStart;
           }
+        } else if (sharedRunner) {
+          for (const reply of [await first!.claim(), await first!.start()])
+            expect(mapRows(reply)).toContainEqual({
+              code: "WORK_FILE_MAP_INCOMPLETE",
+              message:
+                "File overlap map incomplete (advisory skipped: shared process runner). Some overlap may be missing.",
+            });
         } else {
           expect(mapRows(await first!.claim())).toEqual([]);
           if (!skewed) expect(mapRows(await first!.start())).toEqual([]);
