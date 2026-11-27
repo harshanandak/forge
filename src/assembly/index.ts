@@ -180,6 +180,12 @@ const unavailableMap = (reason: string) => ({
   ],
   omitted: 0,
 });
+function leaseAdvisorySkip(expiry: unknown, now?: number): string | undefined {
+  const expiresAt = Date.parse(typeof expiry === "string" ? expiry : "");
+  if (!Number.isFinite(expiresAt)) return "claim expiry unavailable";
+  if (now === undefined) return "lease authority clock unavailable";
+  if (expiresAt - now <= 2 * advisoryMs) return "claim lease is too short";
+}
 
 const TRUST_NAMESPACE = "forge/core-trust";
 const DEVICE_MEMORY: BlockInstance = {
@@ -330,6 +336,13 @@ function checkCancellation(signal?: AbortSignal): void {
 /** First-party detection is registered here; it enables no block and executes no project command. */
 export async function createAssembly(
   options: AssemblyOptions,
+): Promise<Assembly> {
+  return assemble(options, false);
+}
+
+async function assemble(
+  options: AssemblyOptions,
+  cliAdvisories: boolean,
 ): Promise<Assembly> {
   const root = resolve(options.root);
   const deviceRoot = resolve(options.deviceRoot);
@@ -716,7 +729,6 @@ export async function createAssembly(
       signal: AbortSignal,
     ) => Promise<unknown>,
     signal: AbortSignal,
-    laneStart: boolean,
   ): ReturnType<typeof readWorkWarnings> {
     const scope = {
       op: "work-file-map",
@@ -743,39 +755,6 @@ export async function createAssembly(
     ]);
     const git = gitCapability(process, env, createGitScope(stateRoot, root));
     const run = { cwd: stateRoot, env, signal, timeoutMs: advisoryMs };
-    let defaultRef = "refs/remotes/origin/HEAD";
-    if (laneStart) {
-      const executable = git.executable();
-      if (executable.kind !== "resolved")
-        throw new Error("Default Git unavailable");
-      const readDefault = async (args: string[]) => {
-        const result = await process.run(executable, args, {
-          ...run,
-          maxOutputBytes: 16_384,
-        });
-        if (result.exitCode !== 0 || result.timedOut || result.truncated)
-          throw new Error("Default policy unavailable");
-        return result.stdout.trim();
-      };
-      const head = await readDefault([
-        "ls-remote",
-        "--exit-code",
-        "origin",
-        "HEAD",
-      ]);
-      defaultRef = head.match(/^([0-9a-f]{40}|[0-9a-f]{64})\tHEAD$/)?.[1] ?? "";
-      if (!defaultRef) throw new Error("Default commit unavailable");
-      await readDefault([
-        "fetch",
-        "--no-write-fetch-head",
-        "--refmap=",
-        "--no-tags",
-        "--no-prune",
-        "--no-recurse-submodules",
-        "origin",
-        defaultRef,
-      ]);
-    }
     let bytes: number = WORK_MAP_LIMITS.outputBytes;
     const charge = (size: number) => {
       bytes -= size;
@@ -799,8 +778,8 @@ export async function createAssembly(
           await files.close();
         }
       })
-      .catch(() => []);
-    return await readWorkWarnings(
+      .catch(() => undefined);
+    const map = await readWorkWarnings(
       {
         now: Date.now,
         process: { ...process, resolve: () => git.executable() },
@@ -874,18 +853,27 @@ export async function createAssembly(
       },
       {
         ...run,
-        defaultRef,
+        defaultRef: "refs/remotes/origin/HEAD",
         workInstance,
         candidateId,
-        initialProcesses: laneStart ? 3 : 1,
+        initialProcesses: 1,
       },
       (id) =>
-        lanes.findLast(
+        lanes?.findLast(
           (lane) =>
             (lane.issueId ?? lane.issue.replace(/^.*-/, "work-")) ===
             id.replace(/^.*-/, "work-"),
         )?.branch,
     );
+    return lanes
+      ? map
+      : {
+          ...map,
+          warnings: [
+            ...map.warnings,
+            ...unavailableMap("lane registry unavailable").warnings,
+          ],
+        };
   }
 
   function withCallWarnings(
@@ -2693,18 +2681,17 @@ export async function createAssembly(
           (laneStart || workOperation === "issue.claim")
         ) {
           const output = record(result.result);
-          const id = laneStart ? output?.issue : output?.id;
-          const expiry = Date.parse(String(output?.expiresAt));
-          if (mcp || !options.oneShot)
-            call.workMap = unavailableMap(
-              "advisory skipped: shared process runner",
-            );
-          else if (
-            workOperation === "issue.claim" &&
-            !(expiry - Date.now() > 2 * advisoryMs)
-          )
-            call.workMap = unavailableMap("claim lease is too short");
-          else if (typeof id === "string") {
+          const id = output?.id;
+          const skip =
+            mcp || !cliAdvisories
+              ? "advisory skipped: shared process runner"
+              : laneStart
+                ? "trusted default policy unavailable"
+                : leaseAdvisorySkip(output?.expiresAt, Date.now());
+          if (skip) call.workMap = unavailableMap(skip);
+          else if (typeof id !== "string")
+            call.workMap = unavailableMap("candidate unavailable");
+          else {
             const controller = new AbortController();
             const bounded = signal
               ? AbortSignal.any([signal, controller.signal])
@@ -2737,7 +2724,7 @@ export async function createAssembly(
                 delay(advisoryMs, unavailableMap("read timed out"), {
                   signal: bounded,
                 }),
-                workAdvisory(id, instance, read, bounded, laneStart),
+                workAdvisory(id, instance, read, bounded),
               ]);
             } catch {
               call.workMap = unavailableMap("read unavailable");
@@ -2901,15 +2888,24 @@ function readConfirmation(op: string, ask?: string): Promise<boolean> {
 function localHarness(): string {
   return harnessIdentity(process.env);
 }
-export async function createLocalAssembly(
-  options: { readonly oneShot?: boolean } = {},
-): Promise<Assembly> {
+export async function withLocalCommandAssembly<T>(
+  oneShot: boolean,
+  run: (assembly: Assembly) => Promise<T>,
+): Promise<T> {
   const root = process.cwd();
-  return createAssembly({
-    root,
-    deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
-    ...(options.oneShot === undefined ? {} : { oneShot: options.oneShot }),
-  });
+  const assembly = await assemble(
+    {
+      root,
+      deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
+      oneShot,
+    },
+    oneShot,
+  );
+  try {
+    return await run(assembly);
+  } finally {
+    await assembly.close();
+  }
 }
 
 export function localCall(
