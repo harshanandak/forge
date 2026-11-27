@@ -253,6 +253,7 @@ journey(
       sessionId,
       kind: "choice",
       requestedAction: "choice",
+      to: [a.personId],
     };
     const { askId } = result<{ askId: string }>(
       await f.tool("ask", {
