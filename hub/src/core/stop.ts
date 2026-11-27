@@ -3,14 +3,19 @@ import { HOOK_STOP_TEXT_MAX } from "../contract/hooks.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
 import { refused } from "./inbox.ts";
-import { byConversation, str } from "./thread.ts";
+import { str } from "./thread.ts";
 
 const heldNotice =
   "The agent's final message looked like it contained a secret and was held.";
 const skipped = { ok: true, value: { result: "skipped" } } as const;
 
 export function createStop(
-  { chat, deps: { config, db }, store: { guards, sessions, tx } }: CoreContext,
+  {
+    chat,
+    deps: { config, db },
+    store: { guards, sessions, tx },
+    threadGates,
+  }: CoreContext,
   reply: HubCore["reply"],
 ): HubCore["hookStop"] {
   const owed = db.prepare(
@@ -35,6 +40,8 @@ export function createStop(
         const first = conversations[0];
         if (!first || conversations.length !== 1) return skipped;
         if (!chat) return refused("BLOCK_DISABLED");
+        const pending = threadGates.get(str(first.chat_thread_id));
+        if (pending) return { pending } as const;
         const { text } = input;
         if (
           typeof text !== "string" ||
@@ -56,26 +63,19 @@ export function createStop(
           held,
         } as const;
       });
-    const target = claimTarget();
+    let target = claimTarget();
+    while ("pending" in target) {
+      await target.pending;
+      target = claimTarget();
+    }
     if (!target.ok || "value" in target) return target;
     const { sessionId, conversationId, text, held } = target;
-    if (held) {
-      const conversation = byConversation(db, conversationId);
-      if (conversation)
-        await chat?.postText(
-          { kind: "thread", chatThreadId: conversation.chatThreadId },
-          input.text,
-        );
-      return { ok: true, value: { result: "held" } };
-    }
     const result = await reply(
       { person: host.person, tokenId: "" },
       { sessionId, conversationId, text },
     );
-    if (!result.ok) return result;
-    db.prepare(
-      "UPDATE reply_owed SET answered = 0 WHERE session_id = ? AND conversation_id = ?",
-    ).run(sessionId, conversationId);
-    return { ok: true, value: { result: "posted" } };
+    return result.ok
+      ? { ok: true, value: { result: held ? "held" : "posted" } }
+      : result;
   };
 }
