@@ -6658,6 +6658,7 @@ test("the cloud issue.update agrees with the local handler on whole results, row
       [
         "u-6",
         patch({
+          expectRevision: 6,
           expectedFiles: ["src/./planned-*.ts"],
           actualFiles: ["src//delivered.ts"],
           filesAt: "0123456789abcdef0123456789abcdef01234567",
