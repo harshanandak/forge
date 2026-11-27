@@ -6,6 +6,7 @@ import { integer, oneOf, text } from "./askEffects.ts";
 import type { CoreContext } from "./core.ts";
 
 export interface EffectWorker {
+  prepare(): void;
   start(): Promise<void>;
   close(): Promise<void>;
   drain(): Promise<void>;
@@ -55,6 +56,7 @@ export function createEffectWorker(
 ): EffectWorker {
   if (!chat || !asks)
     return {
+      prepare: () => undefined,
       start: () => Promise.resolve(),
       close: () => Promise.resolve(),
       drain: () => Promise.resolve(),
@@ -411,6 +413,7 @@ export function createEffectWorker(
   }
 
   return {
+    prepare,
     start,
     close,
     drain,
