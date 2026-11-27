@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { ChatWriteFailure, type ChatPostTarget } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
+import type { Conversation } from "../contract/domain.ts";
 import type { HubError } from "../contract/errors.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import { fitSection, splitAnswer } from "./answer.ts";
@@ -24,6 +26,9 @@ export interface AgentPostInput {
   readonly prefix: string;
   readonly text: string;
   readonly fallbackName: string;
+  readonly conversation?: Conversation;
+  readonly sessionId?: string;
+  readonly personId?: string;
 }
 
 export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
@@ -54,10 +59,30 @@ export async function postAgentText(ctx: CoreContext, input: AgentPostInput) {
     }
   }
   const posted = fitSection(input.prefix + " ", body);
-  const ref = await ctx.chat.postText(input.target, posted, {
-    agentLabel: input.label,
-  });
-  return { ref, text: posted };
+  try {
+    const ref = await ctx.chat.postText(input.target, posted, {
+      agentLabel: input.label,
+    });
+    return { ref, text: posted };
+  } catch (error) {
+    const { conversation, sessionId, personId } = input;
+    if (
+      error instanceof ChatWriteFailure &&
+      error.effect !== "refused" &&
+      conversation &&
+      sessionId &&
+      personId
+    )
+      recordAgentPost(
+        ctx,
+        { ...conversation, chatMessageId: "unconfirmed:" + randomUUID() },
+        conversation,
+        sessionId,
+        personId,
+        posted,
+      );
+    throw error;
+  }
 }
 
 export function createReply(ctx: CoreContext): HubCore["reply"] {
@@ -259,6 +284,9 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       const posted = await postAgentText(ctx, {
         ...postInput,
         target: { kind: "thread", chatThreadId: conv.chatThreadId },
+        conversation: conv,
+        sessionId: result.sessionId,
+        personId: person.personId,
       });
       ctx.store.tx(() => {
         if (!conv.isDirect)

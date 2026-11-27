@@ -118,6 +118,9 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
           prefix: `${person.displayName}'s agent asked ${result.owner.displayName}'s agent:`,
           text,
           fallbackName: person.displayName,
+          conversation: chat,
+          sessionId,
+          personId: person.personId,
         });
         ctx.store.tx(() =>
           recordAgentPost(

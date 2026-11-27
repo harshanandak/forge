@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { LIMITS } from "../../src/contract/mcp.ts";
-import { baseFixture, seedThread, unknownUser } from "./base-fixture.ts";
+import type { HubResult } from "../../src/contract/core.ts";
+import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
+import {
+  baseFixture,
+  seedThread,
+  unknownUser,
+  type BaseFixture,
+} from "./base-fixture.ts";
 import { refusal, until } from "./base-fakes.ts";
 import { a, p1, value } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
@@ -135,6 +142,167 @@ test(
     expect(f.rows("thread_messages WHERE kind = 'agent'")).toHaveLength(
       LIMITS.agentRunMax,
     );
+  },
+  timeout,
+);
+
+const attempts = (f: BaseFixture) =>
+  f.chat.calls.filter((call) => call.name === "postText").length;
+const agentRows = (f: BaseFixture) =>
+  f.rows("thread_messages WHERE kind = 'agent'");
+
+async function unknownRunFixture() {
+  const f = await baseFixture();
+  const alpha = f.bind();
+  await f.emit("root");
+  const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+  for (let index = 0; index < LIMITS.agentRunMax - 1; index++)
+    seedThread(
+      f,
+      "agent-" + index,
+      "run",
+      "agent",
+      a.personId,
+      alpha.sessionId,
+    );
+  return { f, alpha, conversationId };
+}
+
+function expectPaused(result: HubResult<unknown>) {
+  expect(result.ok).toBe(false);
+  if (!result.ok)
+    expect(result.error).toMatchObject({
+      code: "CONVERSATION_PAUSED",
+      retry: "never",
+    });
+}
+
+test(
+  "forge-1989 a reply post with an unknown outcome uses the loop guard slot",
+  async () => {
+    const { f, alpha, conversationId } = await unknownRunFixture();
+    const reply = (text: string, core: BaseFixture["core"] = f.core) =>
+      core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        conversationId,
+        text,
+      });
+    f.chat.nextWrite = { kind: "unknown" };
+    const error = refusal(await reply("tenth reply"));
+    expect(error).toMatchObject({
+      code: "CHAT_UNAVAILABLE",
+      retry: "reconcile_first",
+      repair: "Inspect that Slack thread before repeating the text.",
+      conversationId,
+    });
+    expect(attempts(f)).toBe(1);
+    expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+    expect(
+      f.col(
+        "thread_messages WHERE kind = 'agent' ORDER BY seq DESC",
+        "chat_message_id",
+      )[0],
+    ).toMatch(/^unconfirmed:/);
+    const before = attempts(f);
+    expectPaused(await reply("eleventh reply"));
+    const restarted = createCoreBase(createCoreContext(f.deps));
+    expectPaused(await reply("rebuilt eleventh reply", restarted));
+    expect(attempts(f)).toBe(before);
+  },
+  timeout,
+);
+
+test(
+  "forge-1989 a visible send with an unknown outcome uses the loop guard slot",
+  async () => {
+    const { f, alpha, conversationId } = await unknownRunFixture();
+    const send = (text: string, core: BaseFixture["core"] = f.core) =>
+      core.send(f.caller(), {
+        sessionId: alpha.sessionId,
+        projectId: p1,
+        toPersonId: "per_b",
+        conversationId,
+        text,
+      });
+    f.chat.nextWrite = { kind: "unknown" };
+    expect(value(await send("tenth send")).threadPost).toBe("failed");
+    expect(attempts(f)).toBe(1);
+    expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+    expect(
+      f.col(
+        "thread_messages WHERE kind = 'agent' ORDER BY seq DESC",
+        "chat_message_id",
+      )[0],
+    ).toMatch(/^unconfirmed:/);
+    const before = attempts(f);
+    expectPaused(await send("eleventh send"));
+    const restarted = createCoreBase(createCoreContext(f.deps));
+    expectPaused(await send("rebuilt eleventh send", restarted));
+    expect(attempts(f)).toBe(before);
+  },
+  timeout,
+);
+
+test(
+  "forge-1989 a member post releases the pause after an unknown outcome",
+  async () => {
+    const { f, alpha, conversationId } = await unknownRunFixture();
+    f.chat.nextWrite = { kind: "unknown" };
+    refusal(
+      await f.core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        conversationId,
+        text: "tenth reply",
+      }),
+    );
+    expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
+    await f.follow("member-release", {
+      slackUserId: slackB,
+      mentionsBot: false,
+    });
+    const before = attempts(f);
+    const posted = value(
+      await f.core.reply(f.caller(), {
+        sessionId: alpha.sessionId,
+        conversationId,
+        text: "after member",
+      }),
+    );
+    expect(posted.conversationId).toBe(conversationId);
+    expect(attempts(f)).toBe(before + 1);
+    expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax + 1);
+  },
+  timeout,
+);
+
+test(
+  "forge-1989 a refused reply records nothing and remains safe to retry",
+  async () => {
+    const { f, alpha, conversationId } = await unknownRunFixture();
+    const input = {
+      sessionId: alpha.sessionId,
+      conversationId,
+      text: "refused tenth reply",
+    };
+    f.chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
+    expect(refusal(await f.core.reply(f.caller(), input))).toEqual({
+      code: "CHAT_UNAVAILABLE",
+      message: "Chat is unavailable.",
+      retry: "safe",
+    });
+    expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax - 1);
+    expect(
+      f.rows("thread_messages WHERE chat_message_id LIKE 'unconfirmed:%'"),
+    ).toEqual([]);
+    expect(value(await f.core.reply(f.caller(), input)).conversationId).toBe(
+      conversationId,
+    );
+    expect(attempts(f)).toBe(3);
+    expect(f.posts()).toEqual([
+      "Fixture Alpha's agent: refused tenth reply",
+      pause,
+    ]);
+    expect(agentRows(f)).toHaveLength(LIMITS.agentRunMax);
   },
   timeout,
 );
