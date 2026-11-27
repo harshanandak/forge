@@ -12,7 +12,7 @@ import {
 } from "./base-fixture.ts";
 import { refusal, until } from "./base-fakes.ts";
 import { a, b, configPeople, p1, p2, value } from "./fixture.ts";
-import { slackB } from "./fakes.ts";
+import { slackA, slackB } from "./fakes.ts";
 
 const timeout = 30_000;
 const c = { personId: "per_c", displayName: "Fixture Gamma" };
@@ -266,10 +266,14 @@ test(
         text,
         ...(conversationId === undefined ? {} : { conversationId }),
       });
-    const postTexts = () =>
+    const channelTarget = { kind: "thread", chatThreadId: thread };
+    const dmTarget = { kind: "thread", chatThreadId: "dm-" + slackA };
+    const picker =
+      "Which project? Reply with one of:\nFixture One: Shared project context\nFixture Two";
+    const postAttempts = () =>
       f.chat.calls
         .filter((call) => call.name === "postText")
-        .map((call) => call.args[1]);
+        .map((call) => [call.args[0], call.args[1]]);
     const posted = value(await send("Visible question", channelConversation));
     expect(posted.threadPost).toBe("posted");
     expect(f.writes("postText")).toHaveLength(1);
@@ -280,7 +284,7 @@ test(
       visiblePost,
       { agentLabel: "Forge (Fixture Alpha's agent)" },
     ]);
-    expect(postTexts()).toEqual([visiblePost]);
+    expect(postAttempts()).toEqual([[channelTarget, visiblePost]]);
     expect(f.col("reply_owed", "answered")).toEqual([0]);
     await f.dm("alpha-dm", "Alpha note");
     const dm = f.rows(
@@ -294,7 +298,10 @@ test(
     expect(direct.threadPost).toBeUndefined();
     const privateSend = value(await send("Private note"));
     expect(privateSend.threadPost).toBeUndefined();
-    expect(postTexts()).toEqual([visiblePost]);
+    expect(postAttempts()).toEqual([
+      [channelTarget, visiblePost],
+      [dmTarget, picker],
+    ]);
     const longText = "Long summary\n---\n" + "detail ".repeat(400);
     const longPosted = value(await send(longText, channelConversation));
     expect(longPosted.threadPost).toBe("posted");
@@ -306,9 +313,13 @@ test(
     ]);
     const longPost =
       "Fixture Alpha's agent asked Fixture Beta's agent: " +
-      "Long summary\nFull answer: https://example.test/canvas/message-2";
-    expect(f.writes("postText")[1]!.args[1]).toBe(longPost);
-    expect(postTexts()).toEqual([visiblePost, longPost]);
+      "Long summary\nFull answer: https://example.test/canvas/message-3";
+    expect(f.writes("postText")[2]!.args[1]).toBe(longPost);
+    expect(postAttempts()).toEqual([
+      [channelTarget, visiblePost],
+      [dmTarget, picker],
+      [channelTarget, longPost],
+    ]);
     const itemsBefore = f.rows(
       "inbox_items WHERE kind = 'agent_message'",
       "item_id",
@@ -319,19 +330,27 @@ test(
       retry: "never",
       pointer: "/text",
     });
-    expect(postTexts()).toEqual([visiblePost, longPost]);
+    expect(postAttempts()).toEqual([
+      [channelTarget, visiblePost],
+      [dmTarget, picker],
+      [channelTarget, longPost],
+    ]);
     expect(
       f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
     ).toEqual(itemsBefore);
     f.chat.nextWrite = { kind: "refused", reason: "not_in_channel" };
     const failed = value(await send("Refused visible", channelConversation));
     expect(failed.threadPost).toBe("failed");
-    expect(postTexts()).toEqual([
-      visiblePost,
-      longPost,
-      "Fixture Alpha's agent asked Fixture Beta's agent: Refused visible",
+    expect(postAttempts()).toEqual([
+      [channelTarget, visiblePost],
+      [dmTarget, picker],
+      [channelTarget, longPost],
+      [
+        channelTarget,
+        "Fixture Alpha's agent asked Fixture Beta's agent: Refused visible",
+      ],
     ]);
-    expect(f.writes("postText")).toHaveLength(2);
+    expect(f.writes("postText")).toHaveLength(3);
     expect(
       f.rows("inbox_items WHERE kind = 'agent_message'", "item_id"),
     ).toHaveLength(5);
