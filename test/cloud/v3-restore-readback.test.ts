@@ -105,6 +105,11 @@ test(
       { length: 80 },
       (_, i) => `src/${String(i).padStart(996, "0")}`,
     );
+    const tooLarge = { title: "Files", expectedFiles, body: "x".repeat(1_625) };
+    expect(Buffer.byteLength(JSON.stringify(tooLarge))).toBe(81_910);
+    expect(
+      await typed(f, { ...create, requestId: "large-create", input: tooLarge }),
+    ).toMatchObject(error(400, "INPUT_INVALID"));
     expect(
       await typed(f, { ...create, input: { title: "Files", expectedFiles } }),
     ).toMatchObject({ status: 200, body: { result: { expectedFiles } } });

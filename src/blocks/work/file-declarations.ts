@@ -8,10 +8,9 @@ type Patch = {
 type Result = { ok: true; patch: Patch } | { ok: false; message: string };
 
 const counts = { expectedFiles: 256, actualFiles: 1024 };
-const pathLimit = 1024;
 const absolute = /^(?:[A-Za-z]:|\/|!)/;
-// A v3 frame holds up to three copies, with 16 KiB for the lease and framing.
-const MAX_DECLARED_ISSUE_BYTES = (256 * 1024 - 16 * 1024) / 3;
+const V3_FRAME_BYTES = 256 * 1024;
+const MAX_DECLARED_ISSUE_BYTES = (V3_FRAME_BYTES - 16 * 1024) / 3;
 export const FILE_DECLARATION_REFUSALS = {
   paths:
     "File declarations require repo-relative / paths of at most 1024 characters, with at most 256 expected and 1024 actual paths",
@@ -41,7 +40,7 @@ export function overFileDeclarationBudget(
 function normalizePath(value: unknown): string | undefined {
   if (
     typeof value !== "string" ||
-    [...value].length > pathLimit ||
+    [...value].length > 1024 ||
     absolute.test(value) ||
     value.includes("\0") ||
     /[\\[\]{}()]|\*{3,}/.test(value)

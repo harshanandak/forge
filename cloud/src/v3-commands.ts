@@ -84,6 +84,7 @@ const commands: Readonly<Record<string, Command>> = {
         ...checked(call.input),
       };
       const value = { ...item, id, prefix };
+      checkFileDeclarationBudget(value);
       return {
         events: [{ key, revision, value }],
         changes: [{ key, value: { revision, value } }],

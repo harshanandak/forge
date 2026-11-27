@@ -12,7 +12,12 @@ import { configured, fail, MAX_SHOW_RESPONSE_BYTES } from "./issue-read.ts";
 import { carriesToken } from "./tokens.ts";
 import type { ReceiptPrincipal } from "./issue-request-id.ts";
 
-export function boundedResult<Result>(op: string, result: Result): Result {
+export function boundedResult<Result>(
+  op: string,
+  result: Result,
+  candidate?: object,
+): Result {
+  if (candidate) checkFileDeclarationBudget(candidate);
   const envelope = { ok: true, op, status: "OK", result, warnings: [] };
   if (jsonBytes(envelope) > (MAX_SHOW_RESPONSE_BYTES * 3) / 4)
     throw fail("UNAVAILABLE", "response too large");

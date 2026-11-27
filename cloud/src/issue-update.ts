@@ -23,12 +23,7 @@ import {
   shownItem,
   storedId,
 } from "./issue-read.ts";
-import {
-  boundedResult,
-  checkFileDeclarationBudget,
-  receipted,
-  type WriteCall,
-} from "./issue-write.ts";
+import { boundedResult, receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 export const UPDATE_GRAPH =
@@ -146,10 +141,10 @@ export function updateIssue(
         expectRevision,
         fence: fence(context, id, "issue.update"),
       });
-      checkFileDeclarationBudget(value);
       return boundedResult(
         "issue.update",
         shownWrite(owner, written, id, prefix),
+        value,
       );
     },
     heldReplay(owner, "issue.update"),

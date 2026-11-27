@@ -30,16 +30,10 @@ export async function inlineWorkPrimitives(
   entry: string,
   path: string,
 ): Promise<string> {
-  const records = await inlineModule(
-    entry,
-    path,
-    'require("./record-primitives.ts")',
-  );
-  return inlineModule(
-    records,
-    join(dirname(path), "file-declarations.ts"),
-    'require("./file-declarations.ts")',
-  );
+  const recordRequire = 'require("./record-primitives.ts")';
+  const withRecords = await inlineModule(entry, path, recordRequire);
+  const files = join(dirname(path), "file-declarations.ts");
+  return inlineModule(withRecords, files, 'require("./file-declarations.ts")');
 }
 
 if (import.meta.main) {

@@ -87,6 +87,7 @@ export function createIssue(
       return boundedResult(
         "issue.create",
         shownItem({ ...written }, id, undefined, now, prefix),
+        written.value as Fields,
       );
     },
   );

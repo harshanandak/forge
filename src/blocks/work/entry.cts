@@ -788,10 +788,13 @@ function atomicRuntime<Input, Output>(
 const MAX_OUTPUT_BYTES = 1_048_576;
 function boundedItem(
   state: LeaseStateClient,
-  value: unknown,
+  value: object,
   revision: number,
   ids: Ids,
+  checkFiles = true,
 ): TrackerItem {
+  if (checkFiles && overFileDeclarationBudget(value))
+    fail("INPUT_INVALID", FILE_DECLARATION_REFUSALS.size);
   const projection = item(
     state,
     { value, revision, updatedAt: new Date(state.now()).toISOString() },
@@ -1239,8 +1242,6 @@ function update(
     readSet.push(...validateDependencies(state, id, [target], ids, true));
     Object.assign(next, { parent: target });
   }
-  if (overFileDeclarationBudget(next))
-    fail("INPUT_INVALID", FILE_DECLARATION_REFUSALS.size);
   boundedItem(state, next, expectRevision + 1, ids);
   return item(
     state,
@@ -6953,7 +6954,13 @@ const operations: Operations<WorkOperations> = {
         : { receipt: input.receipt }),
       ...(input.reason === undefined ? {} : { closeReason: input.reason }),
     };
-    const candidate = boundedItem(state, value, record.revision + 1, ids);
+    const candidate = boundedItem(
+      state,
+      value,
+      record.revision + 1,
+      ids,
+      false,
+    );
     if (validateOnly) return candidate;
     return item(state, persist(state, key(id), value, record.revision), ids);
   },
