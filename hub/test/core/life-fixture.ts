@@ -178,6 +178,8 @@ export async function lifeFixture(schedule?: EffectSchedule) {
       },
       ref,
       publicationKey,
+      path: f.path,
+      anotherWorker: (handle = db) => attach(handle, ref),
       async reopen(summaryMessage = ref) {
         await chat.stop();
         closeDb(db);
