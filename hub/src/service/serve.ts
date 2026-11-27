@@ -25,12 +25,44 @@ function closed(input: IncomingMessage, output: ServerResponse): Promise<void> {
   });
 }
 
+type Handle = (request: Request) => Promise<Response>;
+
+function tracked(handle: Handle, running: Set<Promise<void>>): Handle {
+  return (request) => {
+    const result = handle(request);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    running.add(settled);
+    void settled.then(() => running.delete(settled));
+    return result;
+  };
+}
+
 export async function serveHub(deps: HubServiceDeps): Promise<void> {
   const stop = Promise.withResolvers<void>();
   const onSignal = () => stop.resolve();
   for (const signal of STOP_SIGNALS) process.once(signal, onSignal);
   const active = new Map<ServerResponse, IncomingMessage>();
-  const listener = createHubHttpListener(deps);
+  const running = new Set<Promise<void>>();
+  const { chat, remote } = deps;
+  const listener = createHubHttpListener({
+    ...deps,
+    ...(chat && {
+      chat: {
+        handleWebhook: tracked(
+          (request) => chat.handleWebhook(request),
+          running,
+        ),
+      },
+    }),
+    ...(remote && {
+      remote: {
+        handle: tracked((request) => remote.handle(request), running),
+      },
+    }),
+  });
   const server = createServer({ requireHostHeader: false }, (input, output) => {
     active.set(output, input);
     output.once("close", () => active.delete(output));
@@ -53,6 +85,7 @@ export async function serveHub(deps: HubServiceDeps): Promise<void> {
     const aborted = [...active].map(([output, input]) => closed(input, output));
     server.closeAllConnections();
     await Promise.all(aborted);
+    await Promise.all(running);
   } finally {
     for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
     if (server.listening) {
