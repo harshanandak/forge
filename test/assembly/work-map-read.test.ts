@@ -254,29 +254,14 @@ test("paths and generated rules share the pinned default SHA, read once", async 
       { glob: "src/generated/**", regenerate: { argv: ["gen"] } },
     ],
   });
-  expect(f.gitCalls).toEqual([
-    [
-      "--no-replace-objects",
-      "rev-parse",
-      "--verify",
-      "--end-of-options",
-      `${defaultRef}^{commit}`,
-    ],
-    [
-      "--no-replace-objects",
-      "ls-tree",
-      "-rz",
-      "--name-only",
-      "--full-tree",
-      defaultSha,
-    ],
-    [
-      "--no-replace-objects",
-      "cat-file",
-      "blob",
-      `${defaultSha}:.forge/config.yaml`,
-    ],
-  ]);
+  const commands = [
+    `rev-parse --verify --end-of-options ${defaultRef}^{commit}`,
+    `ls-tree -rz --name-only --full-tree ${defaultSha}`,
+    `cat-file blob ${defaultSha}:.forge/config.yaml`,
+  ];
+  expect(f.gitCalls).toEqual(
+    commands.map((command) => ["--no-replace-objects", ...command.split(" ")]),
+  );
 });
 
 test("learned paths on open issues satisfy a holder's glob, but closed issues cannot", async () => {
@@ -327,27 +312,46 @@ test("issue output is bounded before delivery or declaration processing", async 
   });
 });
 
-test("Git and PR reads share a process budget without losing observed holders", async () => {
-  const f = fixture([issue("work-1")]);
-  const links = Array.from({ length: WORK_MAP_LIMITS.processes }, (_, n) =>
-    pullUrl(n + 1),
-  );
-  f.ports.deliveries = () => ({ items: links, truncated: false });
-  const observed: string[] = [];
-  f.ports.pull = (url, { maxBytes }) => {
-    expect(maxBytes).toBeGreaterThan(0);
-    expect(maxBytes).toBeLessThan(WORK_MAP_LIMITS.outputBytes);
-    observed.push(url);
-    return { state: url === pullUrl(1) ? "OPEN" : "CLOSED" };
-  };
-  const result = await f.read();
-  expect(f.gitCalls.length + observed.length).toBe(WORK_MAP_LIMITS.processes);
-  expect(result).toMatchObject({
-    complete: false,
-    holders: [{ openPulls: [{ url: pullUrl(1) }] }],
-    reasons: [{ kind: "process-budget", issue: "work-1", source: "pull" }],
-  });
-});
+test.each(["process", "output"] as const)(
+  "cached open deliveries survive the %s budget cut",
+  async (budget) => {
+    const f = fixture([issue("work-1"), issue("work-2")]);
+    const cached = pullUrl(1);
+    const oversized = pullUrl(100);
+    const unread = pullUrl(101);
+    const processLimited = budget === "process";
+    const count = processLimited ? WORK_MAP_LIMITS.processes - 3 : 1;
+    const first = Array.from({ length: count }, (_, n) => pullUrl(n + 1));
+    const second = processLimited
+      ? [unread, cached]
+      : [oversized, unread, cached];
+    f.ports.deliveries = (id) => ({
+      items: id === "work-1" ? first : second,
+      truncated: false,
+    });
+    const observed: string[] = [];
+    f.ports.pull = (url, { maxBytes }) => {
+      expect(maxBytes).toBeGreaterThan(0);
+      expect(maxBytes).toBeLessThan(WORK_MAP_LIMITS.outputBytes);
+      observed.push(url);
+      if (url === oversized)
+        return { state: "OPEN", branch: "x".repeat(maxBytes) };
+      return { state: url === cached ? "OPEN" : "CLOSED" };
+    };
+    const result = await f.read();
+    expect(observed).toEqual(processLimited ? first : [cached, oversized]);
+    expect(result.complete).toBe(false);
+    expect(result.reasons).toContainEqual({
+      kind: `${budget}-budget`,
+      issue: "work-2",
+      source: "pull",
+    });
+    expect(result.holders.map((holder) => holder.issue.id)).toEqual([
+      "work-1",
+      "work-2",
+    ]);
+  },
+);
 
 test("a pattern scan that exceeds the work budget yields an incomplete snapshot", async () => {
   const f = fixture([

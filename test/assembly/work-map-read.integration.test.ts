@@ -87,7 +87,10 @@ function fixture() {
       maxConcurrent: 1,
     },
   });
-  function read(source = adapter) {
+  function read(
+    source = adapter,
+    overrides: Readonly<Record<string, string>> = {},
+  ) {
     return readWorkMap(
       {
         process: source,
@@ -96,35 +99,38 @@ function fixture() {
         deliveries: () => ({ items: [], truncated: false }),
         pull: () => ({ state: "CLOSED" }),
       },
-      { cwd, env: gitEnv, defaultRef, timeoutMs: 5000 },
+      { cwd, env: { ...gitEnv, ...overrides }, defaultRef, timeoutMs: 5000 },
     );
   }
-  return { command, commit, close, read, adapter };
+  return { cwd, command, commit, close, read, adapter };
 }
 
-test("a real Git snapshot keeps the same SHA across default-ref movement and candidate commits", async () => {
+test("real Git pins the project default across ref movement and foreign Git environment overrides", async () => {
   const f = fixture();
   try {
-    const base = f.commit([
-      "name with space.ts",
-      "é.gen",
-      "name\nwith-break.ts",
-    ]);
+    const paths = ["name with space.ts", "é.gen", "name\nwith-break.ts"];
+    const base = f.commit(paths);
     const candidate = f.commit(
       ["candidate.ts"],
       defaultPolicy.replace("gen/*.ts", "candidate.ts"),
     );
     f.command(["update-ref", defaultRef, base]);
     f.command(["update-ref", "HEAD", candidate]);
-    const result = await f.read({
-      ...f.adapter,
-      async run(git, args, opts) {
-        const response = await f.adapter.run(git, args, opts);
-        if (args[1] === "rev-parse")
-          f.command(["update-ref", defaultRef, candidate]);
-        return response;
+    const foreign = join(f.cwd, "foreign.git");
+    f.command(["clone", "-q", "--bare", ".", foreign]);
+    f.command(["--git-dir", foreign, "update-ref", defaultRef, candidate]);
+    const result = await f.read(
+      {
+        ...f.adapter,
+        async run(git, args, opts) {
+          const response = await f.adapter.run(git, args, opts);
+          if (args[1] === "rev-parse")
+            f.command(["update-ref", defaultRef, candidate]);
+          return response;
+        },
       },
-    });
+      { GIT_DIR: foreign },
+    );
     expect(result).toMatchObject({
       complete: true,
       defaultSha: base,
@@ -134,57 +140,44 @@ test("a real Git snapshot keeps the same SHA across default-ref movement and can
       holders: [],
     });
     expect(result.trackedPaths.sort()).toEqual(
-      [
-        ".forge/config.yaml",
-        "name with space.ts",
-        "é.gen",
-        "name\nwith-break.ts",
-      ].sort(),
+      [".forge/config.yaml", ...paths].sort(),
     );
   } finally {
     f.close();
   }
 });
 
-test("the real Git tree inventory stops at the tracked-path ceiling", async () => {
-  const f = fixture();
-  try {
-    const paths = Array.from(
-      { length: WORK_MAP_LIMITS.trackedPaths },
-      (_, i) => `file-${i.toString().padStart(6, "0")}`,
-    );
-    const base = f.commit(paths);
-    f.command(["update-ref", defaultRef, base]);
-    const result = await f.read();
-    expect(result).toMatchObject({
-      complete: false,
-      defaultSha: base,
-      reasons: [{ kind: "tracked-paths-truncated" }],
-    });
-    expect(result.trackedPaths.length).toBe(WORK_MAP_LIMITS.trackedPaths);
-    expect(result.trackedPaths.at(0)).toBe(".forge/config.yaml");
-    expect(result.trackedPaths.at(-1)).toBe(paths.at(-2));
-  } finally {
-    f.close();
-  }
-});
-
-test("a real Git output byte cut is explicit and cannot certify missing paths", async () => {
-  const f = fixture();
-  try {
-    const paths = Array.from(
-      { length: WORK_MAP_LIMITS.trackedPaths / 2 },
-      (_, i) => `file-${i}`.padEnd(128, "z"),
-    );
-    const base = f.commit(paths);
-    f.command(["update-ref", defaultRef, base]);
-    expect(await f.read()).toMatchObject({
-      complete: false,
-      defaultSha: base,
-      trackedPaths: [],
-      reasons: [{ kind: "output-budget", source: "tracked-paths" }],
-    });
-  } finally {
-    f.close();
-  }
-});
+test.each(["tracked paths", "output bytes"] as const)(
+  "the real Git inventory reports its %s cut",
+  async (budget) => {
+    const f = fixture();
+    try {
+      const byteLimited = budget === "output bytes";
+      const limit = WORK_MAP_LIMITS.trackedPaths;
+      const paths = Array.from(
+        { length: byteLimited ? limit / 2 : limit },
+        (_, i) =>
+          `file-${i.toString().padStart(6, "0")}`.padEnd(
+            byteLimited ? 128 : 11,
+            "z",
+          ),
+      );
+      const base = f.commit(paths);
+      f.command(["update-ref", defaultRef, base]);
+      expect(await f.read()).toMatchObject({
+        complete: false,
+        defaultSha: base,
+        reasons: [
+          byteLimited
+            ? { kind: "output-budget", source: "tracked-paths" }
+            : { kind: "tracked-paths-truncated" },
+        ],
+        trackedPaths: byteLimited
+          ? []
+          : [".forge/config.yaml", ...paths.slice(0, -1)],
+      });
+    } finally {
+      f.close();
+    }
+  },
+);
