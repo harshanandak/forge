@@ -46,14 +46,8 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
         if (!chat) return refused("CONVERSATION_UNKNOWN");
         if (chat.personId !== person.personId)
           return refused("CONVERSATION_NOT_YOURS");
-        const currentChannel = config.projects.find(
-          (entry) => entry.projectId === projectId,
-        )?.slackChannelId;
-        if (
-          !chat.isDirect &&
-          (chat.projectId !== projectId || chat.channelId !== currentChannel)
-        )
-          return refused("INPUT_INVALID", "/conversationId");
+        const binding = channelBindingRefusal(db, chat, projectId);
+        if (binding) return binding;
         if (paused(db, chat.chatThreadId))
           return refused("CONVERSATION_PAUSED");
       }
@@ -104,11 +98,13 @@ export function createSend(ctx: CoreContext): HubCore["send"] {
     const release = await enterThread(ctx, chat.chatThreadId);
     try {
       const blocked = ctx.store.tx(() => {
-        if (paused(db, chat.chatThreadId))
-          return refused("CONVERSATION_PAUSED");
         const fresh = byConversation(db, chat.conversationId);
         if (!fresh) return refused("CONVERSATION_UNKNOWN");
-        return channelBindingRefusal(fresh, config.projects, projectId);
+        const binding = channelBindingRefusal(db, fresh, projectId);
+        if (binding) return binding;
+        if (paused(db, chat.chatThreadId))
+          return refused("CONVERSATION_PAUSED");
+        return undefined;
       });
       if (blocked) return blocked;
       const item = storeItem();

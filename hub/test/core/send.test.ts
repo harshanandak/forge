@@ -427,12 +427,18 @@ test(
       text: "Race note",
     });
     await Bun.sleep(10);
-    (f.config as unknown as { projects: unknown }).projects =
-      f.config.projects.map((project) =>
-        project.projectId === p1
-          ? { ...project, slackChannelId: "C00000009" }
-          : project,
-      );
+    const rebound = f.config.projects.map((project) =>
+      project.projectId === p1
+        ? { ...project, slackChannelId: "C00000009" }
+        : project,
+    );
+    createCoreBase(
+      createCoreContext({
+        ...f.deps,
+        config: { ...f.config, projects: rebound },
+        people: configPeople(f.config.people),
+      }),
+    );
     releaseGate();
     expect(refusal(await pending)).toEqual({
       code: "INPUT_INVALID",
@@ -445,6 +451,21 @@ test(
     expect(f.rows("conversations")).toEqual(beforeConvs);
     expect(f.rows("reply_owed")).toEqual(beforeOwed);
     expect(f.chat.writes).toHaveLength(beforeWrites);
+    createCoreBase(
+      createCoreContext({
+        ...f.deps,
+        config: f.config,
+        people: configPeople(f.config.people),
+      }),
+    );
+    const retry = value(
+      await f.core.send(f.caller(), {
+        ...draft(alpha.sessionId),
+        conversationId,
+        text: "After rebind",
+      }),
+    );
+    expect(retry.threadPost).toBe("posted");
   },
   timeout,
 );

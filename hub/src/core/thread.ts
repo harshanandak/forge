@@ -5,19 +5,26 @@ import type {
 } from "../contract/chat.ts";
 import type { Conversation } from "../contract/domain.ts";
 import { LIMITS } from "../contract/mcp.ts";
-import type { HubDb, ProjectConfig, SqlRow } from "../contract/runtime.ts";
+import type { HubDb, SqlRow } from "../contract/runtime.ts";
 import type { CoreContext } from "./core.ts";
 import { fail } from "./errors.ts";
 
 export function channelBindingRefusal(
+  db: HubDb,
   conversation: Conversation,
-  projects: readonly ProjectConfig[],
   projectId: string | undefined,
 ) {
   if (conversation.isDirect) return undefined;
-  const currentChannel = projects.find(
-    (entry) => entry.projectId === projectId,
-  )?.slackChannelId;
+  const row =
+    projectId === undefined
+      ? undefined
+      : db
+          .prepare("SELECT slack_channel_id FROM projects WHERE project_id = ?")
+          .get(projectId);
+  const currentChannel =
+    row && typeof row.slack_channel_id === "string"
+      ? row.slack_channel_id
+      : undefined;
   if (
     conversation.projectId !== projectId ||
     conversation.channelId !== currentChannel
