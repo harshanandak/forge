@@ -20,12 +20,13 @@ export const refused = (code: HubErrorCode, pointer?: string) =>
 
 function acknowledge(ctx: CoreContext, session: Session, input: InboxInput) {
   const { db, now } = ctx.deps;
-  const { sessionId, personId } = session;
+  const { sessionId, personId, projectId } = session;
   const items = input.ackItemIds ?? [];
   const answers = input.ackAskIds ?? [];
   const item =
     db.prepare(`SELECT 1 FROM inbox_items i WHERE item_id = ? AND delivered_to_session_id = ?
-    AND owner_person_id = ? AND held = 0 AND (project_id IS NULL OR EXISTS (
+    AND owner_person_id = ? AND held = 0 AND i.project_id IS COALESCE(?, i.project_id)
+    AND (project_id IS NULL OR EXISTS (
       SELECT 1 FROM project_members m WHERE m.project_id = i.project_id AND m.person_id = i.owner_person_id))`);
   const answer =
     db.prepare(`SELECT 1 FROM ask_answers x JOIN asks a ON a.ask_id = x.ask_id
@@ -33,7 +34,7 @@ function acknowledge(ctx: CoreContext, session: Session, input: InboxInput) {
     WHERE x.ask_id = ? AND a.from_session_id = ? AND a.from_person_id = ?
     AND x.delivered_at IS NOT NULL`);
   if (
-    items.some((id) => !item.get(id, sessionId, personId)) ||
+    items.some((id) => !item.get(id, sessionId, personId, projectId ?? null)) ||
     answers.some(
       (id) => !ctx.store.asks || !answer.get(id, sessionId, personId),
     )

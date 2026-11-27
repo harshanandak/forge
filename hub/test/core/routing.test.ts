@@ -181,14 +181,16 @@ test(
 );
 
 test(
-  "R6P a conversation skips its bound session after it joins another project",
+  "R6P a conversation skips its legacy binding to a session in another project",
   async () => {
     const f = await baseFixture();
     const claimant = f.bind(a, "claimant", "unconfigured-thread");
     await f.emit("root");
     const [first] = f.read(claimant.sessionId).items;
     f.ack(claimant.sessionId, [first!.itemId]);
-    f.bindProject(claimant.sessionId, p2);
+    f.db
+      .prepare("UPDATE sessions SET project_id = ? WHERE session_id = ?")
+      .run(p2, claimant.sessionId);
     const compatible = f.bind();
     f.bindProject(compatible.sessionId);
     await f.follow("after-project-binding");

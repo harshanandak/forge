@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessageRef } from "../contract/chat.ts";
 import type { Conversation } from "../contract/domain.ts";
+import type { HubDb } from "../contract/runtime.ts";
 import type { CoreContext } from "./core.ts";
 import { recordAgentPost, UNCONFIRMED_MESSAGE_PREFIX } from "./thread.ts";
 
@@ -121,6 +122,34 @@ function readJournalPost(key: string, value: unknown): JournalRead {
     return { ok: true, post: { ...reservation, phase, ref } };
   }
   return { ok: true, post: { ...reservation, phase } };
+}
+
+export function unresolvedAgentPost(db: HubDb) {
+  const unconfirmed = db.prepare(`
+    SELECT 1 FROM thread_messages WHERE session_id = ?
+      AND (? IS NULL OR project_id IS NOT ?)
+      AND kind = 'agent' AND chat_message_id LIKE ? LIMIT 1
+  `);
+  const journal = db.prepare(
+    "SELECT key,value FROM meta WHERE key GLOB 'agent-post:*'",
+  );
+  return (sessionId: string, projectId: string | null) =>
+    !!unconfirmed.get(
+      sessionId,
+      projectId,
+      projectId,
+      UNCONFIRMED_MESSAGE_PREFIX + "%",
+    ) ||
+    journal.all().some((row) => {
+      const read = readJournalPost(String(row.key), row.value);
+      return (
+        !read.ok ||
+        (read.post.sessionId === sessionId &&
+          (projectId === null ||
+            read.post.conversation.projectId !== projectId) &&
+          read.post.phase !== "refused")
+      );
+    });
 }
 
 export function reserveAgentPost(
