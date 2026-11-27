@@ -829,6 +829,17 @@ test.each([
   30_000,
 );
 
+test("rendered review checks the base run log for the same failure signature", async () => {
+  await withDelivery(async (root, call) => {
+    expect(await call("skills.sync")).toMatchObject({ ok: true });
+    const text = readFileSync(join(root, rendered("forge-review")), "utf8");
+    const red = text.split("## Red checks")[1] ?? "";
+    const step = red.split("\n").find((line) => line.startsWith("3.")) ?? "";
+    expect(step).toContain("--log-failed");
+    expect(step).toContain("same signature");
+  });
+}, 30_000);
+
 test("the delivery template renders all six skills: linted, at most 4 KB, values filled in", async () => {
   await withDelivery(async (root, call, lint) => {
     const synced = await call("skills.sync");
