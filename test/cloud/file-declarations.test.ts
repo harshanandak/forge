@@ -39,6 +39,9 @@ const sqlOf = (db: Database): SqlDatabase => ({
 
 function project() {
   const raw = new Database(":memory:");
+  raw.run(
+    "CREATE TABLE domain_cloud_pragma (name TEXT PRIMARY KEY, value INTEGER NOT NULL)",
+  );
   const db = sqlOf(raw);
   const owner = new StateOwner(db, { now: () => time });
   owner.initialize([domain]);
