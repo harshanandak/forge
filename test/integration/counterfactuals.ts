@@ -90,8 +90,8 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
   },
   {
     file: "src/assembly/state.js",
-    from: "const result = this.#queue.then(work);",
-    to: "const result = work();",
+    from: "await promise;",
+    to: "await Promise.resolve();",
     mode: "lifetime",
     fixture: "review-two",
     evidence: "concurrent first opens must be serialized",

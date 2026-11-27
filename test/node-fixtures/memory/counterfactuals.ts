@@ -96,8 +96,8 @@ export const counterfactuals: readonly Counterfactual[] = [
   {
     // The assembly would hand the device store over as the project's.
     file: "assembly/index.js",
-    from: "projectState,\n deviceState,\n namespace,",
-    to: "projectState: deviceState,\n deviceState,\n namespace,",
+    from: "projectState,\n deviceState,\n signal: scope.signal,\n namespace,",
+    to: "projectState: deviceState,\n deviceState,\n signal: scope.signal,\n namespace,",
     journey: "levels",
     evidence: "a project note's id names its project",
   },
