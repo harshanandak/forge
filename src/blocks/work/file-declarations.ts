@@ -1,19 +1,15 @@
-export type FileDeclarationField = "expectedFiles" | "actualFiles" | "filesAt";
-export type FileDeclarationPatch = {
-  readonly expectedFiles?: string[];
-  readonly actualFiles?: string[];
-  readonly filesAt?: string;
+type Field = "expectedFiles" | "actualFiles" | "filesAt";
+type Patch = {
+  expectedFiles?: string[];
+  actualFiles?: string[];
+  filesAt?: string;
 };
-export type FileDeclarationsResult =
-  | { readonly ok: true; readonly patch: FileDeclarationPatch }
-  | { readonly ok: false; readonly message: string };
-
-type Result =
-  | { readonly ok: true; readonly paths: string[] }
-  | { readonly ok: false; readonly message: string };
+type Result = { ok: true; patch: Patch } | { ok: false; message: string };
 
 const limit = 1024;
 const unsupported = /[[\]{}()]/;
+const absolute = /^(?:[A-Za-z]:|\/|!)/;
+const trailing = /\/\.?$/;
 const problem = (field: string, maximum: number) => ({
   ok: false as const,
   message: `${field} must be an array of at most ${maximum} repo-relative paths of at most ${limit} characters, using only / separators and the *, ** and ? glob operators`,
@@ -25,12 +21,9 @@ function normalizePath(path: unknown): string | undefined {
     path.length === 0 ||
     path.length > limit ||
     path.includes("\\") ||
-    path.startsWith("/") ||
-    path.startsWith("!") ||
-    /^[A-Za-z]:/.test(path) ||
-    path.endsWith("/") ||
+    absolute.test(path) ||
     path === "." ||
-    path.endsWith("/.")
+    trailing.test(path)
   )
     return undefined;
   const segments: string[] = [];
@@ -41,19 +34,20 @@ function normalizePath(path: unknown): string | undefined {
     segments.push(segment);
   }
   const normalized = segments.join("/");
-  return normalized.length > 0 &&
-    normalized.length <= limit &&
-    !normalized.startsWith("!") &&
-    !/^[A-Za-z]:/.test(normalized)
-    ? normalized
-    : undefined;
+  if (
+    normalized.length === 0 ||
+    normalized.length > limit ||
+    absolute.test(normalized)
+  )
+    return undefined;
+  return normalized;
 }
 
 function normalizePaths(
   value: unknown,
   field: "expectedFiles" | "actualFiles",
   maximum: number,
-): Result {
+) {
   if (!Array.isArray(value) || value.length > maximum)
     return problem(field, maximum);
   const paths: string[] = [];
@@ -62,28 +56,27 @@ function normalizePaths(
     if (normalized === undefined) return problem(field, maximum);
     paths.push(normalized);
   }
-  return { ok: true, paths };
+  return { ok: true as const, paths };
 }
 
 export function normalizeFileDeclarations(
   input: unknown,
-  fields: readonly FileDeclarationField[],
-): FileDeclarationsResult {
+  fields: readonly Field[],
+): Result {
   if (typeof input !== "object" || input === null)
-    return { ok: false, message: "file declarations require an object input" };
+    return {
+      ok: false as const,
+      message: "file declarations require an object input",
+    };
   const record = input as Record<string, unknown>;
-  const patch: {
-    expectedFiles?: string[];
-    actualFiles?: string[];
-    filesAt?: string;
-  } = {};
+  const patch: Patch = {};
   for (const field of fields) {
     const value = record[field];
     if (value === undefined) continue;
     if (field === "filesAt") {
       if (typeof value !== "string" || !/^[0-9a-f]{40}$/.test(value))
         return {
-          ok: false,
+          ok: false as const,
           message: "filesAt must be a lowercase 40-character commit SHA",
         };
       patch.filesAt = value;
@@ -97,5 +90,5 @@ export function normalizeFileDeclarations(
       patch[field] = normalized.paths;
     }
   }
-  return { ok: true, patch };
+  return { ok: true as const, patch };
 }

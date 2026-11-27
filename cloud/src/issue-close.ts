@@ -120,11 +120,9 @@ export function closeIssue(
         ...(reason === undefined ? {} : { closeReason: reason }),
       };
       const candidate = {
-        namespace: NAMESPACE,
-        key: held.subject,
+        ...record,
         value,
         revision: record.revision + 1,
-        updatedAt: new Date(Date.now()).toISOString(),
         updatedBy: actor,
       };
       boundedResult("issue.close", shownWrite(owner, candidate, id, prefix));
@@ -133,10 +131,7 @@ export function closeIssue(
         fence: held,
         readSet: reads,
       });
-      return boundedResult(
-        "issue.close",
-        shownWrite(owner, written, id, prefix),
-      );
+      return shownWrite(owner, written, id, prefix);
     },
     heldReplay(owner, "issue.close"),
   );

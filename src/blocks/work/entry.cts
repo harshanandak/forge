@@ -804,20 +804,27 @@ function boundedOutput(value: TrackerItem): void {
   if (utf8Bytes(JSON.stringify(value)) > MAX_OUTPUT_BYTES)
     fail("LIMIT_EXCEEDED", `output exceeds maxOutputBytes ${MAX_OUTPUT_BYTES}`);
 }
-function outputCandidate(
+function boundedItem(
+  state: LeaseStateClient,
   key: string,
   value: unknown,
   revision: number,
-  updatedAt: string,
-): StateRecord {
-  return {
-    namespace: "forge/work",
-    key,
-    value,
-    revision,
-    updatedAt,
-    updatedBy: { kind: "agent", id: "output-check" },
-  };
+  ids: Ids,
+): void {
+  boundedOutput(
+    item(
+      state,
+      {
+        namespace: "forge/work",
+        key,
+        value,
+        revision,
+        updatedAt: new Date(state.now()).toISOString(),
+        updatedBy: { kind: "agent", id: "output-check" },
+      },
+      ids,
+    ),
+  );
 }
 function persist(
   state: LeaseStateClient,
@@ -1261,18 +1268,7 @@ function update(
     readSet.push(...validateDependencies(state, id, [target], ids, true));
     Object.assign(next, { parent: target });
   }
-  boundedOutput(
-    item(
-      state,
-      outputCandidate(
-        key(id),
-        next,
-        expectRevision + 1,
-        new Date(state.now()).toISOString(),
-      ),
-      ids,
-    ),
-  );
+  boundedItem(state, key(id), next, expectRevision + 1, ids);
   return item(
     state,
     persist(state, key(id), next, expectRevision, undefined, readSet),
@@ -6105,9 +6101,7 @@ const operations: Operations<WorkOperations> = {
         ...(parent === undefined ? {} : { parent }),
         ...declarations.patch,
       };
-      boundedOutput(
-        item(state, outputCandidate(key(id), value, 1, value.createdAt), ids),
-      );
+      boundedItem(state, key(id), value, 1, ids);
       return { value, readSet };
     });
     return item(state, checked(state, written), ids);
@@ -6986,18 +6980,7 @@ const operations: Operations<WorkOperations> = {
     const { closeReason: _reason, ...view } = value as Stored & {
       closeReason?: string;
     };
-    boundedOutput(
-      item(
-        state,
-        outputCandidate(
-          key(id),
-          view,
-          record.revision + 1,
-          new Date(state.now()).toISOString(),
-        ),
-        ids,
-      ),
-    );
+    boundedItem(state, key(id), view, record.revision + 1, ids);
     const written = persist(state, key(id), value, record.revision);
     return item(state, { ...written, value: view }, ids);
   },

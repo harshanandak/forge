@@ -143,14 +143,13 @@ export function updateIssue(
     },
     ({ id, expectRevision, patch }, actor, prefix, context) => {
       const key = `issue:${id}`;
-      const current = checkedValue({ ...owner.get(NAMESPACE, key)! }, id);
+      const row = owner.get(NAMESPACE, key)!;
+      const current = checkedValue({ ...row }, id);
       const value = { ...current, ...patch };
       const candidate = {
-        namespace: NAMESPACE,
-        key,
+        ...row,
         value,
         revision: expectRevision + 1,
-        updatedAt: new Date(Date.now()).toISOString(),
         updatedBy: actor,
       };
       boundedResult("issue.update", shownWrite(owner, candidate, id, prefix));
@@ -158,10 +157,7 @@ export function updateIssue(
         expectRevision,
         fence: fence(context, id, "issue.update"),
       });
-      return boundedResult(
-        "issue.update",
-        shownWrite(owner, written, id, prefix),
-      );
+      return shownWrite(owner, written, id, prefix);
     },
     heldReplay(owner, "issue.update"),
   );

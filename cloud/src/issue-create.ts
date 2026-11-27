@@ -106,10 +106,7 @@ export function createIssue(
         { refuseMissing: FLOOR_MISSING },
       );
       const id = `work-${written.key.slice("issue:work-".length)}`;
-      return boundedResult(
-        "issue.create",
-        shownItem({ ...written }, id, undefined, now, prefix),
-      );
+      return shownItem({ ...written }, id, undefined, now, prefix);
     },
   );
 }
