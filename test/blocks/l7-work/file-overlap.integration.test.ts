@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
@@ -16,15 +23,39 @@ const mapWarnings = (reply: object) =>
     code.startsWith("WORK_FILE"),
   );
 
-for (const mode of ["disjoint", "shared", "racing"] as const)
+for (const mode of [
+  "disjoint",
+  "shared",
+  "racing",
+  "stale default policy",
+] as const)
   test(`local CLI overlap: ${mode}`, async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-overlap-")));
     let commands: Awaited<ReturnType<typeof laneCommands>> | undefined;
     try {
       const { repo } = laneRepository(root, brief);
+      const configPath = join(repo, ".forge/config.yaml");
+      const config = readFileSync(configPath, "utf8");
+      if (mode === "stale default policy")
+        writeFileSync(
+          configPath,
+          config.replace(
+            "config: {",
+            `config: { generatedFiles: [{glob: ${sharedFile}, regenerate: {argv: [fixture]}}],`,
+          ),
+        );
       laneGit(["add", ".forge/config.yaml"], repo);
       laneGit(["commit", "-m", "project policy"], repo);
       laneGit(["push", "origin", "main"], repo);
+      const trackedDefault = "refs/remotes/origin/main";
+      const stale = laneGit(["rev-parse", trackedDefault], repo);
+      if (mode === "stale default policy") {
+        writeFileSync(configPath, config);
+        laneGit(["add", ".forge/config.yaml"], repo);
+        laneGit(["commit", "-m", "stop excluding the shared file"], repo);
+        laneGit(["push", "origin", "main"], repo);
+        laneGit(["update-ref", trackedDefault, stale], repo);
+      }
       commands = await laneCommands(root, repo);
       const { call, good } = commands;
       const id = async (title: string, file: string) =>
@@ -70,6 +101,16 @@ for (const mode of ["disjoint", "shared", "racing"] as const)
       const started = await start(second);
       checkLane(started);
       expect(mapWarnings(replay)).toEqual([]);
+      if (mode === "stale default policy") {
+        expect(mapWarnings(claimed)).toEqual([]);
+        expect(laneGit(["rev-parse", trackedDefault], repo)).toBe(stale);
+        expect(started.result.base).not.toBe(stale);
+        expect(
+          mapWarnings(started).find(({ code }) => code === "WORK_FILE_OVERLAP")
+            ?.message ?? "",
+        ).toContain(sharedFile);
+        return;
+      }
       for (const reply of [claimed, started]) {
         if (mode === "disjoint") expect(mapWarnings(reply)).toEqual([]);
         else {
