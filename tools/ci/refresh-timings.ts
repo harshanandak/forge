@@ -1,0 +1,112 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { type jobRecord } from "./ci-record.ts";
+import { downloadRecords } from "./ci-report.ts";
+import { selectSourceFiles } from "./source-selection.ts";
+import { discoverSourceFiles } from "./test-shards.ts";
+
+type Entry = ReturnType<typeof jobRecord>;
+
+export function median(values: number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  const sorted = values.toSorted((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[middle]
+    : (sorted[middle - 1]! + sorted[middle]!) / 2;
+}
+
+const isTestShard = (record: Entry) =>
+  record.os === "Windows" &&
+  record.node === "24" &&
+  /^\d+\/\d+$/.test(record.shard);
+
+// Pure part: per-file medians over the latest attempt of each run, restricted
+// to the selected files. A selected file with no measurement keeps its old
+// value; without one it is left out. Keys come out sorted, values whole ms.
+export function refreshTimings(
+  records: Entry[],
+  selected: readonly string[],
+  old: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const samples = new Map<string, number[]>();
+  for (const record of records.filter(isTestShard))
+    for (const [file, { durationMs }] of Object.entries(record.files))
+      if (durationMs !== null) {
+        const seen = samples.get(file) ?? [];
+        seen.push(durationMs);
+        samples.set(file, seen);
+      }
+  const files: Record<string, number> = {};
+  for (const file of [...selected].sort()) {
+    const values = samples.get(file);
+    if (values?.length) files[file] = Math.round(median(values)!);
+    else if (file in old) files[file] = old[file]!;
+  }
+  return files;
+}
+
+if (import.meta.main) {
+  const count = Number(
+    process.argv.find((arg) => arg.startsWith("--runs="))?.split("=")[1] ??
+      "10",
+  );
+  if (!Number.isInteger(count) || count <= 0)
+    throw new Error("expected --runs=<positive integer>");
+  const repo = "harshanandak/forge";
+  const candidates = JSON.parse(
+    execFileSync(
+      "gh",
+      [
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--workflow",
+        "ci.yml",
+        "--json",
+        "databaseId,headSha,headBranch,conclusion,attempt",
+        "--jq",
+        'map(select(.headBranch == "main" and .conclusion == "success")) | sort_by(.databaseId) | reverse | .[0:30] | map({id: .databaseId, head_sha: .headSha, run_attempt: .attempt})',
+      ],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true },
+    ),
+  ) as { id: number; head_sha: string; run_attempt: number }[];
+  const kept: Entry[] = [];
+  const used: number[] = [];
+  for (const run of candidates) {
+    if (used.length >= count) break;
+    const directory = mkdtempSync(`${tmpdir()}/refresh-timings-`);
+    try {
+      const found = downloadRecords(run, directory).filter(
+        (record) =>
+          record.run_attempt === run.run_attempt &&
+          record.head_sha === run.head_sha &&
+          isTestShard(record),
+      );
+      if (found.length) {
+        kept.push(...found);
+        used.push(run.id);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+  if (used.length < count)
+    throw new Error(
+      `only ${used.length}/${count} successful main runs have Windows Node 24 test-shard records`,
+    );
+  const selected = selectSourceFiles(discoverSourceFiles(), "24");
+  const path = "test/timings.json";
+  const old = (
+    JSON.parse(readFileSync(path, "utf8")) as {
+      files: Record<string, number>;
+    }
+  ).files;
+  const files = refreshTimings(kept, selected, old);
+  writeFileSync(path, `${JSON.stringify({ version: 1, files }, null, 2)}\n`);
+  console.log(
+    `refresh-timings: ${kept.length} records from ${used.length} runs (${used.toSorted((a, b) => a - b).join(", ")}); ${Object.keys(files).length}/${selected.length} selected files have timings`,
+  );
+}
