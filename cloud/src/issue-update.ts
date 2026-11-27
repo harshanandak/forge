@@ -19,7 +19,7 @@ import {
   shownItem,
   storedId,
 } from "./issue-read.ts";
-import { receipted, type WriteCall } from "./issue-write.ts";
+import { boundedResult, receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 export const UPDATE_GRAPH =
@@ -154,7 +154,10 @@ export function updateIssue(
           fence: fence(context, id, "issue.update"),
         },
       );
-      return shownWrite(owner, written, id, prefix);
+      return boundedResult(
+        "issue.update",
+        shownWrite(owner, written, id, prefix),
+      );
     },
     heldReplay(owner, "issue.update"),
   );

@@ -14,6 +14,7 @@ const session = { id: "fixture" } as const;
 const leased = { actor, session, leaseGeneration: 1 };
 const sha = "0123456789abcdef0123456789abcdef01234567";
 const full = Array.from({ length: 1024 }, (_, index) => `src/${index}.ts`);
+const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(993)}`);
 
 beforeEach(() => setSystemTime(time));
 afterEach(() => setSystemTime());
@@ -226,7 +227,11 @@ test(
     expect(
       (
         await f.command(
-          create("create", { title: "Files", expectedFiles: ["src/alpha.ts"] }),
+          create("create", {
+            title: "Files",
+            body: "b".repeat(65536),
+            expectedFiles: ["src/alpha.ts"],
+          }),
         )
       ).status,
     ).toBe(200);
@@ -250,6 +255,12 @@ test(
       inputInvalid(got);
       expect(await f.command(show)).toEqual(before);
     }
+    const large = await f.command(update("large", { actualFiles: longFiles }));
+    expect([large.status, large.body.error?.code]).toEqual([
+      409,
+      "UNAVAILABLE",
+    ]);
+    expect(await f.command(show)).toEqual(before);
     expect(
       (
         await f.command({

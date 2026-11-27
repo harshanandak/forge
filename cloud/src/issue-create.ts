@@ -8,7 +8,7 @@ import type { StateOwner } from "../../src/core/state/index.ts";
 import type { TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { fail, schemas, shownItem } from "./issue-read.ts";
-import { receipted, type WriteCall } from "./issue-write.ts";
+import { boundedResult, receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 const FLOOR_MISSING =
@@ -90,7 +90,10 @@ export function createIssue(
         { refuseMissing: FLOOR_MISSING },
       );
       const id = `work-${written.key.slice("issue:work-".length)}`;
-      return shownItem({ ...written }, id, undefined, now, prefix);
+      return boundedResult(
+        "issue.create",
+        shownItem({ ...written }, id, undefined, now, prefix),
+      );
     },
   );
 }

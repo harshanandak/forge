@@ -3,9 +3,22 @@ import type { StateOwner } from "../../src/core/state/index.ts";
 import type { Actor, BoundContext } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { commandWrite, prepareReceipt } from "./command-write.ts";
-import { configured, fail } from "./issue-read.ts";
+import { configured, fail, MAX_SHOW_RESPONSE_BYTES } from "./issue-read.ts";
 import { carriesToken } from "./tokens.ts";
 import type { ReceiptPrincipal } from "./issue-request-id.ts";
+
+export function boundedResult<Result>(op: string, result: Result): Result {
+  const body = JSON.stringify({
+    ok: true,
+    op,
+    status: "OK",
+    result,
+    warnings: [],
+  });
+  if (new TextEncoder().encode(body).length > MAX_SHOW_RESPONSE_BYTES)
+    throw fail("UNAVAILABLE", "response too large");
+  return result;
+}
 
 export interface WriteCall {
   readonly principal: ReceiptPrincipal;
