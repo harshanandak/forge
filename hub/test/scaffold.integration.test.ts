@@ -209,6 +209,8 @@ const ownFiles = [
   "dist/core/worker-lock.js",
   "dist/main.js",
   "dist/remote/index.js",
+  "dist/service/http.js",
+  "dist/service/routes.js",
   "dist/setup/index.js",
 ];
 const credentialPath =
