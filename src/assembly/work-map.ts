@@ -1,4 +1,5 @@
 import { resolveFileOverlap } from "../blocks/work/file-overlap.ts";
+import { normalizeFileDeclarations } from "../blocks/work/file-declarations.ts";
 import { escapeDisplayText } from "../contract/display-text.ts";
 import type { ResultEnvelope } from "../generated/types.ts";
 import { readWorkMap, WORK_MAP_LIMITS } from "./work-map-read.ts";
@@ -11,6 +12,7 @@ type Scan = { warnings: Warning[]; omitted: number };
 type Branch = (id: string) => string | undefined;
 const maxWarnings = 32;
 const maxMessage = 2000;
+const maxIssueId = 200;
 const incompleteCode = "WORK_FILE_MAP_INCOMPLETE";
 
 const incomplete = (reason: string): Warning => ({
@@ -18,26 +20,65 @@ const incomplete = (reason: string): Warning => ({
   message: `File overlap map incomplete (${reason}). Some overlap may be missing.`,
 });
 
-function quoted(text: string, limit: number): string {
-  const escaped = escapeDisplayText(text, "fragment");
-  if (escaped.length + 2 <= limit) return `"${escaped}"`;
-  const prefix = escaped.slice(0, limit - 3).replace(/[\uD800-\uDBFF]$/u, "");
-  return `"${prefix}…"`;
+function clipped(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const prefix = text.slice(0, limit - 1).replace(/[\uD800-\uDBFF]$/u, "");
+  return `${prefix}…`;
 }
 
-function warningTail(candidate: Issue, holder: Holder, branchFor?: Branch) {
+function quoted(text: string, limit: number): string {
+  return `"${clipped(escapeDisplayText(text, "fragment"), limit - 2)}"`;
+}
+
+function dependentsOf(candidateId: string, graph: Snapshot["dependencies"]) {
+  const dependents = new Map<string, string[]>();
+  for (const [id, prerequisites] of graph ?? []) {
+    if (!Array.isArray(prerequisites)) continue;
+    for (const prerequisite of prerequisites) {
+      if (typeof prerequisite !== "string") continue;
+      const direct = dependents.get(prerequisite);
+      if (direct) direct.push(id);
+      else dependents.set(prerequisite, [id]);
+    }
+  }
+  const pending = [candidateId];
+  const seen = new Set(pending);
+  for (const id of pending) {
+    for (const next of dependents.get(id) ?? []) {
+      if (seen.has(next)) continue;
+      seen.add(next);
+      pending.push(next);
+    }
+  }
+  return seen;
+}
+
+function warningTail(
+  candidate: Issue,
+  holder: Holder,
+  candidateFirst: boolean,
+  branchFor?: Branch,
+) {
   const other = holder.issue;
   const pull =
     holder.openPulls.find(({ branch }) => branch) ?? holder.openPulls[0];
   const branch = pull?.branch ?? branchFor?.(other.id);
   const evidence = pull
     ? `open PR ${quoted(pull.url, 240)}`
-    : `lease until ${holder.leaseExpiresAt}`;
-  const [first, second] = other.dependsOn.includes(candidate.id)
-    ? [candidate.id, other.id]
-    : [other.id, candidate.id];
+    : `lease until ${clipped(escapeDisplayText(holder.leaseExpiresAt ?? "", "fragment"), 240)}`;
+  const incumbentId = clipped(
+    escapeDisplayText(other.id, "fragment"),
+    maxIssueId,
+  );
+  const candidateId = clipped(
+    escapeDisplayText(candidate.id, "fragment"),
+    maxIssueId,
+  );
+  const [first, second] = candidateFirst
+    ? [candidateId, incumbentId]
+    : [incumbentId, candidateId];
   const lane = branch ? ` on ${quoted(branch, 180)}` : "";
-  const who = `${other.id} ${quoted(other.title, 180)}${lane}`;
+  const who = `${incumbentId} ${quoted(other.title, 180)}${lane}`;
   return ` overlaps ${who} (${evidence}). Finish ${first} first, then start ${second}.`;
 }
 
@@ -46,7 +87,13 @@ function scanWarnings(snapshot: Snapshot, branchFor?: Branch): Scan {
   let omitted = 0;
   const reasons = new Set<string>(snapshot.reasons.map(({ kind }) => kind));
   const candidate = snapshot.candidate;
-  if (!candidate) reasons.add("candidate unavailable");
+  const left = candidate && normalizeFileDeclarations(candidate);
+  if (!candidate || !left?.ok) {
+    reasons.add(candidate ? "invalid-declarations" : "candidate unavailable");
+    return { warnings: [incomplete([...reasons].join(", "))], omitted };
+  }
+  const dependents = dependentsOf(candidate.id, snapshot.dependencies);
+  if (candidate.id.length > maxIssueId) reasons.add("invalid-issue-id");
   const paths = [...snapshot.trackedPaths, ...snapshot.literalPaths];
   const length = (paths: readonly string[]) =>
     paths.reduce((sum, path) => sum + path.length + 1, 0);
@@ -55,17 +102,23 @@ function scanWarnings(snapshot: Snapshot, branchFor?: Branch): Scan {
   let remaining: number = WORK_MAP_LIMITS.patternWork;
   for (const holder of snapshot.holders) {
     const other = holder.issue;
-    if (!candidate || other.id === candidate.id) continue;
+    if (other.id === candidate.id) continue;
+    if (other.id.length > maxIssueId) reasons.add("invalid-issue-id");
+    const right = normalizeFileDeclarations(other);
+    if (!right.ok) {
+      reasons.add("invalid-declarations");
+      continue;
+    }
     const declarations = [
-      ...(candidate.expectedFiles ?? []),
-      ...(other.expectedFiles ?? []),
+      ...(left.patch.expectedFiles ?? []),
+      ...(right.patch.expectedFiles ?? []),
     ];
     const globWork = length(declarations.filter((path) => /[*?]/u.test(path)));
     const universeWork = globWork ? pathWork : 0;
     const declarationWork =
       length(declarations) +
-      length(candidate.actualFiles ?? []) +
-      length(other.actualFiles ?? []);
+      length(left.patch.actualFiles ?? []) +
+      length(right.patch.actualFiles ?? []);
     remaining -=
       universeWork * globWork +
       (universeWork + declarationWork) * (1 + generatedWork);
@@ -74,19 +127,27 @@ function scanWarnings(snapshot: Snapshot, branchFor?: Branch): Scan {
       break;
     }
     const result = resolveFileOverlap({
-      left: candidate,
-      right: other,
-      trackedPaths: [],
+      left: left.patch,
+      right: right.patch,
+      trackedPaths: globWork ? paths : [],
       generatedFiles: snapshot.generatedFiles,
     });
     for (const reason of result.reasons) reasons.add(reason.kind);
     if (!result.overlaps.length) continue;
-    const tail = warningTail(candidate, holder, branchFor);
+    const tail = warningTail(
+      candidate,
+      holder,
+      dependents.has(other.id),
+      branchFor,
+    );
     for (const { path } of result.overlaps) {
       if (warnings.length < maxWarnings)
         warnings.push({
           code: "WORK_FILE_OVERLAP",
-          message: quoted(path, maxMessage - tail.length) + tail,
+          message: clipped(
+            quoted(path, Math.max(3, maxMessage - tail.length)) + tail,
+            maxMessage,
+          ),
         });
       else omitted++;
     }

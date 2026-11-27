@@ -72,6 +72,7 @@ type Snapshot = {
   literalPaths: string[];
   generatedFiles: readonly GeneratedFileRule[];
   candidate?: Issue;
+  dependencies?: ReadonlyMap<string, Issue["dependsOn"]>;
   holders: {
     issue: Issue;
     leaseExpiresAt?: string;
@@ -230,6 +231,10 @@ export async function readWorkMap(
   const issues = await readPage("issues", limits.issues, (input) =>
     ports.issues(input),
   );
+  if (candidateId !== undefined)
+    snapshot.dependencies = new Map(
+      issues.map(({ id, dependsOn }) => [id, dependsOn]),
+    );
   const pulls = new Map<string, Pull | undefined>();
   async function lookupPull(
     url: string,
