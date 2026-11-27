@@ -79,7 +79,14 @@ function fixture() {
       "fixture",
     ]);
   }
-  const adapter = createProcessPort();
+  const adapter = createProcessPort({
+    supervision: {
+      cleanupTimeoutMs: 5000,
+      pollIntervalMs: 25,
+      drainTimeoutMs: 250,
+      maxConcurrent: 1,
+    },
+  });
   function read(source = adapter) {
     return readWorkMap(
       {
