@@ -196,19 +196,32 @@ export function pointerFragment(fragment: string): string[] | undefined {
 
 /** Structural equality for JSON values. */
 export function jsonEqual(a: unknown, b: unknown): boolean {
+  return equalJson(a, b);
+}
+
+function equalJson(
+  a: unknown,
+  b: unknown,
+  spend?: SchemaBudget,
+  depth = 0,
+): boolean {
+  spend?.(depth);
   if (a === b) return true;
   if (Array.isArray(a)) {
     return (
       Array.isArray(b) &&
       a.length === b.length &&
-      a.every((item, index) => jsonEqual(item, b[index]))
+      a.every((item, index) => equalJson(item, b[index], spend, depth + 1))
     );
   }
   if (isObject(a) && isObject(b)) {
     const keys = Object.keys(a);
     return (
       keys.length === Object.keys(b).length &&
-      keys.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]))
+      keys.every(
+        (key) =>
+          Object.hasOwn(b, key) && equalJson(a[key], b[key], spend, depth + 1),
+      )
     );
   }
   return false;
@@ -415,9 +428,15 @@ export class SchemaRegistry {
       value,
       spend,
     );
-    const protect = (entries: readonly SchemaProblem[]): SchemaProblem[] =>
+    const protect = (
+      entries: readonly SchemaProblem[],
+      depth = 0,
+    ): SchemaProblem[] =>
       entries.map((problem) => {
-        const alternatives = problem.alternatives?.map(protect);
+        spend(depth, problem.pointer);
+        const alternatives = problem.alternatives?.map((branch) =>
+          protect(branch, depth + 1),
+        );
         if (problem.knownProperties === undefined)
           return alternatives === undefined
             ? problem
@@ -775,6 +794,8 @@ export class SchemaRegistry {
     };
     const sub = (s: unknown, v: unknown, p: string): SchemaProblem[] =>
       this.#evaluate(s as JsonSchema, base, v, p, spend, depth + 1, detailed);
+    const equal = (left: unknown, right: unknown) =>
+      equalJson(left, right, spend, depth + 1);
 
     if (typeof schema.$ref === "string") {
       const uri = this.resolve(schema.$ref, base);
@@ -810,7 +831,7 @@ export class SchemaRegistry {
     }
     if (
       Array.isArray(schema.enum) &&
-      !schema.enum.some((e) => jsonEqual(e, value))
+      !schema.enum.some((e) => equal(e, value))
     ) {
       const suggested =
         typeof value === "string"
@@ -830,7 +851,7 @@ export class SchemaRegistry {
         suggested,
       );
     }
-    if ("const" in schema && !jsonEqual(schema.const, value)) {
+    if ("const" in schema && !equal(schema.const, value)) {
       add(
         "const",
         `expected ${JSON.stringify(schema.const)}`,
@@ -893,9 +914,19 @@ export class SchemaRegistry {
         add("maxItems", `must have at most ${schema.maxItems} items`);
       }
       if (schema.uniqueItems === true) {
-        const duplicate = value.findIndex((item, index) =>
-          value.slice(0, index).some((earlier) => jsonEqual(earlier, item)),
-        );
+        const scalars = new Set<unknown>();
+        const compounds: object[] = [];
+        const duplicate = value.findIndex((item: unknown) => {
+          spend(depth);
+          if (typeof item === "object" && item !== null) {
+            if (compounds.some((earlier) => equal(earlier, item))) return true;
+            compounds.push(item);
+          } else {
+            if (scalars.has(item)) return true;
+            scalars.add(item);
+          }
+          return false;
+        });
         if (duplicate !== -1) {
           add("uniqueItems", "items must be unique", `${at}/${duplicate}`);
         }
