@@ -532,7 +532,11 @@ try {
         windowsHide: true,
         timeout: 15000,
       });
-      assert.equal(result.status, 0, "version must not open local state");
+      assert.equal(
+        result.status,
+        0,
+        `version must not open local state\n${result.stderr}`,
+      );
       assert.match(result.stdout, /^\d+\.\d+\.\d+[^\r\n]*\r?\n$/);
       assert.equal(result.stderr, "");
     }

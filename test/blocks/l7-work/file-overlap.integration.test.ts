@@ -392,6 +392,103 @@ test("the later concurrent one-shot CLI claim reports overlap before lane start"
   });
 }, 30_000);
 
+for (const entry of ["createAssembly", "wrapper", "runLocalCommand"] as const)
+  test(`embedded ${entry} claims leave the sole supervisor free for another admission`, async () => {
+    await project(async ({ good }, repo, root) => {
+      const first = String((await good("issue.create", planned)).id);
+      const second = String(
+        (
+          await good("issue.create", {
+            ...planned,
+            expectedFiles: ["elsewhere.rs"],
+          })
+        ).id,
+      );
+      const modulePath = (name: string) =>
+        JSON.stringify(
+          new URL(`../../../dist/src/${name}.js`, import.meta.url).href,
+        );
+      const run = modulePath("adapters/process/run");
+      const heldRunner = `data:text/javascript,${encodeURIComponent(`
+        export * from ${run};
+        import { runProcess as run } from ${run};
+        export async function runProcess(executable, args, options, platform, config) {
+          supervisorLimits.add(config?.supervision?.maxConcurrent);
+          if (args[0] === "--no-replace-objects" || args[0] === "ls-remote" || args[0] === "pr") {
+            scans++;
+            const pending = run(process.execPath, ["-e", "setInterval(() => {}, 1000)"],
+              { ...options, signal: gate.signal }, platform, config);
+            entered.resolve();
+            return pending;
+          }
+          return run(executable, args, options, platform, config);
+        }
+      `)}`;
+      const driver = `
+        import { registerHooks } from "node:module";
+        globalThis.scans = 0;
+        globalThis.gate = new AbortController();
+        globalThis.entered = Promise.withResolvers();
+        globalThis.supervisorLimits = new Set();
+        const held = ${JSON.stringify(heldRunner)};
+        registerHooks({ resolve(specifier, context, next) {
+          const found = next(specifier, context);
+          return found.url === ${run} && context.parentURL !== held
+            ? { ...found, url: held } : found;
+        } });
+        const { createAssembly, withLocalCommandAssembly, localCall } =
+          await import(${modulePath("assembly/index")});
+        const { runLocalCommand } = await import(${modulePath("assembly/command")});
+        const { runCli } = await import(${modulePath("surface/cli")});
+        const options = { root: process.cwd(), deviceRoot: process.env.FORGE_DEVICE_ROOT, oneShot: true };
+        const left = await createAssembly(options);
+        const right = await createAssembly(options);
+        const claim = ["issue", "claim", ${JSON.stringify(first)}];
+        const run = async (assembly, args) =>
+          (await runCli(assembly.catalog, args, localCall(assembly))).envelope;
+        const write = process.stdout.write;
+        let text = "";
+        async function importedCommand() {
+          process.stdout.write = (chunk) => { text += chunk; return true; };
+          try { await runLocalCommand(claim); return JSON.parse(text); }
+          finally { process.stdout.write = write; }
+        }
+        const mode = ${JSON.stringify(entry)};
+        const claiming = mode === "wrapper" ? withLocalCommandAssembly(true, (assembly) => run(assembly, claim))
+          : mode === "createAssembly" ? run(left, claim) : importedCommand();
+        let started;
+        try {
+          await Promise.race([entered.promise, claiming]);
+          started = await run(right, ["lane", "start", "--input", ${JSON.stringify(JSON.stringify(laneInput(second)))}]);
+        } finally { gate.abort(); }
+        const claimed = await claiming;
+        await Promise.all([left.close(), right.close()]);
+        console.log(JSON.stringify({ ok: true, result: { claimed, started, scans, limits: [...supervisorLimits] } }));
+      `;
+      const result = laneCli(
+        root,
+        repo,
+        [],
+        "coordinator",
+        { FORGE_DEVICE_ID: "lane-fixture" },
+        ["--input-type=module", "-e", driver, "--"],
+      );
+      expect(result.exit).toBe(0);
+      expect(result.result.claimed).toMatchObject({
+        ok: true,
+        result: { id: first },
+      });
+      expect(result.result.started).toMatchObject({
+        ok: true,
+        result: { issue: second },
+      });
+      for (const reply of [result.result.claimed, result.result.started])
+        expect(hasIncompleteMap(reply as object)).toBe(true);
+      expect(result.result.scans).toBe(0);
+      expect(result.result.limits).toEqual([1]);
+    });
+  }, 30_000);
+
 function observedCli(
   root: string,
   repo: string,
