@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test";
-import { recoverAgentPosts } from "../../src/core/agent-posts.ts";
+import {
+  agentPost,
+  AgentPostJournalError,
+  recoverAgentPosts,
+  reserveAgentPost,
+  type SettledAgentPost,
+} from "../../src/core/agent-posts.ts";
 import { createCoreContext } from "../../src/core/core.ts";
+import { byConversation } from "../../src/core/thread.ts";
 import { baseFixture, thread, type BaseFixture } from "./base-fixture.ts";
 import { slackB } from "./fakes.ts";
-import { value } from "./fixture.ts";
+import { a, value } from "./fixture.ts";
 
 const timeout = 30_000;
 const threadB = "slack:C00000001:20.000001";
@@ -276,3 +283,92 @@ for (const at of ["0.5", "1e400"]) {
     timeout,
   );
 }
+
+async function setupInvalidWithPending() {
+  const { f, reply } = await setupThreads();
+  const conv = byConversation(f.db, conversationId(f, thread));
+  if (!conv) throw new Error("Conversation missing");
+  const pending: SettledAgentPost = {
+    id: "unconfirmed:pending-1",
+    conversation: conv,
+    sessionId: "session-pending",
+    personId: a.personId,
+    text: "pending outcome",
+    at: f.now(),
+    phase: "refused",
+  };
+  f.db
+    .prepare("INSERT INTO meta (key,value) VALUES (?,?)")
+    .run(journalKey(thread), "{not json");
+  f.context.pendingAgentPosts.set(thread, pending);
+  return { f, reply, pending };
+}
+
+test(
+  "an invalid stored row fails closed even with a pending outcome",
+  async () => {
+    const { f, reply, pending } = await setupInvalidWithPending();
+    const writes = f.posts().length;
+    const failure = caught(() => recoverAgentPosts(f.context, thread));
+    expect(failure).toBeInstanceOf(AgentPostJournalError);
+    expect(journalValues(f, journalKey(thread))).toEqual(["{not json"]);
+    expect(f.context.pendingAgentPosts.get(thread)).toEqual(pending);
+    expect(transcriptIds(f, thread)).toEqual([]);
+    const blocked = await reply(thread, "blocked");
+    expect(blocked).toMatchObject({
+      ok: false,
+      error: { code: "CHAT_UNAVAILABLE" },
+    });
+    expect(f.posts()).toHaveLength(writes);
+    expect(journalValues(f, journalKey(thread))).toEqual(["{not json"]);
+    expect(f.context.pendingAgentPosts.get(thread)).toEqual(pending);
+  },
+  timeout,
+);
+
+test(
+  "agentPost throws on an invalid stored row even with a pending outcome",
+  async () => {
+    const { f, pending } = await setupInvalidWithPending();
+    const failure = caught(() => agentPost(f.context, thread));
+    expect(failure).toBeInstanceOf(AgentPostJournalError);
+    expect(journalValues(f, journalKey(thread))).toEqual(["{not json"]);
+    expect(f.context.pendingAgentPosts.get(thread)).toEqual(pending);
+  },
+  timeout,
+);
+
+test(
+  "a pending outcome still wins over a valid stored row",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    await f.emit("root-a", { chatThreadId: thread });
+    const conv = byConversation(f.db, conversationId(f, thread));
+    if (!conv) throw new Error("Conversation missing");
+    reserveAgentPost(
+      f.context,
+      conv,
+      alpha.sessionId,
+      a.personId,
+      "reserved text",
+    );
+    expect(journalValues(f, journalKey(thread))).toHaveLength(1);
+    const pending: SettledAgentPost = {
+      id: "unconfirmed:pending-1",
+      conversation: conv,
+      sessionId: alpha.sessionId,
+      personId: a.personId,
+      text: "pending outcome",
+      at: f.now(),
+      phase: "refused",
+    };
+    f.context.pendingAgentPosts.set(thread, pending);
+    const recovered = recoverAgentPosts(f.context, thread);
+    expect(recovered).toEqual(conv);
+    expect(f.context.pendingAgentPosts.has(thread)).toBe(false);
+    expect(journalValues(f, journalKey(thread))).toEqual([]);
+    expect(transcriptIds(f, thread)).toEqual([]);
+  },
+  timeout,
+);
