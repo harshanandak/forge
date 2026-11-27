@@ -119,3 +119,46 @@ test(
   },
   timeout,
 );
+
+test(
+  "forge-1988 R3 an unknown-outcome post settled after a member counts in the run",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    useSlackPosts(f, 2001);
+    f.advance(95_760_000_000);
+    await f.emit(ts(0), { chatThreadId: orderThread });
+    const conversationId = f.read(alpha.sessionId).items[0]!.conversationId!;
+    const reply = mkReply(f, alpha.sessionId, conversationId);
+    const enter = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const post = f.chat.postText.bind(f.chat);
+    f.chat.postText = async (...args) => {
+      f.chat.postText = post;
+      enter.resolve();
+      await release.promise;
+      f.chat.nextWrite = { kind: "unknown" };
+      return post(...args);
+    };
+    f.advance(1);
+    const inFlight = reply("in flight");
+    await enter.promise;
+    await f.follow(ts(1500), {
+      chatThreadId: orderThread,
+      slackUserId: slackB,
+      mentionsBot: false,
+    });
+    f.advance(1);
+    release.resolve();
+    await inFlight;
+    for (let index = 0; index < LIMITS.agentRunMax - 1; index++)
+      value(await reply("reply " + index));
+    expect(f.posts().filter((text) => text === pause)).toHaveLength(1);
+    expect(await reply("eleventh")).toMatchObject({
+      ok: false,
+      error: { code: "CONVERSATION_PAUSED" },
+    });
+    expect(f.posts().filter((text) => text === pause)).toHaveLength(1);
+  },
+  timeout,
+);
