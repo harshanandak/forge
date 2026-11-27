@@ -4,24 +4,39 @@ const shaPattern = /^[a-f0-9]{40}$/;
 
 type SourceInput = { repo: string; sha: string; recovery: boolean };
 type RunObject = Record<string, unknown>;
+type SourceResponse = {
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+};
+export type SourceFetch = (
+  url: string,
+  init: { headers: { Authorization: string }; redirect: "manual" },
+) => Promise<SourceResponse>;
+export type SourceOutput = (text: string) => void;
+
+class SourceFailure extends Error {}
+
+function failure(message: string): never {
+  throw new SourceFailure(message);
+}
 
 const object = (value: unknown): RunObject | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as RunObject)
     : undefined;
 
-const mismatch = (field: string): never => {
-  throw new Error(`release source: ${field} mismatch`);
-};
+function mismatch(field: string): never {
+  failure(`release source: ${field} mismatch`);
+}
 
 export function assertRunId(runId: string): void {
-  if (!/^[0-9]+$/.test(runId))
-    throw new Error("release source: invalid run id");
+  if (!/^[0-9]+$/.test(runId)) failure("release source: invalid run id");
 }
 
 export function sourceSha(run: unknown, input: SourceInput): string {
   const value = object(run);
-  if (!value) throw new Error("release source: run must be an object");
+  if (!value) failure("release source: run must be an object");
   if (object(value.repository)?.full_name !== input.repo)
     mismatch("repository.full_name");
   if (object(value.head_repository)?.full_name !== input.repo)
@@ -37,21 +52,24 @@ export function sourceSha(run: unknown, input: SourceInput): string {
     if (value[field] !== wanted) mismatch(field);
   const sha = value.head_sha;
   if (typeof sha !== "string" || !shaPattern.test(sha))
-    throw new Error("release source: head_sha invalid");
+    failure("release source: head_sha invalid");
   if (!input.recovery && sha !== input.sha)
-    throw new Error("release source: head_sha differs from dispatch sha");
+    failure("release source: head_sha differs from dispatch sha");
   return sha;
 }
 
 const required = (env: NodeJS.ProcessEnv, name: string): string => {
   const value = env[name];
-  if (!value) throw new Error(`release source: missing ${name}`);
+  if (!value) failure(`release source: missing ${name}`);
   return value;
 };
 
-if (import.meta.main) {
+export async function runSource(
+  env: NodeJS.ProcessEnv,
+  fetchRun: SourceFetch = fetch,
+  writeOutput?: SourceOutput,
+): Promise<number> {
   try {
-    const env = process.env;
     const runId = required(env, "RUN_ID");
     const readbackOnly = required(env, "READBACK_ONLY");
     const token = required(env, "GH_TOKEN");
@@ -60,20 +78,41 @@ if (import.meta.main) {
     const sha = required(env, "GITHUB_SHA");
     const output = required(env, "GITHUB_OUTPUT");
     assertRunId(runId);
-    const response = await fetch(`${api}/repos/${repo}/actions/runs/${runId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      redirect: "manual",
-    });
+    let response: SourceResponse;
+    try {
+      response = await fetchRun(`${api}/repos/${repo}/actions/runs/${runId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        redirect: "manual",
+      });
+    } catch {
+      failure("release source: GitHub API request failed");
+    }
     if (!response.ok)
-      throw new Error(`release source: GitHub API HTTP ${response.status}`);
-    const source = sourceSha(await response.json(), {
+      failure(`release source: GitHub API HTTP ${response.status}`);
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      failure("release source: unreadable JSON");
+    }
+    const source = sourceSha(body, {
       repo,
       sha,
       recovery: readbackOnly === "true",
     });
-    appendFileSync(output, `source_sha=${source}\n`);
+    try {
+      if (writeOutput) writeOutput(`source_sha=${source}\n`);
+      else appendFileSync(output, `source_sha=${source}\n`);
+    } catch {
+      failure("release source: output write failed");
+    }
+    return 0;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+    console.error(
+      error instanceof SourceFailure ? error.message : "release source: failed",
+    );
+    return 1;
   }
 }
+
+if (import.meta.main) process.exitCode = await runSource(process.env);
