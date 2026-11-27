@@ -1722,8 +1722,8 @@ for (const [name, variants] of [
             );
             const source = readFileSync(path, "utf8");
             const mutated = source.replace(
-              "(progressWrites.get(key) ?? Promise.resolve())",
-              "Promise.resolve()",
+              "await promise;",
+              "await Promise.resolve();",
             );
             expect(mutated).not.toBe(source);
             const absolute = mutated.replace(

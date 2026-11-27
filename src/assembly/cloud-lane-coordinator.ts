@@ -21,7 +21,7 @@ import {
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { wireDeviceId } from "./wire-device.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-const progressWrites = new Map<string, Promise<unknown>>();
+const progressWrites = new Map<string, Set<() => void>>();
 
 function laneSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
   const deadline = AbortSignal.timeout(timeoutMs);
@@ -111,31 +111,42 @@ export async function coordinateLane(
       );
     if (["lane.next", "lane.record"].includes(flight.operation.declaredOp)) {
       // Serialize this device's reservations; StateOwner revisions fence other processes.
+      signal?.throwIfAborted();
       const key = boundLaneKey(project);
-      const pending = (progressWrites.get(key) ?? Promise.resolve())
-        .catch(() => {})
-        .then(() => {
-          signal?.throwIfAborted();
-          return boundLaneProgress(
-            flight.operation.declaredOp,
-            flight.request.input as BoundProgressInput,
-            flight.request.context,
-            wireDeviceId(local),
-            options.now,
-            project,
-            state,
-            command,
-            save,
-            flight.config,
-            (worktree) =>
-              readBoundLaneHead(flight, options.providers, worktree, signal),
-          );
-        });
-      progressWrites.set(key, pending);
+      const queue = progressWrites.get(key) ?? new Set<() => void>();
+      progressWrites.set(key, queue);
+      const { promise, resolve, reject } = Promise.withResolvers<void>();
+      const abort = () => {
+        if (queue.values().next().value !== resolve) queue.delete(resolve);
+        reject(signal?.reason);
+      };
+      queue.add(resolve);
+      if (queue.size === 1) resolve();
+      else signal?.addEventListener("abort", abort, { once: true });
       try {
-        return await pending;
+        await promise;
+        signal?.throwIfAborted();
+        return await boundLaneProgress(
+          flight.operation.declaredOp,
+          flight.request.input as BoundProgressInput,
+          flight.request.context,
+          wireDeviceId(local),
+          options.now,
+          project,
+          state,
+          command,
+          save,
+          flight.config,
+          (worktree) =>
+            readBoundLaneHead(flight, options.providers, worktree, signal),
+        );
       } finally {
-        if (progressWrites.get(key) === pending) progressWrites.delete(key);
+        signal?.removeEventListener("abort", abort);
+        if (queue.delete(resolve)) {
+          const next = queue.values().next().value;
+          if (next) next();
+          else progressWrites.delete(key);
+        }
       }
     }
     if (flight.operation.declaredOp === "lane.release")
