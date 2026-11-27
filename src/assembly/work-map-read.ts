@@ -15,6 +15,7 @@ import type { LeaseRecord, TrackerItem } from "../generated/types.ts";
 import {
   validateConfigDocument,
   validateLeaseRecord,
+  validateTimestamp,
 } from "../generated/validators.ts";
 import type { ProcessPort, SpawnOptions } from "../ports/process.ts";
 
@@ -104,7 +105,11 @@ export function advisoryLeaseReader(
       unavailable();
       return undefined;
     }
-    if (lease === undefined || validateLeaseRecord(lease).ok) return lease;
+    if (
+      lease === undefined ||
+      (validateLeaseRecord(lease).ok && lease.subject === subject)
+    )
+      return lease;
     unavailable();
     return undefined;
   };
@@ -302,19 +307,15 @@ export async function readWorkMap(
     const lease = issue.lease;
     let leaseExpiresAt: string | undefined;
     if (lease !== undefined) {
-      const expires =
-        typeof lease?.expiresAt === "string"
-          ? Date.parse(lease.expiresAt)
-          : NaN;
+      const expires = validateTimestamp(lease?.expiresAt);
       const released = lease?.releasedAt;
       if (
-        Number.isNaN(expires) ||
-        (released !== undefined &&
-          (typeof released !== "string" || Number.isNaN(Date.parse(released))))
+        !expires.ok ||
+        (released !== undefined && !validateTimestamp(released).ok)
       )
         note("issues-unavailable", { issue: issue.id, source: "lease" });
-      else if (released === undefined && expires > now)
-        leaseExpiresAt = lease.expiresAt;
+      else if (released === undefined && Date.parse(expires.value) > now)
+        leaseExpiresAt = expires.value;
     }
     const openPulls: Snapshot["holders"][number]["openPulls"] = [];
     const links = await readPage(
