@@ -227,7 +227,8 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
           structuredContent: {
             error: {
               code: "MCP_BUSY",
-              message: expect.stringContaining("retry"),
+              message:
+                "Forge is running 8 MCP tool calls. Wait for a call to finish, then retry.",
             },
           },
         },
