@@ -58,6 +58,7 @@ export function mainFixture(overrides: Partial<MainServices> = {}) {
     exec: unexpected("db.exec"),
     prepare: unexpected("db.prepare"),
     transaction: unexpected("db.transaction"),
+    claimWorker: unexpected("db.claimWorker"),
     close: () => {
       calls.push("db.close");
     },

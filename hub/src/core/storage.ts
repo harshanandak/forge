@@ -5,6 +5,7 @@ import { protectPath } from "./protect.ts";
 import { probeHubSchema } from "./schema-probe.ts";
 import { schemaVersion } from "./schema.ts";
 import type { RefuseNetworkPath } from "./store.ts";
+import { workerLockPath } from "./worker-lock.ts";
 
 const refusal = "The data directory must be on a local filesystem.";
 const uninitialised = "The database is not initialised.";
@@ -111,11 +112,12 @@ export function inspectStorage({ dataDir }: HubConfig): readonly DoctorCheck[] {
   const area = row("storage_placement", ...positions[location]);
   const note = missing ? uninitialised : "Cannot inspect the database here.";
   const version = safe ? schema(dataDir) : row(schemaKey, "skipped", note);
-  const noLock = safe && stat(join(dataDir, "serve.lock")) === undefined;
+  const noLock =
+    safe && stat(workerLockPath(join(dataDir, "hub.sqlite"))) === undefined;
   const lockFile = "service_lock";
-  const lockUnknown = "Cannot tell whether the service lock is held.";
+  const lockUnknown = "Cannot tell whether the effect worker lock is held.";
   const lock = noLock
-    ? row(lockFile, "ok", "The service lock file is absent.")
+    ? row(lockFile, "ok", "The effect worker lock file is absent.")
     : row(lockFile, "skipped", lockUnknown);
   return [dir, area, version, lock];
 }

@@ -12,6 +12,7 @@ import { configFixture } from "./config-fixture.ts";
 
 const paths = new Set<string>();
 const handles = new Set<HubDb>();
+const cleanups = new Set<() => Promise<void>>();
 
 export const a = { personId: "per_a", displayName: "Fixture Alpha" };
 export const b = { personId: "per_b", displayName: "Fixture Beta" };
@@ -31,10 +32,23 @@ export function closeDb(db: HubDb): void {
 }
 
 afterEach(async () => {
-  for (const db of handles) closeDb(db);
-  for (const path of paths) await rm(path, { recursive: true, force: true });
-  paths.clear();
+  const pending = [...cleanups];
+  cleanups.clear();
+  try {
+    await Promise.all(pending.map((close) => close()));
+  } finally {
+    for (const db of handles) closeDb(db);
+    for (const path of paths) await rm(path, { recursive: true, force: true });
+    paths.clear();
+  }
 });
+
+export function onFixtureCleanup(close: () => Promise<void>): () => void {
+  cleanups.add(close);
+  return () => {
+    cleanups.delete(close);
+  };
+}
 
 export async function fixture(change: Partial<HubConfig> = {}) {
   const root = hubTestTemp("forge-hub-sessions-");

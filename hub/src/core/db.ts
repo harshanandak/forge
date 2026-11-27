@@ -3,6 +3,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  realpathSync,
   type BigIntStats,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -20,8 +21,9 @@ import {
   readSchemaVersion,
   schemaVersion,
 } from "./schema.ts";
+import { claimWorkerLock } from "./worker-lock.ts";
 
-function handle(raw: DatabaseSync): HubDb {
+function handle(raw: DatabaseSync, claimWorker: HubDb["claimWorker"]): HubDb {
   let active = false;
   return {
     exec: raw.exec.bind(raw),
@@ -55,6 +57,7 @@ function handle(raw: DatabaseSync): HubDb {
         active = false;
       }
     },
+    claimWorker,
     close: raw.close.bind(raw),
   };
 }
@@ -118,7 +121,19 @@ export function createOpenHubDb(
         }
       });
     assertIdentity(target, expected);
-    const db = handle(connect(target, {}));
+    const db = handle(connect(target, {}), () => {
+      let canonical: string;
+      try {
+        assertIdentity(target, expected);
+        canonical = realpathSync.native(target);
+        assertIdentity(canonical, expected);
+      } catch {
+        throw new Error(
+          "Hub effect worker lock requires the original database file",
+        );
+      }
+      return claimWorkerLock(canonical);
+    });
     try {
       assertIdentity(target, expected);
       db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");

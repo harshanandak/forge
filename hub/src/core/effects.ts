@@ -1,7 +1,7 @@
 import { ChatWriteFailure, type ChatMessageRef } from "../contract/chat.ts";
 import type { Summary, SummaryLine } from "../contract/domain.ts";
 import { LIMITS, type ReportOutput } from "../contract/mcp.ts";
-import type { SqlRow } from "../contract/runtime.ts";
+import type { SqlRow, WorkerClaim } from "../contract/runtime.ts";
 import { integer, oneOf, text } from "./askEffects.ts";
 import type { CoreContext } from "./core.ts";
 
@@ -160,6 +160,11 @@ export function createEffectWorker(
   let abandoned = false;
   let closing: Promise<void> | undefined;
   let cancelSweep: (() => void) | undefined;
+  let ownership: WorkerClaim | undefined;
+
+  function prepare(): void {
+    ownership ??= db.claimWorker();
+  }
 
   function retainHistory(): void {
     const cutoff = now() - LIMITS.threadKeepDays * dayMs;
@@ -315,6 +320,8 @@ export function createEffectWorker(
 
   async function drainRequestedWork(): Promise<void> {
     try {
+      if (stopped) return;
+      prepare();
       do {
         drainRequested = false;
         await drainDue();
@@ -350,18 +357,21 @@ export function createEffectWorker(
   }
 
   function start(): Promise<void> {
-    if (!isSlack || stopped || started) return Promise.resolve();
+    if (stopped || started) return Promise.resolve();
     starting ??= Promise.resolve(draining)
       .then(() => {
         if (stopped) return;
-        reconcile();
-        scheduleSweep();
+        prepare();
+        if (isSlack) {
+          reconcile();
+          scheduleSweep();
+        }
         started = true;
       })
       .finally(() => {
         starting = undefined;
       });
-    return starting.then(kick);
+    return isSlack ? starting.then(kick) : starting;
   }
 
   function close(): Promise<void> {
@@ -370,15 +380,30 @@ export function createEffectWorker(
     cancelSweep?.();
     cancelSweep = undefined;
     const active = draining;
-    if (!active) return Promise.resolve();
-    closing = new Promise<void>((resolve) => {
+    const release = () => ownership?.release();
+    if (!active) {
+      closing = Promise.resolve().then(release);
+      return closing;
+    }
+    closing = new Promise<void>((resolve, reject) => {
       const cancelLimit = schedule(() => {
         abandoned = true;
         resolve();
       }, closeMs);
       const finish = () => {
         cancelLimit();
-        resolve();
+        try {
+          release();
+          resolve();
+        } catch (error) {
+          if (abandoned) log.warn("effect_worker_lock_release_failed");
+          else
+            reject(
+              error instanceof Error
+                ? error
+                : new Error("Hub effect worker lock release failed"),
+            );
+        }
       };
       void active.then(finish, finish);
     });

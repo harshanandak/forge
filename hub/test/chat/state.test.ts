@@ -43,6 +43,9 @@ function openDb(path = ":memory:", initialize = true): HubDb {
       };
     },
     transaction: (work) => database.transaction(work).immediate(),
+    claimWorker() {
+      throw new Error("Chat state does not own an effect worker");
+    },
     close() {
       if (closed) return;
       database.close();
