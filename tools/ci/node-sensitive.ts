@@ -53,6 +53,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for built cloud-bound issue show, list and ready coverage.",
   "test/assembly/cloud-login.integration.test.ts":
     "Launches selected Node for installed cloud login coverage.",
+  "test/assembly/cloud-work-map.integration.test.ts":
+    "Uses the built assembly and real Git for cloud-bound MCP overlap coverage.",
   "test/assembly/command-graph.integration.test.ts":
     "Launches selected Node for command graph module and catalog coverage.",
   "test/assembly/config-defaults/captured-schema.test.ts":
@@ -91,6 +93,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for autopilot guard coverage.",
   "test/blocks/l7-work/autopilot-restart.integration.test.ts":
     "Launches selected Node for autopilot restart coverage.",
+  "test/blocks/l7-work/file-overlap.integration.test.ts":
+    "Uses the built CLI and real Git for local claim and lane overlap coverage.",
   "test/blocks/l7-work/lane-attempt-close.integration.test.ts":
     "Launches selected Node for competing-attempt cleanup and cap coverage.",
   "test/blocks/l7-work/lane-attempt.integration.test.ts":
