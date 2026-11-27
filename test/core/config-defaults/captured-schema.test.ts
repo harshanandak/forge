@@ -62,11 +62,13 @@ test("captured schema walks are document-local and independent of declaration or
     ],
   );
   for (const ordered of [files, [...files].reverse()]) {
-    const block = capture(
-      { $ref: "part-0.schema.json" },
-      Object.fromEntries(ordered),
-    );
-    expect(block.problems("config.json", {})).toEqual([]);
+    const check = () =>
+      capture(
+        { $ref: "part-0.schema.json" },
+        Object.fromEntries(ordered),
+      ).problems("config.json", {});
+    expect(check).not.toThrow();
+    expect(check()).toEqual([]);
   }
   const recursive = capture(
     { $ref: "first.schema.json" },
