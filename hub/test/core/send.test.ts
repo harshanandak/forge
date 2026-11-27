@@ -220,6 +220,7 @@ test(
         a.personId,
         alpha.sessionId,
       );
+    f.advance(LIMITS.doorbellDebounceMs + 1);
     const before = f.rows("inbox_items");
     const writes = f.chat.writes.length;
     const rings = f.rings.length;
