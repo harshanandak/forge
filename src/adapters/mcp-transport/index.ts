@@ -5,6 +5,19 @@ import {
   StdioServerTransport,
 } from "@modelcontextprotocol/server/stdio";
 import type { McpTransportPort } from "../../ports/mcp-transport.ts";
+import type { FailureEnvelope } from "../../generated/types.ts";
+
+const MCP_TOOL_CONCURRENCY_LIMIT = 8;
+const MCP_BUSY: FailureEnvelope = {
+  ok: false,
+  status: "FAIL",
+  error: {
+    code: "MCP_BUSY",
+    message: `Forge is running ${MCP_TOOL_CONCURRENCY_LIMIT} MCP tool calls. Wait for a call to finish, then retry.`,
+    retry: "safe",
+  },
+  warnings: [],
+};
 
 /** SDK owns framing, negotiation, era-specific wire codecs and connection cleanup. */
 export function createMcpTransport(): McpTransportPort {
@@ -12,6 +25,23 @@ export function createMcpTransport(): McpTransportPort {
     open: (options) => {
       try {
         let instance: Server | undefined;
+        let activeToolCalls = 0;
+        const callTool = async (
+          name: string,
+          args: unknown,
+          signal: AbortSignal,
+        ) => {
+          signal.throwIfAborted();
+          if (name === "catalog_list" || name === "catalog_describe")
+            return options.handlers.callTool(name, args, signal);
+          if (activeToolCalls >= MCP_TOOL_CONCURRENCY_LIMIT) return MCP_BUSY;
+          activeToolCalls++;
+          try {
+            return await options.handlers.callTool(name, args, signal);
+          } finally {
+            activeToolCalls--;
+          }
+        };
         const transport = new StdioServerTransport(
           Readable.fromWeb(options.input),
           Writable.fromWeb(options.output),
@@ -40,10 +70,11 @@ export function createMcpTransport(): McpTransportPort {
                 })),
               };
             });
-            server.setRequestHandler("tools/call", async (request) => {
-              const result = await options.handlers.callTool(
+            server.setRequestHandler("tools/call", async (request, ctx) => {
+              const result = await callTool(
                 request.params.name,
                 request.params.arguments ?? {},
+                ctx.mcpReq.signal,
               );
               if (result === undefined)
                 throw new ProtocolError(-32602, "Unknown tool.");

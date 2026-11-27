@@ -29,6 +29,7 @@ export interface CloudAuthorityDeps {
   ) => Promise<unknown>;
   readonly root: string;
   readonly deviceRoot: string;
+  readonly signal?: AbortSignal;
   /** The runtime's own check that a context is this project's; it throws the refusal. */
   readonly scope: (context: BoundContext) => void;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -218,6 +219,7 @@ export async function selectCloud(
   declaredOp?: string,
   blockId?: string,
 ): Promise<ResultEnvelope | undefined> {
+  deps.signal?.throwIfAborted();
   if (blockId === "forge/work") admitPrClose(deps, declaredOp, request.input);
   const home = deps.env.HOME ?? deps.env.USERPROFILE;
   const binding = () => cloudBinding(deps.root, home);
@@ -292,12 +294,14 @@ export async function selectCloud(
     throw fail("AUTH_DEVICE_MISMATCH", "This session is not on this machine.");
   const [{ createCloudHttp }, { createCloudLeaseClient, CloudCommandFailure }] =
     await Promise.all([loadHttp(), loadLeaseClient()]);
+  deps.signal?.throwIfAborted();
   const { fetch, now, security } = deps.cloud ?? {};
   const client = createCloudLeaseClient({
     key: { origin, identity, project },
     credentials: credentialStore(openCloudFiles(home, security, {})),
     now: now ?? Date.now,
     http: createCloudHttp({ origin, project, ...(fetch ? { fetch } : {}) }),
+    ...(deps.signal === undefined ? {} : { signal: deps.signal }),
   });
   try {
     const { leaseGeneration: _generation, ...withoutGeneration } =

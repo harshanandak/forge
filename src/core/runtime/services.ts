@@ -163,6 +163,7 @@ export class InvocationServices {
   async wait<T>(
     pending: Promise<T>,
     late?: (value: T) => Promise<void>,
+    drain = false,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let ended = false;
@@ -177,11 +178,11 @@ export class InvocationServices {
       };
       this.controller.signal.addEventListener("abort", abort, { once: true });
       if (this.controller.signal.aborted) abort();
-      void pending.then(
-        (value) => {
+      const settled = pending.then(
+        async (value) => {
           this.controller.signal.removeEventListener("abort", abort);
           if (ended) {
-            void late?.(value).catch(() => undefined);
+            await late?.(value).catch(() => undefined);
             return;
           }
           ended = true;
@@ -199,6 +200,7 @@ export class InvocationServices {
           }
         },
       );
+      if (drain) this.#pending.add(settled);
     });
   }
   async drain(): Promise<void> {

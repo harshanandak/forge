@@ -71,9 +71,9 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
         ...options,
         handlers: {
           listTools: () => request().handlers.listTools(),
-          async callTool(name, args) {
+          async callTool(name, args, signal) {
             const { candidates, catalog, exposure, handlers } = request();
-            const result = await handlers.callTool(name, args);
+            const result = await handlers.callTool(name, args, signal);
             if (result !== undefined) return result;
             const reachable = new Set(
               selectMcpTools(
@@ -96,6 +96,7 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
                   caller: "agent",
                   context,
                   resolveContext,
+                  ...(signal === undefined ? {} : { signal }),
                   ...(exposure.readOnly === undefined
                     ? {}
                     : { readOnly: exposure.readOnly }),
