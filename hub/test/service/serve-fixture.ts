@@ -46,9 +46,15 @@ function port(server: Server): number {
   return address.port;
 }
 
-function status(server: Server, path: string, fields = 0): Promise<number> {
-  const headers: Record<string, string> = { host, connection: "close" };
-  for (let i = 0; i < fields; i++) headers["x-" + i] = "v";
+function status(
+  server: Server,
+  path: string,
+  fields = 0,
+  hidden?: string,
+): Promise<number> {
+  const headers = ["host", host, "connection", "close"];
+  for (let i = 0; i < fields; i++) headers.push("x-" + i, "v");
+  if (hidden) headers.push("host", hidden);
   return new Promise((resolve, reject) => {
     http
       .get({ host, port: port(server), path, headers, agent: false }, (res) => {
@@ -135,15 +141,19 @@ async function probe() {
     chatCalls++;
     return Promise.resolve(new Response());
   };
-  http.createServer = (...args: Parameters<typeof createServer>) => {
-    const created = createServer(...args);
-    server = created;
-    created.once("listening", () => {
-      events.push("listening");
-      listening.resolve(created);
-    });
-    return created;
-  };
+  Reflect.set(
+    http,
+    "createServer",
+    (...args: Parameters<typeof createServer>): Server => {
+      const created = createServer(...args);
+      server = created;
+      created.once("listening", () => {
+        events.push("listening");
+        listening.resolve(created);
+      });
+      return created;
+    },
+  );
   syncBuiltinESMExports();
   try {
     ok(await core.createPrivateDirectory(dataDir));
@@ -261,7 +271,12 @@ async function probe() {
           const fixed =
             !Reflect.set(active, "maxHeadersCount", 0) &&
             active.maxHeadersCount === 1_000;
-          const atLimit = await status(active, mcp, 998);
+          const atLimit = await status(
+            active,
+            mcp,
+            998,
+            "elsewhere.example.test",
+          );
           headers = {
             fixed,
             atLimit,
