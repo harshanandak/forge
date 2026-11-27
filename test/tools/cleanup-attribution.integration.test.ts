@@ -595,7 +595,13 @@ test.skipIf(process.platform !== "win32")(
           windowsHide: true,
         },
       );
-      expect(result.status).toBe(0);
+      const tail = String(result.stderr ?? "").slice(-1000);
+      expect({
+        status: result.status,
+        signal: result.signal,
+        code: (result.error as NodeJS.ErrnoException | undefined)?.code,
+        stderr: tail,
+      }).toMatchObject({ status: 0 });
       const host = JSON.parse(result.stdout) as {
         processes: { pid: number; matchesRoot?: boolean; command: string }[];
       };

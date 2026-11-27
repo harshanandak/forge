@@ -18,7 +18,13 @@ export type AttributionRunner = (
   command: string,
   args: string[],
   options: SpawnSyncOptionsWithStringEncoding,
-) => { status: number | null; stdout: string; stderr?: string; error?: Error };
+) => {
+  status: number | null;
+  signal?: string | null;
+  stdout: string;
+  stderr?: string;
+  error?: Error;
+};
 export type CleanupInspector = (
   root: string,
   path: string,
@@ -206,7 +212,7 @@ function secondAttempt(cleanup: () => void, sleep: CleanupSleep) {
   };
 }
 
-function windowsEvidence(
+export function windowsEvidence(
   root: string,
   path: string,
   run: AttributionRunner,
