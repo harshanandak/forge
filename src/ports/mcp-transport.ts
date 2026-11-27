@@ -19,6 +19,7 @@ export interface McpServeOptions {
   readonly serverVersion: string;
   readonly input: ReadableStream<Uint8Array>;
   readonly output: WritableStream<Uint8Array>;
+  readonly onOutputError?: () => void;
 }
 
 export interface McpServer {

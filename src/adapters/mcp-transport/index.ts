@@ -1,5 +1,9 @@
 import { Readable, Writable } from "node:stream";
-import { Server, ProtocolError } from "@modelcontextprotocol/server";
+import {
+  Server,
+  ProtocolError,
+  specTypeSchemas,
+} from "@modelcontextprotocol/server";
 import {
   serveStdio,
   StdioServerTransport,
@@ -42,10 +46,13 @@ export function createMcpTransport(): McpTransportPort {
             activeToolCalls--;
           }
         };
-        const transport = new StdioServerTransport(
-          Readable.fromWeb(options.input),
-          Writable.fromWeb(options.output),
-        );
+        const input = Readable.fromWeb(options.input);
+        const output = Writable.fromWeb(options.output);
+        const transport = new StdioServerTransport(input, output);
+        output.once("error", () => {
+          input.destroy();
+          options.onOutputError?.();
+        });
         const handle = serveStdio(
           () => {
             const server = new Server(
@@ -53,23 +60,23 @@ export function createMcpTransport(): McpTransportPort {
               { capabilities: { tools: { listChanged: true } } },
             );
             instance = server;
-            server.setRequestHandler("tools/list", (request) => {
-              const params = request.params as unknown;
-              const cursor =
-                typeof params === "object" &&
-                params !== null &&
-                "cursor" in params
-                  ? (params as { readonly cursor?: unknown }).cursor
-                  : undefined;
-              if (cursor !== undefined && cursor !== "")
-                throw new ProtocolError(-32602, "Unknown cursor.");
-              return {
-                tools: options.handlers.listTools().map((tool) => ({
-                  ...tool,
-                  inputSchema: { ...tool.inputSchema, type: "object" as const },
-                })),
-              };
-            });
+            server.setRequestHandler(
+              "tools/list",
+              { params: specTypeSchemas.PaginatedRequestParams },
+              ({ cursor }) => {
+                if (cursor !== undefined && cursor !== "")
+                  throw new ProtocolError(-32602, "Unknown cursor.");
+                return {
+                  tools: options.handlers.listTools().map((tool) => ({
+                    ...tool,
+                    inputSchema: {
+                      ...tool.inputSchema,
+                      type: "object" as const,
+                    },
+                  })),
+                };
+              },
+            );
             server.setRequestHandler("tools/call", async (request, ctx) => {
               const result = await callTool(
                 request.params.name,
