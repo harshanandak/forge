@@ -63,6 +63,7 @@ import type {
   DetectionObservation,
   ForgeError,
   BlockInstance,
+  BuiltinSource,
   DocsRecords,
   AmbientContext,
   BoundContext,
@@ -444,60 +445,17 @@ export async function createAssembly(
   const sharedBuiltins = options.oneShot
     ? new Map<string, CapturedBlock>()
     : undefined;
-  const builtinInstallToken = "<forge install>";
-  function redactBuiltinText(text: string, installRoot: string): string {
-    const forward = installRoot.replaceAll("\\", "/");
-    const backward = installRoot.replaceAll("/", "\\");
-    return text
-      .split(installRoot)
-      .join(builtinInstallToken)
-      .split(forward)
-      .join(builtinInstallToken)
-      .split(backward)
-      .join(builtinInstallToken);
-  }
-  function redactBuiltinError(source: BlockSource, error: unknown): unknown {
-    let installRoot: string;
-    try {
-      installRoot = resolveConfiguredBlock(root, source);
-    } catch {
-      return error;
-    }
-    installRoot = installRoot.replace(/[\\/]+$/, "");
-    if (error instanceof ForgeFailure) {
-      const inner = error.error;
-      return new ForgeFailure({
-        ...inner,
-        message: redactBuiltinText(inner.message, installRoot),
-        ...(typeof inner.repair === "string"
-          ? { repair: redactBuiltinText(inner.repair, installRoot) }
-          : {}),
-        ...(inner.suggest === undefined
-          ? {}
-          : {
-              suggest: inner.suggest.map((entry) =>
-                redactBuiltinText(entry, installRoot),
-              ),
-            }),
-      });
-    }
-    if (error instanceof Error) {
-      const Construct = error.constructor as new (message?: string) => Error;
-      const replacement = new Construct(
-        redactBuiltinText(error.message, installRoot),
-      );
-      const fields: Record<string, unknown> = {};
-      for (const [key, entry] of Object.entries(error)) {
-        if (key === "message" || key === "stack") continue;
-        fields[key] =
-          typeof entry === "string"
-            ? redactBuiltinText(entry, installRoot)
-            : entry;
-      }
-      Object.assign(replacement, fields);
-      return replacement;
-    }
-    return error;
+  function builtinCaptureFailure(
+    source: BuiltinSource,
+    error: unknown,
+  ): ForgeFailure {
+    const failure = error instanceof ForgeFailure ? error.error : undefined;
+    const code = failure?.code ?? "PROVIDER_MISSING";
+    return new ForgeFailure({
+      code,
+      message: `built-in block ${source.builtin} could not be captured (${code})`,
+      retry: failure?.retry ?? "never",
+    });
   }
   function callScope(
     derived: readonly DetectionObservation[] = [],
@@ -529,7 +487,9 @@ export async function createAssembly(
           } catch (error) {
             found = {
               failed:
-                "builtin" in source ? redactBuiltinError(source, error) : error,
+                "builtin" in source
+                  ? builtinCaptureFailure(source, error)
+                  : error,
             };
           }
         }
