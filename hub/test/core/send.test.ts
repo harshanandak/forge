@@ -78,6 +78,24 @@ test(
 );
 
 test(
+  "agent send redacts a secret-shaped sender name in storage and inbox",
+  async () => {
+    const f = await baseFixture();
+    const sender = { ...a, displayName: "xapp" + "-" + "fixture".repeat(3) };
+    const alpha = f.bind();
+    const beta = f.bind(b);
+    value(await f.core.send(f.caller(sender), draft(alpha.sessionId)));
+    const storedName = f.col("inbox_items", "sender_name")[0];
+    const deliveredName = f.read(beta.sessionId, b).items[0]?.from.name;
+    expect({
+      stored: storedName === "[possible secret removed]",
+      delivered: deliveredName === "[possible secret removed]",
+    }).toEqual({ stored: true, delivered: true });
+  },
+  timeout,
+);
+
+test(
   "X2 send requires both current project members",
   async () => {
     const f = await baseFixture({ ring: true });

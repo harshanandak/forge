@@ -9,6 +9,55 @@ import { a, b, p1, p2, seedItem, value } from "./fixture.ts";
 
 const timeout = 30_000;
 
+test(
+  "CLI send redacts a secret-shaped sender name in storage and inbox",
+  async () => {
+    const f = await baseFixture();
+    const cli = createCli(f.context);
+    const sender = { ...a, displayName: "xapp" + "-" + "fixture".repeat(3) };
+    const project = { projectId: p1 };
+    const { sessionId } = value(cli.cliInbox(a, project));
+    const target = value(cli.cliInbox(b, project));
+    value(
+      await cli.cliSend(sender, {
+        ...project,
+        sessionId,
+        toPersonId: b.personId,
+        targetSessionId: target.sessionId,
+        text: "CLI note",
+      }),
+    );
+    const storedName = f.col("inbox_items", "sender_name")[0];
+    const inbox = value(
+      cli.cliInbox(b, { ...project, sessionId: target.sessionId }),
+    );
+    expect({
+      stored: storedName === "[possible secret removed]",
+      delivered: inbox.items[0]?.from.name === "[possible secret removed]",
+    }).toEqual({ stored: true, delivered: true });
+  },
+  timeout,
+);
+
+test(
+  "CLI inbox redacts a secret-shaped name already stored on an item",
+  async () => {
+    const f = await baseFixture();
+    const cli = createCli(f.context);
+    const project = { projectId: p1 };
+    const { sessionId } = value(cli.cliInbox(a, project));
+    seedItem(f.db, "itm_legacy", { target: sessionId });
+    f.db
+      .prepare("UPDATE inbox_items SET sender_name = ? WHERE item_id = ?")
+      .run("xapp" + "-" + "fixture".repeat(3), "itm_legacy");
+    const inbox = value(cli.cliInbox(a, { ...project, sessionId }));
+    expect(inbox.items[0]?.from.name === "[possible secret removed]").toBe(
+      true,
+    );
+  },
+  timeout,
+);
+
 function expectNoApproval(f: BaseFixture) {
   for (const table of ["asks", "ask_answers", "permits"])
     expect(f.rows(table)).toEqual([]);
