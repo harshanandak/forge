@@ -10,7 +10,7 @@ import { exitCode } from "../../src/surface/result.ts";
 setDefaultTimeout(30_000);
 const example = resolve(import.meta.dirname, "../../examples/hello-block");
 const builtins = firstPartyBlocks as Record<string, URL>;
-const cleanup: Array<() => Promise<void>> = [];
+const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
@@ -87,7 +87,7 @@ test("builtin capture race keeps INPUT_CONFLICT and exit 4 with a path-free fixe
   const open = spyOn(cap.nodeFileCapture, "open").mockImplementation(
     (rootPath: string) => racing.open(rootPath),
   );
-  cleanup.push(async () => open.mockRestore());
+  cleanup.push(() => open.mockRestore());
   const entry = await probeFixed(f, id, "INPUT_CONFLICT");
   expect(entry.name).toBe("redacted");
   expect(
@@ -133,6 +133,6 @@ test("path source capture failure keeps the original message", async () => {
   const open = spyOn(cap.nodeFileCapture, "open").mockImplementation(() => {
     throw new Error(message);
   });
-  cleanup.push(async () => open.mockRestore());
+  cleanup.push(() => open.mockRestore());
   expectError(await probe(f), "PROVIDER_MISSING", message);
 });
