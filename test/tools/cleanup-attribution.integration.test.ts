@@ -732,6 +732,37 @@ test.skipIf(process.platform !== "win32")(
   60_000,
 );
 
+test.skipIf(process.platform !== "win32")(
+  "the host evidence reports each probe on stderr and keeps stdout as one JSON line",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-host-probe-"));
+    writeFileSync(join(root, "kept.txt"), "kept");
+    try {
+      const result = spawnSync(
+        "powershell.exe",
+        powerShellArgs(HOST_EVIDENCE),
+        {
+          encoding: "utf8",
+          env: { ...process.env, FORGE_CLEANUP_ROOT: root },
+          timeout: 60_000,
+          windowsHide: true,
+        },
+      );
+      expect(result.status).toBe(0);
+      for (const name of ["cim", "filters", "volume", "defender", "search"])
+        expect(result.stderr).toContain(`host-probe start ${name}`);
+      const lines = result.stdout.trim().split("\n");
+      expect(lines).toHaveLength(1);
+      expect(() => {
+        JSON.parse(lines[0]!);
+      }).not.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  60_000,
+);
+
 for (const reason of ["checksum mismatch", "download failed", "not configured"])
   test.skipIf(process.platform !== "win32")(
     `unavailable Handle reports ${reason} without executing it`,

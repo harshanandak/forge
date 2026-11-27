@@ -47,6 +47,7 @@ $root = $env:FORGE_CLEANUP_ROOT
 $cap = 300
 if ($env:FORGE_CLEANUP_PROCESS_CAP) { $cap = [int]$env:FORGE_CLEANUP_PROCESS_CAP }
 $data = @{}
+[Console]::Error.WriteLine("host-probe start cim"); $t0 = [DateTime]::UtcNow
 try {
   $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
   $names = @{}
@@ -61,11 +62,20 @@ try {
   $data.processesMatched = $matched.Count
   $data.processes = @($matched | Sort-Object @{ Expression = { if ($_.matchesRoot) { 0 } elseif ($_.name -eq 'conhost.exe') { 1 } else { 2 } } }, pid | Select-Object -First $cap)
 } catch { $data.processError = $_.Exception.Message }
+[Console]::Error.WriteLine("host-probe end cim $([int]([DateTime]::UtcNow - $t0).TotalMilliseconds)")
 $out = ''
+[Console]::Error.WriteLine("host-probe start filters"); $t0 = [DateTime]::UtcNow
 try { $out = (& fltmc.exe filters | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.filterError = "fltmc filters exited $($LASTEXITCODE): $out" } else { $data.filters = $out } } catch { $data.filterError = $_.Exception.Message }
+[Console]::Error.WriteLine("host-probe end filters $([int]([DateTime]::UtcNow - $t0).TotalMilliseconds)")
+[Console]::Error.WriteLine("host-probe start volume"); $t0 = [DateTime]::UtcNow
 try { $out = (& fltmc.exe instances -v $root.Substring(0, 2) | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { $data.volumeError = "fltmc instances exited $($LASTEXITCODE): $out" } else { $data.volume = $out } } catch { $data.volumeError = $_.Exception.Message }
+[Console]::Error.WriteLine("host-probe end volume $([int]([DateTime]::UtcNow - $t0).TotalMilliseconds)")
+[Console]::Error.WriteLine("host-probe start defender"); $t0 = [DateTime]::UtcNow
 try { $data.defender = Get-MpComputerStatus -ErrorAction Stop | Select-Object RealTimeProtectionEnabled, AntivirusEnabled } catch { $data.defenderError = 'Defender state unavailable' }
+[Console]::Error.WriteLine("host-probe end defender $([int]([DateTime]::UtcNow - $t0).TotalMilliseconds)")
+[Console]::Error.WriteLine("host-probe start search"); $t0 = [DateTime]::UtcNow
 try { $data.search = (Get-Service WSearch -ErrorAction Stop).Status.ToString() } catch { $data.searchError = 'Search service state unavailable' }
+[Console]::Error.WriteLine("host-probe end search $([int]([DateTime]::UtcNow - $t0).TotalMilliseconds)")
 $data | ConvertTo-Json -Depth 4 -Compress
 `;
 
@@ -231,11 +241,13 @@ export function windowsEvidence(
       windowsHide: true,
       env: { ...process.env, FORGE_CLEANUP_ROOT: root },
     });
-    if (result.error || result.status !== 0)
-      throw (
-        result.error ??
-        new Error(`status ${result.status}: ${result.stderr || result.stdout}`)
+    if (result.error || result.status !== 0) {
+      const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+      const tail = String(result.stderr ?? "").slice(-1000);
+      throw new Error(
+        `${String(result.error ?? `status ${result.status}`)} status ${String(result.status)} signal ${String(result.signal ?? "")} code ${String(code ?? "")} stderr ${tail}`,
       );
+    }
     Object.assign(evidence, boundHost(JSON.parse(result.stdout)));
   } catch (failure) {
     evidence.hostError = String(failure);
