@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { createHubCore, nullTracker } from "../../src/core/index.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import { channel, thread } from "./base-fixture.ts";
@@ -123,27 +124,86 @@ test(
 );
 
 test(
+  "H1 Stop restores only the newly claimed rows after a definite refusal",
+  async () => {
+    const f = await stopFixture();
+    await f.owe("previous question");
+    f.db.exec("UPDATE reply_owed SET answered = 1");
+    await f.owe("new question");
+    const owed = () => f.rows("SELECT answered FROM reply_owed ORDER BY rowid");
+    f.chat.nextWrite = { kind: "refused" };
+    expect(refusal(await f.stop("First attempt."))).toMatchObject({
+      code: "CHAT_UNAVAILABLE",
+      retry: "safe",
+    });
+    expect(owed()).toEqual([{ answered: 1 }, { answered: 0 }]);
+    expect(value(await f.stop("Recovered."))).toEqual({ result: "posted" });
+    expect(owed()).toEqual([{ answered: 1 }, { answered: 1 }]);
+    expect(f.posts()).toEqual([expect.stringContaining("Recovered.")]);
+  },
+  timeout,
+);
+
+for (const outcome of ["transcript", "journal"]) {
+  test(
+    "H1 Stop skips an uncertain explicit reply recorded in the " + outcome,
+    async () => {
+      const f = await stopFixture();
+      const conversationId = await f.owe("question");
+      if (outcome === "journal")
+        f.db
+          .exec(`CREATE TRIGGER fail_agent_projection BEFORE INSERT ON thread_messages
+          WHEN NEW.kind = 'agent' BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END`);
+      const release = Promise.withResolvers<void>();
+      f.chat.nextWrite = { kind: "unknown", until: release.promise };
+      const explicit = f.core.reply(caller, {
+        sessionId: f.sessionId,
+        conversationId,
+        text: "Explicit reply.",
+      });
+      try {
+        await nextTurn();
+        expect(f.posts()).toHaveLength(1);
+        const waiting = f.stop("Stop while explicit reply is pending.");
+        release.resolve();
+        expect(refusal(await explicit)).toMatchObject({
+          code: "CHAT_UNAVAILABLE",
+          retry: "reconcile_first",
+        });
+        const later = await f.stop("Stop after the uncertain reply.");
+        const skipped = { ok: true, value: { result: "skipped" } } as const;
+        expect([await waiting, later]).toEqual([skipped, skipped]);
+        expect(f.rows("SELECT answered FROM reply_owed")).toEqual([
+          { answered: 0 },
+        ]);
+        expect(f.posts()).toEqual([expect.stringContaining("Explicit reply.")]);
+      } finally {
+        release.resolve();
+      }
+    },
+    timeout,
+  );
+}
+
+test(
   "H1 Stop skips after an in-flight explicit reply succeeds",
   async () => {
     const f = await stopFixture();
     const conversationId = await f.owe("question");
-    const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const post = f.chat.postText.bind(f.chat);
-    f.chat.postText = (...args) => {
-      entered.resolve();
-      return post(...args);
-    };
     f.chat.nextWrite = { kind: "delay", until: release.promise };
     const explicit = f.core.reply(caller, {
       sessionId: f.sessionId,
       conversationId,
       text: "Explicit reply.",
     });
-    await Promise.race([entered.promise, explicit]);
     try {
+      await nextTurn();
       expect(f.posts()).toEqual([expect.stringContaining("Explicit reply.")]);
       const stop = f.stop("Automatic duplicate.");
+      expect(await Promise.race([stop.then(() => true), nextTurn(false)])).toBe(
+        false,
+      );
       release.resolve();
       expect(value(await explicit).conversationId).toBe(conversationId);
       expect(value(await stop)).toEqual({ result: "skipped" });
@@ -178,20 +238,30 @@ test(
   async () => {
     const f = await stopFixture();
     await f.owe("question");
-    const sensitive = "xoxb-" + "0".repeat(32);
-    const result = await f.stop("a".repeat(3500) + sensitive);
-    const recorded = [
+    const fragments = [
+      "private-answer-start",
+      "xoxb-",
+      "0".repeat(32),
+      "private-answer-end",
+    ];
+    const [start, prefix, body, end] = fragments;
+    const result = await f.stop(
+      start + "a".repeat(3500) + prefix + body + " " + end,
+    );
+    const recorded = JSON.stringify([
       f.chat.calls,
       f.logged,
       f.rows("SELECT text FROM thread_messages"),
       f.rows("SELECT text FROM inbox_items"),
       f.rows("SELECT value FROM meta"),
       result,
-    ];
-    expect(JSON.stringify(recorded).includes(sensitive)).toBe(false);
+    ]);
+    for (const fragment of fragments)
+      expect(recorded.includes(fragment)).toBe(false);
     expect(value(result)).toEqual({ result: "held" });
     expect(f.posts()).toEqual([
-      expect.stringContaining("looked like it contained a secret"),
+      a.displayName +
+        "'s agent: The agent's final message looked like it contained a secret and was held.",
     ]);
     expect(value(await f.stop("Try again."))).toEqual({ result: "skipped" });
   },

@@ -1,16 +1,21 @@
 import { expect, spyOn, test } from "bun:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import type { MainServices } from "../../src/main.ts";
 import { createHubCore, nullTracker } from "../../src/core/index.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import { mainFixture } from "../main/main-fixture.ts";
 import { doorbellFake, fakeHostCore } from "./base-fakes.ts";
-import { button } from "./fakes.ts";
+import { button, host } from "./fakes.ts";
 import {
   a,
+  caller,
   closeDb,
   configPeople,
   fixture,
   onFixtureCleanup,
+  p1,
+  seedHost,
+  value,
 } from "./fixture.ts";
 
 const timeout = 30_000;
@@ -207,6 +212,75 @@ test(
       );
     } finally {
       release.resolve();
+      timers.mockRestore();
+    }
+  },
+  timeout,
+);
+
+test(
+  "C3 a report queues during startup and a stalled edit cannot block bounded close",
+  async () => {
+    const f = await compositionFixture();
+    const core = f.track(createHubCore({ ...f.deps, chat: f.chat }));
+    seedHost(f.db);
+    const { sessionId } = value(
+      core.hookSession(host, {
+        host: "claude",
+        hostSessionId: "startup-report",
+        source: "startup",
+      }),
+    );
+    f.db
+      .prepare(
+        `INSERT INTO asks VALUES ('ask_report','prj_one','work_request','work',
+      ?,'per_a',0,'fixture','[]','[]','demo-12',NULL,'answered',1,2)`,
+      )
+      .run(sessionId);
+    f.db
+      .exec(`INSERT INTO permits VALUES ('permit_report','per_a','prj_one','request:ask_report',
+      'demo-12','ask_report','approved_request','owner_approval',1,NULL)`);
+    const chatRelease = Promise.withResolvers<void>();
+    const editEntered = Promise.withResolvers<void>();
+    const editRelease = Promise.withResolvers<void>();
+    f.chat.start = () => chatRelease.promise;
+    f.chat.editSummary = async () => {
+      editEntered.resolve();
+      await editRelease.promise;
+      return "edited";
+    };
+    const timers = spyOn(globalThis, "setTimeout");
+    const start = core.start();
+    try {
+      await nextTurn();
+      const report = core.report(caller, {
+        sessionId,
+        projectId: p1,
+        requestAskId: "ask_report",
+        state: "working",
+        text: "Started approved work.",
+      });
+      const edited = editEntered.promise.then(() => true);
+      const editedEarly = await Promise.race([edited, nextTurn(false)]);
+      chatRelease.resolve();
+      expect(await Promise.race([edited, report.then(() => false)])).toBe(true);
+      await nextTurn();
+      const close = core.close();
+      await nextTurn();
+      const deadline = timers.mock.calls.find(([, delay]) => delay === 5_000);
+      deadline?.[0]();
+      const bounded = await Promise.race([
+        close.then(() => !!deadline),
+        nextTurn(false),
+      ]);
+      expect({ editedEarly, bounded }).toEqual({
+        editedEarly: false,
+        bounded: true,
+      });
+    } finally {
+      chatRelease.resolve();
+      editRelease.resolve();
+      await Promise.all([start, core.close()]);
       timers.mockRestore();
     }
   },
