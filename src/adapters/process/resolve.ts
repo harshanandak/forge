@@ -1,17 +1,13 @@
-import { Buffer } from "node:buffer";
 import {
   accessSync,
-  closeSync,
   constants,
-  fstatSync,
   lstatSync,
-  openSync,
   readFileSync,
-  readSync,
   realpathSync,
   statSync,
-  type BigIntStats,
 } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { windowsProcessStartTime } from "./windows-job.ts";
@@ -309,161 +305,78 @@ export function resolveExecutable(
   );
 }
 
-const ghBuildInfo = Buffer.from("\xff Go buildinf:", "latin1");
-const ghModule = Buffer.from(
-  "path\tgithub.com/cli/cli/v2/cmd/gh\nmod\tgithub.com/cli/cli/v2\t",
-);
-const gitVersionFormat = Buffer.from("git version %s");
-const gitNoLazyFetch = Buffer.from("--no-lazy-fetch");
-const gitNoReplace = Buffer.from("--no-replace-objects");
-const appleGitPaths = [
-  "/Library/Developer/CommandLineTools/usr/bin/git",
-  "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
-];
-const gitForWindows = Buffer.from("Git for Windows\0", "utf16le");
-const gitDispatchTarget = Buffer.from("bin\\git.exe\0", "utf16le");
+const systemGit = "/usr/bin/git";
+const gitManifest = "/var/lib/dpkg/info/git.md5sums";
 
-function hasGitHubCliBuildInfo(block: Buffer): boolean {
-  for (
-    let at = block.indexOf(ghBuildInfo);
-    at >= 0;
-    at = block.indexOf(ghBuildInfo, at + 1)
-  ) {
-    if (block.subarray(at + 32, at + 256).includes(ghModule)) return true;
-  }
-  return false;
-}
-
-function matchesBuild(
-  fd: number,
-  size: number,
-  matches: (block: Buffer) => boolean,
-): boolean {
-  const step = 1024 * 1024;
-  if (size > 128 * step) return false;
-  const data = Buffer.alloc(step + 256);
-  for (let offset = 0; offset < size; offset += step) {
-    const count = readSync(fd, data, 0, data.length, offset);
-    if (matches(data.subarray(0, count))) return true;
-  }
-  return false;
-}
-
-function nativeHeader(magic: Buffer, platform: NodeJS.Platform): boolean {
-  if (platform === "win32") return magic.readUInt16BE(0) === 0x4d5a;
-  const header = magic.readUInt32BE(0);
-  if (platform === "darwin")
-    return [
-      0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe, 0xcafebabe, 0xbebafeca,
-      0xcafebabf, 0xbfbafeca,
-    ].includes(header);
-  return header === 0x7f454c46;
-}
-
-function sameFile(initial: BigIntStats, current: BigIntStats): boolean {
-  return (
-    current.isFile() &&
-    initial.dev === current.dev &&
-    initial.ino === current.ino &&
-    initial.size === current.size &&
-    initial.mtimeNs === current.mtimeNs &&
-    initial.ctimeNs === current.ctimeNs
-  );
-}
-
-type AdvisoryExecutablePin = {
-  executable: ResolvedExecutable;
-  cost: 1 | 2;
-  unchanged(): boolean;
-};
-
-export function pinAdvisoryExecutable(
-  executable: ResolvedExecutable,
-  platform: NodeJS.Platform,
-  program: "git" | "gh",
-): AdvisoryExecutablePin | undefined {
-  if (
-    platform !== "darwin" ||
-    program !== "git" ||
-    executable.path !== "/usr/bin/git"
-  )
-    return pinAdvisoryFile(executable, platform, program);
-  for (const path of appleGitPaths) {
-    const direct = pinAdvisoryFile(
-      { kind: "resolved", path },
-      platform,
-      program,
-    );
-    if (direct) return direct;
-  }
-}
-
-function pinAdvisoryFile(
-  executable: ResolvedExecutable,
-  platform: NodeJS.Platform,
-  program: "git" | "gh",
-): AdvisoryExecutablePin | undefined {
-  if (platform === "win32" && !/\.exe$/i.test(executable.path)) return;
-  let fd: number | undefined;
+async function readManagedFile(path: string, max: number) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    fd = openSync(executable.path, constants.O_RDONLY | constants.O_NONBLOCK);
-    const info = fstatSync(fd, { bigint: true });
-    if (!info.isFile()) return;
-    const magic = Buffer.alloc(4);
+    const info = await handle.stat({ bigint: true });
     if (
-      readSync(fd, magic, 0, magic.length, 0) !== magic.length ||
-      !nativeHeader(magic, platform)
+      !info.isFile() ||
+      info.uid !== 0n ||
+      info.mode & 0o022n ||
+      info.size > max
     )
       return;
-    const size = Number(info.size);
-    const cost =
-      program === "gh"
-        ? matchesBuild(fd, size, hasGitHubCliBuildInfo)
-          ? 1
-          : undefined
-        : gitCost(fd, size, platform, executable.path);
+    const data = await handle.readFile();
+    if (BigInt(data.length) === info.size) return { data, info };
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function proveAdvisoryGit(
+  executable: ResolvedExecutable,
+  platform: NodeJS.Platform,
+  signal: AbortSignal,
+): Promise<
+  { executable: ResolvedExecutable; unchanged(): boolean } | undefined
+> {
+  if (platform !== "linux" || executable.path !== systemGit) return;
+  try {
+    for (const path of [
+      "/usr",
+      "/usr/bin",
+      "/var",
+      "/var/lib",
+      "/var/lib/dpkg",
+      "/var/lib/dpkg/info",
+    ]) {
+      const stat = await lstat(path);
+      if (!stat.isDirectory() || stat.uid !== 0 || stat.mode & 0o022) return;
+    }
+    const manifest = await readManagedFile(gitManifest, 128 * 1024);
+    const expected = manifest?.data
+      .toString("ascii")
+      .match(/^([a-f0-9]{32}) {2}usr\/bin\/git$/m)?.[1];
+    if (!expected || signal.aborted) return;
+    const git = await readManagedFile(systemGit, 16 * 1024 * 1024);
+    if (
+      !git ||
+      signal.aborted ||
+      git.data.readUInt32BE(0) !== 0x7f454c46 ||
+      createHash("md5").update(git.data).digest("hex") !== expected
+    )
+      return;
     const unchanged = () => {
       try {
-        return sameFile(info, lstatSync(executable.path, { bigint: true }));
+        const current = lstatSync(systemGit, { bigint: true });
+        const previous = git.info;
+        return (
+          current.isFile() &&
+          current.dev === previous.dev &&
+          current.ino === previous.ino &&
+          current.size === previous.size &&
+          current.mtimeNs === previous.mtimeNs &&
+          current.ctimeNs === previous.ctimeNs
+        );
       } catch {
         return false;
       }
     };
-    if (cost !== undefined && unchanged())
-      return { executable, cost, unchanged };
+    if (unchanged()) return { executable, unchanged };
   } catch {
     return;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
   }
-}
-
-function gitCost(
-  fd: number,
-  size: number,
-  platform: NodeJS.Platform,
-  path: string,
-): 1 | 2 | undefined {
-  if (matchesBuild(fd, size, (block) => block.includes(gitVersionFormat)))
-    return 1;
-  if (
-    platform === "darwin" &&
-    matchesBuild(
-      fd,
-      size,
-      (block) => block.includes(gitNoLazyFetch) && block.includes(gitNoReplace),
-    )
-  )
-    return 1;
-  if (
-    platform === "win32" &&
-    /[\\/](?:cmd|bin)[\\/]git\.exe$/i.test(path) &&
-    matchesBuild(
-      fd,
-      size,
-      (block) =>
-        block.includes(gitForWindows) && block.includes(gitDispatchTarget),
-    )
-  )
-    return 2;
 }

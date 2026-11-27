@@ -2,6 +2,7 @@ import { expect } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -23,6 +24,8 @@ type LaneReply = {
 
 const built = (name: string) =>
   new URL(`../../../dist/src/${name}.js`, import.meta.url).href;
+export const linuxAdvisory =
+  process.platform === "linux" && existsSync("/var/lib/dpkg/info/git.md5sums");
 export const { processStartTime } = (await import(
   built("adapters/process/index")
 )) as typeof import("../../../src/adapters/process/index.ts");

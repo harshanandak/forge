@@ -45,9 +45,9 @@ type Ports = {
   now(): number;
   issues(limits: ReadLimits): Read<Page<Issue>>;
   deliveries(issue: string, limits: ReadLimits): Read<Page<string>>;
-  pull(url: string, limits: Budget): Read<Pull>;
+  pull?(url: string, limits: Budget): Read<Pull>;
   gitProcessCost: 1 | 2;
-  pullProcessCost(): 1 | 2 | undefined;
+  pullProcessCost?(): 1 | 2 | undefined;
   process: Pick<ProcessPort, "resolve" | "run">;
 };
 type Options = Pick<SpawnOptions, "cwd" | "env" | "signal" | "timeoutMs"> & {
@@ -287,11 +287,12 @@ export async function readWorkMap(
     issue: string,
   ): Promise<Pull | undefined> {
     try {
-      const pull = await ports.pull(url, budget());
+      const pull = await ports.pull?.(url, budget());
       if (
-        pull.state !== "OPEN" &&
-        pull.state !== "CLOSED" &&
-        pull.state !== "MERGED"
+        !pull ||
+        (pull.state !== "OPEN" &&
+          pull.state !== "CLOSED" &&
+          pull.state !== "MERGED")
       )
         throw new Error("Unknown pull state");
       if (withinBytes(pull, "pull")) return pull;
@@ -341,7 +342,7 @@ export async function readWorkMap(
           lookupCut = "output-budget";
           continue;
         }
-        const cost = ports.pullProcessCost();
+        const cost = ports.pullProcessCost?.();
         if (cost === undefined) {
           lookupCut = "pull-unavailable";
           continue;

@@ -86,7 +86,7 @@ import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
 import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
 import { advisoryLeaseReader, WORK_MAP_LIMITS } from "./work-map-read.ts";
-import { pinAdvisoryExecutable } from "../adapters/process/index.ts";
+import { proveAdvisoryGit } from "../adapters/process/index.ts";
 import {
   blockCapture,
   resolveBlock,
@@ -158,7 +158,6 @@ import {
   createAssemblyProviders,
   createGitScope,
   gitCapability,
-  resolveOutside,
   createReceiptsService,
   processCleanupBudgetMs,
   idPrefixObservation,
@@ -753,22 +752,8 @@ export async function createAssembly(
     const { platform } = environment;
     if (gitExecutable.kind !== "resolved")
       return unavailableMap("advisory Git executable unavailable");
-    const gitPin = pinAdvisoryExecutable(gitExecutable, platform, "git");
+    const gitPin = await proveAdvisoryGit(gitExecutable, platform, signal);
     if (!gitPin) return unavailableMap("advisory Git process cost unavailable");
-    const { cost: gitProcessCost } = gitPin;
-    const tokens = environment.select(["GH_TOKEN", "GITHUB_TOKEN"]);
-    let pullExecutable: ReturnType<typeof pinAdvisoryExecutable> | null;
-    function boundedPull() {
-      if (pullExecutable === undefined) {
-        const gh = resolveOutside(process, "gh", env, [stateRoot, root]);
-        pullExecutable =
-          gh.kind === "resolved" &&
-          (platform !== "darwin" || tokens.GH_TOKEN || tokens.GITHUB_TOKEN)
-            ? (pinAdvisoryExecutable(gh, platform, "gh") ?? null)
-            : null;
-      }
-      return pullExecutable;
-    }
     const run = { cwd: stateRoot, env, signal, timeoutMs: advisoryMs };
     let bytes: number = WORK_MAP_LIMITS.outputBytes;
     const charge = (size: number) => {
@@ -783,7 +768,7 @@ export async function createAssembly(
       return answer;
     };
     const lanes = await providers
-      .openFiles(scope, { ...gitPin, requested: gitExecutable })
+      .openFiles(scope, gitPin)
       .then(async (files) => {
         try {
           const { boundLaneRegistry } =
@@ -807,8 +792,7 @@ export async function createAssembly(
             return gitPin.executable;
           },
         },
-        gitProcessCost,
-        pullProcessCost: () => boundedPull()?.cost,
+        gitProcessCost: 1,
         async issues({ limit }) {
           const { result, leaseUnavailable } = await read("issue.list", {
             status: "open",
@@ -838,58 +822,13 @@ export async function createAssembly(
             truncated: urls.length > limit,
           };
         },
-        async pull(url, { maxBytes }) {
-          if (
-            bytes <= 0 ||
-            !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?$/i.test(
-              url,
-            )
-          )
-            throw new Error("PR lookup unavailable");
-          const gh = boundedPull();
-          if (!gh?.unchanged()) throw new Error("GitHub CLI unavailable");
-          const result = await process.run(
-            gh.executable,
-            [
-              "pr",
-              "view",
-              url.replace(/\/$/, ""),
-              "--json",
-              "state,headRefName",
-            ],
-            {
-              ...run,
-              env: {
-                ...env,
-                ...tokens,
-                GH_PROMPT_DISABLED: "1",
-                GH_NO_UPDATE_NOTIFIER: "1",
-                GH_NO_EXTENSION_UPDATE_NOTIFIER: "1",
-              },
-              maxOutputBytes: Math.min(maxBytes, bytes),
-            },
-          );
-          charge(Buffer.byteLength(result.stdout + result.stderr));
-          if (result.exitCode !== 0 || result.timedOut || result.truncated)
-            throw new Error("PR state unavailable");
-          const row = record(JSON.parse(result.stdout) as unknown);
-          const state = row?.state;
-          if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED")
-            throw new Error("Unknown PR state");
-          return {
-            state,
-            ...(typeof row?.headRefName === "string"
-              ? { branch: row.headRefName }
-              : {}),
-          };
-        },
       },
       {
         ...run,
         defaultRef: "refs/remotes/origin/HEAD",
         workInstance,
         candidateId,
-        initialProcesses: gitProcessCost,
+        initialProcesses: 1,
       },
       (id) =>
         lanes?.findLast(

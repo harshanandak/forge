@@ -20,6 +20,7 @@ import {
   laneCommands,
   laneGit,
   laneRepository,
+  linuxAdvisory,
 } from "./lane-repository-fixture.ts";
 
 const brief = ".worktrees/briefs/overlap.md";
@@ -34,6 +35,14 @@ const mapWarnings = (reply: object) =>
   (reply as Pick<ResultEnvelope, "warnings">).warnings.filter(({ code }) =>
     code.startsWith("WORK_FILE"),
   );
+const expectUnprovedGit = (reply: object) =>
+  expect(mapWarnings(reply)).toEqual([
+    {
+      code: "WORK_FILE_MAP_INCOMPLETE",
+      message:
+        "File overlap map incomplete (advisory Git process cost unavailable). Some overlap may be missing.",
+    },
+  ]);
 
 for (const mode of [
   "disjoint",
@@ -223,9 +232,14 @@ for (const mode of [
       expect(hasIncompleteMap(replay)).toBe(true);
       expect(hasIncompleteMap(started)).toBe(true);
       if (mode === "stale default policy") {
-        expect(mapWarnings(claimed)).toEqual([]);
+        if (linuxAdvisory) expect(mapWarnings(claimed)).toEqual([]);
+        else expectUnprovedGit(claimed);
         expect(laneGit(["rev-parse", trackedDefault], repo)).toBe(stale);
         expect(started.result.base).not.toBe(stale);
+        return;
+      }
+      if (!linuxAdvisory) {
+        expectUnprovedGit(claimed);
         return;
       }
       {
@@ -299,6 +313,10 @@ for (const [fault, replacement] of Object.entries({
         ok: true,
         result: { id: candidate },
       });
+      if (!linuxAdvisory) {
+        expectUnprovedGit(result);
+        return;
+      }
       const warnings = mapWarnings(result);
       expect(warnings.map(({ code }) => code)).toEqual([
         "WORK_FILE_MAP_INCOMPLETE",
@@ -384,18 +402,23 @@ test("the later concurrent one-shot CLI claim reports overlap before lane start"
     };
     const claims = [startClaim(first), startClaim(second)] as const;
     try {
-      expect(
-        await Promise.all(claims.map(({ checkpoint }) => checkpoint)),
-      ).toEqual([checkpoint, checkpoint]);
+      if (linuxAdvisory)
+        expect(
+          await Promise.all(claims.map(({ checkpoint }) => checkpoint)),
+        ).toEqual([checkpoint, checkpoint]);
       const replies: ResultEnvelope[] = [];
       for (const { child, done } of claims) {
-        child.stdin.end("scan");
+        if (linuxAdvisory) child.stdin.end("scan");
         const { code, stdout, stderr } = await done;
         expect(code, stderr + stdout).toBe(0);
         replies.push(JSON.parse(stdout) as ResultEnvelope);
       }
       expect(replies[0]).toMatchObject({ ok: true, result: { id: first } });
       expect(replies[1]).toMatchObject({ ok: true, result: { id: second } });
+      if (!linuxAdvisory) {
+        for (const reply of replies) expectUnprovedGit(reply);
+        return;
+      }
       const claimOverlap = mapWarnings(replies[1]!).find(
         ({ code }) => code === "WORK_FILE_OVERLAP",
       );
@@ -660,6 +683,10 @@ test("advisory authority reads stay in the invoking renamed work instance", asyn
     expect(claim(first).ok).toBe(true);
     const result = claim(second);
     expect(result.ok).toBe(true);
+    if (!linuxAdvisory) {
+      expectUnprovedGit(result);
+      return;
+    }
     expect(mapWarnings(result)[0]?.message ?? "").toContain(
       `overlaps ${first}`,
     );
@@ -676,6 +703,10 @@ test("a broken lane registry preserves claim overlap and reports incomplete evid
     writeFileSync(join(repo, ".git", "forge-lanes.json"), "{");
     const result = claim(second);
     expect(result.ok, JSON.stringify(result)).toBe(true);
+    if (!linuxAdvisory) {
+      expectUnprovedGit(result);
+      return;
+    }
     expect(mapWarnings(result).map(({ code }) => code)).toContain(
       "WORK_FILE_OVERLAP",
     );
