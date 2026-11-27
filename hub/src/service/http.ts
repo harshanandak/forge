@@ -46,7 +46,6 @@ function requestHeaders(input: IncomingMessage): Headers {
 }
 
 async function readBody(input: IncomingMessage): Promise<Buffer | undefined> {
-  if (Number(input.headers["content-length"]) > LIMITS.bodyBytes) return;
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of input.iterator({
@@ -105,18 +104,21 @@ export function createHttpListener(
   async function serve(input: IncomingMessage, output: ServerResponse) {
     const controller = new AbortController();
     const { signal } = controller;
-    input.once("close", () => {
-      if (!input.complete) controller.abort();
-    });
+    let dispatched = false;
     output.once("close", () => {
-      if (!output.writableFinished) controller.abort();
+      if (dispatched && !output.writableFinished) controller.abort();
     });
 
     try {
+      const target = input.url;
+      if (
+        !target ||
+        !URL.canParse(target, "http://localhost") ||
+        !validTarget(target)
+      )
+        return reject(output, 400);
       const host = allowedHost(input, hosts);
       if (!host) return reject(output, 403);
-      const target = input.url;
-      if (!target || !validTarget(target)) return reject(output, 400);
       const route = matchRoute(target);
       if (!route) return reject(output, 404);
 
@@ -129,13 +131,14 @@ export function createHttpListener(
         request = new Request("http://" + host + route.target, {
           method: input.method ?? "GET",
           headers: requestHeaders(input),
-          body: body.length === 0 ? null : new Uint8Array(body),
+          body: body.length === 0 ? null : new TextDecoder().decode(body),
           signal,
         });
       } catch {
         return reject(output, 400);
       }
 
+      dispatched = true;
       const response = await route.handle(request);
       if (signal.aborted) {
         void response.body?.cancel().catch(() => {});
