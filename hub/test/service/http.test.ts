@@ -361,7 +361,7 @@ test(
 );
 
 test(
-  "S3 propagates disconnect to a dispatched request and cancels its stream",
+  "S3 sends headers before an idle stream's first chunk and cancels on disconnect",
   async () => {
     const cancelled = Promise.withResolvers<void>();
     await withServer(
@@ -369,8 +369,11 @@ test(
         const { client, response } = startRequest(port, mcp, "GET");
         try {
           client.end();
-          const incoming = await response;
-          await once(incoming, "data");
+          const incoming = await Promise.race([
+            response,
+            delay(2_000, undefined, { ref: false }),
+          ]);
+          expect(incoming?.statusCode).toBe(200);
           client.destroy();
           await cancelled.promise;
           expect(remoteCalls[0]?.signal.aborted).toBe(true);
@@ -382,9 +385,6 @@ test(
       () =>
         new Response(
           new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(Uint8Array.of(1));
-            },
             cancel() {
               cancelled.resolve();
             },

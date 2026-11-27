@@ -73,6 +73,7 @@ async function writeResponse(
   const cookies = response.headers.getSetCookie();
   if (cookies.length > 0) output.setHeader("set-cookie", cookies);
   output.writeHead(response.status);
+  if (response.body) output.flushHeaders();
   const reader = response.body?.getReader();
   if (reader) {
     const cancel = () => void reader.cancel().catch(() => {});
