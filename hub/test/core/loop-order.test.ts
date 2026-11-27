@@ -9,8 +9,16 @@ const pause = "Paused: the agents need a person to reply.";
 const ts = (index: number) => "1795760000." + String(index).padStart(6, "0");
 const orderThread = "slack:" + channel + ":" + ts(0);
 
-function useSlackPosts(f: BaseFixture, first: number) {
+function useSlackPosts(
+  f: BaseFixture,
+  first: number,
+  reserved: readonly number[] = [],
+) {
   let next = first;
+  const stamp = () => {
+    while (reserved.includes(next)) next += 1;
+    return ts(next++);
+  };
   const post = f.chat.postText.bind(f.chat);
   f.chat.postText = async (target, text, options) => {
     const ref = await post(target, text, options);
@@ -18,7 +26,7 @@ function useSlackPosts(f: BaseFixture, first: number) {
       ...ref,
       chatThreadId:
         target.kind === "thread" ? target.chatThreadId : orderThread,
-      chatMessageId: ts(next++),
+      chatMessageId: stamp(),
     };
   };
 }
@@ -58,8 +66,8 @@ test(
   async () => {
     const f = await baseFixture();
     const alpha = f.bind();
-    useSlackPosts(f, 1);
-    await f.emit(ts(2), { chatThreadId: orderThread });
+    useSlackPosts(f, 1, [2]);
+    await f.follow(ts(2), { chatThreadId: orderThread });
     const root = value(
       await f.core.reply(f.caller(), {
         sessionId: alpha.sessionId,
