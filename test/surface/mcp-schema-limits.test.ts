@@ -1,0 +1,55 @@
+import { expect, test } from "bun:test";
+import {
+  SchemaRegistry,
+  type SchemaObject,
+} from "../../src/contract/schema.ts";
+import { createMcpHandlers } from "../../src/surface/mcp.ts";
+import { candidate, fakeCatalog } from "./fixtures/catalog.ts";
+
+test("MCP refuses a declared dialect Forge cannot enforce", () => {
+  const entry = candidate();
+  const catalog = fakeCatalog([
+    {
+      ...entry,
+      inputSchema: {
+        ...entry.inputSchema,
+        $schema: "http://json-schema.org/draft-07/schema#",
+      },
+    },
+  ]);
+  expect(() => createMcpHandlers(catalog).listTools()).toThrow(/dialect/i);
+}, 30_000);
+
+test("MCP refuses a ref cycle that makes no progress through the instance", () => {
+  const catalog = fakeCatalog([
+    {
+      ...candidate(),
+      inputSchema: { type: "object", not: { $ref: "#" } },
+    },
+  ]);
+  expect(() => createMcpHandlers(catalog).listTools()).toThrow(
+    /cycle|recursive/i,
+  );
+}, 30_000);
+
+test("MCP refuses deep schema composition", () => {
+  let schema: SchemaObject = { type: "object" };
+  for (let i = 0; i < 200; i++) schema = { allOf: [schema] };
+  const catalog = fakeCatalog([{ ...candidate(), inputSchema: schema }]);
+  expect(() => createMcpHandlers(catalog).listTools()).toThrow(
+    /depth|limit|budget/i,
+  );
+}, 30_000);
+
+test("schema validation refuses when composition exhausts the work budget", () => {
+  const $defs: Record<string, SchemaObject> = { leaf: { type: "object" } };
+  let ref = "#/$defs/leaf";
+  for (let i = 0; i < 18; i++) {
+    $defs[`branch${i}`] = { allOf: [{ $ref: ref }, { $ref: ref }] };
+    ref = `#/$defs/branch${i}`;
+  }
+  const registry = new SchemaRegistry([{ $defs, $ref: ref }]);
+  const problems = registry.validate("#", {});
+  expect(problems).toHaveLength(1);
+  expect(problems[0]?.message).toMatch(/limit|budget/i);
+}, 30_000);
