@@ -18,6 +18,22 @@ Project operations require an actor and project. Claims also require a session a
 
 Issues may carry optional `expectedFiles` patterns, cumulative `actualFiles` literals and `filesAt`, the merge SHA those literals were learned from. Omission means undeclared and `[]` means explicitly no files. The declaration lists share an 80 KiB UTF-8 JSON budget with the other issue fields. Paths are repo-relative `/` paths of at most 1024 Unicode code points; patterns support only `*`, `**` and `?`, with at most 256 expected and 1024 learned paths. Absolute paths, traversal, backslashes, NUL, negation and other glob syntax are refused. Leading `./`, repeated separators and interior `/./` segments are normalized away before storage. Create and update accept `expectedFiles`; until merge learning exists, the learned fields can change only through the same fenced update and are otherwise read-only in show and list output.
 
+### File overlap
+
+Set `generatedFiles` under `blocks.work.config` to exclude generated paths from overlap:
+
+```yaml
+generatedFiles:
+  - glob: src/generated/*.ts
+    regenerate: { argv: [bun, run, gen] }
+```
+
+Each shared generated path is reported with the first matching rule and its regeneration command. Forge records the argument list for reference and never runs it during overlap resolution. Use narrow rules that describe generator outputs.
+
+Overlap compares file paths case-sensitively on every platform. A literal names one file, with no directory expansion. `*` matches zero or more characters within a path segment, `?` matches one Unicode code point within a segment, `**` can cross `/`, and a whole `**/` can match zero directories. Dotfiles follow the same rules as other files.
+
+Expected patterns match a pinned list of tracked paths plus literal files declared by either issue, including learned files. For each shared file, the result names a source declaration from each issue. An omitted expected list, an unmatched pattern or a truncated tracked list makes the result incomplete even when it has no shared paths. An empty expected list explicitly declares no planned files.
+
 The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue link ...` and `forge issue close --input '{"id":"<id>","receipt":"<receipt>"}'` need no explicit context:
 
 - **Session.** A trimmed, nonempty `FORGE_SESSION` wins. Otherwise Forge uses `CODEX_SESSION_ID` as the Codex root session, falling back to `CODEX_THREAD_ID` for older Codex builds. It combines that selected Codex identity with a nonempty `CLAUDE_CODE_SESSION_ID`, in the fixed order Codex then Claude Code. Native values are trimmed and form a readable key tagged `codex:<id>` and `claude-code:<id>`, including when only one harness identity is present. Adding a nested harness's identity distinguishes its session from its parent's in either nesting direction. Codex subagents sharing `CODEX_SESSION_ID` intentionally share authority even when their thread IDs differ. Other native subagents that inherit the same selected identities also share authority. `CODEX_COMPANION_SESSION_ID` is plugin metadata and is ignored. Without an explicit or native session, an interactive terminal uses `local-cli`; non-TTY CLI and MCP calls refuse every leased operation, including claims, renewals and releases, and tell the caller to set `FORGE_SESSION`. To recover a terminal-created claim from a non-TTY call on the same device, set `FORGE_SESSION=local-cli`.
