@@ -91,15 +91,33 @@ const gh = (command: string, args: string[] = []) =>
     maxBuffer: 64 * 1024 * 1024,
     windowsHide: true,
   });
+const repo = "harshanandak/forge";
+const api = <T>(path: string, options = ""): T =>
+  JSON.parse(gh(`api ${options}`, [`repos/${repo}/actions/${path}`])) as T;
+const list = <T>(path: string, key: string) =>
+  api<Record<string, T[]>[]>(
+    `${path}?per_page=100`,
+    "--paginate --slurp",
+  ).flatMap((p) => p[key]!);
+export function downloadRecords(
+  run: Pick<Run, "id" | "run_attempt" | "head_sha">,
+  directory: string,
+): Entry[] {
+  const artifacts = list<{ name: string; expired: boolean }>(
+    `runs/${run.id}/artifacts`,
+    "artifacts",
+  ).filter((a) => a.name.startsWith("ci-record-") && !a.expired);
+  if (artifacts.length)
+    gh(`run download ${run.id} --repo ${repo}`, [
+      "--dir",
+      directory,
+      ...artifacts.flatMap((a) => ["--name", a.name]),
+    ]);
+  return [...new Bun.Glob("**/ci-record.json").scanSync(directory)].map(
+    (path) => readJson<Entry>(`${directory}/${path}`),
+  );
+}
 if (import.meta.main) {
-  const repo = "harshanandak/forge";
-  const api = <T>(path: string, options = ""): T =>
-    JSON.parse(gh(`api ${options}`, [`repos/${repo}/actions/${path}`])) as T;
-  const list = <T>(path: string, key: string) =>
-    api<Record<string, T[]>[]>(
-      `${path}?per_page=100`,
-      "--paginate --slurp",
-    ).flatMap((p) => p[key]!);
   const selected = JSON.parse(
     gh(
       `run list --repo ${repo} --workflow ci.yml --json databaseId,headSha,event,attempt,headBranch --jq`,
@@ -113,17 +131,7 @@ if (import.meta.main) {
   for (const run of selected) {
     const directory = mkdtempSync(`${tmpdir()}/ci-report-`);
     try {
-      const artifacts = list<{ name: string; expired: boolean }>(
-        `runs/${run.id}/artifacts`,
-        "artifacts",
-      ).filter((a) => a.name.startsWith("ci-record-") && !a.expired);
-      if (artifacts.length)
-        gh(`run download ${run.id} --repo ${repo} --dir`, [
-          directory,
-          ...artifacts.flatMap((a) => ["--name", a.name]),
-        ]);
-      const paths = [...new Bun.Glob("**/ci-record.json").scanSync(directory)];
-      const records = paths.map((p) => readJson<Entry>(`${directory}/${p}`));
+      const records = downloadRecords(run, directory);
       for (let attempt = 1; attempt <= run.run_attempt; attempt++) {
         const path = `runs/${run.id}/attempts/${attempt}`;
         attempts.push({
