@@ -192,7 +192,7 @@ for (const first of ["reply", "send"] as const) {
         await new Promise<void>((resolve) => setImmediate(resolve));
         const racedAttempts = attempts();
         release();
-        value(await tenth);
+        expect((await tenth).ok).toBe(true);
         const result = await eleventh;
         expect(racedAttempts).toBe(1);
         expect(result.ok).toBe(false);
