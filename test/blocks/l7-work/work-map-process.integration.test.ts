@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -92,18 +93,18 @@ test.each(["script", "unknown native executable", "live lease"] as const)(
             FORGE_DEVICE_ID: "lane-fixture",
           };
           const linuxAdvisory = await advisoryGitAvailable(repo, cliEnv);
-          const claim = laneCli(
-            root,
-            repo,
-            [
-              "issue",
-              "claim",
-              "--input",
-              JSON.stringify({ id: candidate, ttlSeconds: 600 }),
-            ],
-            "reader",
-            cliEnv,
-          );
+          const gitOnPath = Bun.which("git", { PATH: cliEnv.PATH, cwd: repo });
+          if (
+            kind === "live lease" &&
+            process.platform === "linux" &&
+            existsSync("/var/lib/dpkg/info/git.md5sums") &&
+            gitOnPath &&
+            realpathSync(gitOnPath) === "/usr/bin/git"
+          )
+            expect(linuxAdvisory).toBe(true);
+          const input = JSON.stringify({ id: candidate, ttlSeconds: 600 });
+          const args = ["issue", "claim", "--input", input];
+          const claim = laneCli(root, repo, args, "reader", cliEnv);
           expect(claim).toMatchObject({
             exit: 0,
             ok: true,
@@ -117,10 +118,8 @@ test.each(["script", "unknown native executable", "live lease"] as const)(
             lease: { generation, expiresAt },
           });
 
-          expect(
-            readFileSync(launches, "utf8"),
-            "interpreter and native child PIDs",
-          ).toBe("");
+          const launchLog = readFileSync(launches, "utf8");
+          expect(launchLog, "interpreter and native child PIDs").toBe("");
           expect(existsSync(launcherStarted)).toBe(false);
           const events = readFileSync(gitTrace, "utf8")
             .trim()
@@ -140,9 +139,10 @@ test.each(["script", "unknown native executable", "live lease"] as const)(
               (start) => sid === start.sid || sid.startsWith(start.sid + "/"),
             ),
           );
-          expect(tree.filter(({ event }) => event === "child_start")).toEqual(
-            [],
+          const childStarts = tree.filter(
+            ({ event }) => event === "child_start",
           );
+          expect(childStarts).toEqual([]);
           expect(tree.filter(({ event }) => event === "start")).toHaveLength(
             advisory.length,
           );
