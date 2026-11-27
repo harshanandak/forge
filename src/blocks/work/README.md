@@ -40,6 +40,18 @@ An open issue holds files while its claim lease is live or any delivered PR is o
 
 The reader allows up to 1,000 issues, 128 delivered links per issue, 20,000 tracked paths and 64 Git commands and distinct PR lookups combined. Git output is capped at 1 MiB per command, and authority and PR results share a 1 MiB budget. Glob checks also share a work budget. Failed reads, cuts and unresolved or missing active declarations mark the snapshot incomplete and list the reasons. Previously observed open PRs still count when the lookup budget runs out.
 
+### Claim and lane advisories
+
+In local projects, the one-shot Forge CLI checks for overlapping files after a successful claim or lane publication.
+`WORK_FILE_OVERLAP` names the path, the other issue's ID and title, its branch when known, and the live lease or open PR.
+Forge follows known dependencies, including indirect ones. Otherwise, finish the incumbent lane first.
+
+`WORK_FILE_MAP_INCOMPLETE` means some overlaps may be missing. The result carries at most 32 warnings, with messages
+limited to 2,000 characters. `WORK_FILE_MAP_TRUNCATED` reports how many warning rows were omitted.
+
+The scan runs outside the registry lock. MCP and other long-lived hosts skip the scan to keep the process runner free.
+Skipped scans and short claim leases get an incomplete-map warning. Cloud-bound calls and direct cloud HTTP claims are outside this scope.
+
 The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue link ...` and `forge issue close --input '{"id":"<id>","receipt":"<receipt>"}'` need no explicit context:
 
 - **Session.** A trimmed, nonempty `FORGE_SESSION` wins. Otherwise Forge uses `CODEX_SESSION_ID` as the Codex root session, falling back to `CODEX_THREAD_ID` for older Codex builds. It combines that selected Codex identity with a nonempty `CLAUDE_CODE_SESSION_ID`, in the fixed order Codex then Claude Code. Native values are trimmed and form a readable key tagged `codex:<id>` and `claude-code:<id>`, including when only one harness identity is present. Adding a nested harness's identity distinguishes its session from its parent's in either nesting direction. Codex subagents sharing `CODEX_SESSION_ID` intentionally share authority even when their thread IDs differ. Other native subagents that inherit the same selected identities also share authority. `CODEX_COMPANION_SESSION_ID` is plugin metadata and is ignored. Without an explicit or native session, an interactive terminal uses `local-cli`; non-TTY CLI and MCP calls refuse every leased operation, including claims, renewals and releases, and tell the caller to set `FORGE_SESSION`. To recover a terminal-created claim from a non-TTY call on the same device, set `FORGE_SESSION=local-cli`.

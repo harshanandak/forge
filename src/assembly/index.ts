@@ -1,6 +1,8 @@
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { Buffer } from "node:buffer";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   createConfig,
   createConfigOperations,
@@ -69,6 +71,8 @@ import type {
   BoundContext,
   McpExposure,
   ResultEnvelope,
+  StateRecord,
+  TrackerItem,
 } from "../generated/types.ts";
 import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { record } from "../surface/dispatch.ts";
@@ -79,6 +83,8 @@ import { missingOperationHint } from "./stale-build.ts";
 import { withCheckRunBudget } from "./check-budget.ts";
 import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
+import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
+import { WORK_MAP_LIMITS } from "./work-map-read.ts";
 import {
   blockCapture,
   resolveBlock,
@@ -148,6 +154,9 @@ import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
   createAssemblyProviders,
+  createGitScope,
+  gitCapability,
+  resolveOutside,
   createReceiptsService,
   processCleanupBudgetMs,
   idPrefixObservation,
@@ -161,6 +170,16 @@ import {
 // Only skills.sync writes skill files, so no other command loads the writer.
 const loadLaneCoordinator = lazy(() => import("./cloud-lane-coordinator.ts"));
 const loadSkills = lazy(() => import("./skills.ts"));
+const advisoryMs = 5000;
+const unavailableMap = (reason: string) => ({
+  warnings: [
+    {
+      code: "WORK_FILE_MAP_INCOMPLETE",
+      message: `File overlap map incomplete (${reason}). Some overlap may be missing.`,
+    },
+  ],
+  omitted: 0,
+});
 
 const TRUST_NAMESPACE = "forge/core-trust";
 const DEVICE_MEMORY: BlockInstance = {
@@ -448,6 +467,7 @@ export async function createAssembly(
     inProject: boolean;
     operatorExport: boolean;
     warnings: Array<ResultEnvelope["warnings"][number]>;
+    workMap?: Awaited<ReturnType<typeof readWorkWarnings>>;
     configWarningsCollected: boolean;
     warnUnknownConfig: (name: string, paths: readonly string[]) => void;
     captured(source: BlockSource): CapturedBlock;
@@ -687,6 +707,187 @@ export async function createAssembly(
     if (exposure?.readOnly && declaration.effects.length > 0)
       refuse("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
   }
+  async function workAdvisory(
+    candidateId: string,
+    workInstance: string,
+    command: (
+      op: string,
+      input: object,
+      signal: AbortSignal,
+    ) => Promise<unknown>,
+    signal: AbortSignal,
+    laneStart: boolean,
+  ): ReturnType<typeof readWorkWarnings> {
+    const scope = {
+      op: "work-file-map",
+      effects: ["environment:read", "external:process", "files:read"],
+      signal,
+      deadline: Date.now() + advisoryMs,
+      processContainment: "supervised" as const,
+    };
+    const process = providers.process(scope);
+    const environment = providers.environment(scope);
+    const env = environment.select([
+      "PATH",
+      "PATHEXT",
+      "SystemRoot",
+      "WINDIR",
+      "ComSpec",
+      "TEMP",
+      "TMP",
+      "TMPDIR",
+      "HOME",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+    ]);
+    const git = gitCapability(process, env, createGitScope(stateRoot, root));
+    const run = { cwd: stateRoot, env, signal, timeoutMs: advisoryMs };
+    let defaultRef = "refs/remotes/origin/HEAD";
+    if (laneStart) {
+      const executable = git.executable();
+      if (executable.kind !== "resolved")
+        throw new Error("Default Git unavailable");
+      const readDefault = async (args: string[]) => {
+        const result = await process.run(executable, args, {
+          ...run,
+          maxOutputBytes: 16_384,
+        });
+        if (result.exitCode !== 0 || result.timedOut || result.truncated)
+          throw new Error("Default policy unavailable");
+        return result.stdout.trim();
+      };
+      const head = await readDefault([
+        "ls-remote",
+        "--exit-code",
+        "origin",
+        "HEAD",
+      ]);
+      defaultRef = head.match(/^([0-9a-f]{40}|[0-9a-f]{64})\tHEAD$/)?.[1] ?? "";
+      if (!defaultRef) throw new Error("Default commit unavailable");
+      await readDefault([
+        "fetch",
+        "--no-write-fetch-head",
+        "--refmap=",
+        "--no-tags",
+        "--no-prune",
+        "--no-recurse-submodules",
+        "origin",
+        defaultRef,
+      ]);
+    }
+    let bytes: number = WORK_MAP_LIMITS.outputBytes;
+    const charge = (size: number) => {
+      bytes -= size;
+      if (bytes < 0) throw new Error("Work map output limit reached");
+    };
+    const read = async (op: string, input: object) => {
+      signal.throwIfAborted();
+      if (bytes <= 0) throw new Error("Work map output limit reached");
+      const result = await command(op, input, signal);
+      charge(Buffer.byteLength(JSON.stringify(result)));
+      return result;
+    };
+    const lanes = await providers
+      .openFiles(scope)
+      .then(async (files) => {
+        try {
+          const { boundLaneRegistry } =
+            await import("../blocks/work/bound-lane.ts");
+          return boundLaneRegistry(files.value).lanes;
+        } finally {
+          await files.close();
+        }
+      })
+      .catch(() => []);
+    return await readWorkWarnings(
+      {
+        now: Date.now,
+        process: { ...process, resolve: () => git.executable() },
+        async issues({ limit }) {
+          const page = (await read("issue.list", {
+            status: "open",
+            limit,
+          })) as {
+            items: TrackerItem[];
+            truncated?: boolean;
+          };
+          return { items: page.items, truncated: page.truncated === true };
+        },
+        async deliveries(id, { limit }) {
+          const { records } = (await read("issue.links", { id })) as {
+            records: StateRecord[];
+          };
+          const urls = records.flatMap(({ value }) => {
+            const link = record(value);
+            return link?.relation === "delivers" && typeof link.url === "string"
+              ? [link.url]
+              : [];
+          });
+          return {
+            items: urls.slice(0, limit),
+            truncated: urls.length > limit,
+          };
+        },
+        async pull(url, { maxBytes }) {
+          if (
+            bytes <= 0 ||
+            !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?$/i.test(
+              url,
+            )
+          )
+            throw new Error("PR lookup unavailable");
+          const gh = resolveOutside(process, "gh", env, [stateRoot, root]);
+          if (gh.kind !== "resolved") throw new Error("GitHub CLI unavailable");
+          const result = await process.run(
+            gh,
+            [
+              "pr",
+              "view",
+              url.replace(/\/$/, ""),
+              "--json",
+              "state,headRefName",
+            ],
+            {
+              ...run,
+              env: {
+                ...env,
+                ...environment.select(["GH_TOKEN", "GITHUB_TOKEN"]),
+              },
+              maxOutputBytes: Math.min(maxBytes, bytes),
+            },
+          );
+          charge(Buffer.byteLength(result.stdout + result.stderr));
+          if (result.exitCode !== 0 || result.timedOut || result.truncated)
+            throw new Error("PR state unavailable");
+          const row = record(JSON.parse(result.stdout) as unknown);
+          const state = row?.state;
+          if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED")
+            throw new Error("Unknown PR state");
+          return {
+            state,
+            ...(typeof row?.headRefName === "string"
+              ? { branch: row.headRefName }
+              : {}),
+          };
+        },
+      },
+      {
+        ...run,
+        defaultRef,
+        workInstance,
+        candidateId,
+        initialProcesses: laneStart ? 3 : 1,
+      },
+      (id) =>
+        lanes.findLast(
+          (lane) =>
+            (lane.issueId ?? lane.issue.replace(/^.*-/, "work-")) ===
+            id.replace(/^.*-/, "work-"),
+        )?.branch,
+    );
+  }
+
   function withCallWarnings(
     call: CallScope,
     result: ResultEnvelope,
@@ -698,7 +899,7 @@ export async function createAssembly(
         // Preserve recovery operations when the project file is unreadable.
       }
     }
-    return {
+    const envelope = {
       ...result,
       warnings: [
         ...call.warnings.filter(
@@ -712,6 +913,12 @@ export async function createAssembly(
         ),
       ],
     };
+    if (envelope.ok && call.workMap)
+      envelope.warnings = appendWorkMapWarnings(
+        envelope.warnings,
+        call.workMap,
+      );
+    return envelope;
   }
   function collectCompatibilityWarnings(
     call: CallScope,
@@ -1984,6 +2191,12 @@ export async function createAssembly(
           if (context.variant === "device" && context.device.id !== deviceRoot)
             refuse("INPUT_CONFLICT", "State context belongs to another device");
         };
+        const workOperation =
+          target?.builtin === true && target.blockId === "forge/work"
+            ? target.declaredOp
+            : undefined;
+        const laneStart =
+          workOperation === "lane.start" || workOperation === "lane.attempt";
         const fromCloud = (runtime: Pick<Runtime, "preflight">) =>
           selectCloud(
             {
@@ -2474,6 +2687,65 @@ export async function createAssembly(
           request,
           signal === undefined ? undefined : { signal },
         );
+        if (
+          result.ok &&
+          !request.dryRun &&
+          (laneStart || workOperation === "issue.claim")
+        ) {
+          const output = record(result.result);
+          const id = laneStart ? output?.issue : output?.id;
+          const expiry = Date.parse(String(output?.expiresAt));
+          if (mcp || !options.oneShot)
+            call.workMap = unavailableMap(
+              "advisory skipped: shared process runner",
+            );
+          else if (
+            workOperation === "issue.claim" &&
+            !(expiry - Date.now() > 2 * advisoryMs)
+          )
+            call.workMap = unavailableMap("claim lease is too short");
+          else if (typeof id === "string") {
+            const controller = new AbortController();
+            const bounded = signal
+              ? AbortSignal.any([signal, controller.signal])
+              : controller.signal;
+            const instance = runtimeCatalog.resolve(request.op).operation
+              .instance;
+            try {
+              const read: Parameters<typeof workAdvisory>[2] = async (
+                op,
+                input,
+                signal,
+              ) => {
+                const nested = runtimeCatalog.list().find((name) => {
+                  const { operation } = runtimeCatalog.resolve(name);
+                  return (
+                    operation.declaredOp === op &&
+                    operation.instance === instance
+                  );
+                });
+                if (!nested)
+                  refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
+                const answer = await runtime.invoke(
+                  { ...request, op: nested, input },
+                  { signal },
+                );
+                if (!answer.ok) throw new ForgeFailure(answer.error);
+                return answer.result;
+              };
+              call.workMap = await Promise.race([
+                delay(advisoryMs, unavailableMap("read timed out"), {
+                  signal: bounded,
+                }),
+                workAdvisory(id, instance, read, bounded, laneStart),
+              ]);
+            } catch {
+              call.workMap = unavailableMap("read unavailable");
+            } finally {
+              controller.abort();
+            }
+          }
+        }
         return checkResult(
           runtimeCatalog,
           request.op,

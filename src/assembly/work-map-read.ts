@@ -44,6 +44,7 @@ type Options = Pick<SpawnOptions, "cwd" | "env" | "signal" | "timeoutMs"> & {
   defaultRef: string;
   workInstance?: string;
   candidateId?: string;
+  initialProcesses?: 1 | 3;
 };
 type Reason = {
   kind:
@@ -117,14 +118,15 @@ export async function readWorkMap(
   };
   const note = (kind: Reason["kind"], detail?: Omit<Reason, "kind">) =>
     snapshot.reasons.push({ kind, ...detail });
-  const { defaultRef, workInstance = "work", candidateId, ...spawn } = options;
+  const { initialProcesses = 0, ...input } = options;
+  const { defaultRef, workInstance = "work", candidateId, ...spawn } = input;
   const limits = WORK_MAP_LIMITS;
   const env = Object.fromEntries(
     Object.entries(spawn.env).filter(([name]) => !/^GIT_/i.test(name)),
   );
   env.GIT_NO_LAZY_FETCH = "1";
   const gitSpawn = { ...spawn, env, maxOutputBytes: limits.outputBytes };
-  let processes = 0;
+  let processes = initialProcesses;
   let authorityBytes: number = limits.outputBytes;
   const budget = (): Budget => ({
     maxBytes: authorityBytes,
@@ -186,7 +188,9 @@ export async function readWorkMap(
       return undefined;
     }
   }
-  const sha = defaultRef.startsWith("refs/remotes/")
+  const trustedRef =
+    defaultRef.startsWith("refs/remotes/") || commitSha.test(defaultRef);
+  const sha = trustedRef
     ? (
         await gitText("default-ref", [
           "rev-parse",

@@ -175,6 +175,7 @@ test("lane helper start and close refuse with equivalent argv and preserve repos
   ]) {
     const result = f.run(args);
     expect(result.code, result.stderr).toBe(2);
+    expect(result.output.verdict).toBe("refused");
     expect(result.output.next).toEqual(["forge", "lane", ...args]);
     expect(existsSync(f.registry)).toBe(false);
     expect(f.git(["branch", "--list", "lane/one"])).toBe("");
