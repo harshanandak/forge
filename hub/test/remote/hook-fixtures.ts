@@ -8,6 +8,11 @@ import { fakeCore, key, person, safeOutput } from "./fixtures.ts";
 
 type Hook = "pre-tool" | "session-start" | "stop";
 export const hubRoot = fileURLToPath(new URL("../../", import.meta.url));
+export const hubCommand = [
+  "--import",
+  new URL("./database-diagnostics.mjs", import.meta.url).href,
+  join(hubRoot, "bin", "forge-hub.mjs"),
+];
 export const session = { session_id: "s1", source: "startup" };
 export const stop = { session_id: "s1", stop_hook_active: false };
 export const r1 =

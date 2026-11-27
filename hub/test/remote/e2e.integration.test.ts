@@ -21,6 +21,7 @@ import {
   child,
   deny,
   guard,
+  hubCommand,
   hubRoot,
   r1,
   r3,
@@ -96,7 +97,7 @@ async function workspace(slack = true) {
   const settings = path("settings.json");
   await writeFile(settings, JSON.stringify(f.config));
   const cli = (args: string[], input?: string) =>
-    child(f.root, [bin("forge-hub"), ...args, "--config", settings], input);
+    child(f.root, [...hubCommand, ...args, "--config", settings], input);
   const create = (kind: "host" | "token", file: string) => {
     const flags = ["--person", a.personId, "--label", "fixture", "--output"];
     return cli([kind, "create", ...flags, file]);
@@ -348,7 +349,7 @@ test(
       ),
     );
     const proc = Bun.spawn(
-      [node, bin("forge-hub"), "serve", "--config", f.settings],
+      [node, ...hubCommand, "serve", "--config", f.settings],
       { cwd: f.root, env, stdout: "pipe", stderr: "pipe", windowsHide: true },
     );
     const streams = Promise.all([
