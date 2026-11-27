@@ -6,7 +6,11 @@ import type { LifetimeProvider } from "./lifetime.ts";
 export interface McpHandlers {
   listTools(): readonly McpTool[];
   /** undefined for an unknown tool, which the transport reports as a protocol error. */
-  callTool(name: string, args: unknown): Promise<ResultEnvelope | undefined>;
+  callTool(
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ): Promise<ResultEnvelope | undefined>;
 }
 
 export interface McpServeOptions {

@@ -299,6 +299,15 @@ function success(op: string, result: unknown): ResultEnvelope {
   return { ok: true, op, status: "OK", result, warnings: [] };
 }
 
+function checkCancellation(signal?: AbortSignal): void {
+  if (signal?.aborted)
+    throw new ForgeFailure({
+      code: "INVOCATION_CANCELLED",
+      message: "Invocation cancelled",
+      retry: "reconcile_first",
+    });
+}
+
 /** First-party detection is registered here; it enables no block and executes no project command. */
 export async function createAssembly(
   options: AssemblyOptions,
@@ -317,14 +326,14 @@ export async function createAssembly(
   const deviceState = LocalState.deviceRecords(deviceRoot);
   const env = options.providers?.env ?? process.env;
   const home = env.HOME ?? env.USERPROFILE;
+  const missingStore = (path: string) =>
+    boundMissingStoreRemedy(root, home, path);
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
     undefined,
     undefined,
-    () =>
-      requireRegisteredStore(deviceState, stateRoot, (path) =>
-        boundMissingStoreRemedy(root, home, path),
-      ),
+    (_write, signal) =>
+      requireRegisteredStore(deviceState, stateRoot, missingStore, signal),
     stateRoot,
     () => refuseUnsupportedProjectWrite(root, home),
   );
@@ -397,20 +406,24 @@ export async function createAssembly(
       method: "attended",
     });
   }
-  async function approve(
+  async function approveWithSignal(
+    signal: AbortSignal | undefined,
     request: Parameters<Assembly["catalog"]["invoke"]>[0],
     ask: string,
     displayAsk: string,
     relayedOnly = false,
   ) {
     const { direct, input } = await openApproval(request);
+    checkCancellation(signal);
     let warning: string | undefined;
     if (input.approval === undefined && !relayedOnly) {
       // No relayed evidence: a person at a terminal types the phrase; otherwise a script with no
       // agent session may run the operations the owner listed in owner.json.
       const { stdin, stderr } = tty();
       if (attendedTerminal(process.env, stdin, stderr)) {
-        if (await confirm(request.op, displayAsk))
+        const confirmed = await confirm(request.op, displayAsk);
+        checkCancellation(signal);
+        if (confirmed)
           return directApproval({ ...direct, ask, method: "attended" });
       } else if (!agentSession(process.env) && POLICY_OPS.has(request.op)) {
         const policy = ownerPolicy(deviceRoot);
@@ -1282,12 +1295,13 @@ export async function createAssembly(
       }
       return [...configCandidates(), grantCandidate, ...candidates];
     },
-    async invoke(request) {
+    async invoke(request, signal) {
       const derived: DetectionObservation[] = [];
       const deviceMemory =
         !mcp && deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived, request.op === "store.export");
       try {
+        checkCancellation(signal);
         const preview =
           request.op === "config.show"
             ? configCandidates().find((entry) => entry.op === request.op)
@@ -1306,8 +1320,9 @@ export async function createAssembly(
             ),
           );
         const prefix = () =>
-          idPrefixObservation(root, stateRoot, options.providers).catch(
+          idPrefixObservation(root, stateRoot, options.providers, signal).catch(
             (error: unknown) => {
+              checkCancellation(signal);
               if (core) {
                 if (!(error instanceof GitCommandError)) throw error;
                 call.warnings.push({
@@ -1406,7 +1421,13 @@ export async function createAssembly(
       } catch (error) {
         return withCallWarnings(call, failure(request.op, error));
       }
-      const result = await direct.invoke(call, request, mcp, deviceMemory);
+      const result = await direct.invoke(
+        call,
+        request,
+        mcp,
+        deviceMemory,
+        signal,
+      );
       if (
         !result.ok &&
         process.env.T3CODE_CLI_PATH &&
@@ -1433,8 +1454,11 @@ export async function createAssembly(
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
       mcp: boolean,
       deviceMemory: boolean,
+      signal?: AbortSignal,
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
+        checkCancellation(signal);
+        const approve = approveWithSignal.bind(undefined, signal);
         const checked = validateInvocationRequest(request);
         if (!checked.ok) refuse("INPUT_INVALID", "Invalid invocation");
         const entry = [
@@ -1501,7 +1525,7 @@ export async function createAssembly(
               ask(stateRoot),
               ask(quoteDisplayText(stateRoot)),
             );
-            return await recovery.create(async (staged) => {
+            const initialize = async (staged: LocalState) => {
               const opened = openLevels({
                 root,
                 manifestRoot,
@@ -1515,6 +1539,7 @@ export async function createAssembly(
                 write: true,
                 requestId: request.requestId,
                 replaceRegistration: true,
+                signal,
               });
               try {
                 const project = await opened.levels.project();
@@ -1522,7 +1547,8 @@ export async function createAssembly(
               } finally {
                 await opened.close();
               }
-            });
+            };
+            return await recovery.create(initialize, signal);
           }
           if (request.op === "project.init") {
             if (bound.context.variant !== "project")
@@ -1536,6 +1562,7 @@ export async function createAssembly(
               ask(manifestRoot),
               ask(quoteDisplayText(manifestRoot)),
             );
+            checkCancellation(signal);
             const made = initProjectManifest(
               manifestRoot,
               typeof input.name === "string" ? input.name : undefined,
@@ -1553,6 +1580,7 @@ export async function createAssembly(
             if (request.op === "config.show") await trustState.open(false);
             // laws.check reads which blocks are admitted, so it opens trust state the same way
             if (request.op === "laws.check") await trustState.open(false);
+            checkCancellation(signal);
             const handled = configHandler(request.input);
             const deviceOnly = !call.inProject && !record(handled)?.configured;
             const current =
@@ -1677,6 +1705,7 @@ export async function createAssembly(
                 message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
               });
             const { syncSkills } = await loadSkills();
+            checkCancellation(signal);
             const synced = syncSkills(
               root,
               catalog.list(),
@@ -1759,6 +1788,7 @@ export async function createAssembly(
           }
           if (request.op === "block.check" || request.op === "block.add") {
             await trustState.open(false);
+            checkCancellation(signal);
             const spec = String(input.path);
             const source = sourceFor(spec);
             const block = captureBlock(
@@ -1838,6 +1868,7 @@ export async function createAssembly(
             const ask = (format: (text: string) => string) =>
               `Let scripts and CI with no agent session run ${unattended.map(format).join(", ") || "no operations"} without asking, by writing owner.json in the device folder.`;
             await approve(request, ask(String), ask(quoteDisplayText));
+            checkCancellation(signal);
             writePrivateTextAtomic(
               join(deviceRoot, "owner.json"),
               `${JSON.stringify({ unattended })}\n`,
@@ -1879,6 +1910,7 @@ export async function createAssembly(
               ask(String),
               ask(quoteDisplayText),
             );
+            checkCancellation(signal);
             trustActor = request.context.actor;
             try {
               if (request.op === "block.admit") trust.admit(approval, digest);
@@ -1960,6 +1992,7 @@ export async function createAssembly(
               scope: ownContext,
               env: options.providers?.env ?? process.env,
               cloud: options.providers?.cloudLogin,
+              ...(signal === undefined ? {} : { signal }),
               coordinate: async (flight, project) =>
                 (await loadLaneCoordinator()).coordinateLane(
                   flight,
@@ -1974,7 +2007,7 @@ export async function createAssembly(
                     );
                     if (!nested)
                       refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
-                    const answer = await (mcp ? mcpCatalog : catalog).invoke({
+                    const nestedRequest = {
                       ...request,
                       requestId: release?.requestId ?? request.requestId,
                       op: nested.op,
@@ -1986,7 +2019,11 @@ export async function createAssembly(
                           ? {}
                           : { leaseGeneration: generation }),
                       },
-                    });
+                    };
+                    const answer = await (mcp ? mcpCatalog : catalog).invoke(
+                      nestedRequest,
+                      signal,
+                    );
                     if (!answer.ok) throw new ForgeFailure(answer.error);
                     return answer.result;
                   },
@@ -1995,6 +2032,7 @@ export async function createAssembly(
                     env,
                     deviceRoot,
                     now: options.providers?.cloudLogin?.now ?? Date.now,
+                    ...(signal === undefined ? {} : { signal }),
                   },
                 ),
             },
@@ -2065,6 +2103,7 @@ export async function createAssembly(
         );
         const runtime = new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
+          drainServicePreparation: true,
           async services(instance, context, scope) {
             const clients: Record<string, unknown> = {};
             const leases: import("../ports/lifetime.ts").OwnedHandle<unknown>[] =
@@ -2142,7 +2181,7 @@ export async function createAssembly(
                       "CONTEXT_MISSING",
                       "Store export requires project context",
                     );
-                  const lease = await projectState.acquire(false);
+                  const lease = await projectState.acquire(false, scope.signal);
                   leases.push(lease);
                   clients[binding.slot] = (
                     await import("./store-export.ts")
@@ -2163,7 +2202,7 @@ export async function createAssembly(
                   const configured = [...current.blocks.values()].some(
                     (block) => block.manifest.id === "forge/check",
                   );
-                  const lease = await projectState.acquire(false);
+                  const lease = await projectState.acquire(false, scope.signal);
                   leases.push(lease);
                   clients[binding.slot] = createReceiptsService(scope, {
                     get: (key) =>
@@ -2246,6 +2285,7 @@ export async function createAssembly(
                     deviceRoot,
                     projectState,
                     deviceState,
+                    signal: scope.signal,
                     namespace,
                     actor: context.actor,
                     servesProject: call.inProject,
@@ -2284,6 +2324,7 @@ export async function createAssembly(
                   .operation.declaredOp.split(".")[0]!;
                 const lease = await storage.acquire(
                   scope.effects.includes(`${noun}:write`),
+                  scope.signal,
                 );
                 leases.push(lease);
                 const owner = lease.value;
@@ -2356,7 +2397,10 @@ export async function createAssembly(
             target.declaredOp === "memory.reject");
         const checkDecision = async () => {
           if (!decision) return undefined;
-          const checked = await runtime.invoke(request, { check: true });
+          const checked = await runtime.invoke(request, {
+            check: true,
+            ...(signal === undefined ? {} : { signal }),
+          });
           return checked.ok ? undefined : checked;
         };
         const laneOwned =
@@ -2426,7 +2470,10 @@ export async function createAssembly(
           const cloud = await fromCloud(runtime);
           if (cloud) return cloud;
         }
-        const result = await runtime.invoke(request);
+        const result = await runtime.invoke(
+          request,
+          signal === undefined ? undefined : { signal },
+        );
         return checkResult(
           runtimeCatalog,
           request.op,

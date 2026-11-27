@@ -189,6 +189,7 @@ export async function checkoutScopeRoot(
 export async function originRepositoryName(
   dir: string,
   options: VcsAdapterOptions,
+  abort?: AbortSignal,
 ): Promise<string | undefined> {
   if (nearestGitEntry(dir) === undefined) return undefined;
   const env = gitEnvironment(options.env);
@@ -203,6 +204,7 @@ export async function originRepositoryName(
         env,
         timeoutMs: options.timeoutMs,
         maxOutputBytes: options.maxOutputBytes,
+        ...(abort === undefined ? {} : { signal: abort }),
       },
     );
     const { exitCode, stdout, stderr, timedOut, truncated, signal } = result;

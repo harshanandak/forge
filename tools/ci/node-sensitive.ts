@@ -225,4 +225,6 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node on the built hub store to verify SQLite and answer locking.",
   "hub/test/core/answers.test.ts":
     "Launches two selected Node contenders to verify concurrent hub answer locking.",
+  "hub/test/service/serve.integration.test.ts":
+    "Launches selected Node on the hub service to observe startup, shutdown and the fixed header limit.",
 };

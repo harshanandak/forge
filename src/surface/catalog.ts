@@ -25,7 +25,10 @@ export interface SurfaceCatalog {
     caller: Caller,
     readOnly?: boolean,
   ): TemplateHint | undefined;
-  invoke(request: InvocationRequest): Promise<ResultEnvelope>;
+  invoke(
+    request: InvocationRequest,
+    signal?: AbortSignal,
+  ): Promise<ResultEnvelope>;
 }
 
 export const emptyCatalog: SurfaceCatalog = {

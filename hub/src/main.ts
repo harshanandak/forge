@@ -25,8 +25,10 @@ import {
   createRemoteHandler,
   runAdminCommand,
 } from "./remote/index.ts";
+import { serveHub } from "./service/serve.ts";
 import { runSetupCommand } from "./setup/index.ts";
 
+const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const;
 const ignore = (): void => undefined;
 const log: HubLog = { info: ignore, warn: ignore, error: ignore };
 const noDoorbell: DoorbellPort = {
@@ -40,6 +42,8 @@ const failureMessages = {
   stdin: "could not read stdin",
   stdinLimit: "stdin exceeds " + LIMITS.bodyBytes + " bytes",
   unavailable: "not_built",
+  service: "could not run hub service",
+  telegram: "Telegram is unavailable for the hub service",
 };
 
 class EntryFailure extends Error {
@@ -226,7 +230,7 @@ function databaseAction<T>(run: () => T): T {
 async function withCore(
   services: MainServices,
   config: HubConfig,
-  run: (core: HubCore) => Promise<number>,
+  run: (core: HubCore, chat?: ChatPort) => Promise<number>,
   secret?: ReadSecret,
 ): Promise<number> {
   const { createHubCore, nullTracker, openHubDb } = await services.loadCore();
@@ -254,7 +258,7 @@ async function withCore(
       log,
     });
     try {
-      return await run(core);
+      return await run(core, chat);
     } finally {
       await core.close();
     }
@@ -263,21 +267,46 @@ async function withCore(
   }
 }
 
-export function runService(
+export async function runService(
   config: HubConfig,
   secret: ReadSecret,
   services: MainServices,
 ): Promise<number> {
-  return withCore(
-    services,
-    config,
-    async (core) => {
-      if (config.mcp.enabled || config.hooks.enabled)
-        await services.createRemoteHandler({ config, core, log }).close();
-      throw new EntryFailure("unavailable");
-    },
-    secret,
-  );
+  if (config.chat?.adapter === "telegram") throw new EntryFailure("telegram");
+  const stop = new AbortController();
+  const onSignal = () => stop.abort();
+  for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
+  try {
+    return await withCore(
+      services,
+      config,
+      async (core, chat) => {
+        const remote =
+          config.mcp.enabled || config.hooks.enabled
+            ? services.createRemoteHandler({ config, core, log })
+            : undefined;
+        try {
+          await serveHub({
+            config,
+            core,
+            log,
+            stop: stop.signal,
+            ...(chat === undefined ? {} : { chat }),
+            ...(remote === undefined ? {} : { remote }),
+          });
+          return 0;
+        } finally {
+          await remote?.close();
+        }
+      },
+      secret,
+    );
+  } catch (error) {
+    if (error instanceof EntryFailure) throw error;
+    throw new EntryFailure("service");
+  } finally {
+    for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
+  }
 }
 
 export function main(

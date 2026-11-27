@@ -29,8 +29,8 @@ export const providerCounterfactuals = [
   },
   {
     file: "assembly/index.js",
-    from: "storage.acquire(scope.effects.includes(`${noun}:write`))",
-    to: "storage.acquire(scope.effects.length > 0)",
+    from: "storage.acquire(scope.effects.includes(`${noun}:write`), scope.signal)",
+    to: "storage.acquire(scope.effects.length > 0, scope.signal)",
     mode: "state-read",
     evidence: "non-state effects must not open writable project state",
   },

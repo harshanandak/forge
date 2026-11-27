@@ -99,6 +99,7 @@ export interface RuntimeOptions {
   readonly clock?: ClockPort;
   readonly isolation?: RunIsolationPort;
   readonly limits?: Partial<RuntimeLimits>;
+  readonly drainServicePreparation?: boolean;
   /** Constructs clients exposing only scope.effects, never block-wide grants.
    * The embedding owns capability enforcement and partial-open rollback.
    */
@@ -520,6 +521,7 @@ export class Runtime {
         async (late) => {
           if (late?.ownership === "owned") await late.close();
         },
+        this.#options.drainServicePreparation,
       );
       await scope.prepare(handle?.value);
       scope.check();

@@ -81,7 +81,7 @@ export function createMcpHandlers(
   const exposed = candidates.filter((candidate) => reachable.has(candidate.op));
   const restricted: SurfaceCatalog = {
     list: () => exposed,
-    invoke: (request) => catalog.invoke(request),
+    invoke: (request, signal) => catalog.invoke(request, signal),
     ...(catalog.admit === undefined
       ? {}
       : {
@@ -98,7 +98,8 @@ export function createMcpHandlers(
         return tool === undefined ? [] : [tool];
       }),
     ],
-    callTool: async (name, args) => {
+    callTool: async (name, args, signal) => {
+      const call = signal === undefined ? options : { ...options, signal };
       const core = discoveryOperations.find(
         (entry) =>
           entry.declaration.callers.includes("agent") &&
@@ -108,7 +109,7 @@ export function createMcpHandlers(
         if (exposure.readOnly && core.declaration.effects.length > 0)
           return undefined;
         return dispatch(restricted, core.op, args, {
-          ...options,
+          ...call,
           caller: "agent",
           ...(exposure.readOnly === undefined
             ? {}
@@ -119,7 +120,7 @@ export function createMcpHandlers(
       return candidate === undefined
         ? undefined
         : dispatch(catalog, candidate.op, args, {
-            ...options,
+            ...call,
             caller: "agent",
             ...(exposure.readOnly === undefined
               ? {}

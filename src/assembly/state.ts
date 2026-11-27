@@ -70,17 +70,18 @@ export class LocalState {
   readonly #projectRoot: string | undefined;
   readonly #store: StorePort;
   readonly #directories: DirectoryCreatePort | undefined;
-  readonly #missing: ((write: boolean) => Promise<void>) | undefined;
+  readonly #missing:
+    ((write: boolean, signal?: AbortSignal) => Promise<void>) | undefined;
   readonly #beforeWrite: (() => void) | undefined;
   readonly #entries = new Map<boolean, Entry>();
-  #queue: Promise<void> = Promise.resolve();
+  readonly #queue = new Set<() => void>();
   #closed = false;
   #deviceRecords = false;
   constructor(
     path: string,
     store: StorePort = sqliteStore,
     directories?: DirectoryCreatePort,
-    missing?: (write: boolean) => Promise<void>,
+    missing?: (write: boolean, signal?: AbortSignal) => Promise<void>,
     projectRoot?: string,
     beforeWrite?: () => void,
   ) {
@@ -109,13 +110,28 @@ export class LocalState {
       refuse("INTERNAL", error.message);
     }
   }
-  #serial<T>(work: () => T | Promise<T>): Promise<T> {
-    const result = this.#queue.then(work);
-    this.#queue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
+  async #serial<T>(
+    signal: AbortSignal | undefined,
+    work: () => T | Promise<T>,
+  ): Promise<T> {
+    signal?.throwIfAborted();
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const abort = () => {
+      if (this.#queue.values().next().value !== resolve)
+        this.#queue.delete(resolve);
+      reject(signal?.reason);
+    };
+    this.#queue.add(resolve);
+    if (this.#queue.size === 1) resolve();
+    else signal?.addEventListener("abort", abort, { once: true });
+    try {
+      await promise;
+      signal?.throwIfAborted();
+      return await work();
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      if (this.#queue.delete(resolve)) this.#queue.values().next().value?.();
+    }
   }
   #alreadyExists(): never {
     refuse(
@@ -130,8 +146,11 @@ export class LocalState {
     if (existsSync(this.#path)) this.#alreadyExists();
   }
   /** Initialize privately, then publish exclusively; failed recovery never unlinks a public store. */
-  async create<T>(initialize: (staged: LocalState) => Promise<T>): Promise<T> {
-    const pending = await this.#serial(() => {
+  async create<T>(
+    initialize: (staged: LocalState) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const pending = await this.#serial(signal, () => {
       this.validateCreate();
       const security = storeSecurity();
       const files = security ? securedFileOps(security) : undefined;
@@ -162,6 +181,7 @@ export class LocalState {
       } finally {
         await pending.state.close();
       }
+      signal?.throwIfAborted();
       try {
         linkDurable(pending.path, this.#path, pending.files);
       } catch (error) {
@@ -174,7 +194,10 @@ export class LocalState {
       removeDurable(pending.directory, { recursive: true }, pending.files);
     }
   }
-  async #entry(write: boolean): Promise<Entry | undefined> {
+  async #entry(
+    write: boolean,
+    signal?: AbortSignal,
+  ): Promise<Entry | undefined> {
     if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
     if (write) this.#beforeWrite?.();
     this.#resolveProjectPath();
@@ -188,7 +211,8 @@ export class LocalState {
       if (!result) return undefined;
     } else {
       if (!existsSync(this.#path)) {
-        await this.#missing?.(write);
+        await this.#missing?.(write, signal);
+        signal?.throwIfAborted();
         if (!write) return undefined;
       }
       if (write) ensurePrivateDirectory(dirname(this.#path), this.#directories);
@@ -202,6 +226,7 @@ export class LocalState {
           : result.unavailable.reason,
       });
     try {
+      signal?.throwIfAborted();
       const owner = new StateOwner(result.handle.value, {
         now: () => Date.now(),
       });
@@ -227,9 +252,9 @@ export class LocalState {
     }
   }
   /** Trust retains a pinned reader/writer for its synchronous admission checks. */
-  open(write: boolean): Promise<StateOwner | undefined> {
-    return this.#serial(async () => {
-      const entry = await this.#entry(write);
+  open(write: boolean, signal?: AbortSignal): Promise<StateOwner | undefined> {
+    return this.#serial(signal, async () => {
+      const entry = await this.#entry(write, signal);
       if (entry && !entry.pinned) {
         entry.pinned = true;
         entry.refs++;
@@ -237,16 +262,19 @@ export class LocalState {
       return entry?.owner;
     });
   }
-  acquire(write: boolean): Promise<OwnedHandle<StateOwner | undefined>> {
-    return this.#serial(async () => {
-      const entry = await this.#entry(write);
+  acquire(
+    write: boolean,
+    signal?: AbortSignal,
+  ): Promise<OwnedHandle<StateOwner | undefined>> {
+    return this.#serial(signal, async () => {
+      const entry = await this.#entry(write, signal);
       if (entry) entry.refs++;
       let closed = false;
       return {
         ownership: "owned",
         value: entry?.owner,
         close: () =>
-          this.#serial(async () => {
+          this.#serial(undefined, async () => {
             if (closed) return;
             closed = true;
             if (entry) await this.#release(entry);
@@ -268,7 +296,7 @@ export class LocalState {
   }
   async close(): Promise<void> {
     this.#closed = true;
-    const draining = await this.#serial(async () => {
+    const draining = await this.#serial(undefined, async () => {
       const entries = [...this.#entries.values()];
       const outcomes = await Promise.allSettled(
         entries

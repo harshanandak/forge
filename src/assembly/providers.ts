@@ -568,8 +568,13 @@ export async function idPrefixObservation(
   root: string,
   stateRoot: string,
   options: ProviderOptions = {},
+  signal?: AbortSignal,
 ): Promise<readonly DetectionObservation[]> {
-  const repository = await originRepositoryName(root, gitOptions(options));
+  const repository = await originRepositoryName(
+    root,
+    gitOptions(options),
+    signal,
+  );
   const value = idPrefix(repository ?? basename(stateRoot));
   return value === undefined
     ? []

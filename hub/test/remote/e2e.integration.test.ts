@@ -1,12 +1,11 @@
 import { expect, test } from "bun:test";
-import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import * as Mcp from "../../src/contract/mcp.ts";
 import * as Core from "../../src/core/index.ts";
 import { createDoorbell, createRemoteHandler } from "../../src/remote/index.ts";
-import { createHubHttpListener } from "../../src/service/routes.ts";
+import { HEALTH_PATH } from "../../src/service/routes.ts";
+import { serveHub } from "../../src/service/serve.ts";
 import { a, b, fixture, p1 } from "../core/fixture.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import {
@@ -50,11 +49,35 @@ function result<T>(body: WireEnvelope): T {
   return body.result as T;
 }
 
+async function ready(origin: string, exited: () => boolean) {
+  for (let i = 0; i < 75 && !exited(); i++) {
+    const healthy = await fetch(origin + HEALTH_PATH, {
+      signal: AbortSignal.timeout(100),
+    }).then(
+      (response) => response.ok,
+      () => false,
+    );
+    if (healthy) return true;
+    await Bun.sleep(100);
+  }
+  return false;
+}
+
 async function workspace(slack = true) {
-  const f = await fixture(
-    slack
+  const reservation = Bun.serve({
+    hostname: host,
+    port: 0,
+    fetch: () => new Response(),
+  });
+  const { port, origin } = reservation.url;
+  await reservation.stop(true);
+  const f = await fixture({
+    listen: { host, port: Number(port) },
+    allowedHosts: [host + ":" + port],
+    ...(slack
       ? { hooks: { enabled: true } }
       : {
+          chat: { adapter: "off" },
           slack: { mode: "off", buttons: false },
           people: [{ ...a }, { ...b }],
           projects: [
@@ -66,24 +89,19 @@ async function workspace(slack = true) {
             },
           ],
           doorbells: [],
-        },
-  );
+        }),
+  });
   expect(Core.protectDirectoryChain(f.config.dataDir)).toBe(true);
   const path = (file: string) => join(f.config.dataDir, file);
   const settings = path("settings.json");
-  const configAt = (port: number) => ({
-    ...f.config,
-    listen: { host, port },
-    allowedHosts: [host + ":" + port],
-  });
-  await writeFile(settings, JSON.stringify(configAt(f.config.listen.port)));
+  await writeFile(settings, JSON.stringify(f.config));
   const cli = (args: string[], input?: string) =>
     child(f.root, [bin("forge-hub"), ...args, "--config", settings], input);
   const create = (kind: "host" | "token", file: string) => {
     const flags = ["--person", a.personId, "--label", "fixture", "--output"];
     return cli([kind, "create", ...flags, file]);
   };
-  return { ...f, path, settings, configAt, cli, create };
+  return { ...f, path, settings, origin, cli, create };
 }
 
 function journey(
@@ -106,9 +124,10 @@ function journey(
 
 async function realHub() {
   const f = await workspace();
-  const chat = new FakeChatPort(f.config.slack.teamId);
+  const { config, origin } = f;
+  const chat = new FakeChatPort(config.slack.teamId);
   const doorbell = createDoorbell({ ...f, secret: () => undefined });
-  const people = Core.createPeopleDirectory(f.config.people);
+  const people = Core.createPeopleDirectory(config.people);
   const core = Core.createHubCore({
     ...f,
     chat,
@@ -118,35 +137,39 @@ async function realHub() {
     now: Date.now,
   });
   const remote = createRemoteHandler({ ...f, core });
-  const allowedHosts: string[] = [];
-  const config = { ...f.config, allowedHosts };
-  const listener = createHubHttpListener({ ...f, config, remote, chat });
-  const server = createServer(listener);
+  const abort = new AbortController();
+  let exited = false;
+  const serving = serveHub({
+    ...f,
+    core,
+    remote,
+    chat,
+    stop: abort.signal,
+  }).finally(() => {
+    exited = true;
+  });
+  void serving.catch(() => undefined);
   const close = async () => {
-    const closed = new Promise<void>((done) => server.close(() => done()));
-    server.closeAllConnections();
-    await closed;
-    await remote.close();
-    await core.close();
+    abort.abort();
+    try {
+      await serving;
+    } finally {
+      try {
+        await remote.close();
+      } finally {
+        await core.close();
+      }
+    }
   };
-  let authority: string;
   try {
-    await core.start();
+    expect(await ready(origin, () => exited), "Hub health").toBe(true);
     core.createToken(a.personId, "fixture", digest(token));
     core.createHostKey(a.personId, "fixture", digest(key));
     await writeFile(f.path("hook-host"), key, { mode: 0o600 });
-    server.listen(0, host);
-    await once(server, "listening");
-    const address = server.address();
-    if (!address || typeof address === "string")
-      throw new Error("Expected TCP");
-    authority = host + ":" + address.port;
-    allowedHosts.push(authority);
   } catch (error) {
     await close();
     throw error;
   }
-  const origin = "http://" + authority;
   const handle = requestAt(origin);
   const hook = (name: string, input: unknown, file = f.path("hook-host")) =>
     child(f.root, [bin(name)], JSON.stringify(input), {
@@ -309,14 +332,7 @@ test(
   "E5 the Slack-off Node hub round-trips a CLI message",
   async () => {
     const f = await workspace(false);
-    const reservation = Bun.serve({
-      hostname: host,
-      port: 0,
-      fetch: () => new Response(),
-    });
-    const { port, origin } = reservation.url;
-    await reservation.stop(true);
-    await writeFile(f.settings, JSON.stringify(f.configAt(Number(port))));
+    const { origin } = f;
     const node = Bun.which("node");
     if (!node) throw new Error("Selected Node is unavailable");
     const env = Object.fromEntries(
@@ -341,20 +357,8 @@ test(
       new Response(proc.stderr).text(),
     ]);
     try {
-      let ready = false;
-      for (let i = 0; i < 75 && proc.exitCode === null && !ready; i++) {
-        ready = await fetch(origin + "/healthz", {
-          signal: AbortSignal.timeout(100),
-        }).then(
-          (r) => r.ok,
-          () => false,
-        );
-        if (!ready) await Bun.sleep(100);
-      }
-      const stderr = proc.exitCode === null ? "" : (await streams)[1];
-      const unavailable = stderr.split(/\r?\n/).includes("not_built");
-      const message = unavailable ? "forge-hub serve: not_built" : "Hub health";
-      expect(ready, message).toBe(true);
+      const healthy = await ready(origin, () => proc.exitCode !== null);
+      expect(healthy, "Hub health (exit " + proc.exitCode + ")").toBe(true);
       const path = f.path("person-output");
       expect((await f.create("token", path)).status).toBe(0);
       const bearer = (await readFile(path, "utf8"))
