@@ -240,7 +240,7 @@ export function isRfc3339DateTime(value: string): boolean {
 const DAY = String.raw`(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8])`;
 const LEAP_YEAR = String.raw`[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00`;
 const HOUR = "(?:[01][0-9]|2[0-3])";
-export const DATE_TIME_PATTERN = String.raw`^(?:[0-9]{4}-(?:${DAY})|(?:${LEAP_YEAR})-02-29)[Tt]${HOUR}:[0-5][0-9]:[0-5][0-9](?:\.[0-9]+)?(?:[Zz]|[+-]${HOUR}:[0-5][0-9])$`;
+export const DATE_TIME_PATTERN: string = String.raw`^(?:[0-9]{4}-(?:${DAY})|(?:${LEAP_YEAR})-02-29)[Tt]${HOUR}:[0-5][0-9]:[0-5][0-9](?:\.[0-9]+)?(?:[Zz]|[+-]${HOUR}:[0-5][0-9])$`;
 const SCHEMA_LISTS: ReadonlySet<string> = new Set(["allOf", "anyOf", "oneOf"]);
 const SCHEMA_MAPS: ReadonlySet<string> = new Set(["properties", "$defs"]);
 
