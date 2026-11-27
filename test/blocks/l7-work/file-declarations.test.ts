@@ -16,7 +16,7 @@ const sha = "0123456789abcdef0123456789abcdef01234567";
 const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(486)}`);
 const mediumFiles = Array.from(
   { length: 1024 },
-  () => `src/${"a".repeat(450)}`,
+  () => `src/${"a".repeat(452)}`,
 );
 const wideFiles = Array.from({ length: 256 }, () => `src/${"é".repeat(996)}`);
 const globals = globalThis as Record<string, unknown>;
