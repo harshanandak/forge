@@ -5,6 +5,7 @@
 // A replay checks the lease again, so a device that lost it never gets the old result back.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import UpdateItemInput from "../../src/blocks/work/schemas/UpdateItemInput.json" with { type: "json" };
+import { normalizeFileDeclarations } from "../../src/blocks/work/file-declarations.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
@@ -33,7 +34,14 @@ if (
 interface Fields {
   id: string;
   expectRevision: number;
-  patch: { title?: string; body?: string; labels?: string[] };
+  patch: {
+    title?: string;
+    body?: string;
+    labels?: string[];
+    expectedFiles?: readonly string[];
+    actualFiles?: readonly string[];
+    filesAt?: string;
+  };
 }
 
 // The fence a held-lease context names: the caller's holder and generation, the device from the token.
@@ -103,7 +111,16 @@ export function checkedUpdateInput(input: unknown) {
     throw fail("INPUT_INVALID", UPDATE_GRAPH);
   if (schemas().validate(UpdateItemInput.$ref, input).length > 0)
     throw fail("INPUT_INVALID", UPDATE_SCHEMA);
-  return input as Fields["patch"] & { id: string; expectRevision: number };
+  const declarations = normalizeFileDeclarations(input, [
+    "expectedFiles",
+    "actualFiles",
+    "filesAt",
+  ]);
+  if (!declarations.ok) throw fail("INPUT_INVALID", declarations.message);
+  return {
+    ...(input as Fields["patch"] & { id: string; expectRevision: number }),
+    ...declarations.patch,
+  };
 }
 
 /** Edits one issue's title, body or labels, or returns the recorded answer while the caller still holds its lease. */

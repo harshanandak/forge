@@ -19,6 +19,8 @@ const {
   approvalFor,
   hostedCheck: { hostedGate, repo: hostedRepo },
 } = require("./record-primitives.ts") as typeof import("./record-primitives.ts");
+const { normalizeFileDeclarations } =
+  require("./file-declarations.ts") as typeof import("./file-declarations.ts");
 import type {
   ReceiptsService,
   ProcessService,
@@ -1183,6 +1185,12 @@ function update(
   given: string,
 ): TrackerItem {
   const value = stored(get(state, input.id, given));
+  const declarations = normalizeFileDeclarations(input, [
+    "expectedFiles",
+    "actualFiles",
+    "filesAt",
+  ]);
+  if (!declarations.ok) fail("INPUT_INVALID", declarations.message);
   checkKind(input.kind);
   if (
     value.kind === "epic" &&
@@ -1207,7 +1215,7 @@ function update(
     ? [...validateDependencies(state, input.id, input.dependsOn, ids)]
     : [];
   const { id, expectRevision, parent, ...patch } = input;
-  const next = { ...value, ...patch };
+  const next = { ...value, ...patch, ...declarations.patch };
   if (parent === null) delete next.parent;
   else if (parent !== undefined) {
     const target = ids.stored(parent);
@@ -6022,6 +6030,8 @@ const operations: Operations<WorkOperations> = {
   "issue.create": ({ input, services, config }) => {
     const state = client(services);
     const ids = idsFor(state, config);
+    const declarations = normalizeFileDeclarations(input, ["expectedFiles"]);
+    if (!declarations.ok) fail("INPUT_INVALID", declarations.message);
     checkKind(input.kind);
     const dependsOn = [...new Set((input.dependsOn ?? []).map(ids.stored))];
     const parent =
@@ -6042,6 +6052,7 @@ const operations: Operations<WorkOperations> = {
         ...(input.kind ? { kind: input.kind } : {}),
         ...(input.body === undefined ? {} : { body: input.body }),
         ...(parent === undefined ? {} : { parent }),
+        ...declarations.patch,
       };
       return { value, readSet };
     });
