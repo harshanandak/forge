@@ -35,6 +35,10 @@ interface CommentDiffModule {
     oids: readonly string[],
   ) => Buffer[];
   readonly parseLsTree?: (output: string) => Map<string, string>;
+  readonly resolveBlobIds?: (
+    files: readonly string[],
+    blobs: ReadonlyMap<string, string>,
+  ) => string[];
 }
 
 let tested: CommentDiffModule | undefined;
@@ -71,6 +75,30 @@ function repository(headFiles: Readonly<Record<string, string>>): string {
   git(root, "commit", "-qm", "head");
   return root;
 }
+function symlinkRepository(): { root: string; head: string } {
+  const root = mkdtempSync(join(tmpdir(), "forge-comment-diff-"));
+  git(root, "init", "-q");
+  git(root, "config", "user.name", "Fixture");
+  git(root, "config", "user.email", "fixture@example.invalid");
+  git(root, "config", "commit.gpgsign", "false");
+  put(root, ".gitattributes", "* -text\n");
+  put(root, "src/base.ts", "export const base = 1;\n");
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "base");
+  git(root, "branch", "base");
+  put(root, "target.ts", "export const target = 1;\n");
+  const blob = git(root, "hash-object", "-w", "target.ts");
+  rmSync(join(root, "target.ts"));
+  git(
+    root,
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `120000,${blob},src/link.ts`,
+  );
+  git(root, "commit", "-qm", "symlink");
+  return { root, head: git(root, "rev-parse", "HEAD") };
+}
 function subcommandOf(entry: unknown): string {
   if (!Array.isArray(entry)) return "";
   const command: unknown = entry[3];
@@ -104,6 +132,15 @@ function parseTree(): (output: string) => Map<string, string> {
   if (typeof parseListing !== "function")
     throw new Error("The tree listing parser is unavailable");
   return parseListing;
+}
+function blobIds(): (
+  files: readonly string[],
+  blobs: ReadonlyMap<string, string>,
+) => string[] {
+  const resolve = api().resolveBlobIds;
+  if (typeof resolve !== "function")
+    throw new Error("The blob resolver is unavailable");
+  return resolve;
 }
 function readTexts(): (
   root: string,
@@ -219,6 +256,38 @@ test("batch frames decode after framing and keep every byte", () => {
   expect(parsed[0]?.equals(Buffer.from(bodies[0] ?? "", "utf8"))).toBe(true);
   expect(parsed[1]?.equals(Buffer.from(bodies[1] ?? "", "utf8"))).toBe(true);
   expect(parse()(Buffer.alloc(0), [])).toHaveLength(0);
+}, 30_000);
+
+test("the tree parser rejects non-source modes", () => {
+  const oid = "c".repeat(40);
+  expect(() => parseTree()(`120000 blob ${oid}\tsrc/link.ts\0`)).toThrow();
+  expect(() => parseTree()(`160000 commit ${oid}\tsrc/sub.ts\0`)).toThrow();
+}, 30_000);
+
+test("a committed symlink is rejected instead of read as source", () => {
+  const link = symlinkRepository();
+  try {
+    expect(() => readTexts()(link.root, link.head, ["src/link.ts"])).toThrow();
+  } finally {
+    rmSync(link.root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("blob resolution requires exactly the requested path set", () => {
+  const resolve = blobIds();
+  const oidA = "a".repeat(40);
+  const oidB = "b".repeat(40);
+  expect(resolve(["src/a.ts"], new Map([["src/a.ts", oidA]]))).toEqual([oidA]);
+  expect(() => resolve(["src/a.ts"], new Map())).toThrow();
+  expect(() =>
+    resolve(
+      ["src/a.ts"],
+      new Map([
+        ["src/a.ts", oidA],
+        ["src/unrequested.ts", oidB],
+      ]),
+    ),
+  ).toThrow();
 }, 30_000);
 
 test("both parsers accept a 64-character object id", () => {
