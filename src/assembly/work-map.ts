@@ -76,7 +76,7 @@ function scanWarnings(snapshot: Snapshot, branchFor?: Branch): Scan {
     const result = resolveFileOverlap({
       left: candidate,
       right: other,
-      trackedPaths: globWork ? paths : [],
+      trackedPaths: [],
       generatedFiles: snapshot.generatedFiles,
     });
     for (const reason of result.reasons) reasons.add(reason.kind);
