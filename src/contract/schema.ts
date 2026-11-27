@@ -284,6 +284,9 @@ function equalJson(
   depth = 0,
 ): boolean {
   spend?.(depth);
+  if (typeof a === "string" && typeof b === "string" && a.length === b.length) {
+    spend?.(depth, Math.ceil(Math.max(0, a.length - 64) / 8));
+  }
   if (a === b) return true;
   if (Array.isArray(a)) {
     return (
@@ -980,21 +983,30 @@ export class SchemaRegistry {
     }
 
     if (typeof value === "string") {
-      const length = [...value].length;
-      if (typeof schema.minLength === "number" && length < schema.minLength) {
-        add("minLength", `must be at least ${schema.minLength} characters`);
-      }
-      if (typeof schema.maxLength === "number" && length > schema.maxLength) {
-        add("maxLength", `must be at most ${schema.maxLength} characters`);
-      }
+      const stringWork = Math.ceil(Math.max(0, value.length - 64) / 8);
       if (
-        typeof schema.pattern === "string" &&
-        !this.#pattern(schema.pattern).test(value)
+        typeof schema.minLength === "number" ||
+        typeof schema.maxLength === "number"
       ) {
-        add("pattern", `must match ${schema.pattern}`);
+        charge(stringWork);
+        let length = 0;
+        for (const _point of value) length++;
+        if (typeof schema.minLength === "number" && length < schema.minLength)
+          add("minLength", `must be at least ${schema.minLength} characters`);
+        if (typeof schema.maxLength === "number" && length > schema.maxLength)
+          add("maxLength", `must be at most ${schema.maxLength} characters`);
       }
-      if (schema.format === "date-time" && !isRfc3339DateTime(value)) {
-        add("format", "must be an RFC 3339 date-time with real field values");
+      if (typeof schema.pattern === "string") {
+        charge(stringWork);
+        if (!this.#pattern(schema.pattern).test(value)) {
+          charge(Math.ceil(schema.pattern.length / 8));
+          add("pattern", `must match ${schema.pattern}`);
+        }
+      }
+      if (schema.format === "date-time") {
+        charge(stringWork);
+        if (!isRfc3339DateTime(value))
+          add("format", "must be an RFC 3339 date-time with real field values");
       }
     }
 
