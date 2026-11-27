@@ -92,6 +92,7 @@ const noDb: HubDb = {
   exec: noDatabase,
   prepare: noDatabase,
   transaction: noDatabase,
+  claimWorker: noDatabase,
   close: ignore,
 };
 

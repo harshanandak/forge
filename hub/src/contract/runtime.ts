@@ -15,10 +15,15 @@ export interface HubStatement {
   all(...params: SqlValue[]): SqlRow[];
 }
 
+export interface WorkerClaim {
+  release(): void;
+}
+
 export interface HubDb {
   exec(sql: string): void;
   prepare(sql: string): HubStatement;
   transaction<T>(work: () => T): T;
+  claimWorker(): WorkerClaim;
   close(): void;
 }
 

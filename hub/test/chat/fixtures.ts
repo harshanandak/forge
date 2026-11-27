@@ -95,6 +95,7 @@ const blockedDb: Runtime.HubDb = {
   exec: blockDb,
   prepare: blockDb,
   transaction: blockDb,
+  claimWorker: blockDb,
   close: blockDb,
 };
 
@@ -112,6 +113,7 @@ export function testDb(path: string, initialize: boolean): Runtime.HubDb {
       };
     },
     transaction: (work) => database.transaction(work).immediate(),
+    claimWorker: blockDb,
     close: () => database.close(),
   };
 }

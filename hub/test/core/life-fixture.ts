@@ -19,6 +19,7 @@ import {
   closeDb,
   configPeople,
   fixture,
+  onFixtureCleanup,
   openDb,
   p1,
   seedHost,
@@ -62,7 +63,15 @@ export async function lifeFixture(schedule?: EffectSchedule) {
     const chat = new FakeChatPort(f.config.slack.teamId);
     const ctx = context(db, chat, ref);
     const core = createCoreBase(ctx);
-    const worker = createEffectWorker(ctx, schedule);
+    const effects = createEffectWorker(ctx, schedule);
+    const untrack = onFixtureCleanup(() => effects.close());
+    const worker = {
+      ...effects,
+      close() {
+        untrack();
+        return effects.close();
+      },
+    };
     await chat.start(core.chatHandlers);
     chat.provisionSummary(ref.channelId, publicationKey, ref);
 
@@ -178,7 +187,10 @@ export async function lifeFixture(schedule?: EffectSchedule) {
       },
       ref,
       publicationKey,
+      path: f.path,
+      anotherWorker: (handle = db) => attach(handle, ref),
       async reopen(summaryMessage = ref) {
+        await worker.close();
         await chat.stop();
         closeDb(db);
         return attach(openDb(f.path), summaryMessage);

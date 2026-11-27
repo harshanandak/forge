@@ -205,6 +205,7 @@ const ownFiles = [
   "dist/core/store.js",
   "dist/core/thread.js",
   "dist/core/waiters.js",
+  "dist/core/worker-lock.js",
   "dist/main.js",
   "dist/remote/index.js",
   "dist/setup/index.js",
