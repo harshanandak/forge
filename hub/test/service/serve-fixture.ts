@@ -345,6 +345,7 @@ async function probe() {
             "elsewhere.example.test",
           );
           headers = {
+            node: process.versions.node,
             fixed,
             atLimit,
             hiddenHost,
@@ -364,7 +365,6 @@ async function probe() {
       }
       const code = await run;
       return {
-        node: process.versions.node,
         code,
         stderr,
         events,

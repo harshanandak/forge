@@ -194,8 +194,8 @@ test(
 test(
   "H-limit the Node service fixes its limit and rejects a saturated header view before dispatch",
   () => {
-    const result = probe("headers") as { node: string };
-    const [major = 0, minor = 0, patch = 0] = result.node
+    const result = probe("headers") as { headers: { node: string } };
+    const [major = 0, minor = 0, patch = 0] = result.headers.node
       .split(".")
       .map(Number);
     const at = major * 1e6 + minor * 1e3 + patch;
