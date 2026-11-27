@@ -104,6 +104,8 @@ function fixture() {
         issues: () => ({ items: [], truncated: false }),
         deliveries: () => ({ items: [], truncated: false }),
         pull: () => ({ state: "CLOSED" }),
+        gitProcessCost: process.platform === "win32" ? 2 : 1,
+        pullProcessCost: () => 1,
       },
       { cwd, env: { ...gitEnv, ...overrides }, defaultRef, timeoutMs: 5000 },
     );
@@ -130,7 +132,7 @@ test("real Git pins the project default across ref movement and foreign Git envi
         ...f.adapter,
         async run(git, args, opts) {
           const response = await f.adapter.run(git, args, opts);
-          if (args[1] === "rev-parse")
+          if (args.includes("rev-parse"))
             f.command(["update-ref", defaultRef, candidate]);
           return response;
         },

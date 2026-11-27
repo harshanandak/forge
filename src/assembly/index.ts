@@ -86,6 +86,7 @@ import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
 import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
 import { advisoryLeaseReader, WORK_MAP_LIMITS } from "./work-map-read.ts";
+import { pinAdvisoryExecutable } from "./work-map-process.ts";
 import {
   blockCapture,
   resolveBlock,
@@ -748,6 +749,26 @@ export async function createAssembly(
       "LOCALAPPDATA",
     ]);
     const git = gitCapability(process, env, createGitScope(stateRoot, root));
+    const gitExecutable = git.executable();
+    const { platform } = environment;
+    if (gitExecutable.kind !== "resolved")
+      return unavailableMap("advisory Git executable unavailable");
+    const gitPin = pinAdvisoryExecutable(gitExecutable, platform, "git");
+    if (!gitPin) return unavailableMap("advisory Git process cost unavailable");
+    const { cost: gitProcessCost } = gitPin;
+    const tokens = environment.select(["GH_TOKEN", "GITHUB_TOKEN"]);
+    let pullExecutable: ReturnType<typeof pinAdvisoryExecutable> | null;
+    function boundedPull() {
+      if (pullExecutable === undefined) {
+        const gh = resolveOutside(process, "gh", env, [stateRoot, root]);
+        pullExecutable =
+          gh.kind === "resolved" &&
+          (platform !== "darwin" || tokens.GH_TOKEN || tokens.GITHUB_TOKEN)
+            ? (pinAdvisoryExecutable(gh, platform, "gh") ?? null)
+            : null;
+      }
+      return pullExecutable;
+    }
     const run = { cwd: stateRoot, env, signal, timeoutMs: advisoryMs };
     let bytes: number = WORK_MAP_LIMITS.outputBytes;
     const charge = (size: number) => {
@@ -762,7 +783,7 @@ export async function createAssembly(
       return answer;
     };
     const lanes = await providers
-      .openFiles(scope)
+      .openFiles(scope, gitPin)
       .then(async (files) => {
         try {
           const { boundLaneRegistry } =
@@ -776,7 +797,18 @@ export async function createAssembly(
     const map = await readWorkWarnings(
       {
         now: Date.now,
-        process: { ...process, resolve: () => git.executable() },
+        process: {
+          ...process,
+          resolve() {
+            const current = git.executable();
+            if (current.kind !== "resolved") return current;
+            if (current.path !== gitExecutable.path || !gitPin.unchanged())
+              throw new Error("Advisory Git changed");
+            return gitExecutable;
+          },
+        },
+        gitProcessCost,
+        pullProcessCost: () => boundedPull()?.cost,
         async issues({ limit }) {
           const { result, leaseUnavailable } = await read("issue.list", {
             status: "open",
@@ -814,10 +846,10 @@ export async function createAssembly(
             )
           )
             throw new Error("PR lookup unavailable");
-          const gh = resolveOutside(process, "gh", env, [stateRoot, root]);
-          if (gh.kind !== "resolved") throw new Error("GitHub CLI unavailable");
+          const gh = boundedPull();
+          if (!gh?.unchanged()) throw new Error("GitHub CLI unavailable");
           const result = await process.run(
-            gh,
+            gh.executable,
             [
               "pr",
               "view",
@@ -829,7 +861,10 @@ export async function createAssembly(
               ...run,
               env: {
                 ...env,
-                ...environment.select(["GH_TOKEN", "GITHUB_TOKEN"]),
+                ...tokens,
+                GH_PROMPT_DISABLED: "1",
+                GH_NO_UPDATE_NOTIFIER: "1",
+                GH_NO_EXTENSION_UPDATE_NOTIFIER: "1",
               },
               maxOutputBytes: Math.min(maxBytes, bytes),
             },
@@ -854,7 +889,7 @@ export async function createAssembly(
         defaultRef: "refs/remotes/origin/HEAD",
         workInstance,
         candidateId,
-        initialProcesses: 1,
+        initialProcesses: gitProcessCost,
       },
       (id) =>
         lanes?.findLast(

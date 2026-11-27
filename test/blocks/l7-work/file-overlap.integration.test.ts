@@ -1,8 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -546,7 +548,6 @@ function observedCli(
   root: string,
   repo: string,
   args: string[],
-  delivered?: string,
   failList = false,
 ) {
   const capture = join(root, "processes.log");
@@ -556,28 +557,13 @@ function observedCli(
   const built = (module: string) =>
     new URL(`../../../dist/src/${module}.js`, import.meta.url).href;
   const run = built("adapters/process/run");
-  const providers = built("assembly/providers");
   const wrappedRun = moduleUrl(`
     export * from ${JSON.stringify(run)};
     import { runProcess as run } from ${JSON.stringify(run)};
     import { appendFileSync } from "node:fs";
     export async function runProcess(executable, args, ...tail) {
       appendFileSync(${JSON.stringify(capture)}, JSON.stringify(args) + "\\n");
-      if (${JSON.stringify(delivered ?? "")} && args[0] === "pr") {
-        if (args[1] !== "view" || args[2] !== ${JSON.stringify(delivered ?? "")})
-          throw new Error("Expected normalized delivered PR URL");
-        return { exitCode: 0, stdout: '{"state":"OPEN","headRefName":"feat/released"}',
-          stderr: "", signal: null, timedOut: false, truncated: false, durationMs: 0 };
-      }
       return run(executable, args, ...tail);
-    }
-  `);
-  const wrappedProviders = moduleUrl(`
-    export * from ${JSON.stringify(providers)};
-    import { resolveOutside as resolve } from ${JSON.stringify(providers)};
-    export function resolveOutside(executor, name, ...tail) {
-      return name === "gh" ? { kind: "resolved", path: process.execPath }
-        : resolve(executor, name, ...tail);
     }
   `);
   const hooks = moduleUrl(`
@@ -590,11 +576,11 @@ function observedCli(
         return invoke.call(this, request, ...rest);
       };
     }
-    const wrappers = ${JSON.stringify({ [run]: wrappedRun, ...(delivered ? { [providers]: wrappedProviders } : {}) })};
     registerHooks({ resolve(specifier, context, next) {
       const found = next(specifier, context);
-      const wrapped = wrappers[found.url];
-      return wrapped && context.parentURL !== wrapped ? { ...found, url: wrapped } : found;
+      const wrapped = ${JSON.stringify(wrappedRun)};
+      return found.url === ${JSON.stringify(run)} && context.parentURL !== wrapped
+        ? { ...found, url: wrapped } : found;
     } });
   `);
   const reply = laneCli(
@@ -706,118 +692,166 @@ test("advisory authority reads stay in the invoking renamed work instance", asyn
   }, "  zlab:\n    source: {builtin: forge/work}\n    bind: {state: core}\n    rename: {issue: labissue, attempt: labattempt, lane: lablane}\n    config: {idPrefix: lab}\n");
 }, 30_000);
 
-test("a delivered open PR with a trailing slash keeps a released holder visible", async () => {
-  await project(async ({ good }, repo, root) => {
-    const first = String((await good("issue.create", planned)).id);
-    const second = String((await good("issue.create", planned)).id);
-    const url = "https://github.com/example/overlap/pull/17/";
-    await good("issue.claim", { id: first });
-    await good("issue.link", { id: first, relation: "delivers", url });
-    await good("issue.release", { id: first });
-    const { reply, calls } = observedCli(
-      root,
-      repo,
-      ["issue", "claim", second],
-      url.slice(0, -1),
-    );
-    expect(reply.ok).toBe(true);
-    expect(calls.find((args) => args[0] === "pr")).toEqual([
-      "pr",
-      "view",
-      url.slice(0, -1),
-      "--json",
-      "state,headRefName",
-    ]);
-    expect(
-      mapWarnings(reply).find(({ code }) => code === "WORK_FILE_OVERLAP")
-        ?.message ?? "",
-    ).toContain("feat/released");
-  });
-}, 30_000);
+test.each(["script", "unknown native executable", "GitHub CLI build"] as const)(
+  "advisory process accounting with a %s preserves the CLI claim",
+  async (kind) => {
+    await project(async ({ good }, repo, root) => {
+      const holder = String((await good("issue.create", planned)).id);
+      const candidate = String((await good("issue.create", planned)).id);
+      await good("issue.claim", { id: holder });
+      for (let n = 1; n <= (kind === "script" ? 31 : 1); n++)
+        await good("issue.link", {
+          id: holder,
+          relation: "delivers",
+          url: `https://github.com/example/overlap/pull/${n}/`,
+        });
+      await good("issue.release", { id: holder });
 
-test("a long CLI claim refuses a PR launcher with an unknown process tree", async () => {
-  await project(async ({ good }, repo, root) => {
-    const holder = String((await good("issue.create", planned)).id);
-    const candidate = String((await good("issue.create", planned)).id);
-    await good("issue.claim", { id: holder });
-    for (let n = 1; n <= 31; n++)
-      await good("issue.link", {
-        id: holder,
-        relation: "delivers",
-        url: `https://github.com/example/overlap/pull/${n}`,
-      });
-    await good("issue.release", { id: holder });
-
-    const bin = mkdtempSync(join(homedir(), "forge-advisory-bin-"));
-    try {
-      const launches = join(root, "launcher-pids.jsonl");
-      const gitTrace = join(root, "git-trace.jsonl");
-      const fixture = join(root, "native-fixture.cjs");
-      writeFileSync(launches, "");
-      writeFileSync(gitTrace, "");
-      writeFileSync(
-        fixture,
-        `require("node:fs").appendFileSync(${JSON.stringify(launches)},
-          JSON.stringify([process.ppid, process.pid]) + "\\n");
+      const bin = mkdtempSync(join(homedir(), "forge-advisory-bin-"));
+      try {
+        const launches = join(root, "launcher-pids.jsonl");
+        const launcherStarted = join(root, "launcher-started");
+        const gitTrace = join(root, "git-trace.jsonl");
+        const fixture =
+          kind === "script"
+            ? join(root, "native-fixture.cjs")
+            : join(repo, "pr");
+        writeFileSync(launches, "");
+        writeFileSync(gitTrace, "");
+        writeFileSync(
+          fixture,
+          `require("node:fs").appendFileSync(${JSON.stringify(launches)},
+          JSON.stringify([process.ppid, process.pid, process.argv.slice(2)]) + "\\n");
         console.log(JSON.stringify({state: "OPEN", headRefName: "feat/released"}));`,
-      );
-      const windows = process.platform === "win32";
-      const launcher = join(bin, windows ? "gh.cmd" : "gh");
-      const forward = `"${process.execPath}" "${fixture}"`;
-      writeFileSync(
-        launcher,
-        windows
-          ? `@echo off\r\n${forward} %*\r\n`
-          : `#!/bin/sh\n${forward} "$@"\nexit $?\n`,
-      );
-      if (!windows) chmodSync(launcher, 0o755);
-      writeFileSync(
-        join(bin, ".gitconfig"),
-        `[trace2]\n\teventTarget = ${gitTrace.replaceAll("\\", "/")}\n`,
-      );
+        );
+        const windows = process.platform === "win32";
+        const launcher = join(
+          bin,
+          windows ? (kind === "script" ? "gh.cmd" : "gh.exe") : "gh",
+        );
+        if (kind === "script") {
+          const forward = `"${process.execPath}" "${fixture}"`;
+          writeFileSync(
+            launcher,
+            windows
+              ? `@echo off\r\n>"${launcherStarted}" echo started\r\n${forward} %*\r\n`
+              : `#!/bin/sh\nprintf '%s\\n' "$$" >"${launcherStarted}"\n${forward} "$@"\nexit $?\n`,
+          );
+        } else if (kind === "unknown native executable") {
+          const node = spawnSync("node", ["-p", "process.execPath"], {
+            encoding: "utf8",
+            timeout: 5000,
+          });
+          expect(node.status, node.stderr).toBe(0);
+          copyFileSync(node.stdout.trim(), launcher);
+        } else {
+          const go = join(root, "go-fixture");
+          mkdirSync(join(go, "cmd", "gh"), { recursive: true });
+          writeFileSync(
+            join(go, "go.mod"),
+            "module github.com/cli/cli/v2\n\ngo 1.20\n",
+          );
+          writeFileSync(
+            join(go, "cmd", "gh", "main.go"),
+            `package main
+import ("encoding/json"; "fmt"; "os")
+func main() {
+    f, err := os.OpenFile(${JSON.stringify(launches)}, os.O_WRONLY|os.O_APPEND, 0)
+    if err != nil { panic(err) }
+    defer f.Close()
+    if err = json.NewEncoder(f).Encode([]any{os.Getppid(), os.Getpid(), os.Args[2:]}); err != nil { panic(err) }
+    fmt.Println(${JSON.stringify('{"state":"OPEN","headRefName":"feat/released"}')})
+}`,
+          );
+          const compiled = spawnSync(
+            "go",
+            ["build", "-o", launcher, "./cmd/gh"],
+            {
+              cwd: go,
+              env: {
+                ...process.env,
+                CGO_ENABLED: "0",
+                GOPROXY: "off",
+                GOTOOLCHAIN: "local",
+              },
+              encoding: "utf8",
+              timeout: 15_000,
+              windowsHide: true,
+            },
+          );
+          expect(
+            compiled.status,
+            compiled.error?.message ?? compiled.stderr,
+          ).toBe(0);
+        }
+        if (!windows) chmodSync(launcher, 0o755);
+        writeFileSync(
+          join(bin, ".gitconfig"),
+          `[trace2]\n\teventTarget = ${gitTrace.replaceAll("\\", "/")}\n`,
+        );
 
-      const result = laneCli(
-        root,
-        repo,
-        [
-          "issue",
-          "claim",
-          "--input",
-          JSON.stringify({ id: candidate, ttlSeconds: 600 }),
-        ],
-        "reader",
-        {
-          PATH: [bin, process.env.PATH ?? process.env.Path].join(delimiter),
-          PATHEXT: ".CMD;.EXE",
-          HOME: bin,
-          USERPROFILE: bin,
-          FORGE_DEVICE_ID: "lane-fixture",
-        },
-      );
-      expect(result).toMatchObject({
-        exit: 0,
-        ok: true,
-        result: { id: candidate },
-      });
-      const trees = readFileSync(launches, "utf8")
-        .trim()
-        .split("\n")
-        .filter(Boolean);
-      const gitProcesses = readFileSync(gitTrace, "utf8")
-        .trim()
-        .split("\n")
-        .filter((line) => line.includes('"event":"start"'));
-      expect(gitProcesses.length).toBeGreaterThan(0);
-      expect(trees, "batch/interpreter and native child PIDs").toEqual([]);
-      expect(
-        gitProcesses.length * (windows ? 2 : 1) + trees.length * 2,
-      ).toBeLessThanOrEqual(64);
-      expect(hasIncompleteMap(result)).toBe(true);
-    } finally {
-      rmSync(bin, { recursive: true, force: true });
-    }
-  });
-}, 30_000);
+        const result = laneCli(
+          root,
+          repo,
+          [
+            "issue",
+            "claim",
+            "--input",
+            JSON.stringify({ id: candidate, ttlSeconds: 600 }),
+          ],
+          "reader",
+          {
+            PATH: [bin, process.env.PATH ?? process.env.Path].join(delimiter),
+            PATHEXT: ".CMD;.EXE",
+            HOME: bin,
+            USERPROFILE: bin,
+            FORGE_DEVICE_ID: "lane-fixture",
+            GH_TOKEN: "fixture-token",
+          },
+        );
+        expect(result).toMatchObject({
+          exit: 0,
+          ok: true,
+          result: { id: candidate },
+        });
+        const trees = readFileSync(launches, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean);
+        const gitProcesses = readFileSync(gitTrace, "utf8")
+          .trim()
+          .split("\n")
+          .filter((line) => line.includes('"event":"start"'));
+        expect(gitProcesses.length).toBeGreaterThan(0);
+        if (kind !== "GitHub CLI build") {
+          expect(trees, "batch/interpreter and native child PIDs").toEqual([]);
+          expect(existsSync(launcherStarted)).toBe(false);
+          expect(hasIncompleteMap(result)).toBe(true);
+        } else {
+          expect(trees).toHaveLength(1);
+          expect(JSON.parse(trees[0]!)).toEqual([
+            expect.any(Number),
+            expect.any(Number),
+            [
+              "view",
+              "https://github.com/example/overlap/pull/1",
+              "--json",
+              "state,headRefName",
+            ],
+          ]);
+          expect(hasIncompleteMap(result)).toBe(false);
+          expect(mapWarnings(result)[0]?.message).toContain("feat/released");
+        }
+        expect(
+          gitProcesses.length * (windows ? 2 : 1) + trees.length * 2,
+        ).toBeLessThanOrEqual(64);
+      } finally {
+        rmSync(bin, { recursive: true, force: true });
+      }
+    });
+  },
+  30_000,
+);
 
 test("a broken lane registry preserves claim overlap and reports incomplete evidence", async () => {
   await project(async ({ good }, repo, root) => {
@@ -839,13 +873,7 @@ test("a broken lane registry preserves claim overlap and reports incomplete evid
 test("a failed holder read marks the successful claim incomplete", async () => {
   await project(async ({ good }, repo, root) => {
     const id = String((await good("issue.create", planned)).id);
-    const { reply } = observedCli(
-      root,
-      repo,
-      ["issue", "claim", id],
-      undefined,
-      true,
-    );
+    const { reply } = observedCli(root, repo, ["issue", "claim", id], true);
     expect(reply.ok).toBe(true);
     expect(hasIncompleteMap(reply)).toBe(true);
   });

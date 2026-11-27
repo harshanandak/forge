@@ -46,13 +46,15 @@ type Ports = {
   issues(limits: ReadLimits): Read<Page<Issue>>;
   deliveries(issue: string, limits: ReadLimits): Read<Page<string>>;
   pull(url: string, limits: Budget): Read<Pull>;
+  gitProcessCost: 1 | 2;
+  pullProcessCost(): 1 | 2 | undefined;
   process: Pick<ProcessPort, "resolve" | "run">;
 };
 type Options = Pick<SpawnOptions, "cwd" | "env" | "signal" | "timeoutMs"> & {
   defaultRef: string;
   workInstance?: string;
   candidateId?: string;
-  initialProcesses?: 1 | 3;
+  initialProcesses?: 1 | 2;
 };
 type Reason = {
   kind:
@@ -154,10 +156,14 @@ export async function readWorkMap(
   const env = Object.fromEntries(
     Object.entries(spawn.env).filter(([name]) => !/^GIT_/i.test(name)),
   );
-  env.GIT_NO_LAZY_FETCH = "1";
   const gitSpawn = { ...spawn, env, maxOutputBytes: limits.outputBytes };
   let processes = initialProcesses;
   let authorityBytes: number = limits.outputBytes;
+  function reserveProcesses(cost: number): boolean {
+    if (processes + cost > limits.processes) return false;
+    processes += cost;
+    return true;
+  }
   const budget = (): Budget => ({
     maxBytes: authorityBytes,
     ...(spawn.signal === undefined ? {} : { signal: spawn.signal }),
@@ -196,11 +202,14 @@ export async function readWorkMap(
     source: string,
     args: readonly string[],
   ): Promise<string | undefined> {
-    processes++;
+    if (!reserveProcesses(ports.gitProcessCost)) {
+      note("process-budget", { source });
+      return undefined;
+    }
     try {
       const git = ports.process.resolve("git", env);
       if (git.kind !== "resolved") throw new Error("Git unavailable");
-      const command = ["--no-replace-objects", ...args];
+      const command = ["--no-replace-objects", "--no-lazy-fetch", ...args];
       const result = await ports.process.run(git, command, gitSpawn);
       const bytes = Buffer.byteLength(result.stdout + result.stderr);
       if (result.truncated || bytes > limits.outputBytes) {
@@ -324,14 +333,23 @@ export async function readWorkMap(
       (input) => ports.deliveries(issue.id, input),
       issue.id,
     );
-    let lookupCut: "output-budget" | "process-budget" | undefined;
+    let lookupCut:
+      "output-budget" | "process-budget" | "pull-unavailable" | undefined;
     for (const url of new Set(links)) {
       if (!pulls.has(url)) {
-        if (authorityBytes <= 0 || processes >= limits.processes) {
-          lookupCut = authorityBytes <= 0 ? "output-budget" : "process-budget";
+        if (authorityBytes <= 0) {
+          lookupCut = "output-budget";
           continue;
         }
-        processes++;
+        const cost = ports.pullProcessCost();
+        if (cost === undefined) {
+          lookupCut = "pull-unavailable";
+          continue;
+        }
+        if (!reserveProcesses(cost)) {
+          lookupCut = "process-budget";
+          continue;
+        }
         pulls.set(url, await lookupPull(url, issue.id));
       }
       const { state, branch } = pulls.get(url) ?? {};

@@ -47,7 +47,7 @@ function output(
   };
 }
 
-function fixture(items: readonly Issue[] = []) {
+function fixture(items: readonly Issue[] = [], gitCost: 1 | 2 = 1) {
   const gitCalls: string[][] = [];
   const gitOutputs: Partial<Record<string, ProcessResult>> = {
     "rev-parse": output(`${defaultSha}\n`),
@@ -59,12 +59,14 @@ function fixture(items: readonly Issue[] = []) {
     issues: () => ({ items, truncated: false }),
     deliveries: () => ({ items: [], truncated: false }),
     pull: () => ({ state: "CLOSED" }),
+    gitProcessCost: gitCost,
+    pullProcessCost: () => 1,
     process: {
       resolve: () => ({ kind: "resolved", path: "git" }),
       run: (_git, args) => {
         gitCalls.push([...args]);
         return Promise.resolve(
-          gitOutputs[args[1] ?? ""] ?? output("", { exitCode: 1 }),
+          gitOutputs[args[2] ?? ""] ?? output("", { exitCode: 1 }),
         );
       },
     },
@@ -79,6 +81,7 @@ function fixture(items: readonly Issue[] = []) {
         env: {},
         timeoutMs: 5000,
         defaultRef,
+        initialProcesses: gitCost,
       }),
   };
 }
@@ -308,7 +311,11 @@ test("paths and generated rules share the pinned default SHA, read once", async 
     `cat-file blob ${defaultSha}:.forge/config.yaml`,
   ];
   expect(f.gitCalls).toEqual(
-    commands.map((command) => ["--no-replace-objects", ...command.split(" ")]),
+    commands.map((command) => [
+      "--no-replace-objects",
+      "--no-lazy-fetch",
+      ...command.split(" "),
+    ]),
   );
 });
 
@@ -363,12 +370,12 @@ test("issue output is bounded before delivery or declaration processing", async 
 test.each(["process", "output"] as const)(
   "cached open deliveries survive the %s budget cut",
   async (budget) => {
-    const f = fixture([issue("work-1"), issue("work-2")]);
+    const f = fixture([issue("work-1"), issue("work-2")], 2);
     const cached = pullUrl(1);
     const oversized = pullUrl(100);
     const unread = pullUrl(101);
     const processLimited = budget === "process";
-    const count = processLimited ? WORK_MAP_LIMITS.processes - 3 : 1;
+    const count = processLimited ? WORK_MAP_LIMITS.processes - 8 : 1;
     const first = Array.from({ length: count }, (_, n) => pullUrl(n + 1));
     const second = processLimited
       ? [unread, cached]

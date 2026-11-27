@@ -34,6 +34,7 @@ import {
 import type {
   ProcessPort,
   ProcessResult,
+  ResolvedExecutable,
   SpawnOptions,
 } from "../ports/process.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
@@ -164,7 +165,13 @@ export interface AssemblyProviders {
   environment(scope: ServiceScope): EnvironmentService;
   crypto(scope: ServiceScope): CryptoService;
   runnerOutput(scope: ServiceScope): RunnerOutputPort;
-  openFiles(scope: ServiceScope): Promise<OwnedHandle<FilesService>>;
+  openFiles(
+    scope: ServiceScope,
+    discoveryOnly?: {
+      executable: ResolvedExecutable;
+      unchanged(): boolean;
+    },
+  ): Promise<OwnedHandle<FilesService>>;
 }
 interface InternalProviders extends AssemblyProviders {
   files(
@@ -888,7 +895,10 @@ export function createAssemblyProviders(
         },
       };
     },
-    async openFiles(scope: ServiceScope): Promise<OwnedHandle<FilesService>> {
+    async openFiles(
+      scope: ServiceScope,
+      discoveryOnly?: Parameters<AssemblyProviders["openFiles"]>[1],
+    ): Promise<OwnedHandle<FilesService>> {
       // A block can declare the slot for other operations. Do not discover Git when this
       // operation declared no file access; every attempted use still fails closed.
       if (
@@ -933,9 +943,19 @@ export function createAssemblyProviders(
       const pending = new Set<Promise<ProcessResult>>();
       const cleanupErrors: unknown[] = [];
       let fileLease: OwnedHandle<FilesService> | undefined;
+      let discoveryStarted = false;
       const executor: ProcessPort = {
         ...port,
         run(executable, args, options) {
+          if (discoveryOnly) {
+            if (
+              discoveryStarted ||
+              executable.path !== discoveryOnly.executable.path ||
+              !discoveryOnly.unchanged()
+            )
+              refuse("UNAVAILABLE", "Advisory Git discovery is unavailable");
+            discoveryStarted = true;
+          }
           const result = port.run(executable, args, {
             ...options,
             signal,

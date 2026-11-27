@@ -51,10 +51,12 @@ function fixture(
     },
     deliveries: () => ({ items: [], truncated: false }),
     pull: () => ({ state: "CLOSED" }),
+    gitProcessCost: 1,
+    pullProcessCost: () => 1,
     process: {
       resolve: () => ({ kind: "resolved", path: "git" }),
       run: (_git, args, options) => {
-        const verb = args[1] ?? "";
+        const verb = args[2] ?? "";
         calls.push(options.cwd);
         const stdout = output[verb];
         return Promise.resolve({
