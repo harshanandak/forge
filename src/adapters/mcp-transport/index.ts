@@ -1,11 +1,16 @@
 import { Readable, Writable } from "node:stream";
-import { Server, ProtocolError } from "@modelcontextprotocol/server";
+import {
+  Server,
+  ProtocolError,
+  specTypeSchemas,
+} from "@modelcontextprotocol/server";
 import {
   serveStdio,
   StdioServerTransport,
 } from "@modelcontextprotocol/server/stdio";
 import type { McpTransportPort } from "../../ports/mcp-transport.ts";
 import type { FailureEnvelope } from "../../generated/types.ts";
+import { ForgeFailure } from "../../contract/failure.ts";
 
 const MCP_TOOL_CONCURRENCY_LIMIT = 8;
 const MCP_BUSY: FailureEnvelope = {
@@ -42,10 +47,14 @@ export function createMcpTransport(): McpTransportPort {
             activeToolCalls--;
           }
         };
-        const transport = new StdioServerTransport(
-          Readable.fromWeb(options.input),
-          Writable.fromWeb(options.output),
-        );
+        const input = Readable.fromWeb(options.input);
+        const output = Writable.fromWeb(options.output);
+        const transport = new StdioServerTransport(input, output);
+        let stdoutFailed = false;
+        output.once("error", () => {
+          stdoutFailed = true;
+          input.destroy();
+        });
         const handle = serveStdio(
           () => {
             const server = new Server(
@@ -53,23 +62,23 @@ export function createMcpTransport(): McpTransportPort {
               { capabilities: { tools: { listChanged: true } } },
             );
             instance = server;
-            server.setRequestHandler("tools/list", (request) => {
-              const params = request.params as unknown;
-              const cursor =
-                typeof params === "object" &&
-                params !== null &&
-                "cursor" in params
-                  ? (params as { readonly cursor?: unknown }).cursor
-                  : undefined;
-              if (cursor !== undefined && cursor !== "")
-                throw new ProtocolError(-32602, "Unknown cursor.");
-              return {
-                tools: options.handlers.listTools().map((tool) => ({
-                  ...tool,
-                  inputSchema: { ...tool.inputSchema, type: "object" as const },
-                })),
-              };
-            });
+            server.setRequestHandler(
+              "tools/list",
+              { params: specTypeSchemas.PaginatedRequestParams },
+              ({ cursor }) => {
+                if (cursor !== undefined && cursor !== "")
+                  throw new ProtocolError(-32602, "Unknown cursor.");
+                return {
+                  tools: options.handlers.listTools().map((tool) => ({
+                    ...tool,
+                    inputSchema: {
+                      ...tool.inputSchema,
+                      type: "object" as const,
+                    },
+                  })),
+                };
+              },
+            );
             server.setRequestHandler("tools/call", async (request, ctx) => {
               const result = await callTool(
                 request.params.name,
@@ -102,6 +111,12 @@ export function createMcpTransport(): McpTransportPort {
               if (!closed) {
                 closed = true;
                 await handle.close();
+                if (stdoutFailed)
+                  throw new ForgeFailure({
+                    code: "UNAVAILABLE",
+                    message: "MCP stdout write failed.",
+                    retry: "never",
+                  });
               }
             },
           },

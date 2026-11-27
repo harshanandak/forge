@@ -141,6 +141,7 @@ test("MCP exits nonzero after an asynchronous stdout write failure", () => {
     const input = new PassThrough();
     const stdout = process.stdout;
     let writes = 0;
+    let failed = false;
     const output = new Writable({
       write(chunk, encoding, callback) {
         writes++;
@@ -151,15 +152,18 @@ test("MCP exits nonzero after an asynchronous stdout write failure", () => {
           input.write('{"jsonrpc":"2.0","id":3,"method":"ping"}\\n');
         } else {
           setImmediate(() => {
+            failed = true;
             callback(new Error("private stdout fixture payload"));
-            setImmediate(() => input.end());
+            setImmediate(() => {
+              if (!input.destroyed) input.end('{"jsonrpc":"2.0","id":4,"method":"ping"}\\n');
+            });
           });
         }
       },
     });
     const write = output.write.bind(output);
     output.write = (...args) => {
-      if (writes >= 2) process.stderr.write("extra stdout write\\n");
+      if (failed) process.stderr.write("extra stdout write\\n");
       return write(...args);
     };
     Object.defineProperty(process, "stdin", { value: input });
