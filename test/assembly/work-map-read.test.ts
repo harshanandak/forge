@@ -182,6 +182,16 @@ test("an unavailable issue authority is incomplete", async () => {
   });
 });
 
+test("an unparseable lease expiry makes the snapshot incomplete", async () => {
+  const healthy = issue("work-1", { lease: { expiresAt: future } });
+  const damaged = issue("work-2", { lease: { expiresAt: "unreadable" } });
+  expect(await fixture([healthy, damaged]).read()).toMatchObject({
+    complete: false,
+    holders: [{ issue: healthy, leaseExpiresAt: future }],
+    reasons: [{ kind: "issues-unavailable", issue: damaged.id }],
+  });
+});
+
 test("issue truncation preserves the visible holders and is incomplete", async () => {
   const incumbent = issue("work-1", { lease: { expiresAt: future } });
   const f = fixture([incumbent]);
