@@ -270,7 +270,7 @@ export async function readWorkMap(
       (input) => ports.deliveries(issue.id, input),
       issue.id,
     );
-    for (const url of new Set(links.slice(0, 1))) {
+    for (const url of new Set(links)) {
       if (!pulls.has(url)) {
         if (authorityBytes <= 0) {
           note("output-budget", { source: "pull", issue: issue.id });
@@ -287,10 +287,7 @@ export async function readWorkMap(
       if (state === "OPEN")
         openPulls.push(branch === undefined ? { url } : { url, branch });
     }
-    if (
-      leaseExpiresAt !== undefined ||
-      (lease?.releasedAt === undefined && openPulls.length > 0)
-    )
+    if (leaseExpiresAt !== undefined || openPulls.length > 0)
       snapshot.holders.push({
         issue,
         ...(leaseExpiresAt === undefined ? {} : { leaseExpiresAt }),
@@ -332,8 +329,6 @@ export async function readWorkMap(
       if (reason.kind === "unmatched-pattern")
         note(reason.kind, { issue: issue.id, pattern: reason.pattern });
   }
-  snapshot.complete = snapshot.reasons.every(
-    (reason) => reason.kind === "pull-unavailable",
-  );
+  snapshot.complete = snapshot.reasons.length === 0;
   return snapshot;
 }
