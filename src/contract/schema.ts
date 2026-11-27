@@ -8,7 +8,7 @@ export type JsonSchema = boolean | SchemaObject;
 
 export const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
 
-const DIRECT_SUBSCHEMAS: ReadonlySet<string> = new Set([
+export const DIRECT_SUBSCHEMAS: ReadonlySet<string> = new Set([
   "items",
   "additionalProperties",
   "propertyNames",

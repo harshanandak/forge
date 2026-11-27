@@ -4,47 +4,85 @@ import {
   type McpCandidate,
 } from "../contract/mcp.ts";
 import { mcpToolName } from "../contract/naming.ts";
-import type { McpExposure } from "../generated/types.ts";
+import { bundleSchema } from "../contract/schema-bundle.ts";
+import { SchemaRegistry, type SchemaObject } from "../contract/schema.ts";
+import { SCHEMA_DOCUMENTS } from "../generated/schemas.ts";
+import type { McpExposure, McpTool } from "../generated/types.ts";
 import type { McpHandlers } from "../ports/mcp-transport.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import { dispatch, type CallOptions } from "./dispatch.ts";
 import { discoveryOperations } from "./discovery.ts";
 
+const STANDALONE_ID = "https://mcp.invalid/schema.json";
+
+function projected(
+  candidate: McpCandidate,
+  side: "input" | "output",
+): SchemaObject {
+  if (candidate.projectSchema !== undefined)
+    return candidate.projectSchema(side);
+  const schema =
+    side === "input" ? candidate.inputSchema : candidate.outputSchema!;
+  const id = typeof schema.$id === "string" ? schema.$id : STANDALONE_ID;
+  return bundleSchema(
+    new SchemaRegistry([...SCHEMA_DOCUMENTS, { ...schema, $id: id }]),
+    id,
+  );
+}
+
+function publishable(
+  tool: McpTool,
+  candidate: McpCandidate,
+  side: "input" | "output",
+): SchemaObject {
+  try {
+    return projected(candidate, side);
+  } catch (error) {
+    throw new Error(
+      `MCP tool ${tool.name} cannot publish its ${side} schema: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
 /** MCP output schemas describe the shared result envelope, including failures. */
-function enveloped(candidate: McpCandidate): McpCandidate {
+function enveloped(tool: McpTool, candidate: McpCandidate): McpTool {
+  const inputSchema = publishable(tool, candidate, "input");
+  if (candidate.outputSchema === undefined) return { ...tool, inputSchema };
+  const { $schema, $defs, ...result } = publishable(tool, candidate, "output");
+  const local = { $schema, ...($defs === undefined ? {} : { $defs }) };
   // The generic dispatcher already returns the target's canonical envelope.
   if (candidate.op === "catalog.call")
     return {
-      ...candidate,
-      outputSchema: { type: "object", ...candidate.outputSchema },
+      ...tool,
+      inputSchema,
+      outputSchema: { type: "object", ...local, ...result },
     };
   return {
-    ...candidate,
-    ...(candidate.outputSchema === undefined
-      ? {}
-      : {
-          outputSchema: {
-            type: "object",
-            oneOf: [
-              {
-                properties: {
-                  ok: { const: true },
-                  status: { const: "OK" },
-                  result: candidate.outputSchema,
-                },
-                required: ["ok", "op", "status", "result", "warnings"],
-              },
-              {
-                properties: {
-                  ok: { const: false },
-                  status: { enum: ["FAIL", "INCOMPLETE"] },
-                  result: candidate.outputSchema,
-                },
-                required: ["ok", "status", "error", "warnings"],
-              },
-            ],
+    ...tool,
+    inputSchema,
+    outputSchema: {
+      type: "object",
+      ...local,
+      oneOf: [
+        {
+          properties: {
+            ok: { const: true },
+            status: { const: "OK" },
+            result,
           },
-        }),
+          required: ["ok", "op", "status", "result", "warnings"],
+        },
+        {
+          properties: {
+            ok: { const: false },
+            status: { enum: ["FAIL", "INCOMPLETE"] },
+            result,
+          },
+          required: ["ok", "status", "error", "warnings"],
+        },
+      ],
+    },
   };
 }
 
@@ -60,7 +98,7 @@ export function createMcpHandlers(
   )
     throw new RangeError("MCP budget must be a non-negative safe integer.");
   const candidates = catalog.list();
-  const selected = selectMcpTools(candidates.map(enveloped), exposure);
+  const selected = selectMcpTools(candidates, exposure);
   const byName = new Map(
     selected.tools.map((tool) => [
       tool.name,
@@ -91,11 +129,11 @@ export function createMcpHandlers(
   };
   return {
     listTools: () => [
-      ...selected.tools,
+      ...selected.tools.map((tool) => enveloped(tool, byName.get(tool.name)!)),
       ...discoveryOperations.flatMap((c) => {
         if (exposure.readOnly && c.declaration.effects.length > 0) return [];
-        const tool = projectMcpTool(enveloped(c));
-        return tool === undefined ? [] : [tool];
+        const tool = projectMcpTool(c);
+        return tool === undefined ? [] : [enveloped(tool, c)];
       }),
     ],
     callTool: async (name, args, signal) => {
