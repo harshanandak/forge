@@ -11,6 +11,7 @@ import {
   type SchemaProblem,
   SchemaRegistry,
   isSchemaObject,
+  schemaBudget,
 } from "../../contract/schema.ts";
 import {
   parseUntrustedJson,
@@ -114,7 +115,8 @@ export class CapturedBlock {
     const pathsByUri = new Map(
       [...files.keys()].map((name) => [capturedUri(name, this.#base), name]),
     );
-    const register = (name: string): void => {
+    const spend = schemaBudget();
+    const register = (name: string, depth = 0): void => {
       const uri = capturedUri(name, this.#base);
       if (documents.has(uri)) return;
       const schema: unknown = JSON.parse(this.text(name));
@@ -125,21 +127,24 @@ export class CapturedBlock {
         $id: uri,
       };
       documents.set(uri, document);
-      const visit = (node: unknown): void => {
+      const visit = (node: unknown, level: number): void => {
+        spend(level);
         if (!isSchemaObject(node)) return;
+        const descend = (child: unknown) => visit(child, level + 1);
         if (typeof node.$ref === "string") {
           const target = new URL(node.$ref, uri);
           target.hash = "";
           const dependency = pathsByUri.get(target.href);
-          if (dependency !== undefined) register(dependency);
+          if (dependency !== undefined) register(dependency, level + 1);
         }
         for (const key of ["properties", "$defs"]) {
           const children = node[key];
-          if (isSchemaObject(children)) Object.values(children).forEach(visit);
+          if (isSchemaObject(children))
+            Object.values(children).forEach(descend);
         }
         for (const key of ["allOf", "anyOf", "oneOf"]) {
           const children = node[key];
-          if (Array.isArray(children)) children.forEach(visit);
+          if (Array.isArray(children)) children.forEach(descend);
         }
         for (const key of [
           "items",
@@ -150,9 +155,9 @@ export class CapturedBlock {
           "then",
           "else",
         ])
-          visit(node[key]);
+          if (node[key] !== undefined) descend(node[key]);
       };
-      visit(schema);
+      visit(schema, depth);
     };
     for (const name of files.keys())
       if (schemaPaths.has(name) || name.endsWith(".schema.json"))

@@ -6,6 +6,21 @@ import { nameDistance } from "./distance.ts";
 export type SchemaObject = Readonly<Record<string, unknown>>;
 export type JsonSchema = boolean | SchemaObject;
 
+export const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+
+class SchemaLimit extends Error {}
+type SchemaBudget = (depth: number) => void;
+
+export function schemaBudget(maxDepth = 64, maxNodes = 20_000): SchemaBudget {
+  let remaining = maxNodes;
+  return (depth) => {
+    if (depth > maxDepth)
+      throw new SchemaLimit(`Schema depth limit exceeded (${maxDepth})`);
+    if (--remaining < 0)
+      throw new SchemaLimit(`Schema work budget exceeded (${maxNodes} nodes)`);
+  };
+}
+
 export interface SchemaProblem {
   readonly pointer: string;
   readonly keyword: string;
@@ -318,7 +333,8 @@ export class SchemaRegistry {
       this.#documents.set(uri, document);
     }
     for (const [uri, document] of this.#documents) {
-      if (!BUILD_CHECKED.has(document)) this.#check(document, uri, "", true);
+      if (!BUILD_CHECKED.has(document))
+        this.#check(document, uri, "", 0, schemaBudget());
     }
   }
 
@@ -348,11 +364,27 @@ export class SchemaRegistry {
     if (located === undefined) throw new Error(`no schema at ${uri}`);
     const outside = findNonJson(value);
     if (outside !== undefined) return [outside];
+    try {
+      return this.#validateValue(located, value, detailed);
+    } catch (error) {
+      if (!(error instanceof SchemaLimit)) throw error;
+      return [{ pointer: "", keyword: "budget", message: error.message }];
+    }
+  }
+
+  #validateValue(
+    located: Located,
+    value: unknown,
+    detailed: boolean,
+  ): SchemaProblem[] {
+    const spend = schemaBudget(256, 100_000);
     const problems = this.#evaluate(
       located.schema,
       located.base,
       value,
       "",
+      spend,
+      0,
       detailed,
     );
     if (problems.length === 0) return problems;
@@ -360,6 +392,7 @@ export class SchemaRegistry {
       located.schema,
       located.base,
       value,
+      spend,
     );
     const protect = (entries: readonly SchemaProblem[]): SchemaProblem[] =>
       entries.map((problem) => {
@@ -404,6 +437,7 @@ export class SchemaRegistry {
     schema: JsonSchema,
     base: string,
     value: unknown,
+    spend: SchemaBudget,
   ): ReadonlyMap<string, ReadonlySet<string>> {
     const declared = new Map<string, Set<string>>();
     const seen = new Set<string>();
@@ -412,15 +446,23 @@ export class SchemaRegistry {
       uri: string,
       current: unknown,
       at: string,
+      depth: number,
     ): void => {
+      spend(depth);
       if (!isObject(node)) return;
+      const descend = (
+        child: unknown,
+        base: string,
+        value: unknown,
+        pointer: string,
+      ) => visit(child, base, value, pointer, depth + 1);
       if (typeof node.$ref === "string") {
         const reference = this.resolve(node.$ref, uri);
         const key = JSON.stringify([reference, at]);
         if (!seen.has(key)) {
           seen.add(key);
           const target = this.#locate(reference);
-          if (target) visit(target.schema, target.base, current, at);
+          if (target) descend(target.schema, target.base, current, at);
         }
       }
       if (isObject(current)) {
@@ -429,7 +471,7 @@ export class SchemaRegistry {
         for (const name of Object.keys(properties)) names.add(name);
         declared.set(at, names);
         for (const [key, child] of Object.entries(current))
-          visit(
+          descend(
             Object.hasOwn(properties, key)
               ? properties[key]
               : node.additionalProperties,
@@ -439,16 +481,17 @@ export class SchemaRegistry {
           );
       } else if (Array.isArray(current)) {
         current.forEach((child, index) =>
-          visit(node.items, uri, child, `${at}/${index}`),
+          descend(node.items, uri, child, `${at}/${index}`),
         );
       }
       for (const keyword of ["allOf", "oneOf", "anyOf"])
         if (Array.isArray(node[keyword]))
-          for (const branch of node[keyword]) visit(branch, uri, current, at);
+          for (const branch of node[keyword]) descend(branch, uri, current, at);
       for (const keyword of ["if", "then", "else", "not"])
-        visit(node[keyword], uri, current, at);
+        if (node[keyword] !== undefined)
+          descend(node[keyword], uri, current, at);
     };
-    visit(schema, base, value, "");
+    visit(schema, base, value, "", 0);
     return declared;
   }
 
@@ -491,7 +534,14 @@ export class SchemaRegistry {
       : undefined;
   }
 
-  #check(schema: unknown, base: string, at: string, root: boolean): void {
+  #check(
+    schema: unknown,
+    base: string,
+    at: string,
+    depth: number,
+    spend: SchemaBudget,
+  ): void {
+    spend(depth);
     if (typeof schema === "boolean") return;
     if (!isObject(schema)) {
       throw new Error(`${base}#${at}: a schema must be an object or boolean`);
@@ -499,8 +549,16 @@ export class SchemaRegistry {
     for (const [keyword, value] of Object.entries(schema)) {
       if (keyword.startsWith("x-")) continue;
       if (ANNOTATIONS.has(keyword)) {
-        if (keyword === "$id" && !root) {
+        if (keyword === "$schema" && value !== SCHEMA_DIALECT) {
+          throw new Error(
+            `${base}#${at}: unsupported schema dialect ${String(value)}`,
+          );
+        }
+        if (keyword === "$id" && depth !== 0) {
           throw new Error(`${base}#${at}: $id is allowed only at a root`);
+        }
+        if (keyword === "$defs" && !isObject(value)) {
+          throw new Error(`${base}#${at}: $defs must be an object`);
         }
         continue;
       }
@@ -509,11 +567,24 @@ export class SchemaRegistry {
           `${base}#${at}: keyword "${keyword}" is outside the supported profile`,
         );
       }
-      this.#checkKeyword(keyword, value, base, `${at}/${keyword}`);
+      this.#checkKeyword(
+        keyword,
+        value,
+        base,
+        `${at}/${keyword}`,
+        depth,
+        spend,
+      );
     }
     if (isObject(schema.$defs)) {
       for (const [name, def] of Object.entries(schema.$defs)) {
-        this.#check(def, base, `${at}/$defs/${escapePointer(name)}`, false);
+        this.#check(
+          def,
+          base,
+          `${at}/$defs/${escapePointer(name)}`,
+          depth + 1,
+          spend,
+        );
       }
     }
   }
@@ -523,6 +594,8 @@ export class SchemaRegistry {
     value: unknown,
     base: string,
     at: string,
+    depth: number,
+    spend: SchemaBudget,
   ): void {
     const fail = (message: string): never => {
       throw new Error(`${base}#${at}: ${message}`);
@@ -570,7 +643,13 @@ export class SchemaRegistry {
       case "properties":
         if (!isObject(value)) fail("properties must be an object");
         for (const [name, sub] of Object.entries(value as SchemaObject)) {
-          this.#check(sub, base, `${at}/${escapePointer(name)}`, false);
+          this.#check(
+            sub,
+            base,
+            `${at}/${escapePointer(name)}`,
+            depth + 1,
+            spend,
+          );
         }
         return;
       case "oneOf":
@@ -580,7 +659,7 @@ export class SchemaRegistry {
           fail(`${keyword} must be a non-empty array`);
         }
         (value as unknown[]).forEach((sub, index) => {
-          this.#check(sub, base, `${at}/${index}`, false);
+          this.#check(sub, base, `${at}/${index}`, depth + 1, spend);
         });
         return;
       case "additionalProperties":
@@ -590,7 +669,7 @@ export class SchemaRegistry {
       case "if":
       case "then":
       case "else":
-        this.#check(value, base, at, false);
+        this.#check(value, base, at, depth + 1, spend);
         return;
       case "uniqueItems":
         if (typeof value !== "boolean") fail("uniqueItems must be a boolean");
@@ -626,8 +705,11 @@ export class SchemaRegistry {
     base: string,
     value: unknown,
     at: string,
+    spend: SchemaBudget,
+    depth: number,
     detailed = false,
   ): SchemaProblem[] {
+    spend(depth);
     if (schema === true) return [];
     if (schema === false) {
       return [
@@ -671,7 +753,7 @@ export class SchemaRegistry {
       });
     };
     const sub = (s: unknown, v: unknown, p: string): SchemaProblem[] =>
-      this.#evaluate(s as JsonSchema, base, v, p, detailed);
+      this.#evaluate(s as JsonSchema, base, v, p, spend, depth + 1, detailed);
 
     if (typeof schema.$ref === "string") {
       const uri = this.resolve(schema.$ref, base);
@@ -679,7 +761,15 @@ export class SchemaRegistry {
       if (target === undefined) add("$ref", `unresolvable reference ${uri}`);
       else
         problems.push(
-          ...this.#evaluate(target.schema, target.base, value, at, detailed),
+          ...this.#evaluate(
+            target.schema,
+            target.base,
+            value,
+            at,
+            spend,
+            depth + 1,
+            detailed,
+          ),
         );
     }
 
@@ -831,6 +921,7 @@ export class SchemaRegistry {
         }
       }
       for (const key of keys) {
+        spend(depth);
         const pointer = `${at}/${escapePointer(key)}`;
         if (schema.propertyNames !== undefined) {
           for (const problem of sub(schema.propertyNames, key, pointer)) {
