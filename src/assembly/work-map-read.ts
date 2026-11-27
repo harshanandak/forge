@@ -12,7 +12,10 @@ import { isObject } from "../core/config/pointer.ts";
 import { expandShortForm } from "../core/config/short.ts";
 import { CONFIG_FILE } from "../core/config/store.ts";
 import type { LeaseRecord, TrackerItem } from "../generated/types.ts";
-import { validateConfigDocument } from "../generated/validators.ts";
+import {
+  validateConfigDocument,
+  validateLeaseRecord,
+} from "../generated/validators.ts";
 import type { ProcessPort, SpawnOptions } from "../ports/process.ts";
 
 export const WORK_MAP_LIMITS = {
@@ -28,7 +31,11 @@ type Issue = Pick<TrackerItem, "id" | "title" | "status" | "dependsOn"> &
   Pick<TrackerItem, "expectedFiles" | "actualFiles" | "filesAt"> & {
     lease?: Pick<LeaseRecord, "expiresAt" | "releasedAt">;
   };
-type Page<T> = { items: readonly T[]; truncated: boolean };
+type Page<T> = {
+  items: readonly T[];
+  truncated: boolean;
+  leaseUnavailable?: boolean;
+};
 type Pull = { state: "OPEN" | "CLOSED" | "MERGED"; branch?: string };
 type Budget = { maxBytes: number; signal?: AbortSignal };
 type ReadLimits = Budget & { limit: number };
@@ -84,6 +91,24 @@ type Snapshot = {
 };
 
 const commitSha = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+export function advisoryLeaseReader(
+  read: (subject: string) => LeaseRecord | undefined,
+  unavailable: () => void,
+): typeof read {
+  return (subject) => {
+    let lease: LeaseRecord | undefined;
+    try {
+      lease = read(subject);
+    } catch {
+      unavailable();
+      return undefined;
+    }
+    if (lease === undefined || validateLeaseRecord(lease).ok) return lease;
+    unavailable();
+    return undefined;
+  };
+}
 
 function generatedPolicy(text: string, instance: string) {
   const decoded = yamlConfigCodec.decode(text, DEFAULT_PARSE_LIMITS);
@@ -153,7 +178,10 @@ export async function readWorkMap(
       const page = await read({ ...budget(), limit });
       if (page.truncated || page.items.length > limit)
         note(`${source}-truncated`, detail);
-      if (withinBytes(page, source)) return page.items.slice(0, limit);
+      if (source === "issues" && page.leaseUnavailable)
+        note("issues-unavailable", { source: "lease" });
+      const { leaseUnavailable: _advisory, ...data } = page;
+      if (withinBytes(data, source)) return page.items.slice(0, limit);
     } catch {
       note(`${source}-unavailable`, detail);
     }
@@ -272,12 +300,22 @@ export async function readWorkMap(
     }
 
     const lease = issue.lease;
-    const leaseExpiresAt =
-      lease &&
-      lease.releasedAt === undefined &&
-      Date.parse(lease.expiresAt) > now
-        ? lease.expiresAt
-        : undefined;
+    let leaseExpiresAt: string | undefined;
+    if (lease !== undefined) {
+      const expires =
+        typeof lease?.expiresAt === "string"
+          ? Date.parse(lease.expiresAt)
+          : NaN;
+      const released = lease?.releasedAt;
+      if (
+        Number.isNaN(expires) ||
+        (released !== undefined &&
+          (typeof released !== "string" || Number.isNaN(Date.parse(released))))
+      )
+        note("issues-unavailable", { issue: issue.id, source: "lease" });
+      else if (released === undefined && expires > now)
+        leaseExpiresAt = lease.expiresAt;
+    }
     const openPulls: Snapshot["holders"][number]["openPulls"] = [];
     const links = await readPage(
       "deliveries",
