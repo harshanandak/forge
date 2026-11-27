@@ -35,10 +35,10 @@ for (const mcp of [true, false])
     const result = run("{unclosed", mcp ? ["--mcp"] : ["issue", "list"]);
     expect(result.status).toBeGreaterThan(0);
     if (mcp) expect(result.stdout).toBe("");
-    expect(JSON.parse(mcp ? result.stderr : result.stdout)).toMatchObject({
-      ok: false,
-      error: { code: expect.any(String) },
-    });
+    const output = mcp ? result.stderr : result.stdout;
+    const envelope = JSON.parse(output) as { error?: { code?: unknown } };
+    expect(envelope).toMatchObject({ ok: false });
+    expect(typeof envelope.error?.code).toBe("string");
   }, 60_000);
 
 test("valid MCP session answers initialize and exits cleanly", () => {
