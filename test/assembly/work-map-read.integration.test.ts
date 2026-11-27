@@ -172,7 +172,6 @@ test("a missing promisor policy blob never starts a Git fetch even without GIT_N
       blob.slice(0, 2),
       blob.slice(2),
     );
-    // The other fixture paths share this blob, but their tree and commit remain local.
     rmSync(local);
     const trace = join(f.cwd, "git-trace.jsonl");
     writeFileSync(trace, "");
