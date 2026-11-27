@@ -136,6 +136,14 @@ export function createSessionStore(deps: Deps): SessionStore {
     UPDATE sessions SET last_seen_at = ?, project_id = COALESCE(project_id, ?)
       WHERE session_id = ?
   `);
+  const requeue = db.prepare(`
+    UPDATE inbox_items
+    SET target_session_id = CASE WHEN target_session_id = ? THEN NULL ELSE target_session_id END,
+      delivered_at = NULL, delivered_to_session_id = NULL
+    WHERE owner_person_id = ? AND acked_at IS NULL AND project_id IS NOT ?
+      AND (delivered_to_session_id = ? OR
+        (delivered_to_session_id IS NULL AND target_session_id = ?))
+  `);
   const insertBound = db.prepare(`
     INSERT INTO sessions (session_id, person_id, host, host_instance_id, host_session_id, start_source,
       thread_id, mode, mode_reason, mode_changed_at, created_at, last_seen_at)
@@ -158,22 +166,22 @@ export function createSessionStore(deps: Deps): SessionStore {
   `);
   const eligible = `FROM inbox_items AS i
     WHERE i.owner_person_id = ? AND i.held = 0 AND i.acked_at IS NULL
+    AND i.project_id IS COALESCE(?, i.project_id)
     AND (i.project_id IS NULL OR EXISTS (
       SELECT 1 FROM project_members AS m WHERE m.project_id = i.project_id AND m.person_id = i.owner_person_id
     ))`;
   const order = "ORDER BY received_at, item_id LIMIT ?";
   const pending = `${eligible}
-    AND i.delivered_at IS NULL AND (i.target_session_id = ? OR
-      (i.target_session_id IS NULL AND COALESCE(?, i.project_id) IS i.project_id)) ${order}`;
+    AND i.delivered_at IS NULL AND (i.target_session_id IS NULL OR i.target_session_id = ?) ${order}`;
   const newItems = db.prepare("SELECT i.* " + pending);
   const sentItems = db.prepare(`SELECT i.* ${eligible}
     AND i.delivered_at IS NOT NULL AND i.delivered_to_session_id = ? ${order}`);
   const unreadItems = db.prepare(`SELECT item_id, count(*) OVER () AS unread,
     sum(not_your_owner) OVER () AS others ${pending}`);
   const hasPerson = (id: string) => people.byPersonId(id) !== undefined;
-  const queryPending = (stmt: HubStatement, s: Session, limit: number) =>
+  const queryItems = (stmt: HubStatement, s: Session, limit: number) =>
     hasPerson(s.personId)
-      ? stmt.all(s.personId, s.sessionId, s.projectId ?? null, limit)
+      ? stmt.all(s.personId, s.projectId ?? null, s.sessionId, limit)
       : [];
 
   const isMember = (projectId: string, personId: string) =>
@@ -214,7 +222,7 @@ export function createSessionStore(deps: Deps): SessionStore {
   }
 
   function unreadCounts(s: Session) {
-    const rows = queryPending(unreadItems, s, LIMITS.inboxDefault);
+    const rows = queryItems(unreadItems, s, LIMITS.inboxDefault);
     const first = rows[0];
     return {
       unread: first ? integer(first.unread) : 0,
@@ -260,6 +268,14 @@ export function createSessionStore(deps: Deps): SessionStore {
           existing?.value ?? create(insertUnbound, current, input.host, fields);
         if (existing) touch.run(now(), projectId ?? null, active.sessionId);
         const refreshed = session(active.sessionId) ?? active;
+        if (existing && refreshed.projectId !== undefined)
+          requeue.run(
+            active.sessionId,
+            personId,
+            refreshed.projectId,
+            active.sessionId,
+            active.sessionId,
+          );
         const { unread, unreadFromOthers } = unreadCounts(refreshed);
         return ok({
           sessionId: active.sessionId,
@@ -321,11 +337,8 @@ export function createSessionStore(deps: Deps): SessionStore {
     requireNormalMode: (s) =>
       s.mode === "normal" ? undefined : fail("REPLY_ONLY"),
     isMember,
-    deliverable: (s, limit) => queryPending(newItems, s, limit).map(readItem),
-    outstanding: (s, limit) =>
-      hasPerson(s.personId)
-        ? sentItems.all(s.personId, s.sessionId, limit).map(readItem)
-        : [],
+    deliverable: (s, limit) => queryItems(newItems, s, limit).map(readItem),
+    outstanding: (s, limit) => queryItems(sentItems, s, limit).map(readItem),
     unreadCounts,
   };
 }

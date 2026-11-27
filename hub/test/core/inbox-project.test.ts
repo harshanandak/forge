@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { createCli } from "../../src/core/cli.ts";
 import { insertItem } from "../../src/core/routing.ts";
+import { createStop } from "../../src/core/stop.ts";
 import { baseFixture, seedThread } from "./base-fixture.ts";
 import { a, b, p1, p2, seedItem, value } from "./fixture.ts";
 
@@ -9,7 +11,8 @@ test(
   "A requeued chat item keeps its thread context and moves its reply obligation",
   async () => {
     const f = await baseFixture();
-    const { sessionId } = f.bind();
+    const hostSessionId = "scoped-chat";
+    const { sessionId } = f.bind(a, hostSessionId);
     seedThread(f, "early", "Earlier reply", "person", b.personId);
     await f.emit("current");
     const [item] = f.read(sessionId).items;
@@ -18,6 +21,11 @@ test(
       { text: "Earlier reply" },
     ]);
     f.bindProject(sessionId, p2);
+    const stopped = await createStop(f.context, f.core.reply)(
+      { person: a, hostInstanceId: "hst_" + a.personId },
+      { host: "claude", hostSessionId, text: "Finished the work" },
+    );
+    expect(value(stopped)).toEqual({ result: "skipped" });
     const original = f.unbound({ projectId: p1 }).sessionId;
     expect(f.read(original).items).toMatchObject([
       {
@@ -27,6 +35,27 @@ test(
       },
     ]);
     expect(f.col("reply_owed", "session_id")).toEqual([original]);
+  },
+  timeout,
+);
+
+test(
+  "CLI send leaves an item in its project queue when the front session is projectless",
+  async () => {
+    const f = await baseFixture();
+    const cli = createCli(f.context);
+    f.bind();
+    const { itemId } = value(
+      await cli.cliSend(b, {
+        sessionId: f.unbound({ projectId: p1 }, b).sessionId,
+        projectId: p1,
+        toPersonId: a.personId,
+        text: "Queued CLI message",
+      }),
+    );
+    expect(value(cli.cliInbox(a, { projectId: p1 })).items).toMatchObject([
+      { itemId, projectId: p1 },
+    ]);
   },
   timeout,
 );

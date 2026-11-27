@@ -82,18 +82,21 @@ export function insertItem(
 ) {
   const { db, now } = ctx.deps;
   const { owner, sender, chat, projectId, event, senderSession } = item;
-  const selected = item.target;
+  const { sessions } = ctx.store;
+  const compatible = (candidate: Session | undefined) =>
+    candidate?.personId === owner.personId &&
+    (candidate.projectId === projectId ||
+      (senderSession?.kind !== "cli" && candidate.projectId === undefined))
+      ? candidate
+      : undefined;
+  const selected =
+    item.target && compatible(sessions.session(item.target.sessionId));
   const parent =
     selected?.parentSessionId &&
     now() - selected.lastSeenAt > LIMITS.liveSessionMs
-      ? ctx.store.sessions.session(selected.parentSessionId)
+      ? sessions.session(selected.parentSessionId)
       : undefined;
-  const redirected =
-    parent?.personId === owner.personId &&
-    (parent.projectId === projectId ||
-      (senderSession?.kind !== "cli" && parent.projectId === undefined))
-      ? parent
-      : undefined;
+  const redirected = compatible(parent);
   const session = (redirected ?? selected)?.sessionId;
   const id = ctx.store.newId("item");
   const key = event ? JSON.stringify([event.eventKey, owner.personId]) : id;
