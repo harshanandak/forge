@@ -328,6 +328,38 @@ async function fixture(seedLink = true, pullUrl = url) {
   };
 }
 
+test("lane close refuses an oversized close before writing a delivery link or landing", async () => {
+  const f = await fixture(false);
+  try {
+    const key = `issue:${id}`;
+    const row = f.state.get(key)!;
+    const value = {
+      ...(row.value as object),
+      body: "",
+      actualFiles: Array(1024).fill(`src/${"x".repeat(753)}`),
+    };
+    const show = () =>
+      operations["issue.show"]!({
+        input: { id },
+        services: { state: f.state },
+        signal: new AbortController().signal,
+        deadline: Number.MAX_SAFE_INTEGER,
+      });
+    f.state.put(key, value, { expectRevision: row.revision });
+    value.body = "x".repeat(
+      786_425 - Buffer.byteLength(JSON.stringify(await show())),
+    );
+    f.state.put(key, value, { expectRevision: row.revision + 1 });
+    const before = f.owner.export();
+    const files = [...f.files];
+    expect(Buffer.byteLength(JSON.stringify(await show()))).toBe(786_425);
+    await expect(f.close()).rejects.toThrow("LIMIT_EXCEEDED");
+    expect([f.owner.export(), [...f.files]]).toEqual([before, files]);
+  } finally {
+    await f.dispose();
+  }
+});
+
 function freeze(f: Awaited<ReturnType<typeof fixture>>) {
   f.owner.put(
     namespace,

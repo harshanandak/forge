@@ -95,6 +95,58 @@ const commits = (f: Fixture) =>
       "SELECT sequence, body, mac FROM cloud_v3_commits ORDER BY sequence",
     )
     .all();
+test(
+  "v3 admits a declaration at the shared boundary and records typed refusals",
+  async () => {
+    using f = open();
+    await provision(f);
+    const expectedFiles = Array.from(
+      { length: 80 },
+      (_, i) => `src/${String(i).padStart(996, "0")}`,
+    );
+    expect(
+      await typed(f, { ...create, input: { title: "Files", expectedFiles } }),
+    ).toMatchObject({ status: 200, body: { result: { expectedFiles } } });
+    expect((await typed(f, claim)).status).toBe(200);
+    const large = {
+      ...update,
+      input: {
+        id: "forge-1",
+        expectRevision: 1,
+        actualFiles: expectedFiles.slice(0, 3),
+      },
+    };
+    expect(await typed(f, large)).toMatchObject(error(400, "INPUT_INVALID"));
+  },
+  timeout,
+);
+
+test(
+  "v3 records and replays typed refusals for invalid declaration paths",
+  async () => {
+    using f = open();
+    await provision(f);
+    expect((await typed(f, create)).status).toBe(200);
+    expect((await typed(f, claim)).status).toBe(200);
+    for (const call of [
+      {
+        ...create,
+        requestId: "bad-create",
+        input: { title: "Bad", expectedFiles: ["../a.ts"] },
+      },
+      {
+        ...update,
+        requestId: "bad-update",
+        input: { ...update.input, actualFiles: ["../a.ts"] },
+      },
+    ]) {
+      expect(await typed(f, call)).toMatchObject(error(400, "INPUT_INVALID"));
+      expect(await typed(f, call)).toMatchObject(error(400, "INPUT_INVALID"));
+    }
+  },
+  timeout,
+);
+
 function pages(f: Fixture) {
   return f.db
     .query<{ id: string; body: string }, []>(

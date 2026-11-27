@@ -14,8 +14,11 @@ const session = { id: "fixture" } as const;
 const leased = { actor, session, leaseGeneration: 1 };
 const sha = "0123456789abcdef0123456789abcdef01234567";
 const full = Array.from({ length: 1024 }, (_, index) => `src/${index}.ts`);
-const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(486)}`);
-const wideFiles = Array.from({ length: 256 }, () => `src/${"é".repeat(996)}`);
+const files = (count: number, width = 996) =>
+  Array.from(
+    { length: count },
+    (_, i) => `src/${String(i).padStart(width, "0")}`,
+  );
 
 type Reply = {
   status: number;
@@ -253,16 +256,14 @@ test(
       inputInvalid(got);
       expect(await f.command(show)).toEqual(before);
     }
-    const wide = await f.command(update("wide", { expectedFiles: wideFiles }));
-    expect(wide.status).toBe(200);
-    before = await f.command(show);
-    const large = await f.command(
-      update("large", { actualFiles: longFiles }, 2),
+    const bounded = await f.command(
+      update("bounded", { expectedFiles: files(12) }),
     );
-    expect([large.status, large.body.error?.code]).toEqual([
-      409,
-      "UNAVAILABLE",
-    ]);
+    expect(bounded.status).toBe(200);
+    before = await f.command(show);
+    inputInvalid(
+      await f.command(update("large", { actualFiles: files(16) }, 2)),
+    );
     expect(await f.command(show)).toEqual(before);
     expect(
       (

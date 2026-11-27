@@ -13,12 +13,11 @@ const namespace = "forge/work";
 const actor = { kind: "agent", id: "fixture" } as const;
 const session = { id: "fixture" } as const;
 const sha = "0123456789abcdef0123456789abcdef01234567";
-const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(486)}`);
-const mediumFiles = Array.from(
-  { length: 1024 },
-  () => `src/${"a".repeat(335)}`,
-);
-const wideFiles = Array.from({ length: 256 }, () => `src/${"é".repeat(996)}`);
+const files = (count: number, width = 996) =>
+  Array.from(
+    { length: count },
+    (_, i) => `src/${String(i).padStart(width, "0")}`,
+  );
 const globals = globalThis as Record<string, unknown>;
 const hadFail = "fail" in globals;
 const previousFail = globals.fail;
@@ -111,13 +110,19 @@ async function project() {
 test("create update show list and reopen preserve normalized file declarations", async () => {
   const p = await project();
   try {
+    const unicode = `src/${"\u{1F600}/".repeat(509)}ab`;
     const created = (await p.call("issue.create", {
       title: "Files",
-      expectedFiles: ["./src//alpha.ts", "src/./beta-?.ts", "**/*.rs"],
+      expectedFiles: [
+        "./src//alpha.ts//",
+        "src/./beta-?.ts",
+        "**/*.rs",
+        unicode,
+      ],
     })) as Record<string, unknown>;
     expect(created).toMatchObject({
       id: "forge-1",
-      expectedFiles: ["src/alpha.ts", "src/beta-?.ts", "**/*.rs"],
+      expectedFiles: ["src/alpha.ts", "src/beta-?.ts", "**/*.rs", unicode],
     });
     expect(created).not.toHaveProperty("actualFiles");
     expect(created).not.toHaveProperty("filesAt");
@@ -125,7 +130,7 @@ test("create update show list and reopen preserve normalized file declarations",
       items: Record<string, unknown>[];
     };
     expect(listed.items[0]).toMatchObject({
-      expectedFiles: ["src/alpha.ts", "src/beta-?.ts", "**/*.rs"],
+      expectedFiles: ["src/alpha.ts", "src/beta-?.ts", "**/*.rs", unicode],
     });
     await p.call("issue.claim", { id: "forge-1" });
     const updated = (await p.call("issue.update", {
@@ -171,6 +176,7 @@ test("invalid declarations refuse create without a partial write", async () => {
       ["src\\a.ts"],
       ["!src/a.ts"],
       ["src/[ab].ts"],
+      ["src/a\u0000.ts"],
       [long],
       Array.from({ length: 257 }, (_, index) => `src/${index}.ts`),
       [5],
@@ -222,30 +228,24 @@ test("file declaration updates keep the revision and lease fence", async () => {
         expectedFiles: ["src/alpha.ts"],
       });
     }
+    const expectedFiles = files(12);
     await p.call("issue.update", {
       id: "forge-1",
       expectRevision: 1,
-      expectedFiles: wideFiles,
-    });
-    await p.call("issue.update", {
-      id: "forge-1",
-      expectRevision: 2,
-      actualFiles: mediumFiles,
+      expectedFiles,
     });
     const beforeLarge = p.owner.get(namespace, "issue:work-1")?.value;
-    const large = await p.refusal("issue.update", {
-      id: "forge-1",
-      expectRevision: 3,
-      actualFiles: longFiles,
-    });
-    expect(large.code).toBe("LIMIT_EXCEEDED");
-    expect(p.owner.get(namespace, "issue:work-1")?.value).toEqual(beforeLarge);
-    const close = await p.refusal("issue.close", {
-      id: "forge-1",
-      withoutReceipt: "c".repeat(2_000),
-    });
-    expect(close.code).toBe("LIMIT_EXCEEDED");
-    expect(p.owner.get(namespace, "issue:work-1")?.value).toEqual(beforeLarge);
+    for (const actualFiles of [files(16), files(600, 896)]) {
+      const large = await p.refusal("issue.update", {
+        id: "forge-1",
+        expectRevision: 2,
+        actualFiles,
+      });
+      expect(large.code).toBe("INPUT_INVALID");
+      expect(p.owner.get(namespace, "issue:work-1")?.value).toEqual(
+        beforeLarge,
+      );
+    }
     await p.call("issue.release", { id: "forge-1" });
     const lost = await p.refusal("issue.update", {
       id: "forge-1",
@@ -261,8 +261,44 @@ test("file declaration updates keep the revision and lease fence", async () => {
       id: "forge-1",
     });
     expect(p.owner.get(namespace, "issue:work-1")?.value).toMatchObject({
-      expectedFiles: wideFiles,
+      expectedFiles,
     });
+  } finally {
+    await p.close();
+  }
+});
+
+test("closing an admitted near-limit issue leaves the record intact on refusal", async () => {
+  const p = await project();
+  try {
+    await p.call("issue.create", { title: "Files" });
+    await p.call("issue.claim", { id: "forge-1" });
+    const key = "issue:work-1";
+    const row = p.owner.get(namespace, key)!;
+    const value = {
+      ...(row.value as object),
+      actualFiles: files(1024, 753),
+      body: "",
+    };
+    const seed = (revision: number) =>
+      p.owner.put(namespace, key, value, actor, { expectRevision: revision });
+    seed(1);
+    const show = () => p.call("issue.show", { id: "forge-1" });
+    value.body = "x".repeat(
+      786_420 - Buffer.byteLength(JSON.stringify(await show())),
+    );
+    seed(2);
+    const before = await show();
+    expect(Buffer.byteLength(JSON.stringify(before))).toBe(786_420);
+    expect(
+      (
+        await p.refusal("issue.close", {
+          id: "forge-1",
+          withoutReceipt: "c".repeat(2_000),
+        })
+      ).code,
+    ).toBe("LIMIT_EXCEEDED");
+    expect(await show()).toEqual(before);
   } finally {
     await p.close();
   }
