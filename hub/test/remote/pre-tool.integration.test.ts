@@ -242,7 +242,7 @@ check("P13 redirect does not send the host key to another port", async (f) => {
     },
   });
   try {
-    f.respond = () => Response.redirect(other.url, 307);
+    f.respond = () => Response.redirect(other.url.href, 307);
     const result = await f.tool();
     expect(result.status).toBe(2);
     expect(result.stderr).toStartWith(
@@ -305,7 +305,7 @@ check(
 check("Y3 importing built shared library has no launch effect", async (f) => {
   const sharedModule = new URL("../../dist/hooks/shared.js", import.meta.url);
   expect(
-    await child(f.root, ["--import", sharedModule.href, "-e", ""]),
+    await child(f.root, ["--import", sharedModule.href, "-e", "0"]),
   ).toEqual(silence);
   expect(f.seen).toEqual([]);
   expect(hubRoot.length).toBeGreaterThan(0);
