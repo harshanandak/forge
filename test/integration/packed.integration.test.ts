@@ -195,9 +195,15 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
           result.status,
           `${mutation.fixture ?? "journey"}:${mutation.mode} must detect the mutation in ${mutation.file}`,
         ).not.toBe(0);
-        expect(`${result.stdout}\n${result.stderr}`).toContain(
-          mutation.evidence,
-        );
+        const evidence = `${result.stdout}\n${result.stderr}`;
+        expect(evidence).toContain(mutation.evidence);
+        if (mutation.mode === "bootstrap" && mutation.file === "bin/forge.js") {
+          expect(evidence).not.toMatch(/TypeError|does not provide an export/);
+          expect(evidence).toMatch(
+            /UNAVAILABLE: [^\n]*trust\.sqlite[^\n]*directory/i,
+          );
+          expect(evidence).toMatch(/at .*prepareTrust/);
+        }
         console.log(
           `Counterfactual ${mutation.fixture ?? "journey"}:${mutation.mode}: loaded mutated bytes, expected failure observed`,
         );

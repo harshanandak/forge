@@ -3,28 +3,41 @@ import { ForgeFailure } from "../contract/failure.ts";
 import { escapeDisplayText } from "../contract/display-text.ts";
 import { runCommand } from "../surface/command.ts";
 import { failure, respond } from "../surface/result.ts";
-import { createLocalAssembly, localCall } from "./index.ts";
+import { localCall, withLocalCommandAssembly } from "./index.ts";
+import type { Assembly } from "./index.ts";
+import type { SurfaceCatalog } from "../surface/catalog.ts";
 import { assemblyMcp } from "./mcp.ts";
 
 /** Keep host bootstrap and its failures inside the CLI's response boundary. */
 export async function runLocalCommand(
   argv: readonly string[],
 ): Promise<number> {
+  return await localCommandResult(argv, () =>
+    withLocalCommandAssembly(argv[0] !== "--mcp", (assembly) =>
+      dispatchLocalCommand(argv, assembly),
+    ),
+  );
+}
+
+export function dispatchLocalCommand(
+  argv: readonly string[],
+  assembly: Assembly,
+  catalog: SurfaceCatalog = assembly.catalog,
+): Promise<number> {
+  return runCommand(argv, {
+    catalog,
+    version,
+    call: localCall(assembly),
+    mcp: assemblyMcp(assembly),
+  });
+}
+
+export async function localCommandResult(
+  argv: readonly string[],
+  execute: () => Promise<number>,
+): Promise<number> {
   try {
-    // Only a served connection stays up across calls; every other command exits after one.
-    const assembly = await createLocalAssembly({
-      oneShot: argv[0] !== "--mcp",
-    });
-    try {
-      return await runCommand(argv, {
-        catalog: assembly.catalog,
-        version,
-        call: localCall(assembly),
-        mcp: assemblyMcp(assembly),
-      });
-    } finally {
-      await assembly.close();
-    }
+    return await execute();
   } catch (error) {
     const response = respond(
       error instanceof ForgeFailure

@@ -42,15 +42,15 @@ The reader allows up to 1,000 issues, 128 delivered links per issue, 20,000 trac
 
 ### Claim and lane advisories
 
-In local projects, the one-shot Forge CLI checks for overlapping files after a successful claim or lane publication.
+In local projects, the dedicated single-command Forge CLI checks for overlapping files after a successful claim.
 `WORK_FILE_OVERLAP` names the path, the other issue's ID and title, its branch when known, and the live lease or open PR.
 Forge follows known dependencies, including indirect ones. Otherwise, finish the incumbent lane first.
 
 `WORK_FILE_MAP_INCOMPLETE` means some overlaps may be missing. The result carries at most 32 warnings, with messages
 limited to 2,000 characters. `WORK_FILE_MAP_TRUNCATED` reports how many warning rows were omitted.
 
-The scan runs outside the registry lock. MCP and other long-lived hosts skip the scan to keep the process runner free.
-Skipped scans and short claim leases get an incomplete-map warning. Cloud-bound calls and direct cloud HTTP claims are outside this scope.
+Embedded hosts and MCP skip advisory processes to keep the shared runner free. Local lane starts report incomplete evidence until Forge can reuse the admitted default policy snapshot (forge-2052).
+Short grants and failed registry or issue reads also report incomplete evidence. Cloud-bound calls and direct cloud HTTP claims are outside this scope.
 
 The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue link ...` and `forge issue close --input '{"id":"<id>","receipt":"<receipt>"}'` need no explicit context:
 

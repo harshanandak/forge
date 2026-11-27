@@ -43,7 +43,7 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
   {
     file: "bin/forge.js",
     from: "process.stdout.write(`${version}\\n`);",
-    to: "await (await (await import('../src/assembly/index.js')).createLocalAssembly()).prepareTrust(); process.stdout.write(`${version}\\n`);",
+    to: "await (await import('../src/assembly/index.js')).withLocalCommandAssembly(true, async (assembly) => { await assembly.prepareTrust(); }); process.stdout.write(`${version}\\n`);",
     mode: "bootstrap",
     fixture: "review-two",
     evidence: "version must not open local state",
@@ -130,8 +130,8 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
   },
   {
     file: "src/assembly/command.js",
-    from: "catalog: assembly.catalog",
-    to: "catalog: { list: () => [], invoke: assembly.catalog.invoke }",
+    from: "return runCommand(argv, {\n        catalog,",
+    to: "return runCommand(argv, {\n        catalog: { list: () => [], invoke: catalog.invoke },",
     mode: "all",
     evidence: "Unknown operation: config.show",
   },

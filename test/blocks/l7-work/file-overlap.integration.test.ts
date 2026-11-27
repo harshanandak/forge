@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
@@ -37,6 +38,7 @@ for (const mode of [
   "disjoint",
   "shared",
   "racing",
+  "embedded",
   "stale default policy",
 ] as const)
   test(`local CLI overlap: ${mode}`, async () => {
@@ -71,7 +73,7 @@ for (const mode of [
         laneGit(["update-ref", trackedDefault, stale], repo);
       }
       commands = await laneCommands(root, repo);
-      const { call, good } = commands;
+      const { good } = commands;
       const id = async (title: string, file: string) =>
         String(
           (await good("issue.create", { title, expectedFiles: [file] })).id,
@@ -81,16 +83,20 @@ for (const mode of [
         "Candidate lane",
         mode === "disjoint" ? "src/ui/other.rs" : sharedFile,
       );
-      const claim = (id: string) => call("issue.claim", { id });
+      const cli = (args: string[]) =>
+        laneCli(root, repo, args, "coordinator", {
+          FORGE_DEVICE_ID: "lane-fixture",
+        });
+      const claim = (id: string) => cli(["issue", "claim", id]);
       const start = (id: string) =>
-        call("lane.start", { id, brief, branch: `feat/${id}` });
+        cli(["lane", "start", "--input", JSON.stringify(laneInput(id))]);
       const checkLane = (lane: Awaited<ReturnType<typeof start>>) => {
         expect(lane.ok, JSON.stringify(lane)).toBe(true);
         expect(existsSync(join(String(lane.result.worktree), ".git"))).toBe(
           true,
         );
       };
-      if (mode === "racing") {
+      if (mode === "racing" || mode === "embedded") {
         const { createAssembly, localContext } = (await import(
           new URL("../../../dist/src/assembly/index.js", import.meta.url).href
         )) as typeof import("../../../src/assembly/index.ts");
@@ -106,10 +112,14 @@ for (const mode of [
             import.meta.url,
           ).href
         )) as typeof import("../../../src/adapters/process/containment.ts");
-        const host = await createAssembly({
+        const options = {
           root: repo,
           deviceRoot: join(root, "device"),
-        });
+          oneShot: true,
+        };
+        const host = await createAssembly(options);
+        const other =
+          mode === "embedded" ? await createAssembly(options) : host;
         const context = localContext(
           host,
           { kind: "human", id: "local-cli" },
@@ -129,8 +139,10 @@ for (const mode of [
             },
           },
         );
-        for (const issue of [first, second])
-          expect((await claim(issue)).ok).toBe(true);
+        const { runCli } = (await import(
+          new URL("../../../dist/src/surface/cli.js", import.meta.url).href
+        )) as typeof import("../../../src/surface/cli.ts");
+        for (const issue of [first, second]) expect(claim(issue).ok).toBe(true);
         const entered = Promise.withResolvers<void>();
         const resume = Promise.withResolvers<void>();
         let arm = false;
@@ -159,12 +171,22 @@ for (const mode of [
             return runTree(...args);
           }),
         ];
-        const attach = (id: string) =>
-          mcp.callTool("lane_start", {
-            id,
-            brief,
-            branch: "feat/" + id,
-          });
+        const attach = async (id: string) =>
+          mode === "racing"
+            ? mcp.callTool("lane_start", laneInput(id))
+            : (
+                await runCli(
+                  (id === first ? host : other).catalog,
+                  ["lane", "start", "--input", JSON.stringify(laneInput(id))],
+                  {
+                    caller: "human",
+                    context: {
+                      ...context,
+                      session: { id: "coordinator", device: "lane-fixture" },
+                    },
+                  },
+                )
+              ).envelope;
         const admitting = attach(first);
         try {
           await Promise.race([entered.promise, admitting]);
@@ -173,43 +195,42 @@ for (const mode of [
           resume.resolve();
           const lane = await admitting;
           expect(lane?.ok, JSON.stringify(lane)).toBe(true);
-          expect(mapWarnings(lane!)).toContainEqual({
-            code: "WORK_FILE_MAP_INCOMPLETE",
-            message:
-              "File overlap map incomplete (advisory skipped: shared process runner). Some overlap may be missing.",
-          });
+          for (const result of [lane, secondStart])
+            expect(mapWarnings(result!)).toContainEqual({
+              code: "WORK_FILE_MAP_INCOMPLETE",
+              message:
+                "File overlap map incomplete (advisory skipped: shared process runner). Some overlap may be missing.",
+            });
           expect(held).toBe(false);
         } finally {
           resume.resolve();
           await admitting;
           for (const spy of spies) spy.mockRestore();
+          if (other !== host) await other.close();
           await host.close();
         }
         return;
       }
-      expect((await claim(first)).ok).toBe(true);
-      checkLane(await start(first));
-      const replay = await start(first);
+      expect(claim(first).ok).toBe(true);
+      checkLane(start(first));
+      const replay = start(first);
       checkLane(replay);
-      const claimed = await claim(second);
+      const claimed = claim(second);
       expect(claimed.ok, JSON.stringify(claimed)).toBe(true);
-      const started = await start(second);
+      const started = start(second);
       checkLane(started);
-      expect(mapWarnings(replay)).toEqual([]);
+      expect(hasIncompleteMap(replay)).toBe(true);
+      expect(hasIncompleteMap(started)).toBe(true);
       if (mode === "stale default policy") {
         expect(mapWarnings(claimed)).toEqual([]);
         expect(laneGit(["rev-parse", trackedDefault], repo)).toBe(stale);
         expect(started.result.base).not.toBe(stale);
-        expect(
-          mapWarnings(started).find(({ code }) => code === "WORK_FILE_OVERLAP")
-            ?.message ?? "",
-        ).toContain(sharedFile);
         return;
       }
-      for (const reply of [claimed, started]) {
-        if (mode === "disjoint") expect(mapWarnings(reply)).toEqual([]);
+      {
+        if (mode === "disjoint") expect(mapWarnings(claimed)).toEqual([]);
         else {
-          const row = mapWarnings(reply).find(
+          const row = mapWarnings(claimed).find(
             ({ code }) => code === "WORK_FILE_OVERLAP",
           );
           expect(row?.message ?? "").toContain(sharedFile);
@@ -255,8 +276,8 @@ async function project(
 
 const planned = { title: "Shared file", expectedFiles: [sharedFile] };
 const laneInput = (id: string) => ({ id, brief, branch: `feat/${id}` });
-const hasOverlap = (reply: object) =>
-  mapWarnings(reply).some(({ code }) => code === "WORK_FILE_OVERLAP");
+const hasIncompleteMap = (reply: object) =>
+  mapWarnings(reply).some(({ code }) => code === "WORK_FILE_MAP_INCOMPLETE");
 
 test("the later concurrent one-shot CLI claim reports overlap before lane start", async () => {
   await project(async ({ good }, repo, root) => {
@@ -363,56 +384,216 @@ test("the later concurrent one-shot CLI claim reports overlap before lane start"
     ];
     const original = laneCli(root, repo, args, session, device);
     expect(original.ok, JSON.stringify(original)).toBe(true);
-    expect(hasOverlap(original)).toBe(true);
+    expect(hasIncompleteMap(original)).toBe(true);
     const replay = laneCli(root, repo, args, session, device);
     expect(replay.ok, JSON.stringify(replay)).toBe(true);
     expect(replay.result.worktree).toBe(original.result.worktree);
-    expect(hasOverlap(replay)).toBe(true);
+    expect(hasIncompleteMap(replay)).toBe(true);
   });
 }, 30_000);
 
-test("a short grant skips the advisory process", async () => {
-  await project(async ({ call, good }) => {
-    const id = String((await good("issue.create", planned)).id);
-    const seen: string[] = [];
-    const spy = spyOn(launch, "runProcess").mockImplementation((...args) => {
-      if (advisoryGit(args[1])) seen.push(args[1][0]!);
-      return runProcess(...args);
-    });
-    try {
-      const reply = await call("issue.claim", { id, ttlSeconds: 1 });
-      expect(reply.ok).toBe(true);
-      expect(seen).toEqual([]);
-      expect(mapWarnings(reply)[0]?.message ?? "").toContain(
-        "claim lease is too short",
+for (const entry of ["createAssembly", "wrapper", "runLocalCommand"] as const)
+  test(`embedded ${entry} claims leave the sole supervisor free for another admission`, async () => {
+    await project(async ({ good }, repo, root) => {
+      const first = String((await good("issue.create", planned)).id);
+      const second = String(
+        (
+          await good("issue.create", {
+            ...planned,
+            expectedFiles: ["elsewhere.rs"],
+          })
+        ).id,
       );
-    } finally {
-      spy.mockRestore();
+      const modulePath = (name: string) =>
+        JSON.stringify(
+          new URL(`../../../dist/src/${name}.js`, import.meta.url).href,
+        );
+      const run = modulePath("adapters/process/run");
+      const heldRunner = `data:text/javascript,${encodeURIComponent(`
+        export * from ${run};
+        import { runProcess as run } from ${run};
+        export async function runProcess(executable, args, options, platform, config) {
+          supervisorLimits.add(config?.supervision?.maxConcurrent);
+          if (args[0] === "--no-replace-objects" || args[0] === "ls-remote" || args[0] === "pr") {
+            scans++;
+            const pending = run(process.execPath, ["-e", "setInterval(() => {}, 1000)"],
+              { ...options, signal: gate.signal }, platform, config);
+            entered.resolve();
+            return pending;
+          }
+          return run(executable, args, options, platform, config);
+        }
+      `)}`;
+      const driver = `
+        import { registerHooks } from "node:module";
+        globalThis.scans = 0;
+        globalThis.gate = new AbortController();
+        globalThis.entered = Promise.withResolvers();
+        globalThis.supervisorLimits = new Set();
+        const held = ${JSON.stringify(heldRunner)};
+        registerHooks({ resolve(specifier, context, next) {
+          const found = next(specifier, context);
+          return found.url === ${run} && context.parentURL !== held
+            ? { ...found, url: held } : found;
+        } });
+        const { createAssembly, withLocalCommandAssembly, localCall } =
+          await import(${modulePath("assembly/index")});
+        const { runLocalCommand } = await import(${modulePath("assembly/command")});
+        const { runCli } = await import(${modulePath("surface/cli")});
+        const options = { root: process.cwd(), deviceRoot: process.env.FORGE_DEVICE_ROOT, oneShot: true };
+        const left = await createAssembly(options);
+        const right = await createAssembly(options);
+        const claim = ["issue", "claim", ${JSON.stringify(first)}];
+        const run = async (assembly, args) =>
+          (await runCli(assembly.catalog, args, localCall(assembly))).envelope;
+        const write = process.stdout.write;
+        let text = "";
+        async function importedCommand() {
+          process.stdout.write = (chunk) => { text += chunk; return true; };
+          try { await runLocalCommand(claim); return JSON.parse(text); }
+          finally { process.stdout.write = write; }
+        }
+        const mode = ${JSON.stringify(entry)};
+        const claiming = mode === "wrapper" ? withLocalCommandAssembly(true, (assembly) => run(assembly, claim))
+          : mode === "createAssembly" ? run(left, claim) : importedCommand();
+        let started;
+        try {
+          await Promise.race([entered.promise, claiming]);
+          started = await run(right, ["lane", "start", "--input", ${JSON.stringify(JSON.stringify(laneInput(second)))}]);
+        } finally { gate.abort(); }
+        const claimed = await claiming;
+        await Promise.all([left.close(), right.close()]);
+        console.log(JSON.stringify({ ok: true, result: { claimed, started, scans, limits: [...supervisorLimits] } }));
+      `;
+      const result = laneCli(
+        root,
+        repo,
+        [],
+        "coordinator",
+        { FORGE_DEVICE_ID: "lane-fixture" },
+        ["--input-type=module", "-e", driver, "--"],
+      );
+      expect(result.exit).toBe(0);
+      expect(result.result.claimed).toMatchObject({
+        ok: true,
+        result: { id: first },
+      });
+      expect(result.result.started).toMatchObject({
+        ok: true,
+        result: { issue: second },
+      });
+      for (const reply of [result.result.claimed, result.result.started])
+        expect(hasIncompleteMap(reply as object)).toBe(true);
+      expect(result.result.scans).toBe(0);
+      expect(result.result.limits).toEqual([1]);
+    });
+  }, 30_000);
+
+function observedCli(
+  root: string,
+  repo: string,
+  args: string[],
+  delivered?: string,
+  failList = false,
+) {
+  const capture = join(root, "processes.log");
+  writeFileSync(capture, "");
+  const moduleUrl = (source: string) =>
+    `data:text/javascript,${encodeURIComponent(source)}`;
+  const built = (module: string) =>
+    new URL(`../../../dist/src/${module}.js`, import.meta.url).href;
+  const run = built("adapters/process/run");
+  const providers = built("assembly/providers");
+  const wrappedRun = moduleUrl(`
+    export * from ${JSON.stringify(run)};
+    import { runProcess as run } from ${JSON.stringify(run)};
+    import { appendFileSync } from "node:fs";
+    export async function runProcess(executable, args, ...tail) {
+      appendFileSync(${JSON.stringify(capture)}, JSON.stringify(args) + "\\n");
+      if (${JSON.stringify(delivered ?? "")} && args[0] === "pr") {
+        if (args[1] !== "view" || args[2] !== ${JSON.stringify(delivered ?? "")})
+          throw new Error("Expected normalized delivered PR URL");
+        return { exitCode: 0, stdout: '{"state":"OPEN","headRefName":"feat/released"}',
+          stderr: "", signal: null, timedOut: false, truncated: false, durationMs: 0 };
+      }
+      return run(executable, args, ...tail);
     }
+  `);
+  const wrappedProviders = moduleUrl(`
+    export * from ${JSON.stringify(providers)};
+    import { resolveOutside as resolve } from ${JSON.stringify(providers)};
+    export function resolveOutside(executor, name, ...tail) {
+      return name === "gh" ? { kind: "resolved", path: process.execPath }
+        : resolve(executor, name, ...tail);
+    }
+  `);
+  const hooks = moduleUrl(`
+    import { registerHooks } from "node:module";
+    if (${failList}) {
+      const { Runtime } = await import(${JSON.stringify(built("core/runtime/index"))});
+      const invoke = Runtime.prototype.invoke;
+      Runtime.prototype.invoke = function(request, ...rest) {
+        if (request.op === "issue.list") throw new Error("Fixture issue store read failed");
+        return invoke.call(this, request, ...rest);
+      };
+    }
+    const wrappers = ${JSON.stringify({ [run]: wrappedRun, ...(delivered ? { [providers]: wrappedProviders } : {}) })};
+    registerHooks({ resolve(specifier, context, next) {
+      const found = next(specifier, context);
+      const wrapped = wrappers[found.url];
+      return wrapped && context.parentURL !== wrapped ? { ...found, url: wrapped } : found;
+    } });
+  `);
+  const reply = laneCli(
+    root,
+    repo,
+    args,
+    "coordinator",
+    { FORGE_DEVICE_ID: "lane-fixture" },
+    ["--import", hooks],
+  );
+  const calls = readFileSync(capture, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[]);
+  return { reply, calls };
+}
+
+test("a short grant skips the advisory process", async () => {
+  await project(async ({ good }, repo, root) => {
+    const id = String((await good("issue.create", planned)).id);
+    const { reply, calls } = observedCli(root, repo, [
+      "issue",
+      "claim",
+      "--input",
+      JSON.stringify({ id, ttlSeconds: 1 }),
+    ]);
+    expect(reply.ok).toBe(true);
+    expect(calls.filter(advisoryGit)).toEqual([]);
+    expect(mapWarnings(reply)[0]?.message ?? "").toContain(
+      "claim lease is too short",
+    );
   });
 }, 30_000);
 
 test("a branch collision refuses before any advisory reads", async () => {
-  await project(async ({ call, good }, repo) => {
+  await project(async ({ good }, repo, root) => {
     const id = String((await good("issue.create", planned)).id);
     laneGit(["branch", `feat/${id}`], repo);
-    let reads = 0;
-    const spy = spyOn(launch, "runProcess").mockImplementation((...args) => {
-      if (advisoryGit(args[1])) reads++;
-      return runProcess(...args);
-    });
-    try {
-      const reply = await call("lane.start", laneInput(id));
-      expect(reply.error?.code).toBe("INPUT_CONFLICT");
-      expect(reads).toBe(0);
-    } finally {
-      spy.mockRestore();
-    }
+    const { reply, calls } = observedCli(root, repo, [
+      "lane",
+      "start",
+      "--input",
+      JSON.stringify(laneInput(id)),
+    ]);
+    expect(reply.error?.code).toBe("INPUT_CONFLICT");
+    expect(calls.filter(advisoryGit)).toEqual([]);
   });
 }, 30_000);
 
-test("a paused advisory leaves another disjoint lane free to publish", async () => {
-  await project(async ({ call, good }) => {
+test("lane starts never launch an advisory-owned remote helper", async () => {
+  await project(async ({ good }, repo, root) => {
     const first = String((await good("issue.create", planned)).id);
     const second = String(
       (
@@ -422,29 +603,23 @@ test("a paused advisory leaves another disjoint lane free to publish", async () 
         })
       ).id,
     );
-    const entered = Promise.withResolvers<void>();
-    const resume = Promise.withResolvers<void>();
-    let paused = false;
-    const spy = spyOn(launch, "runProcess").mockImplementation(
-      async (...args) => {
-        if (!paused && advisoryGit(args[1])) {
-          paused = true;
-          entered.resolve();
-          await resume.promise;
-        }
-        return runProcess(...args);
-      },
-    );
-    const firstStart = call("lane.start", laneInput(first));
-    try {
-      await Promise.race([entered.promise, firstStart]);
-      expect(paused).toBe(true);
-      const next = await call("lane.start", laneInput(second));
-      expect(next.ok, JSON.stringify(next)).toBe(true);
-    } finally {
-      resume.resolve();
-      await firstStart;
-      spy.mockRestore();
+    const remote = laneGit(["remote", "get-url", "origin"], repo);
+    laneGit(["remote", "set-url", "origin", pathToFileURL(remote).href], repo);
+    for (const id of [first, second]) {
+      const { reply, calls } = observedCli(root, repo, [
+        "lane",
+        "start",
+        "--input",
+        JSON.stringify(laneInput(id)),
+      ]);
+      expect(reply.ok, JSON.stringify(reply)).toBe(true);
+      expect(existsSync(join(String(reply.result.worktree), ".git"))).toBe(
+        true,
+      );
+      expect(calls.filter(advisoryGit)).toEqual([]);
+      expect(mapWarnings(reply)[0]?.message ?? "").toContain(
+        "trusted default policy unavailable",
+      );
     }
   });
 }, 30_000);
@@ -459,16 +634,18 @@ test("a successful lane replay sees a claim made after its original start", asyn
     const replay = await call("lane.start", laneInput(first));
     expect(replay.ok).toBe(true);
     expect(replay.result.worktree).toBe(original.worktree);
-    expect(hasOverlap(replay)).toBe(true);
+    expect(hasIncompleteMap(replay)).toBe(true);
   });
 }, 30_000);
 
 test("advisory authority reads stay in the invoking renamed work instance", async () => {
-  await project(async ({ call, good }) => {
+  await project(async ({ good }, repo, root) => {
     const first = String((await good("labissue.create", planned)).id);
     const second = String((await good("labissue.create", planned)).id);
-    await good("labissue.claim", { id: first });
-    const result = await call("labissue.claim", { id: second });
+    const claim = (id: string) =>
+      laneCli(root, repo, ["labissue", "claim", id], "coordinator");
+    expect(claim(first).ok).toBe(true);
+    const result = claim(second);
     expect(result.ok).toBe(true);
     expect(mapWarnings(result)[0]?.message ?? "").toContain(
       `overlaps ${first}`,
@@ -477,58 +654,78 @@ test("advisory authority reads stay in the invoking renamed work instance", asyn
 }, 30_000);
 
 test("a delivered open PR with a trailing slash keeps a released holder visible", async () => {
-  await project(async ({ call, good }) => {
+  await project(async ({ good }, repo, root) => {
     const first = String((await good("issue.create", planned)).id);
     const second = String((await good("issue.create", planned)).id);
     const url = "https://github.com/example/overlap/pull/17/";
     await good("issue.claim", { id: first });
     await good("issue.link", { id: first, relation: "delivers", url });
     await good("issue.release", { id: first });
-    const spy = spyOn(launch, "runProcess").mockImplementation((...args) =>
-      args[1][0] === "pr"
-        ? Promise.resolve({
-            exitCode: 0,
-            stdout: JSON.stringify({
-              state: "OPEN",
-              headRefName: "feat/released",
-            }),
-            stderr: "",
-            signal: null,
-            timedOut: false,
-            truncated: false,
-            durationMs: 0,
-          })
-        : runProcess(...args),
+    const { reply, calls } = observedCli(
+      root,
+      repo,
+      ["issue", "claim", second],
+      url.slice(0, -1),
     );
-    try {
-      const result = await call("issue.claim", { id: second });
-      expect(result.ok).toBe(true);
-      expect(
-        mapWarnings(result).find(({ code }) => code === "WORK_FILE_OVERLAP")
-          ?.message ?? "",
-      ).toContain("feat/released");
-    } finally {
-      spy.mockRestore();
-    }
+    expect(reply.ok).toBe(true);
+    expect(calls.find((args) => args[0] === "pr")).toEqual([
+      "pr",
+      "view",
+      url.slice(0, -1),
+      "--json",
+      "state,headRefName",
+    ]);
+    expect(
+      mapWarnings(reply).find(({ code }) => code === "WORK_FILE_OVERLAP")
+        ?.message ?? "",
+    ).toContain("feat/released");
+  });
+}, 30_000);
+
+test("a broken lane registry preserves claim overlap and reports incomplete evidence", async () => {
+  await project(async ({ good }, repo, root) => {
+    const first = String((await good("issue.create", planned)).id);
+    const second = String((await good("issue.create", planned)).id);
+    const claim = (id: string) =>
+      laneCli(root, repo, ["issue", "claim", id], "coordinator");
+    expect(claim(first).ok).toBe(true);
+    writeFileSync(join(repo, ".git", "forge-lanes.json"), "{");
+    const result = claim(second);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(mapWarnings(result).map(({ code }) => code)).toContain(
+      "WORK_FILE_OVERLAP",
+    );
+    expect(hasIncompleteMap(result)).toBe(true);
+  });
+}, 30_000);
+
+test("a failed holder read marks the successful claim incomplete", async () => {
+  await project(async ({ good }, repo, root) => {
+    const id = String((await good("issue.create", planned)).id);
+    const { reply } = observedCli(
+      root,
+      repo,
+      ["issue", "claim", id],
+      undefined,
+      true,
+    );
+    expect(reply.ok).toBe(true);
+    expect(hasIncompleteMap(reply)).toBe(true);
   });
 }, 30_000);
 
 test("advisory authority reads do not repeat prefix discovery per issue", async () => {
-  await project(async ({ call, good }) => {
+  await project(async ({ good }, repo, root) => {
     for (let i = 0; i < 64; i++) await good("issue.create", planned);
-    let processes = 0;
-    let prefix = 0;
-    const spy = spyOn(launch, "runProcess").mockImplementation((...args) => {
-      processes++;
-      if (args[1].includes("remote.origin.url")) prefix++;
-      return runProcess(...args);
-    });
-    try {
-      expect((await call("issue.claim", { id: "sample-64" })).ok).toBe(true);
-      expect(prefix).toBe(1);
-      expect(processes).toBeLessThanOrEqual(65);
-    } finally {
-      spy.mockRestore();
-    }
+    const { reply, calls } = observedCli(root, repo, [
+      "issue",
+      "claim",
+      "sample-64",
+    ]);
+    expect(reply.ok).toBe(true);
+    expect(
+      calls.filter((args) => args.includes("remote.origin.url")),
+    ).toHaveLength(1);
+    expect(calls.length).toBeLessThanOrEqual(65);
   });
 }, 30_000);

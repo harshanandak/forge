@@ -28,8 +28,9 @@ export function laneCli(
   args: string[],
   session: string,
   env: NodeJS.ProcessEnv = {},
+  nodeArgs: readonly string[] = [],
 ) {
-  const result = spawnSync("node", [laneBin, ...args], {
+  const result = spawnSync("node", [...nodeArgs, laneBin, ...args], {
     cwd,
     env: {
       ...process.env,
