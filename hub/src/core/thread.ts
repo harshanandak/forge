@@ -172,32 +172,12 @@ export function isUnconfirmedMessage(id: unknown): boolean {
 
 export const LOOP_PAUSE_TEXT = "Paused: the agents need a person to reply.";
 
-type OrderedRow = {
-  seq: number;
-  kind: string;
-  id: string | undefined;
-  at: number;
-};
 type OrderKey = readonly [string, string];
 
-function orderedRow(row: SqlRow): OrderedRow {
-  const id = row.chat_message_id;
-  return {
-    seq: num(row.seq),
-    kind: str(row.kind),
-    id: typeof id === "string" ? id : undefined,
-    at: num(row.created_at),
-  };
-}
-
-function orderKey(id: string | undefined, at: number): OrderKey {
-  const match = id === undefined ? null : /^(\d+)\.(\d{6})$/.exec(id);
-  if (match) return [match[1]!, match[2]!];
-  const seconds = Math.trunc(at / 1000);
-  return [
-    String(seconds),
-    String((at - seconds * 1000) * 1000).padStart(6, "0"),
-  ];
+function tsKey(id: unknown): OrderKey | undefined {
+  if (typeof id !== "string") return undefined;
+  const match = /^0*(\d+)\.(\d{6})$/.exec(id);
+  return match ? [match[1]!, match[2]!] : undefined;
 }
 
 function compareKeys(a: OrderKey, b: OrderKey): number {
@@ -208,39 +188,53 @@ function compareKeys(a: OrderKey, b: OrderKey): number {
   );
 }
 
-function compareRows(a: OrderedRow, b: OrderedRow): number {
-  return (
-    compareKeys(orderKey(a.id, a.at), orderKey(b.id, b.at)) || a.seq - b.seq
-  );
-}
-
-function agentRunStart(db: HubDb, thread: string): OrderedRow | undefined {
+function guardState(
+  db: HubDb,
+  thread: string,
+): { readonly paused: boolean; readonly boundarySeq: number } {
   const rows = db
     .prepare(
-      `SELECT seq,kind,chat_message_id,created_at FROM thread_messages WHERE adapter = 'slack'
-    AND chat_thread_id = ? AND kind IN ('agent','person')`,
+      `SELECT seq,kind,chat_message_id FROM thread_messages WHERE adapter = 'slack'
+    AND chat_thread_id = ? AND kind IN ('agent','person') ORDER BY seq`,
     )
-    .all(thread)
-    .map(orderedRow)
-    .toSorted((a, b) => compareRows(b, a));
-  const run: OrderedRow[] = [];
+    .all(thread);
+  let personKey: OrderKey | undefined;
+  let personKeySeq = -1;
+  let anyPersonSeq = -1;
+  for (const row of rows) {
+    if (str(row.kind) !== "person") continue;
+    const seq = num(row.seq);
+    anyPersonSeq = seq;
+    const key = tsKey(row.chat_message_id);
+    if (
+      key !== undefined &&
+      (personKey === undefined || compareKeys(key, personKey) > 0)
+    ) {
+      personKey = key;
+      personKeySeq = seq;
+    }
+  }
+  const boundarySeq = personKey === undefined ? anyPersonSeq : personKeySeq;
+  let count = 0;
   const seen = new Set<string>();
   for (const row of rows) {
-    if (row.id !== undefined) {
-      if (seen.has(row.id)) continue;
-      seen.add(row.id);
+    if (str(row.kind) !== "agent") continue;
+    const id = row.chat_message_id;
+    if (typeof id === "string") {
+      if (seen.has(id)) continue;
+      seen.add(id);
     }
-    run.push(row);
-    if (run.length === LIMITS.agentRunMax) break;
+    const seq = num(row.seq);
+    const key = tsKey(id);
+    if (key !== undefined && personKey !== undefined) {
+      if (compareKeys(key, personKey) > 0) count += 1;
+    } else if (seq > boundarySeq) count += 1;
   }
-  return run.length === LIMITS.agentRunMax &&
-    run.every(({ kind }) => kind === "agent")
-    ? run.at(-1)
-    : undefined;
+  return { paused: count >= LIMITS.agentRunMax, boundarySeq };
 }
 
 export function paused(db: HubDb, thread: string): boolean {
-  return agentRunStart(db, thread) !== undefined;
+  return guardState(db, thread).paused;
 }
 
 export async function enterThread(
@@ -261,16 +255,16 @@ export async function enterThread(
 
 function loopPauseDue(ctx: CoreContext, conversation: Conversation) {
   return ctx.store.tx(() => {
-    const start = agentRunStart(ctx.deps.db, conversation.chatThreadId);
-    if (start === undefined) return false;
-    const noticed = ctx.deps.db
-      .prepare(
-        `SELECT seq,kind,chat_message_id,created_at FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ?`,
-      )
-      .all(conversation.chatThreadId, LOOP_PAUSE_TEXT)
-      .map(orderedRow)
-      .some((row) => compareRows(row, start) >= 0);
-    return !noticed;
+    const state = guardState(ctx.deps.db, conversation.chatThreadId);
+    if (!state.paused) return false;
+    return (
+      ctx.deps.db
+        .prepare(
+          `SELECT 1 FROM thread_messages WHERE adapter = 'slack' AND chat_thread_id = ? AND kind = 'system' AND text = ? AND seq > ? LIMIT 1`,
+        )
+        .get(conversation.chatThreadId, LOOP_PAUSE_TEXT, state.boundarySeq) ===
+      undefined
+    );
   });
 }
 

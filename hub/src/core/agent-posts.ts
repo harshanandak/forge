@@ -178,7 +178,7 @@ function projectPost(ctx: CoreContext, key: string, post: JournalPost) {
         post.sessionId,
         post.personId,
         post.text,
-        post.phase === "confirmed" ? post.at : ctx.deps.now(),
+        post.at,
       );
     ctx.deps.db.prepare("DELETE FROM meta WHERE key = ?").run(key);
   });
