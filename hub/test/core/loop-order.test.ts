@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseMessageRef } from "../../src/chat/inbound.ts";
+import { ChatWriteFailure } from "../../src/contract/chat.ts";
 import { LIMITS } from "../../src/contract/mcp.ts";
 import { createCoreBase, createCoreContext } from "../../src/core/core.ts";
 import { createEffectWorker } from "../../src/core/effects.ts";
@@ -80,6 +81,38 @@ async function slackRun(
   );
 }
 
+async function sweepHistory(f: BaseFixture) {
+  const worker = createEffectWorker(f.context, () => () => {});
+  await worker.start();
+  await worker.close();
+}
+
+function blockProjection(f: BaseFixture) {
+  f.db.exec(
+    "CREATE TRIGGER block_projection BEFORE INSERT ON thread_messages WHEN NEW.kind = 'agent' BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END",
+  );
+  return () => f.db.exec("DROP TRIGGER block_projection");
+}
+
+function replayRun(r: ReturnType<typeof run>) {
+  return run(
+    { ...r.f, core: createCoreBase(createCoreContext(r.f.deps)) },
+    r.session,
+    r.conversationId,
+  );
+}
+
+function loseNextSlackResponse(f: BaseFixture) {
+  const accepted: string[] = [];
+  const post = f.chat.postText.bind(f.chat);
+  f.chat.postText = async (...args) => {
+    f.chat.postText = post;
+    accepted.push((await post(...args)).chatMessageId);
+    throw new ChatWriteFailure("unknown");
+  };
+  return accepted;
+}
+
 test.each([false, true])(
   "forge-2024 a member reopens a paused run (with retention pressure: %s)",
   async (sweep) => {
@@ -97,9 +130,7 @@ test.each([false, true])(
       expect(f.rows("thread_messages WHERE kind = 'outsider'")).toHaveLength(
         LIMITS.threadKeep,
       );
-      const worker = createEffectWorker(f.context, () => () => {});
-      await worker.start();
-      await worker.close();
+      await sweepHistory(f);
       expect(f.rows("thread_messages")).toHaveLength(LIMITS.threadKeep);
     }
     await r.paused();
@@ -115,26 +146,42 @@ test.each([false, true])(
 );
 
 test(
-  "forge-2024 replay of an unknown outcome settled before a recorded member does not count in the next run",
+  "forge-2024 age pruning preserves a partial run and still removes old outsider history",
   async () => {
     const r = await slackRun(2);
     const { f } = r;
-    f.db.exec(
-      "CREATE TRIGGER block_projection BEFORE INSERT ON thread_messages WHEN NEW.kind = 'agent' BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END",
-    );
-    f.chat.nextWrite = { kind: "unknown" };
+    await r.post(LIMITS.agentRunMax - 1);
+    await f.follow(ts(1), {
+      chatThreadId: thread,
+      slackUserId: unknownUser,
+      mentionsBot: false,
+    });
+    f.advance((LIMITS.threadKeepDays + 1) * 86_400_000);
+    await sweepHistory(f);
+    expect(f.rows("thread_messages WHERE kind = 'outsider'")).toHaveLength(0);
+    await r.post(1);
+    await r.paused();
+    expect(r.notices()).toBe(1);
+  },
+  timeout,
+);
+
+test(
+  "forge-2024 replay of an unknown outcome settled before a recorded member does not count in the next run",
+  async () => {
+    const r = await slackRun(1, 2);
+    const { f } = r;
+    const unblock = blockProjection(f);
+    const accepted = loseNextSlackResponse(f);
     expect(await r.reply("post with a lost response")).toMatchObject({
       ok: false,
       error: { retry: "reconcile_first" },
     });
-    await r.member(ts(1));
+    expect(accepted).toEqual([ts(1)]);
+    await r.member(ts(2));
     expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
-    f.db.exec("DROP TRIGGER block_projection");
-    const recovered = run(
-      { ...f, core: createCoreBase(createCoreContext(f.deps)) },
-      r.session,
-      r.conversationId,
-    );
+    unblock();
+    const recovered = replayRun(r);
     expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(0);
     expect(
       f.rows("thread_messages WHERE chat_message_id LIKE 'unconfirmed:%'"),
@@ -142,6 +189,29 @@ test(
     await recovered.post(LIMITS.agentRunMax - 1);
     expect(recovered.notices()).toBe(0);
     await recovered.post(1);
+    await recovered.paused();
+    expect(recovered.notices()).toBe(1);
+  },
+  timeout,
+);
+
+test(
+  "forge-2024 replay keeps charging the unknown when a confirmed predecessor proves the member is older",
+  async () => {
+    const r = await slackRun(2);
+    await r.post(1);
+    const { f } = r;
+    const unblock = blockProjection(f);
+    const accepted = loseNextSlackResponse(f);
+    expect(await r.reply("post with a lost response")).toMatchObject({
+      ok: false,
+      error: { retry: "reconcile_first" },
+    });
+    expect(accepted).toEqual([ts(3)]);
+    await r.member(ts(1));
+    unblock();
+    const recovered = replayRun(r);
+    await recovered.post(LIMITS.agentRunMax - 2);
     await recovered.paused();
     expect(recovered.notices()).toBe(1);
   },
