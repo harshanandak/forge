@@ -11,6 +11,7 @@ export interface HubHttpDeps {
   readonly chat?: Pick<ChatPort, "handleWebhook">;
   readonly remote?: Pick<RemoteHandler, "handle">;
   readonly log: HubLog;
+  readonly shutdown?: AbortSignal;
 }
 
 export function createHubHttpListener({
@@ -18,6 +19,7 @@ export function createHubHttpListener({
   chat,
   remote,
   log,
+  shutdown,
 }: HubHttpDeps) {
   const hooks: ReadonlySet<string> = new Set(Object.values(HOOK_PATHS));
   return createHttpListener(
@@ -51,5 +53,6 @@ export function createHubHttpListener({
         };
     },
     log,
+    shutdown,
   );
 }

@@ -1,9 +1,5 @@
 import { once } from "node:events";
-import type {
-  IncomingMessage,
-  RequestListener,
-  ServerResponse,
-} from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ReadableStreamDefaultReader } from "node:stream/web";
 import { LIMITS } from "../contract/mcp.ts";
 import type { HubConfig, HubLog } from "../contract/runtime.ts";
@@ -80,7 +76,10 @@ async function writeResponse(
 ): Promise<void> {
   const body = response.body;
   let reader: ReadableStreamDefaultReader<unknown> | undefined;
-  const cancel = () => void (reader ?? body)?.cancel().catch(() => {});
+  let cancelled: Promise<void> | undefined;
+  const cancel = () => {
+    cancelled ??= (reader ?? body)?.cancel().catch(() => {});
+  };
   try {
     for (const [name, value] of response.headers) {
       if (name !== "set-cookie") output.setHeader(name, value);
@@ -105,6 +104,7 @@ async function writeResponse(
     signal.removeEventListener("abort", cancel);
     cancel();
     reader?.releaseLock();
+    await cancelled;
   }
 }
 
@@ -112,10 +112,13 @@ export function createHttpListener(
   hosts: HubConfig["allowedHosts"],
   matchRoute: MatchRoute,
   log: HubLog,
-): RequestListener {
-  async function serve(input: IncomingMessage, output: ServerResponse) {
+  shutdown?: AbortSignal,
+): (input: IncomingMessage, output: ServerResponse) => Promise<void> {
+  return async function serve(input, output) {
     const controller = new AbortController();
-    const { signal } = controller;
+    const signal = shutdown
+      ? AbortSignal.any([controller.signal, shutdown])
+      : controller.signal;
     input.once("close", () => {
       if (!input.complete) controller.abort();
     });
@@ -153,7 +156,7 @@ export function createHttpListener(
 
       const response = await route.handle(request);
       if (signal.aborted) {
-        void response.body?.cancel().catch(() => {});
+        await response.body?.cancel().catch(() => {});
         return;
       }
       await writeResponse(output, response, signal, request.method === "HEAD");
@@ -166,6 +169,5 @@ export function createHttpListener(
         reject(output, 500);
       }
     }
-  }
-  return (input, output) => void serve(input, output);
+  };
 }

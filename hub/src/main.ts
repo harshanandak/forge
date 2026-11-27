@@ -28,6 +28,7 @@ import {
 import { serveHub } from "./service/serve.ts";
 import { runSetupCommand } from "./setup/index.ts";
 
+const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const;
 const ignore = (): void => undefined;
 const log: HubLog = { info: ignore, warn: ignore, error: ignore };
 const noDoorbell: DoorbellPort = {
@@ -272,6 +273,9 @@ export async function runService(
   services: MainServices,
 ): Promise<number> {
   if (config.chat?.adapter === "telegram") throw new EntryFailure("telegram");
+  const stop = new AbortController();
+  const onSignal = () => stop.abort();
+  for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
   try {
     return await withCore(
       services,
@@ -286,6 +290,7 @@ export async function runService(
             config,
             core,
             log,
+            stop: stop.signal,
             ...(chat === undefined ? {} : { chat }),
             ...(remote === undefined ? {} : { remote }),
           });
@@ -299,6 +304,8 @@ export async function runService(
   } catch (error) {
     if (error instanceof EntryFailure) throw error;
     throw new EntryFailure("service");
+  } finally {
+    for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
   }
 }
 

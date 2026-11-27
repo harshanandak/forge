@@ -6,7 +6,6 @@ import type { HubConfig, HubLog, RemoteHandler } from "../contract/runtime.ts";
 import { createHubHttpListener } from "./routes.ts";
 
 export const HEADER_FIELD_LIMIT = 1_000;
-const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const;
 
 export interface HubServiceDeps {
   readonly config: HubConfig;
@@ -14,46 +13,21 @@ export interface HubServiceDeps {
   readonly chat?: Pick<ChatPort, "handleWebhook">;
   readonly remote?: Pick<RemoteHandler, "handle">;
   readonly log: HubLog;
-}
-
-type Handle = (request: Request) => Promise<Response>;
-
-function tracked(handle: Handle, running: Set<Promise<void>>): Handle {
-  return (request) => {
-    const result = handle(request);
-    const settled = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    running.add(settled);
-    void settled.then(() => running.delete(settled));
-    return result;
-  };
+  readonly stop: AbortSignal;
 }
 
 export async function serveHub(deps: HubServiceDeps): Promise<void> {
-  const stop = Promise.withResolvers<void>();
-  const onSignal = () => stop.resolve();
-  for (const signal of STOP_SIGNALS) process.once(signal, onSignal);
+  await deps.core.start();
+  if (deps.stop.aborted) return;
+  const stopped = once(deps.stop, "abort");
+  const shutdown = new AbortController();
+  const serve = createHubHttpListener({ ...deps, shutdown: shutdown.signal });
   const running = new Set<Promise<void>>();
-  const { chat, remote } = deps;
-  const listener = createHubHttpListener({
-    ...deps,
-    ...(chat && {
-      chat: {
-        handleWebhook: tracked(
-          (request) => chat.handleWebhook(request),
-          running,
-        ),
-      },
-    }),
-    ...(remote && {
-      remote: {
-        handle: tracked((request) => remote.handle(request), running),
-      },
-    }),
+  const server = createServer({ requireHostHeader: false }, (input, output) => {
+    const done = serve(input, output);
+    running.add(done);
+    void done.finally(() => running.delete(done));
   });
-  const server = createServer({ requireHostHeader: false }, listener);
   Object.defineProperty(server, "maxHeadersCount", {
     value: HEADER_FIELD_LIMIT,
     writable: false,
@@ -63,18 +37,14 @@ export async function serveHub(deps: HubServiceDeps): Promise<void> {
   const failed = new Promise<never>((_, reject) => server.on("error", reject));
   failed.catch(() => undefined);
   try {
-    await deps.core.start();
     server.listen(deps.config.listen.port, deps.config.listen.host);
-    await Promise.race([once(server, "listening"), failed]);
-    await Promise.race([stop.promise, failed]);
-    server.close();
-    server.closeAllConnections();
-    await Promise.all(running);
+    await Promise.race([once(server, "listening"), stopped, failed]);
+    await Promise.race([stopped, failed]);
   } finally {
-    for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
-    if (server.listening) {
-      server.close();
-      server.closeAllConnections();
-    }
+    const closed = once(server, "close");
+    server.close();
+    shutdown.abort();
+    server.closeAllConnections();
+    await Promise.allSettled([closed, ...running]);
   }
 }
