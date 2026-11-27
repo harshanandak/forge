@@ -36,7 +36,7 @@ No in-run retries, retry loops, or raised timeouts. Only known flakes qualify fo
 
 1. `gh pr checks <n>`, then `gh run view <run> --log-failed`.
 2. Classify only jobs that started in attempt one (`gh run rerun <run> --failed`). A second failure blocks handoff.
-3. Base run red with the same signature (job, test, first error line in `gh run view <base-run> --log-failed`)? File or comment on the issue and label it. Keep unrelated fixes out of this PR.
+3. Base run red with the same signature in `gh run view <base-run> --log-failed`? File or comment on the issue and label it. Keep unrelated fixes out of this PR.
 4. Still red only here? Fix it in the batch.
 
 ## Round budget and handoff
