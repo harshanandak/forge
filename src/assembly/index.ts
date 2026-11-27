@@ -63,6 +63,7 @@ import type {
   DetectionObservation,
   ForgeError,
   BlockInstance,
+  BuiltinSource,
   DocsRecords,
   AmbientContext,
   BoundContext,
@@ -444,6 +445,18 @@ export async function createAssembly(
   const sharedBuiltins = options.oneShot
     ? new Map<string, CapturedBlock>()
     : undefined;
+  function builtinCaptureFailure(
+    source: BuiltinSource,
+    error: unknown,
+  ): ForgeFailure {
+    const failure = error instanceof ForgeFailure ? error.error : undefined;
+    const code = failure?.code ?? "PROVIDER_MISSING";
+    return new ForgeFailure({
+      code,
+      message: `built-in block ${source.builtin} could not be captured (${code})`,
+      retry: failure?.retry ?? "never",
+    });
+  }
   function callScope(
     derived: readonly DetectionObservation[] = [],
     operatorExport = false,
@@ -472,7 +485,12 @@ export async function createAssembly(
             );
             reusable?.set(key, found);
           } catch (error) {
-            found = { failed: error };
+            found = {
+              failed:
+                "builtin" in source
+                  ? builtinCaptureFailure(source, error)
+                  : error,
+            };
           }
         }
         captures.set(key, found);
