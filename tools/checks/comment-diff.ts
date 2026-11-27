@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { gitExecutable } from "../git-executable.ts";
 
 const MAX_BLOB_BYTES = 16 * 1024 * 1024;
+export const LS_TREE_PATH_BUDGET = 8_000;
 const OBJECT_ID = "[0-9a-f]{40}(?:[0-9a-f]{24})?";
 const BATCH_HEADER = new RegExp(`^(${OBJECT_ID}) ([a-z]+)(?: ([0-9]+))?$`);
 const TREE_RECORD = new RegExp(`^(\\S+) (\\S+) (${OBJECT_ID})$`);
@@ -80,6 +81,23 @@ export function resolveBlobIds(
     return oid;
   });
 }
+export function chunkPathsForLsTree(files: readonly string[]): string[][] {
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let cost = 0;
+  for (const file of files) {
+    const fileCost = file.length + 1;
+    if (current.length > 0 && cost + fileCost > LS_TREE_PATH_BUDGET) {
+      chunks.push(current);
+      current = [];
+      cost = 0;
+    }
+    current.push(file);
+    cost += fileCost;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
 export function readCommittedTexts(
   root: string,
   head: string,
@@ -101,7 +119,19 @@ export function readCommittedTexts(
         stdio: "pipe",
       },
     );
-  const blobs = parseLsTree(git("ls-tree", "-r", "-z", head, "--", ...files));
+  const blobs = new Map<string, string>();
+  for (const chunk of chunkPathsForLsTree(files)) {
+    const parsed = parseLsTree(
+      git("ls-tree", "-r", "-z", head, "--", ...chunk),
+    );
+    const chunkOids = resolveBlobIds(chunk, parsed);
+    chunk.forEach((file, index) => {
+      const oid = chunkOids[index];
+      if (oid === undefined)
+        throw new Error("Incomplete committed blob listing");
+      blobs.set(file, oid);
+    });
+  }
   const oids = resolveBlobIds(files, blobs);
   const batch = spawnSync(
     executable,

@@ -334,3 +334,85 @@ test("batch frames fail closed on missing, wrong or short output", () => {
   ).toThrow();
   expect(() => parse()(frame(oid, "blob", "x"), [])).toThrow();
 }, 30_000);
+
+function lsTreePathCalls(): string[][] {
+  const calls: string[][] = [];
+  for (const entry of spawns) {
+    if (!Array.isArray(entry)) continue;
+    const args = entry as unknown[];
+    if (!args.includes("ls-tree")) continue;
+    const sep = args.indexOf("--");
+    if (sep < 0) continue;
+    const paths = args
+      .slice(sep + 1)
+      .filter((part): part is string => typeof part === "string");
+    calls.push(paths);
+  }
+  return calls;
+}
+function lsTreePathCost(paths: readonly string[]): number {
+  return paths.reduce((sum, path) => sum + path.length + 1, 0);
+}
+
+test("ls-tree calls stay under the path budget and grow with total length", () => {
+  const read = readTexts();
+  const smallHead = git(smallRoot, "rev-parse", "HEAD");
+  spawns.length = 0;
+  read(smallRoot, smallHead, Object.keys(twoFiles));
+  const smallCalls = lsTreePathCalls();
+  expect(smallCalls).toHaveLength(1);
+  expect(lsTreePathCost(smallCalls[0] ?? [])).toBeLessThanOrEqual(8000);
+  const manyFiles: Record<string, string> = {};
+  for (let index = 0; index < 240; index++) {
+    const tag = String(index).padStart(3, "0");
+    const file = `src/p${tag}-${"x".repeat(40)}/q${tag}-${"y".repeat(40)}/file-${tag}.ts`;
+    manyFiles[file] = `export const value${index} = ${index};\n`;
+  }
+  const names = Object.keys(manyFiles);
+  const total = names.reduce((sum, name) => sum + name.length + 1, 0);
+  expect(total).toBeGreaterThan(20000);
+  expect(total).toBeLessThan(30000);
+  const manyRoot = repository(manyFiles);
+  const manyHead = git(manyRoot, "rev-parse", "HEAD");
+  spawns.length = 0;
+  const texts = read(manyRoot, manyHead, names);
+  expect(texts.size).toBe(names.length);
+  const calls = lsTreePathCalls();
+  expect(calls.length).toBeGreaterThanOrEqual(3);
+  expect(calls.length).toBeLessThanOrEqual(4);
+  for (const paths of calls)
+    expect(lsTreePathCost(paths)).toBeLessThanOrEqual(8000);
+}, 60_000);
+
+test("a few hundred long-named files are all read with the right text", () => {
+  const files: Record<string, string> = {};
+  for (let index = 0; index < 300; index++) {
+    const name = `src/long-name-${String(index).padStart(3, "0")}-${"x".repeat(40)}.ts`;
+    files[name] = `export const wide${index} = ${index};\n`;
+  }
+  const total = Object.keys(files).reduce(
+    (sum, name) => sum + name.length + 1,
+    0,
+  );
+  expect(total).toBeGreaterThan(8000);
+  const root = repository(files);
+  const head = git(root, "rev-parse", "HEAD");
+  spawns.length = 0;
+  const texts = readTexts()(root, head, Object.keys(files));
+  expect(texts.size).toBe(300);
+  for (const [file, body] of Object.entries(files))
+    expect(texts.get(file)).toBe(body);
+}, 60_000);
+
+test("one path longer than the budget is read in a chunk of its own", () => {
+  const module = api() as unknown as {
+    readonly chunkPathsForLsTree?: (files: readonly string[]) => string[][];
+  };
+  const chunk = module.chunkPathsForLsTree;
+  if (typeof chunk !== "function")
+    throw new Error("The ls-tree chunker is unavailable");
+  const longPath = `src/${"a".repeat(8000)}.ts`;
+  expect(longPath.length).toBeGreaterThan(8000);
+  const chunks = chunk(["src/a.ts", longPath, "src/b.ts"]);
+  expect(chunks.find((part) => part.includes(longPath))).toEqual([longPath]);
+}, 30_000);
