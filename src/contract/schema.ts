@@ -237,6 +237,37 @@ export function isRfc3339DateTime(value: string): boolean {
   );
 }
 
+const DAY = String.raw`(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8])`;
+const LEAP_YEAR = String.raw`[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00`;
+const HOUR = "(?:[01][0-9]|2[0-3])";
+export const DATE_TIME_PATTERN: string = String.raw`^(?:[0-9]{4}-(?:${DAY})|(?:${LEAP_YEAR})-02-29)[Tt]${HOUR}:[0-5][0-9]:[0-5][0-9](?:\.[0-9]+)?(?:[Zz]|[+-]${HOUR}:[0-5][0-9])$`;
+const SCHEMA_LISTS: ReadonlySet<string> = new Set(["allOf", "anyOf", "oneOf"]);
+const SCHEMA_MAPS: ReadonlySet<string> = new Set(["properties", "$defs"]);
+
+export function withDateTimeAssertion<T>(schema: T): T {
+  if (!isObject(schema)) return schema;
+  const copy = Object.fromEntries(
+    Object.entries(schema).map(([key, value]) => [
+      key,
+      DIRECT_SUBSCHEMAS.has(key)
+        ? withDateTimeAssertion(value)
+        : SCHEMA_LISTS.has(key) && Array.isArray(value)
+          ? value.map((child: unknown) => withDateTimeAssertion(child))
+          : SCHEMA_MAPS.has(key) && isObject(value)
+            ? Object.fromEntries(
+                Object.entries(value).map(([name, child]) => [
+                  name,
+                  withDateTimeAssertion(child),
+                ]),
+              )
+            : value,
+    ]),
+  );
+  if (schema.format !== "date-time") return copy as T;
+  const allOf: unknown[] = Array.isArray(copy.allOf) ? copy.allOf : [];
+  return { ...copy, allOf: [...allOf, { pattern: DATE_TIME_PATTERN }] } as T;
+}
+
 function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -771,7 +802,10 @@ export class SchemaRegistry {
       }
       case "type": {
         const types = Array.isArray(value) ? value : [value];
-        if (types.length === 0 || !types.every((t) => TYPES.has(String(t)))) {
+        if (
+          types.length === 0 ||
+          !types.every((t) => typeof t === "string" && TYPES.has(t))
+        ) {
           fail("type must name JSON types");
         }
         return;
