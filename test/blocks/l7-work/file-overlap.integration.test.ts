@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -8,8 +9,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
@@ -731,6 +732,90 @@ test("a delivered open PR with a trailing slash keeps a released holder visible"
       mapWarnings(reply).find(({ code }) => code === "WORK_FILE_OVERLAP")
         ?.message ?? "",
     ).toContain("feat/released");
+  });
+}, 30_000);
+
+test("a long CLI claim refuses a PR launcher with an unknown process tree", async () => {
+  await project(async ({ good }, repo, root) => {
+    const holder = String((await good("issue.create", planned)).id);
+    const candidate = String((await good("issue.create", planned)).id);
+    await good("issue.claim", { id: holder });
+    for (let n = 1; n <= 31; n++)
+      await good("issue.link", {
+        id: holder,
+        relation: "delivers",
+        url: `https://github.com/example/overlap/pull/${n}`,
+      });
+    await good("issue.release", { id: holder });
+
+    const bin = mkdtempSync(join(homedir(), "forge-advisory-bin-"));
+    try {
+      const launches = join(root, "launcher-pids.jsonl");
+      const gitTrace = join(root, "git-trace.jsonl");
+      const fixture = join(root, "native-fixture.cjs");
+      writeFileSync(launches, "");
+      writeFileSync(gitTrace, "");
+      writeFileSync(
+        fixture,
+        `require("node:fs").appendFileSync(${JSON.stringify(launches)},
+          JSON.stringify([process.ppid, process.pid]) + "\\n");
+        console.log(JSON.stringify({state: "OPEN", headRefName: "feat/released"}));`,
+      );
+      const windows = process.platform === "win32";
+      const launcher = join(bin, windows ? "gh.cmd" : "gh");
+      const forward = `"${process.execPath}" "${fixture}"`;
+      writeFileSync(
+        launcher,
+        windows
+          ? `@echo off\r\n${forward} %*\r\n`
+          : `#!/bin/sh\n${forward} "$@"\nexit $?\n`,
+      );
+      if (!windows) chmodSync(launcher, 0o755);
+      writeFileSync(
+        join(bin, ".gitconfig"),
+        `[trace2]\n\teventTarget = ${gitTrace.replaceAll("\\", "/")}\n`,
+      );
+
+      const result = laneCli(
+        root,
+        repo,
+        [
+          "issue",
+          "claim",
+          "--input",
+          JSON.stringify({ id: candidate, ttlSeconds: 600 }),
+        ],
+        "reader",
+        {
+          PATH: [bin, process.env.PATH ?? process.env.Path].join(delimiter),
+          PATHEXT: ".CMD;.EXE",
+          HOME: bin,
+          USERPROFILE: bin,
+          FORGE_DEVICE_ID: "lane-fixture",
+        },
+      );
+      expect(result).toMatchObject({
+        exit: 0,
+        ok: true,
+        result: { id: candidate },
+      });
+      const trees = readFileSync(launches, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      const gitProcesses = readFileSync(gitTrace, "utf8")
+        .trim()
+        .split("\n")
+        .filter((line) => line.includes('"event":"start"'));
+      expect(gitProcesses.length).toBeGreaterThan(0);
+      expect(trees, "batch/interpreter and native child PIDs").toEqual([]);
+      expect(
+        gitProcesses.length * (windows ? 2 : 1) + trees.length * 2,
+      ).toBeLessThanOrEqual(64);
+      expect(hasIncompleteMap(result)).toBe(true);
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 }, 30_000);
 

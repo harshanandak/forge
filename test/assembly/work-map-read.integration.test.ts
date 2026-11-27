@@ -1,6 +1,12 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
@@ -142,6 +148,51 @@ test("real Git pins the project default across ref movement and foreign Git envi
     expect(result.trackedPaths.sort()).toEqual(
       [".forge/config.yaml", ...paths].sort(),
     );
+  } finally {
+    f.close();
+  }
+});
+
+test("a missing promisor policy blob never starts a Git fetch even without GIT_NO_LAZY_FETCH", async () => {
+  const f = fixture();
+  try {
+    const base = f.commit(["tracked.ts"]);
+    f.command(["update-ref", defaultRef, base]);
+    f.command(["update-ref", "HEAD", base]);
+    const remote = join(f.cwd, "origin.git");
+    f.command(["clone", "-q", "--bare", ".", remote]);
+    f.command(["remote", "add", "origin", remote]);
+    f.command(["config", "remote.origin.promisor", "true"]);
+    f.command(["config", "remote.origin.partialCloneFilter", "blob:none"]);
+    const blob = f.command(["rev-parse", `${base}:.forge/config.yaml`]);
+    const local = join(
+      f.cwd,
+      ".git",
+      "objects",
+      blob.slice(0, 2),
+      blob.slice(2),
+    );
+    // The other fixture paths share this blob, but their tree and commit remain local.
+    rmSync(local);
+    const trace = join(f.cwd, "git-trace.jsonl");
+    writeFileSync(trace, "");
+    const snapshot = await f.read({
+      ...f.adapter,
+      run(git, args, options) {
+        const { GIT_NO_LAZY_FETCH: _ignored, ...env } = options.env;
+        return f.adapter.run(git, args, {
+          ...options,
+          env: { ...env, GIT_TRACE2_EVENT: trace },
+        });
+      },
+    });
+    const children = readFileSync(trace, "utf8")
+      .trim()
+      .split("\n")
+      .filter((line) => line.includes('"event":"child_start"'));
+    expect(children, "Git child processes").toEqual([]);
+    expect(snapshot.complete).toBe(false);
+    expect(existsSync(local)).toBe(false);
   } finally {
     f.close();
   }
