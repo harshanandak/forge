@@ -36,6 +36,40 @@ test("globstar matches zero or many directories and retains both source declarat
   );
 });
 
+test("wildcard matching inspects offsets only in the required package", () => {
+  const trackedPaths = Array.from(
+    { length: 256 },
+    (_, n) =>
+      "packages/p" + String(n).padStart(3, "0") + "/src/components/index.ts",
+  );
+  const paths = new Set(trackedPaths);
+  const examined = new Set<string>();
+  const descriptor = Object.getOwnPropertyDescriptor(
+    String.prototype,
+    "codePointAt",
+  ) as TypedPropertyDescriptor<string["codePointAt"]>;
+  const codePointAt = descriptor.value!;
+  String.prototype.codePointAt = function (this: string, index: number) {
+    if (paths.has(this)) examined.add(this);
+    return codePointAt.call(this, index);
+  };
+  try {
+    const leftPattern = "**/p042/**/*.ts";
+    const rightPattern = "**/p042/src/**/*.ts";
+    const path = "packages/p042/src/components/index.ts";
+    const result = resolveFileOverlap({
+      left: { expectedFiles: [leftPattern] },
+      right: { expectedFiles: [rightPattern] },
+      trackedPaths,
+    });
+    expect(result.complete).toBe(true);
+    expect(result.overlaps).toEqual([{ path, leftPattern, rightPattern }]);
+    expect([...examined]).toEqual([path]);
+  } finally {
+    String.prototype.codePointAt = codePointAt;
+  }
+});
+
 test("single star stays within one path segment", () => {
   const paths = ["src/a.ts", "src/deep/b.ts"];
   const result = resolveFileOverlap({
@@ -59,6 +93,22 @@ test("question mark matches one Unicode code point and cannot consume a separato
     "src/abz.ts",
     "src/a😀z.ts",
   ]);
+});
+
+test("a literal high surrogate cannot split a code point for question mark", () => {
+  const pattern = "src/\uD83D?.ts";
+  const path = "src/\uD83D\uDE00.ts";
+  const result = resolveFileOverlap({
+    left: { expectedFiles: [pattern] },
+    right: { expectedFiles: [path] },
+    trackedPaths: [path],
+  });
+  expect(result).toEqual({
+    complete: false,
+    reasons: [{ kind: "unmatched-pattern", side: "left", pattern }],
+    overlaps: [],
+    generated: [],
+  });
 });
 
 test("globstar can consume separators within a pattern segment", () => {
@@ -270,6 +320,8 @@ test("generated file config refuses malformed rules and unsupported paths", () =
       "src/[ab].ts",
       "src/{a,b}.ts",
       "src/***.ts",
+      "src/\u2028***.ts",
+      "src/\u2029***.ts",
       "src/\u0000file",
       "a".repeat(1025),
     ].map((glob) => [{ ...generatedRule, glob }]),
@@ -283,7 +335,9 @@ test("generated file config refuses malformed rules and unsupported paths", () =
       { argv: ["bun", 1] },
     ].map((regenerate) => [{ ...generatedRule, regenerate }]),
   ];
-  for (const generatedFiles of invalid) {
-    expect(validateWithSchema(schema, { generatedFiles })).not.toEqual([]);
-  }
+  const accepted = invalid.filter(
+    (generatedFiles) =>
+      validateWithSchema(schema, { generatedFiles }).length === 0,
+  );
+  expect(accepted).toEqual([]);
 });
