@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { runCommand, type CommandRun } from "../../cloud/src/issue-commands.ts";
 import { domain } from "../../cloud/src/project.ts";
@@ -8,16 +8,14 @@ import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 
 const timeout = 30_000;
-const time = Date.parse("2026-11-20T12:00:00.000Z");
+const time = Date.now();
 const actor = { kind: "agent", id: "fixture" } as const;
 const session = { id: "fixture" } as const;
 const leased = { actor, session, leaseGeneration: 1 };
 const sha = "0123456789abcdef0123456789abcdef01234567";
 const full = Array.from({ length: 1024 }, (_, index) => `src/${index}.ts`);
-const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(993)}`);
-
-beforeEach(() => setSystemTime(time));
-afterEach(() => setSystemTime());
+const longFiles = Array.from({ length: 1024 }, () => `src/${"a".repeat(486)}`);
+const wideFiles = Array.from({ length: 256 }, () => `src/${"é".repeat(996)}`);
 
 type Reply = {
   status: number;
@@ -186,7 +184,7 @@ test(
       "C:/src/a.ts",
       "./C:/outside.ts",
       "../a.ts",
-      "src\a.ts",
+      "src\\a.ts",
       "!src/a.ts",
       "src/[ab].ts",
       `src/${"a".repeat(1020)}.ts`,
@@ -255,7 +253,11 @@ test(
       inputInvalid(got);
       expect(await f.command(show)).toEqual(before);
     }
-    const large = await f.command(update("large", { actualFiles: longFiles }));
+    const wide = await f.command(update("wide", { expectedFiles: wideFiles }));
+    expect(wide.status).toBe(200);
+    const large = await f.command(
+      update("large", { actualFiles: longFiles }, 2),
+    );
     expect([large.status, large.body.error?.code]).toEqual([
       409,
       "UNAVAILABLE",

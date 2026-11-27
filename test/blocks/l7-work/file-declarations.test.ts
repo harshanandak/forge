@@ -153,7 +153,7 @@ test("invalid declarations refuse create without a partial write", async () => {
       ["C:/src/a.ts"],
       ["./C:/outside.ts"],
       ["../a.ts"],
-      ["src\a.ts"],
+      ["src\\a.ts"],
       ["!src/a.ts"],
       ["src/[ab].ts"],
       [long],

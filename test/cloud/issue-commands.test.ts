@@ -4597,7 +4597,7 @@ const insertRaw = (f: F, key: string, body: string) =>
 test("list refuses a returned stored issue with a bad body, unknown field, nesting or node count with the fixed 500", async () => {
   // `closeReason` is dropped before the item schema runs, so only the parse bounds can refuse these two rows.
   const nested = `${"[".repeat(8)}"leak-me"${"]".repeat(8)}`;
-  const nodes = `[${'"l",'.repeat(1_100)}"l"]`;
+  const nodes = `[${'"l",'.repeat(4_100)}"l"]`;
   for (const [name, text] of [
     ["unknown field", rawIssue("work-2", ',"extra":"leak-me"')],
     ["body is a number", rawIssue("work-2", ',"body":5')],
@@ -4613,7 +4613,7 @@ test("list refuses a returned stored issue with a bad body, unknown field, nesti
       rawIssue("work-2", `,"body":"${"𝒳".repeat(65_537)}"`),
     ],
     ["nesting over 8", rawIssue("work-2", `,"closeReason":${nested}`)],
-    ["over 1,024 nodes", rawIssue("work-2", `,"closeReason":${nodes}`)],
+    ["over 4,096 nodes", rawIssue("work-2", `,"closeReason":${nodes}`)],
     // SQLite json_valid accepts this and json_set drops the suffix, but only a text body takes the json_set path.
     [
       "text body, a literal NUL byte, then trailing text",
