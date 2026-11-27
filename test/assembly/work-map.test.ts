@@ -89,10 +89,21 @@ function fixture(
   };
 }
 
-test.each(["/repo", "C:\\workspace\\repo"])(
-  "format the shared Git path, incumbent and lease when the project is at %s",
-  async (cwd) => {
-    const f = fixture(undefined, cwd);
+test.each(
+  ["/repo", "C:\\workspace\\repo"].flatMap((cwd) =>
+    [file, "src/ui/*.rs"].map((pattern) => [cwd, pattern] as const),
+  ),
+)(
+  "format the shared Git path from %s with both issues declaring %s",
+  async (cwd, pattern) => {
+    const expectedFiles = [pattern];
+    const f = fixture(
+      [
+        issue(incumbentId, { lease: { expiresAt }, expectedFiles }),
+        issue(candidateId, { expectedFiles }),
+      ],
+      cwd,
+    );
     const scan = await f.read((id) =>
       id === incumbentId ? "feat/ask" : undefined,
     );
@@ -118,6 +129,74 @@ test("an incumbent dependency overrides the default order", async () => {
   expect(warnings[0]?.message ?? "").toContain(
     "Finish work-2 first, then start work-1.",
   );
+});
+
+test("the order follows dependencies through an issue without live work", async () => {
+  const f = fixture([
+    issue(incumbentId, { dependsOn: ["work-3"] }),
+    issue("work-3", { dependsOn: [candidateId], expectedFiles: [] }),
+    issue(candidateId),
+  ]);
+  f.ports.deliveries = (id) => ({
+    items: id === incumbentId ? [openPull] : [],
+    truncated: false,
+  });
+  f.ports.pull = () => ({ state: "OPEN" });
+  const { warnings } = await f.read();
+  expect(warnings[0]?.message ?? "").toContain(
+    "Finish work-2 first, then start work-1.",
+  );
+});
+
+test("invalid declarations preserve known overlaps and cannot disable the work budget", async () => {
+  const malformed = (value: unknown) =>
+    issue("work-3", {
+      lease: { expiresAt },
+      expectedFiles: value as Issue["expectedFiles"] & readonly string[],
+    });
+  const found = await fixture([
+    issue(incumbentId, { lease: { expiresAt } }),
+    malformed({}),
+    issue(candidateId),
+  ]).read();
+  const expensive = fixture([
+    malformed([42]),
+    issue(candidateId, { expectedFiles: ["src/" + "?".repeat(1000)] }),
+  ]);
+  expensive.output["ls-tree"] =
+    Array.from({ length: 1000 }, (_, n) => `src/${n}`.padEnd(100, "x")).join(
+      "\0",
+    ) + "\0";
+  const bounded = await expensive.read();
+  expect({
+    known: found.warnings.map(({ code }) => code),
+    invalidReported: found.warnings.some(({ message }) =>
+      message.includes("invalid-declarations"),
+    ),
+    budgetReported: bounded.warnings.some(({ message }) =>
+      message.includes("resolution-budget"),
+    ),
+    matchedBeyondBudget: bounded.warnings.some(({ message }) =>
+      message.includes("unmatched-pattern"),
+    ),
+  }).toEqual({
+    known: ["WORK_FILE_MAP_INCOMPLETE", "WORK_FILE_OVERLAP"],
+    invalidReported: true,
+    budgetReported: true,
+    matchedBeyondBudget: false,
+  });
+});
+
+test("the full overlap message remains bounded with an oversized issue ID", async () => {
+  const f = fixture([
+    issue("x".repeat(1000), { lease: { expiresAt } }),
+    issue(candidateId),
+  ]);
+  const { warnings } = await f.read();
+  const overlap = warnings.find(({ code }) => code === "WORK_FILE_OVERLAP");
+  expect(overlap?.message.length).toBeLessThanOrEqual(2000);
+  expect(overlap?.message ?? "").toContain(file);
+  expect(overlap?.message ?? "").toContain("then start work-2.");
 });
 
 test("an open linked pull supplies the branch and evidence after lease release", async () => {
