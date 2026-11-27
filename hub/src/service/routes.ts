@@ -4,6 +4,8 @@ import { MCP_PATH } from "../contract/mcp.ts";
 import type { HubConfig, HubLog, RemoteHandler } from "../contract/runtime.ts";
 import { createHttpListener } from "./http.ts";
 
+export const HEALTH_PATH = "/healthz";
+
 export interface HubHttpDeps {
   readonly config: HubConfig;
   readonly chat?: Pick<ChatPort, "handleWebhook">;
@@ -24,6 +26,11 @@ export function createHubHttpListener({
       if (!target.startsWith(config.basePath + "/")) return;
       const stripped = target.slice(config.basePath.length);
       const path = stripped.split("?", 1)[0] ?? "";
+      if (path === HEALTH_PATH)
+        return {
+          target: stripped,
+          handle: () => Promise.resolve(new Response(null, { status: 200 })),
+        };
       if (
         path === SLACK_WEBHOOK_PATH &&
         config.slack.mode === "webhook" &&

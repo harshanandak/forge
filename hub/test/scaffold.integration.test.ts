@@ -213,6 +213,7 @@ const ownFiles = [
   "dist/remote/index.js",
   "dist/service/http.js",
   "dist/service/routes.js",
+  "dist/service/serve.js",
   "dist/setup/index.js",
 ];
 const credentialPath =
