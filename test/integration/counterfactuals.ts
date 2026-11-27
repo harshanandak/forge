@@ -130,8 +130,8 @@ export const firstSliceMutations: readonly FirstSliceMutation[] = [
   },
   {
     file: "src/assembly/command.js",
-    from: "catalog: assembly.catalog",
-    to: "catalog: { list: () => [], invoke: assembly.catalog.invoke }",
+    from: "return runCommand(argv, {\n        catalog,",
+    to: "return runCommand(argv, {\n        catalog: { list: () => [], invoke: catalog.invoke },",
     mode: "all",
     evidence: "Unknown operation: config.show",
   },
