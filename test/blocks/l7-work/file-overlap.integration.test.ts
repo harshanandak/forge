@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -12,6 +13,8 @@ import { join } from "node:path";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import {
+  laneBin,
+  laneCli,
   laneCommands,
   laneGit,
   laneRepository,
@@ -227,7 +230,7 @@ for (const mode of [
 
 type Commands = Awaited<ReturnType<typeof laneCommands>>;
 async function project(
-  use: (commands: Commands, repo: string) => Promise<void>,
+  use: (commands: Commands, repo: string, root: string) => Promise<void>,
   configure = "",
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-advisory-")));
@@ -240,7 +243,7 @@ async function project(
     laneGit(["commit", "-m", "advisory policy"], repo);
     laneGit(["push", "origin", "main"], repo);
     commands = await laneCommands(root, repo);
-    await use(commands, repo);
+    await use(commands, repo, root);
   } finally {
     try {
       await commands?.dispose();
@@ -254,6 +257,119 @@ const planned = { title: "Shared file", expectedFiles: [sharedFile] };
 const laneInput = (id: string) => ({ id, brief, branch: `feat/${id}` });
 const hasOverlap = (reply: object) =>
   mapWarnings(reply).some(({ code }) => code === "WORK_FILE_OVERLAP");
+
+test("the later concurrent one-shot CLI claim reports overlap before lane start", async () => {
+  await project(async ({ good }, repo, root) => {
+    const first = String((await good("issue.create", planned)).id);
+    const second = String((await good("issue.create", planned)).id);
+    const reader = JSON.stringify(
+      new URL("../../../dist/src/assembly/work-map-read.js", import.meta.url)
+        .href,
+    );
+    const moduleUrl = (source: string) =>
+      `data:text/javascript,${encodeURIComponent(source)}`;
+    const checkpoint = "before work-map snapshot";
+    const gatedReader = moduleUrl(`
+      export * from ${reader};
+      import { readWorkMap as read } from ${reader};
+      export async function readWorkMap(...args) {
+        await new Promise((resolve) => {
+          process.stdin.once("data", resolve);
+          process.stderr.write(${JSON.stringify(checkpoint + "\n")});
+        });
+        process.stdin.pause();
+        return read(...args);
+      }
+    `);
+    const preload = moduleUrl(`
+      import { registerHooks } from "node:module";
+      const gatedReader = ${JSON.stringify(gatedReader)};
+      registerHooks({
+        resolve(specifier, context, next) {
+          const resolved = next(specifier, context);
+          return resolved.url === ${reader} && context.parentURL !== gatedReader
+            ? { ...resolved, url: gatedReader }
+            : resolved;
+        },
+      });
+    `);
+    const session = "overlap-race";
+    const device = { FORGE_DEVICE_ID: "lane-fixture" };
+    const startClaim = (id: string) => {
+      const child = spawn(
+        "node",
+        ["--import", preload, laneBin, "issue", "claim", id],
+        {
+          cwd: repo,
+          env: {
+            ...process.env,
+            ...device,
+            FORGE_DEVICE_ROOT: join(root, "device"),
+            FORGE_SESSION: session,
+          },
+          timeout: 15_000,
+          windowsHide: true,
+        },
+      );
+      let stdout = "";
+      let stderr = "";
+      const ready = Promise.withResolvers<string>();
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+        stderr += chunk;
+        if (stderr.includes(checkpoint + "\n")) ready.resolve(checkpoint);
+      });
+      const done = new Promise<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+      }>((resolve, reject) => {
+        child.once("error", reject);
+        child.stdin.once("error", reject);
+        child.once("close", (code) => resolve({ code, stdout, stderr }));
+      });
+      return { child, done, checkpoint: Promise.race([ready.promise, done]) };
+    };
+    const claims = [startClaim(first), startClaim(second)] as const;
+    try {
+      expect(
+        await Promise.all(claims.map(({ checkpoint }) => checkpoint)),
+      ).toEqual([checkpoint, checkpoint]);
+      const replies: ResultEnvelope[] = [];
+      for (const { child, done } of claims) {
+        child.stdin.end("scan");
+        const { code, stdout, stderr } = await done;
+        expect(code, stderr + stdout).toBe(0);
+        replies.push(JSON.parse(stdout) as ResultEnvelope);
+      }
+      expect(replies[0]).toMatchObject({ ok: true, result: { id: first } });
+      expect(replies[1]).toMatchObject({ ok: true, result: { id: second } });
+      const claimOverlap = mapWarnings(replies[1]!).find(
+        ({ code }) => code === "WORK_FILE_OVERLAP",
+      );
+      expect(claimOverlap?.message ?? "").toContain(sharedFile);
+      expect(claimOverlap?.message ?? "").toContain(first);
+    } finally {
+      for (const { child } of claims) child.kill();
+      await Promise.allSettled(claims.map(({ done }) => done));
+    }
+    const args = [
+      "lane",
+      "start",
+      "--input",
+      JSON.stringify(laneInput(second)),
+    ];
+    const original = laneCli(root, repo, args, session, device);
+    expect(original.ok, JSON.stringify(original)).toBe(true);
+    expect(hasOverlap(original)).toBe(true);
+    const replay = laneCli(root, repo, args, session, device);
+    expect(replay.ok, JSON.stringify(replay)).toBe(true);
+    expect(replay.result.worktree).toBe(original.result.worktree);
+    expect(hasOverlap(replay)).toBe(true);
+  });
+}, 30_000);
 
 test("a short grant skips the advisory process", async () => {
   await project(async ({ call, good }) => {
