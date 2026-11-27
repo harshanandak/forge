@@ -1,9 +1,13 @@
 import { beforeAll, expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { composeGithub } from "../../cloud/src/github-compose.ts";
 import {
   createGithubAppCredential,
   type GithubAppBindings,
 } from "../../cloud/src/github-app-credential.ts";
-import { composeGithub } from "../../cloud/src/github-compose.ts";
+import { withGithubPrEvidence } from "../../cloud/src/github-evidence.ts";
+import { policyGuard } from "../../cloud/src/merge-evidence.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 
 setDefaultTimeout(1000);
 const permissions = {
@@ -348,6 +352,9 @@ const configuredPolicy = {
   },
   requiredChecks: ["ci", "security"],
 };
+const expectedPolicyDigest = createHash("sha256")
+  .update(canonicalJson(configuredPolicy), "utf8")
+  .digest("hex");
 type Policy = import("../../cloud/src/merge-evidence.ts").MergePolicy;
 type PolicyResult =
   | { ok: true; policy: Policy }
@@ -455,8 +462,6 @@ for (const [name, raw, repository = "7", project = "forge"] of policyRows)
         expect(new TextEncoder().encode(raw).byteLength).toBeGreaterThan(
           16_384,
         );
-        const { policyGuard } =
-          await import("../../cloud/src/merge-evidence.ts");
         expect(
           policyGuard({
             ...(JSON.parse(raw) as object),
@@ -493,24 +498,11 @@ for (const [name, raw, repository = "7", project = "forge"] of policyRows)
       expect(bindings.GITHUB_MERGE_POLICY).toBe(raw);
       expect(bindings.GITHUB_APP_ID).toBe(env.GITHUB_APP_ID);
       if (name === "valid" || name === "reordered") {
-        const { canonicalJson } =
-          await import("../../src/core/config/pointer.ts");
-        const hash = new Uint8Array(
-          await crypto.subtle.digest(
-            "SHA-256",
-            new TextEncoder().encode(canonicalJson(configuredPolicy)),
-          ),
-        );
-        const digest = Array.from(hash, (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("");
         expect(result).toEqual({
           ok: true,
-          policy: { ...configuredPolicy, digest },
+          policy: { ...configuredPolicy, digest: expectedPolicyDigest },
         });
         if (!result.ok) throw new Error("Valid policy refused");
-        const { withGithubPrEvidence } =
-          await import("../../cloud/src/github-evidence.ts");
         let credentials = 0;
         const accepted = await withGithubPrEvidence(
           {
