@@ -2,6 +2,43 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "generatedFiles": {
+      "description": "Generated file patterns and the commands that regenerate them. The first matching rule explains an exclusion.",
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["glob", "regenerate"],
+        "properties": {
+          "glob": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?![A-Za-z]:|!)(?![\\s\\S]*\\*{3})(?:(?!\\.{1,2}(?:/|$))[^/\\\\\\[\\]{}()\\u0000-\\u001f]+/)*(?!\\.{1,2}$)[^/\\\\\\[\\]{}()\\u0000-\\u001f]+$"
+          },
+          "regenerate": {
+            "type": "object",
+            "required": ["argv"],
+            "properties": {
+              "argv": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "pattern": "^[^\\u0000]+$"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "labels": {
       "type": "object",
       "properties": {

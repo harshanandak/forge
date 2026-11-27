@@ -39,6 +39,11 @@ blocks:
       builtin: forge/work
     config:
       claimTtlSeconds: 7200
+      generatedFiles:
+        - glob: src/generated/*.ts
+          regenerate: { argv: [bun, run, gen] }
+        - glob: src/generated/core-manifest.json
+          regenerate: { argv: [bun, run, gen] }
       lanes:
         discardIgnored:
           [node_modules/, dist/, .agents/, .claude/, src/generated/]

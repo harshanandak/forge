@@ -24,7 +24,7 @@ export const MAX_LEASE_BYTES = 16 * 1024;
 /** The most a read response may be, in UTF-8 bytes, measured on the whole envelope. */
 export const MAX_SHOW_RESPONSE_BYTES = 1_048_576;
 export const MAX_DEPTH = 8;
-export const MAX_NODES = 1024;
+export const MAX_NODES = 4096;
 export const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
 export const INVALID_ID = "Invalid issue id";
 export const UNKNOWN_PREFIX = "Unknown issue id prefix";

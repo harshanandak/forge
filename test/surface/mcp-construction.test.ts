@@ -29,22 +29,11 @@ test("separate MCP constructions see fresh candidates", () => {
   expect(names()).toContain("sample_fresh");
 }, 30_000);
 
-test("read-only unknown-name checks still read the live catalog at call time", async () => {
+test("read-only hidden writes are unknown tools", async () => {
   let entries: readonly McpCandidate[] = [];
-  let reads = 0;
-  const catalog: SurfaceCatalog = {
-    ...fakeCatalog(),
-    list: () => {
-      reads++;
-      return entries;
-    },
-  };
+  const catalog: SurfaceCatalog = { ...fakeCatalog(), list: () => entries };
   const handlers = createMcpHandlers(catalog, { readOnly: true });
-  const constructed = reads;
   entries = [candidate("fresh.write", { effects: ["external:network"] })];
-  expect(await handlers.callTool("fresh_write", {})).toMatchObject({
-    ok: false,
-    error: { code: "UNKNOWN_COMMAND" },
-  });
-  expect(reads).toBe(constructed + 1);
+  expect(await handlers.callTool("fresh_write", {})).toBeUndefined();
+  expect(await handlers.callTool("never_existed", {})).toBeUndefined();
 }, 30_000);

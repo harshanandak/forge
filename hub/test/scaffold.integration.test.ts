@@ -184,6 +184,7 @@ const ownFiles = [
   "dist/core/askEffects.js",
   "dist/core/asks.js",
   "dist/core/cli.js",
+  "dist/core/compose.js",
   "dist/core/config.js",
   "dist/core/context.js",
   "dist/core/core.js",
@@ -204,6 +205,7 @@ const ownFiles = [
   "dist/core/schema.js",
   "dist/core/send.js",
   "dist/core/sessions.js",
+  "dist/core/stop.js",
   "dist/core/storage.js",
   "dist/core/store-impl.js",
   "dist/core/store.js",
@@ -224,6 +226,8 @@ const ownFiles = [
   "dist/remote/mcp.js",
   "dist/remote/message-cli.js",
   "dist/remote/responses.js",
+  "dist/service/http.js",
+  "dist/service/routes.js",
   "dist/setup/index.js",
 ];
 const credentialPath =

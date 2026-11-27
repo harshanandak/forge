@@ -61,9 +61,7 @@ test("read-only MCP exposure refuses effectful core and block operations", async
 
   for (const name of ["catalog_call", "block_add", "sample_write"]) {
     const result = await handlers.callTool(name, { op: "sample.write" });
-    assert.equal(result?.ok, false);
-    if (result && !result.ok)
-      assert.equal(result.error.code, "UNKNOWN_COMMAND");
+    assert.equal(result, undefined);
   }
   const listed = await handlers.callTool("catalog_list", {});
   assert.ok(listed?.ok);

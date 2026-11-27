@@ -836,7 +836,9 @@ test("dry run and read-only MCP refuse before asking", async () => {
   const dry = () => h.invoke("memory.accept", input, { dryRun: true });
   const readOnly = () => mcpFor(h, true).callTool("memory_accept", input);
   await unspent(h, dry, "UNAVAILABLE");
-  await unspent(h, readOnly, "UNKNOWN_COMMAND");
+  const before = await approvalRows(h);
+  expect(await readOnly()).toBeUndefined();
+  expect(await approvalRows(h)).toEqual(before);
 }, 30_000);
 
 test("the owner's approval of accept and reject binds the operation, the ids and their revisions", async () => {

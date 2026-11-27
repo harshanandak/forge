@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
+import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import * as Mcp from "../../src/contract/mcp.ts";
 import * as Core from "../../src/core/index.ts";
 import { createDoorbell, createRemoteHandler } from "../../src/remote/index.ts";
+import { createHubHttpListener } from "../../src/service/routes.ts";
 import { a, b, fixture, p1 } from "../core/fixture.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import {
@@ -33,6 +36,14 @@ const projectId = p1;
 const project = { projectId };
 const bin = (name: string) => join(hubRoot, "bin", name + ".mjs");
 const countPermits = "select count(*) as count from permits";
+
+const requestAt =
+  (origin: string, bearer = token) =>
+  (req: Request) => {
+    const { headers, body } = req;
+    headers.set("authorization", "Bearer " + bearer);
+    return fetch(origin + "/mcp", { method: "POST", headers, body });
+  };
 
 function result<T>(body: WireEnvelope): T {
   expect(body).toMatchObject({ ok: true, status: "OK" });
@@ -68,7 +79,11 @@ async function workspace(slack = true) {
   await writeFile(settings, JSON.stringify(configAt(f.config.listen.port)));
   const cli = (args: string[], input?: string) =>
     child(f.root, [bin("forge-hub"), ...args, "--config", settings], input);
-  return { ...f, path, settings, configAt, cli };
+  const create = (kind: "host" | "token", file: string) => {
+    const flags = ["--person", a.personId, "--label", "fixture", "--output"];
+    return cli([kind, "create", ...flags, file]);
+  };
+  return { ...f, path, settings, configAt, cli, create };
 }
 
 function journey(
@@ -102,28 +117,40 @@ async function realHub() {
     tracker: Core.nullTracker,
     now: Date.now,
   });
-  const handler = createRemoteHandler({ ...f, core });
-  const handle = (request: Request) => handler.handle(request);
-  const server = Bun.serve({ hostname: host, port: 0, fetch: handle });
+  const remote = createRemoteHandler({ ...f, core });
+  const allowedHosts: string[] = [];
+  const config = { ...f.config, allowedHosts };
+  const listener = createHubHttpListener({ ...f, config, remote, chat });
+  const server = createServer(listener);
   const close = async () => {
-    await server.stop(true);
-    await handler.close();
+    const closed = new Promise<void>((done) => server.close(() => done()));
+    server.closeAllConnections();
+    await closed;
+    await remote.close();
     await core.close();
-    await chat.stop();
   };
+  let authority: string;
   try {
-    await chat.start(core.chatHandlers);
     await core.start();
     core.createToken(a.personId, "fixture", digest(token));
     core.createHostKey(a.personId, "fixture", digest(key));
     await writeFile(f.path("hook-host"), key, { mode: 0o600 });
+    server.listen(0, host);
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("Expected TCP");
+    authority = host + ":" + address.port;
+    allowedHosts.push(authority);
   } catch (error) {
     await close();
     throw error;
   }
+  const origin = "http://" + authority;
+  const handle = requestAt(origin);
   const hook = (name: string, input: unknown, file = f.path("hook-host")) =>
     child(f.root, [bin(name)], JSON.stringify(input), {
-      FORGE_HUB_URL: server.url.origin,
+      FORGE_HUB_URL: origin,
       FORGE_HUB_HOST_KEY_FILE: file,
     });
   const tool = async (name: string, args: object) =>
@@ -328,38 +355,13 @@ test(
       const message = unavailable ? "forge-hub serve: not_built" : "Hub health";
       expect(ready, message).toBe(true);
       const path = f.path("person-output");
-      expect(
-        (
-          await f.cli([
-            "token",
-            "create",
-            "--person",
-            a.personId,
-            "--label",
-            "fixture",
-            "--output",
-            path,
-          ])
-        ).status,
-      ).toBe(0);
+      expect((await f.create("token", path)).status).toBe(0);
       const bearer = (await readFile(path, "utf8"))
         .trim()
         .slice("FORGE_HUB_TOKEN=".length);
+      const handle = requestAt(origin, bearer);
       const tool = async (name: string, args: object) =>
-        (
-          await rpc(
-            (req) => {
-              req.headers.set("authorization", "Bearer " + bearer);
-              return fetch(new URL("/mcp", origin), {
-                method: "POST",
-                headers: req.headers,
-                body: req.body,
-              });
-            },
-            name,
-            args,
-          )
-        ).tool.structuredContent;
+        (await rpc(handle, name, args)).tool.structuredContent;
       const hello = result<Mcp.HelloOutput>(
         await tool("hello", { host: "other", ...project }),
       );
@@ -392,7 +394,7 @@ test(
         mode: "reply_only",
         items: [{ kind: "cli_message", trust: "cli", text: "CLI fixture" }],
       });
-      expect(hello.rules).toContain(Mcp.CLI_MESSAGE_NOTICE);
+      expect(delivered.items[0]?.notice).toBe(Mcp.CLI_MESSAGE_NOTICE);
       expect(f.db.prepare(countPermits).get()).toEqual({ count: 0 });
     } finally {
       if (proc.exitCode === null) proc.kill();
@@ -407,16 +409,7 @@ journey(
   "E6 a real host key registers and revocation denies the guard",
   async (f) => {
     const file = f.path("host-output");
-    const created = await f.cli([
-      "host",
-      "create",
-      "--person",
-      a.personId,
-      "--label",
-      "fixture",
-      "--output",
-      file,
-    ]);
+    const created = await f.create("host", file);
     expect(created.status).toBe(0);
     expect(await f.hook("session-start", session, file)).toMatchObject({
       status: 0,

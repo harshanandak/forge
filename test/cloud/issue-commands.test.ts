@@ -4597,7 +4597,7 @@ const insertRaw = (f: F, key: string, body: string) =>
 test("list refuses a returned stored issue with a bad body, unknown field, nesting or node count with the fixed 500", async () => {
   // `closeReason` is dropped before the item schema runs, so only the parse bounds can refuse these two rows.
   const nested = `${"[".repeat(8)}"leak-me"${"]".repeat(8)}`;
-  const nodes = `[${'"l",'.repeat(1_100)}"l"]`;
+  const nodes = `[${'"l",'.repeat(4_100)}"l"]`;
   for (const [name, text] of [
     ["unknown field", rawIssue("work-2", ',"extra":"leak-me"')],
     ["body is a number", rawIssue("work-2", ',"body":5')],
@@ -4613,7 +4613,7 @@ test("list refuses a returned stored issue with a bad body, unknown field, nesti
       rawIssue("work-2", `,"body":"${"𝒳".repeat(65_537)}"`),
     ],
     ["nesting over 8", rawIssue("work-2", `,"closeReason":${nested}`)],
-    ["over 1,024 nodes", rawIssue("work-2", `,"closeReason":${nodes}`)],
+    ["over 4,096 nodes", rawIssue("work-2", `,"closeReason":${nodes}`)],
     // SQLite json_valid accepts this and json_set drops the suffix, but only a text body takes the json_set path.
     [
       "text body, a literal NUL byte, then trailing text",
@@ -5208,6 +5208,7 @@ test("the cloud issue.create agrees with the local handler on whole results, row
       { title: "F", kind: "feature" },
       { title: "E", kind: "epic" },
       { title: "Full", body: 'é\n"x"', labels: ["x", "y"], kind: "task" },
+      { title: "Files", expectedFiles: ["./src//planned-*.ts"] },
       { title: "Bare" },
     ];
     for (const [i, input] of inputs.entries()) {
@@ -6654,7 +6655,16 @@ test("the cloud issue.update agrees with the local handler on whole results, row
         patch({ id: "work-12", title: "t".repeat(500), expectRevision: 5 }),
       ],
       ["u-5", patch({ id: "forge-20", title: "Graph kept" })],
-      ["u-6", { id: "forge-12", expectRevision: 6 }],
+      [
+        "u-6",
+        patch({
+          expectRevision: 6,
+          expectedFiles: ["src/./planned-*.ts"],
+          actualFiles: ["src//delivered.ts"],
+          filesAt: "0123456789abcdef0123456789abcdef01234567",
+        }),
+      ],
+      ["u-7", { id: "forge-12", expectRevision: 7 }],
     ];
     for (const [i, [requestId, input]] of cases.entries()) {
       const got = await f.send(revise(requestId, input), {

@@ -169,10 +169,10 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         if (asker !== undefined)
           prefix = name + "'s agent, answering <@" + asker + ">:";
       }
-      const owed = db
+      const owedCandidates = db
         .prepare(
           `SELECT item_id FROM reply_owed
-    WHERE conversation_id = ? AND answered = 0`,
+    WHERE conversation_id = ?`,
         )
         .all(existing.conversationId)
         .map((row) => str(row.item_id));
@@ -182,7 +182,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         conversation: existing,
         label,
         prefix,
-        owed,
+        owedCandidates,
         sessionId: own.value.sessionId,
       } as const;
     });
@@ -277,14 +277,21 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
       }
       const conv = result.conversation;
       releaseThread = await enterThread(ctx, conv.chatThreadId);
-      const blocked = ctx.store.tx(() => {
+      const ready = ctx.store.tx(() => {
         const fresh = byConversation(db, conv.conversationId);
         if (!fresh) return refused("CONVERSATION_UNKNOWN");
         const binding = channelBindingRefusal(db, fresh, fresh.projectId);
         if (binding) return binding;
-        return undefined;
+        const owed = db
+          .prepare(
+            `SELECT item_id FROM reply_owed WHERE answered = 0
+             AND item_id IN (SELECT value FROM json_each(?))`,
+          )
+          .all(JSON.stringify(result.owedCandidates))
+          .map((row) => str(row.item_id));
+        return { ok: true, owed } as const;
       });
-      if (blocked) return blocked;
+      if (!ready.ok) return ready;
       if (!conv.isDirect) recoverAgentPosts(ctx, conv.chatThreadId);
       if (paused(db, conv.chatThreadId)) {
         await postLoopPause(ctx, conv);
@@ -298,12 +305,12 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         personId: person.personId,
       });
       ctx.store.tx(() => {
-        if (result.owed.length > 0)
+        if (ready.owed.length > 0)
           db.prepare(
             "UPDATE reply_owed SET answered = 1 WHERE item_id IN (" +
-              result.owed.map(() => "?").join(",") +
+              ready.owed.map(() => "?").join(",") +
               ")",
-          ).run(...result.owed);
+          ).run(...ready.owed);
       });
       if (posted.projected) await postLoopPause(ctx, conv);
       return {

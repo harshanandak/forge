@@ -1,5 +1,6 @@
 import { version } from "../version.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { escapeDisplayText } from "../contract/display-text.ts";
 import { runCommand } from "../surface/command.ts";
 import { failure, respond } from "../surface/result.ts";
 import { createLocalAssembly, localCall } from "./index.ts";
@@ -33,7 +34,11 @@ export async function runLocalCommand(
             error instanceof Error ? error.message : "Assembly failed",
           ),
     );
-    process.stdout.write(response.stdout);
+    if (argv[0] === "--mcp") {
+      process.stderr.write(escapeDisplayText(response.stdout));
+    } else {
+      process.stdout.write(response.stdout);
+    }
     return response.exitCode;
   }
 }

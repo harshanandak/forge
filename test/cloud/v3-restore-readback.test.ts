@@ -35,8 +35,7 @@ if (!("timingSafeEqual" in crypto.subtle))
   });
 
 const timeout = 30_000;
-const time = Date.parse("2026-11-20T12:00:00.000Z");
-const activatedAt = new Date(time + 1).toISOString();
+const time = Date.now();
 const env = { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" };
 const open = () => guardFixture(env);
 type Fixture = ReturnType<typeof open>;
@@ -57,7 +56,7 @@ const headers = {
 const create = {
   op: "issue.create",
   requestId: "create",
-  input: { title: "Before" },
+  input: { title: "Before", expectedFiles: ["./src//planned-*.ts"] },
   context: { actor: holder.actor },
 };
 const refusedCreate = {
@@ -74,7 +73,14 @@ const claim = {
 const update = {
   op: "issue.update",
   requestId: "update",
-  input: { id: "forge-1", expectRevision: 1, title: "After" },
+  input: {
+    id: "forge-1",
+    expectRevision: 1,
+    title: "After",
+    expectedFiles: ["src/./planned-*.ts"],
+    actualFiles: ["src//delivered.ts"],
+    filesAt: "0123456789abcdef0123456789abcdef01234567",
+  },
   context: { ...holder, leaseGeneration: 1 },
 };
 const error = (status: number, code: string) => ({
@@ -89,6 +95,65 @@ const commits = (f: Fixture) =>
       "SELECT sequence, body, mac FROM cloud_v3_commits ORDER BY sequence",
     )
     .all();
+test(
+  "v3 admits a declaration at the shared boundary and records typed refusals",
+  async () => {
+    const f = open();
+    using _db = f.db;
+    await provision(f);
+    const expectedFiles = Array.from(
+      { length: 80 },
+      (_, i) => `src/${String(i).padStart(996, "0")}`,
+    );
+    const tooLarge = { title: "Files", expectedFiles, body: "x".repeat(1_625) };
+    expect(Buffer.byteLength(JSON.stringify(tooLarge))).toBe(81_910);
+    expect(
+      await typed(f, { ...create, requestId: "large-create", input: tooLarge }),
+    ).toMatchObject(error(400, "INPUT_INVALID"));
+    expect(
+      await typed(f, { ...create, input: { title: "Files", expectedFiles } }),
+    ).toMatchObject({ status: 200, body: { result: { expectedFiles } } });
+    expect((await typed(f, claim)).status).toBe(200);
+    const large = {
+      ...update,
+      input: {
+        id: "forge-1",
+        expectRevision: 1,
+        actualFiles: expectedFiles.slice(0, 3),
+      },
+    };
+    expect(await typed(f, large)).toMatchObject(error(400, "INPUT_INVALID"));
+  },
+  timeout,
+);
+
+test(
+  "v3 records and replays typed refusals for invalid declaration paths",
+  async () => {
+    const f = open();
+    using _db = f.db;
+    await provision(f);
+    expect((await typed(f, create)).status).toBe(200);
+    expect((await typed(f, claim)).status).toBe(200);
+    for (const call of [
+      {
+        ...create,
+        requestId: "bad-create",
+        input: { title: "Bad", expectedFiles: ["../a.ts"] },
+      },
+      {
+        ...update,
+        requestId: "bad-update",
+        input: { ...update.input, actualFiles: ["../a.ts"] },
+      },
+    ]) {
+      expect(await typed(f, call)).toMatchObject(error(400, "INPUT_INVALID"));
+      expect(await typed(f, call)).toMatchObject(error(400, "INPUT_INVALID"));
+    }
+  },
+  timeout,
+);
+
 function pages(f: Fixture) {
   return f.db
     .query<{ id: string; body: string }, []>(
@@ -281,20 +346,26 @@ function readback(source: Fixture, target: Fixture, data: Backup) {
   expect(actual.recordFloor).toBe(expected.recordFloor);
   const { lease: _lease, ...expectedView } = viewV3(expected).image as Json;
   const { lease: _restoredLease, ...actualView } = viewV3(actual).image as Json;
-  const global = {
+  const global = controlSlot(to.db, actual) as {
+    version: 1;
+    incarnation: string;
+    epoch: 1;
+    resumeAllEpoch: 0;
+    stopAll: string;
+  };
+  expect(global).toMatchObject({
     version: 1,
     incarnation: actual.root.incarnation,
     epoch: 1,
     resumeAllEpoch: 0,
-    stopAll: activatedAt,
-  };
+  });
+  expect(Date.parse(global.stopAll)).not.toBeNaN();
   expect(actualView).toEqual({
     ...expectedView,
     control: { global: entryDigest(digestValue(global)) },
     head: expected.head + 1,
     eventWatermark: expected.eventWatermark + 1,
   });
-  expect(controlSlot(to.db, actual)).toEqual(global);
   for (const collection of ["lease", "outcome", "record", "witness"] as const) {
     expect([...actual.entries[collection].keys()].sort()).toEqual(
       [...expected.entries[collection].keys()].sort(),
@@ -306,7 +377,7 @@ function readback(source: Fixture, target: Fixture, data: Backup) {
         collection === "lease"
           ? {
               ...(value as Json),
-              releasedAt: (value as Json).releasedAt ?? activatedAt,
+              releasedAt: (value as Json).releasedAt ?? global.stopAll,
             }
           : value,
       );
@@ -318,7 +389,7 @@ function readback(source: Fixture, target: Fixture, data: Backup) {
   expect(
     verifyRow(target.seal(), actual.root.incarnation, sequence, body, mac),
   ).toBe(true);
-  return to;
+  return { ...to, global };
 }
 
 test(
@@ -330,11 +401,11 @@ test(
     using _target = target.db;
     const before = source.observeEffects();
     const finish = await restoreInto(target, data);
-    const { db, image } = readback(source, target, data);
+    const { db, image, global } = readback(source, target, data);
     expect(image.recordFloor).toBe(2);
     expect(readV3Value(db, image, "lease", "issue:work-1")).toMatchObject({
       generation: 1,
-      releasedAt: activatedAt,
+      releasedAt: global.stopAll,
       holder: { actor: holder.actor },
     });
     const rows = commits(target).length;

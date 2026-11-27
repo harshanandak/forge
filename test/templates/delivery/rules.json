@@ -61,6 +61,41 @@
     "Finish only when no open decision or pending fact remains"
   ],
   [
+    "in.prior.copy",
+    "forge-intake/prior-art.md",
+    "**Copy:** code or designs we reuse"
+  ],
+  [
+    "in.prior.mistakes",
+    "forge-intake/prior-art.md",
+    "**Their mistakes:** known problems"
+  ],
+  [
+    "in.prior.decision",
+    "forge-intake/prior-art.md",
+    "**Decision:** what we do and why"
+  ],
+  [
+    "in.prior.license",
+    "forge-intake/prior-art.md",
+    "MIT, Apache-2.0, and BSD with attribution may be copied"
+  ],
+  [
+    "in.prior.ideas",
+    "forge-intake/prior-art.md",
+    "GPL, AGPL, BSL, or no license: ideas only, never code"
+  ],
+  [
+    "in.prior.link",
+    "forge-intake/SKILL.md",
+    "Read [prior-art.md](prior-art.md) before any feature design"
+  ],
+  [
+    "cut.prior",
+    "forge-cut/framing.md",
+    "not framed until its prior-art comment exists"
+  ],
+  [
     "in.call.count",
     "forge-loop/dispatch.md",
     "run `forge issue call <slice> --role <role>`",

@@ -5,10 +5,15 @@
 // A replay checks the lease again, so a device that lost it never gets the old result back.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import UpdateItemInput from "../../src/blocks/work/schemas/UpdateItemInput.json" with { type: "json" };
+import { normalizeFileDeclarations } from "../../src/blocks/work/file-declarations.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
-import type { BoundContext, TrackerItem } from "../../src/generated/types.ts";
+import type {
+  BoundContext,
+  TrackerItem,
+  UpdateItemInput as UpdateInput,
+} from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import {
   checkedValue,
@@ -18,7 +23,7 @@ import {
   shownItem,
   storedId,
 } from "./issue-read.ts";
-import { receipted, type WriteCall } from "./issue-write.ts";
+import { boundedResult, receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 export const UPDATE_GRAPH =
@@ -30,11 +35,12 @@ if (
   update.output !== "schemas/TrackerItem.json"
 )
   throw new Error("issue.update no longer declares its input and output");
-interface Fields {
+type Editable = Omit<UpdateInput, "kind" | "parent" | "dependsOn">;
+type Fields = {
   id: string;
   expectRevision: number;
-  patch: { title?: string; body?: string; labels?: string[] };
-}
+  patch: Omit<Editable, "id" | "expectRevision">;
+};
 
 // The fence a held-lease context names: the caller's holder and generation, the device from the token.
 // Shared by every command that holds a lease on one issue.
@@ -103,7 +109,10 @@ export function checkedUpdateInput(input: unknown) {
     throw fail("INPUT_INVALID", UPDATE_GRAPH);
   if (schemas().validate(UpdateItemInput.$ref, input).length > 0)
     throw fail("INPUT_INVALID", UPDATE_SCHEMA);
-  return input as Fields["patch"] & { id: string; expectRevision: number };
+  const fields = input as Editable;
+  const declarations = normalizeFileDeclarations(fields);
+  if (!declarations.ok) throw fail("INPUT_INVALID", declarations.message);
+  return { ...fields, ...declarations.patch };
 }
 
 /** Edits one issue's title, body or labels, or returns the recorded answer while the caller still holds its lease. */
@@ -127,17 +136,16 @@ export function updateIssue(
     ({ id, expectRevision, patch }, actor, prefix, context) => {
       const key = `issue:${id}`;
       const current = checkedValue({ ...owner.get(NAMESPACE, key)! }, id);
-      const written = owner.put(
-        NAMESPACE,
-        key,
-        { ...current, ...patch },
-        actor,
-        {
-          expectRevision,
-          fence: fence(context, id, "issue.update"),
-        },
+      const value = { ...current, ...patch };
+      const written = owner.put(NAMESPACE, key, value, actor, {
+        expectRevision,
+        fence: fence(context, id, "issue.update"),
+      });
+      return boundedResult(
+        "issue.update",
+        shownWrite(owner, written, id, prefix),
+        value,
       );
-      return shownWrite(owner, written, id, prefix);
     },
     heldReplay(owner, "issue.update"),
   );

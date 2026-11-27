@@ -251,16 +251,25 @@ test(
     const m = await load();
     const list = (...messages: string[]) =>
       messages.map((message) => never("INPUT_INVALID", message));
+    const invalidPaths =
+      "File declarations require repo-relative / paths of at most 1024 characters, with at most 256 expected and 1024 actual paths";
+    const overBudget =
+      "File declarations and issue fields exceed the 80 KiB JSON budget";
     expect(m.INPUT_REFUSALS).toEqual({
       "issue.create": list(
         "Parent and dependencies are not supported in cloud yet",
         "input must be a valid issue.create input",
         "kind must be one of task, bug, feature, epic",
+        invalidPaths,
+        overBudget,
       ),
       "issue.update": list(
         "Kind, parent and dependencies are not supported in cloud yet",
         "input must be a valid issue.update input",
         "Invalid issue id",
+        invalidPaths,
+        "filesAt must be a lowercase 40-character commit SHA",
+        overBudget,
       ),
       "issue.claim": list("Expected a valid issue claim", "Invalid issue id"),
     });
