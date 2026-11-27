@@ -114,14 +114,15 @@ test("mcp open refusal keeps stdout empty with a nonzero exit", async () => {
     stdout += chunk.toString();
   });
   const mcp: McpTransportPort = {
-    open: async () => ({
-      ok: false as const,
-      unavailable: {
-        kind: "unavailable" as const,
-        reason: "streams closed",
-        remedy: "reopen streams",
-      },
-    }),
+    open: () =>
+      Promise.resolve({
+        ok: false as const,
+        unavailable: {
+          kind: "unavailable" as const,
+          reason: "streams closed",
+          remedy: "reopen streams",
+        },
+      }),
   };
   const exit = await runCommand(["--mcp"], {
     catalog: fakeCatalog(),
@@ -194,7 +195,7 @@ test("unissued cursors fail while absent and empty cursors list", async () => {
 test("invalid input and gated catalog calls stay domain failures", async () => {
   await exchange("2025-11-25", true, async (rpc) => {
     const bad = await rpc("tools/call", {
-      name: "sample_read",
+      name: "catalog_call",
       arguments: {},
     });
     expect(bad.error ?? null).toBeNull();
@@ -204,7 +205,7 @@ test("invalid input and gated catalog calls stay domain failures", async () => {
     });
     const gated = await rpc("tools/call", {
       name: "catalog_call",
-      arguments: { op: "sample.write", input: { value: "refused" } },
+      arguments: { op: "sample.write" },
     });
     expect(gated.error ?? null).toBeNull();
     expect(gated.result ?? null).toMatchObject({
