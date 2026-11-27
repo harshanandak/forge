@@ -280,22 +280,33 @@ for (const framing of ["declared", "chunked"] as const) {
   test(
     "S3 rejects an oversized " + framing + " body before the upload ends",
     async () => {
-      await withServer(async ({ port, chatCalls, remoteCalls }) => {
+      await withServer(async ({ server, port, chatCalls, remoteCalls }) => {
         const size = LIMITS.bodyBytes + 1;
+        let readStarted = false;
         const { client, response } = startRequest(
           port,
           webhook,
           "POST",
           framing === "declared"
-            ? { "content-length": String(size) }
+            ? { "content-length": String(size + 1) }
             : { "transfer-encoding": "chunked" },
         );
         try {
-          if (framing === "declared") client.flushHeaders();
-          else client.write(Buffer.alloc(size));
+          if (framing === "declared") {
+            server.prependOnceListener("request", (input) => {
+              const iterator = input.iterator.bind(input);
+              input.iterator = (options) => {
+                readStarted = true;
+                client.write(Buffer.alloc(size));
+                return iterator(options);
+              };
+            });
+            client.flushHeaders();
+          } else client.write(Buffer.alloc(size));
           const incoming = await response;
           expect(incoming.statusCode).toBe(413);
           await readResponse(incoming);
+          if (framing === "declared") expect(readStarted).toBe(false);
           expect(chatCalls).toHaveLength(0);
           expect(remoteCalls).toHaveLength(0);
         } finally {
