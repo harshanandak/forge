@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { availableParallelism } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { binaryName, nativeName } from "./koffi-load.fixture.ts";
@@ -100,7 +100,7 @@ for (const [label, runtime] of Object.entries({ Node: node, Bun: bun })) {
   for (const consumer of [offline, normal]) {
     const result = await run(runtime, loadFixture, "load", consumer);
     console.log(
-      `${label} ${consumer}: exit 0 in ${result.elapsed} ms\n${result.stdout}`,
+      `${label} ${basename(consumer)}: exit 0 in ${result.elapsed} ms\n${result.stdout}`,
     );
   }
 }
@@ -123,7 +123,7 @@ for (const runtime of [node, bun]) {
     result.stderr ?? "",
     /Cannot find the native Koffi module|Cannot find module .*koffi\.node/,
   );
-  console.log(`${runtime[0]} missing .node: refused`);
+  console.log(`${basename(runtime[0])} missing .node: refused`);
 }
 
 const runtimes = Object.entries({ Node: node, Bun: bun });

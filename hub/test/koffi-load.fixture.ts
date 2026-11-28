@@ -83,8 +83,12 @@ if (mode === "load" || mode === "cold") {
       nativeName,
     );
     ok(existsSync(join(dirname(native), binaryName)));
+    const resolution = requireHub.resolve.paths("koffi")?.map((path) => {
+      const local = relative(process.cwd(), path);
+      return local.startsWith("node_modules") ? local : "[outside consumer]";
+    });
     console.log(
-      JSON.stringify({ resolution: requireHub.resolve.paths("koffi"), native }),
+      JSON.stringify({ resolution, native: relative(process.cwd(), native) }),
     );
     if (typeof Bun === "undefined") {
       ok(globalThis.gc);

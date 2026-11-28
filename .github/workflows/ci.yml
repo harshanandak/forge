@@ -499,8 +499,7 @@ jobs:
           $proof = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/hub-acl-proof"
           npm pack --ignore-scripts --json --pack-destination $proof.FullName > "$proof/inventory.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-FileHash "$proof/*.tgz" | Format-List > "$proof/digest.txt"
-          Get-Content "$proof/digest.txt"
+          "Hub tarball SHA-256: $((Get-FileHash "$proof/*.tgz").Hash)" | Tee-Object -FilePath "$proof/digest.txt"
       - name: Verify the packed dependency closure
         run: node hub/test/koffi-package.fixture.ts inventory
       - name: Install offline and audit the normal lifecycle
