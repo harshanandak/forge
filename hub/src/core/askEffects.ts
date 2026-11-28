@@ -177,8 +177,9 @@ export function createAskEffects({
         };
       });
     },
-    markEditDone(askId, personId) {
-      db.transaction(() => {
+    markEditDone(askId, personId, writeAbandoned) {
+      return db.transaction(() => {
+        if (writeAbandoned?.()) return false;
         const at = now();
         if (
           Number(
@@ -186,6 +187,7 @@ export function createAskEffects({
           )
         )
           edited.run(at, askId, personId);
+        return true;
       });
     },
     markEditFailed(askId, personId, nextAttemptAt) {

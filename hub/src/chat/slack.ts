@@ -249,13 +249,19 @@ export const createSlackChatPort: CreateChatPort = (deps) => {
     findSummary(channel, publicationKey) {
       return findSummary(adapter, channel, publicationKey);
     },
-    async editSummary(ref, summary) {
+    async editSummary(ref, summary, deadline) {
       try {
         validateRef(ref);
+        const publicationKey = await readSummaryKey(adapter, ref);
+        if (deadline) {
+          const expiresAt = deadline.expiresAt();
+          if (expiresAt !== undefined && deadline.now() >= expiresAt)
+            return "abandoned";
+        }
         await adapter.editMessage(
           ref.chatThreadId,
           ref.chatMessageId,
-          renderSummaryCard(summary, await readSummaryKey(adapter, ref)),
+          renderSummaryCard(summary, publicationKey),
         );
         return "edited";
       } catch (error) {
