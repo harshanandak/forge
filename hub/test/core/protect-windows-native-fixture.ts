@@ -1,9 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { rawDescriptorHelpers, recipes } from "./protect-windows-fixture.ts";
 import {
+  creationReference,
+  frozenDirectoryOutcome,
   powershellCommand,
   readInput,
   type DiskRequest,
@@ -377,4 +379,200 @@ export async function nativeFixtures(): Promise<{
     await close();
     throw error;
   }
+}
+
+export type CreationFault = {
+  barrier: "staged" | "published";
+  sddl?: string;
+  action?: "observe" | "fill" | "delete" | "replace" | "unreadable";
+};
+
+export type CreationRecipe = {
+  row: string;
+  variant: string;
+  expected: boolean | "unverified";
+  parent?: "missing" | "file";
+  parentSddl?: string;
+  shape?: "file" | "dir" | "full" | "junction" | "symlink";
+  name?: string;
+  spelling?: Spelling;
+  fault?: CreationFault;
+};
+
+const spellings = {
+  "absolute trailing separator": (parent: string, leaf: string) =>
+    `${parent}\\${leaf}\\`,
+  "extended forward slashes": (parent: string, leaf: string) =>
+    `\\\\?\\${parent.replaceAll("\\", "/")}/${leaf}`,
+  "extended drive root": (parent: string) => `\\\\?\\${parent.slice(0, 2)}\\.`,
+};
+export type Spelling = keyof typeof spellings;
+export const spellingNames = Object.keys(spellings) as Spelling[];
+
+export type CreationSide = {
+  root: string;
+  parent: string;
+  target: string;
+  log: string;
+};
+
+const creationFaults = `
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$alias = [regex]::Escape([Security.AccessControl.RawSecurityDescriptor]::new("O:$me").GetSddlForm('Owner').Substring(2))
+function Get-Sddl($path, $sections = 'Owner, Access') {
+  (Get-Item -LiteralPath $path -Force).GetAccessControl().GetSecurityDescriptorSddlForm($sections) -creplace "(?<=[:;])$alias(?=[;)GDS]|$)", '@'
+}
+function Set-Sddl($path, $sddl) {
+  $item = Get-Item -LiteralPath $path -Force
+  $acl = $item.GetAccessControl()
+  $acl.SetSecurityDescriptorSddlForm($sddl.Replace('@', $me), 'Owner, Access')
+  $item.SetAccessControl($acl)
+}
+function Invoke-Fault($fault, $path, $log) {
+  if ($fault.sddl) { Set-Sddl $path $fault.sddl }
+  if ($fault.action -eq 'fill') { [IO.File]::WriteAllText((Join-Path $path 'child'), 'fill') }
+  if ($fault.action -in 'delete', 'replace') { [IO.Directory]::Delete($path) }
+  if ($fault.action -eq 'replace') { $null = [IO.Directory]::CreateDirectory($path) }
+  if ($fault.action -eq 'unreadable') { Set-Item Function:script:Read-Descriptor { throw 'injected read failure' } }
+  $seen = if ([IO.Directory]::Exists($path)) { Get-Sddl $path } else { 'absent' }
+  [IO.File]::AppendAllText($log, "$($fault.barrier) $seen")
+}
+function Invoke-Hook($barrier, $path) {
+  if ($request.fault.barrier -eq $barrier) { Invoke-Fault $request.fault $path $request.log }
+}
+`;
+
+const creationSetup = `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$inputData = ${readInput}
+${creationFaults}
+if ($inputData.op -eq 'fault') {
+  Invoke-Fault $inputData.fault $inputData.path $inputData.log
+  exit 0
+}
+function Get-State($side) {
+  if ([IO.File]::Exists($side.parent)) { return 'parent file ' + [IO.File]::ReadAllText($side.parent) }
+  $entries = if (![IO.Directory]::Exists($side.parent)) { 'parent absent' } else {
+    Get-ChildItem -LiteralPath $side.parent -Force | Sort-Object Name | ForEach-Object {
+      $name = $_.Name -creplace '^\\.forge-private-[0-9a-f]{32}$', '.forge-private-*'
+      if ($_.LinkType) { "$name $($_.LinkType) $(Split-Path -Leaf $_.Target)" } else {
+        $body = if ($_.PSIsContainer) { @(Get-ChildItem -LiteralPath $_.FullName -Force).Name -join ',' } else { [IO.File]::ReadAllText($_.FullName) }
+        "$name $body $(Get-Sddl $_.FullName 'Owner, Group, Access')"
+      }
+    }
+  }
+  (@($entries) + [IO.File]::ReadAllText($side.log)) -join "\`n"
+}
+if ($inputData.op -eq 'setup') {
+  foreach ($side in $inputData.sides) {
+    $null = [IO.Directory]::CreateDirectory($side.root)
+    [IO.File]::WriteAllText($side.log, '')
+    if ($side.parentKind -eq 'file') { [IO.File]::WriteAllText($side.parent, 'fixture') }
+    if ($side.parentKind -ne 'dir') { continue }
+    $null = [IO.Directory]::CreateDirectory($side.parent)
+    Set-Sddl $side.parent $side.parentSddl
+    $target = $side.target
+    if ($side.shape -in 'dir', 'full') { $null = [IO.Directory]::CreateDirectory($target) }
+    if ($side.shape -eq 'file') { [IO.File]::WriteAllText($target, 'fixture') }
+    if ($side.shape -eq 'full') { [IO.File]::WriteAllText((Join-Path $target 'child'), 'fixture') }
+    if ($side.shape -in 'junction', 'symlink') {
+      $destination = [IO.Directory]::CreateDirectory((Join-Path $side.root 'destination')).FullName
+      $type = if ($side.shape -eq 'junction') { 'Junction' } else { 'SymbolicLink' }
+      $null = New-Item -ItemType $type -Path $target -Target $destination
+    }
+  }
+}
+ConvertTo-Json -InputObject @($inputData.sides | ForEach-Object { Get-State $_ }) -Compress
+`;
+
+export function creationFixtures(recipes: CreationRecipe[]) {
+  const runner = process.env.RUNNER_TEMP;
+  if (!runner)
+    throw new Error("Hosted Windows creation comparison requires RUNNER_TEMP");
+  const base = mkdtempSync(join(runner, "forge-create-"));
+  const script = (name: string, text: string) => {
+    const path = join(base, name);
+    writeFileSync(path, "﻿" + text, { flag: "wx" });
+    return path;
+  };
+  const fixture = script("fixture.ps1", creationSetup);
+  const reference = script("reference.ps1", creationReference(creationFaults));
+  const launch = (file: string, input: unknown) => {
+    const [executable, args] = powershellCommand("-File", file);
+    return spawnSync(executable, args, {
+      encoding: "utf8",
+      timeout: 30_000,
+      windowsHide: true,
+      input: Buffer.from(JSON.stringify(input)).toString("base64"),
+    });
+  };
+  const call = (input: unknown) => {
+    const result = launch(fixture, input);
+    if (result.error || result.status !== 0 || result.stderr)
+      throw new Error(
+        `Creation fixture failed: ${result.status} ${result.stderr} ${String(result.error)}`,
+      );
+    return result.stdout;
+  };
+  const cases = recipes.map((recipe, index) => {
+    const side = (name: string): CreationSide => {
+      const root = join(base, `case-${index}`, name);
+      const parent = join(root, "parent");
+      const leaf = recipe.name ?? "target";
+      const target = recipe.spelling
+        ? spellings[recipe.spelling](parent, leaf)
+        : join(parent, leaf);
+      return { root, parent, target, log: join(root, "barriers.log") };
+    };
+    return {
+      recipe,
+      reference: side("reference"),
+      candidate: side("candidate"),
+    };
+  });
+  const sides = cases.flatMap(({ recipe, reference, candidate }) =>
+    [reference, candidate].map((side) => ({
+      ...side,
+      parentKind: recipe.parent ?? "dir",
+      parentSddl: recipe.parentSddl ?? "O:@D:P(A;;FA;;;@)",
+      shape: recipe.shape ?? "",
+    })),
+  );
+  const snapshot = (op: string) => {
+    const states = JSON.parse(call({ op, sides })) as string[];
+    return cases.map((_, index) => [
+      states[2 * index]!,
+      states[2 * index + 1]!,
+    ]);
+  };
+  return {
+    cases,
+    before: snapshot("setup"),
+    snapshot: () => snapshot("snapshot"),
+    reference: (side: CreationSide, fault?: CreationFault) =>
+      frozenDirectoryOutcome(
+        launch(reference, {
+          path: side.target,
+          kind: "dir",
+          operation: "create-dir",
+          fault,
+          log: side.log,
+        }),
+      ),
+    fault: (fault: CreationFault, path: string, log: string) =>
+      call({ op: "fault", fault, path, log }),
+    close: () => {
+      const system = process.env.SystemRoot ?? "C:\\Windows";
+      const reset = spawnSync(
+        join(system, "System32", "icacls.exe"),
+        [base, "/reset", "/t", "/c", "/q"],
+        { encoding: "utf8" },
+      );
+      console.log(
+        `CLEANUP RESET ${reset.status} ${reset.stdout}${reset.stderr}`,
+      );
+      rmSync(base, { recursive: true });
+    },
+  };
 }

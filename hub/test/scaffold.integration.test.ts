@@ -210,6 +210,7 @@ const ownFiles = [
   "dist/core/store.js",
   "dist/core/thread.js",
   "dist/core/waiters.js",
+  "dist/core/windows-security-create.js",
   "dist/core/windows-security-read.js",
   "dist/core/windows-security.js",
   "dist/core/worker-lock.js",

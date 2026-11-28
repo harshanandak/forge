@@ -1,5 +1,8 @@
 import { win32 } from "node:path";
-import type { WindowsSecurityReader } from "../contract/windows-security.ts";
+import type {
+  WindowsDirectoryCreator,
+  WindowsSecurityReader,
+} from "../contract/windows-security.ts";
 
 const readControl = 0x00020000;
 const shareAll = 7;
@@ -10,8 +13,28 @@ const fileStandardInfo = 1;
 const getReparsePoint = 0x000900a8;
 const ioPending = 997;
 const notAReparsePoint = 4390;
+const statusPending = 0x103;
+const invalidAttributes = 0xffffffff;
+const directoryAttribute = 0x10;
 
-async function openNative(): Promise<WindowsSecurityReader> {
+export function withOwnedHandle<T>(
+  status: number,
+  handle: unknown,
+  close: (handle: unknown) => unknown,
+  use: (handle: unknown) => T,
+): T {
+  if (status < 0 || status === statusPending || !handle)
+    throw new Error(`Cannot open Windows path: NTSTATUS ${status}`);
+  try {
+    if (status !== 0)
+      throw new Error(`Unexpected Windows open status: ${status}`);
+    return use(handle);
+  } finally {
+    close(handle);
+  }
+}
+
+async function openNative(): Promise<WindowsDirectoryCreator> {
   if (process.platform !== "win32") throw new Error("Windows required");
   const system = process.env.SystemRoot ?? "";
   if (!win32.isAbsolute(system)) throw new Error("SystemRoot is unavailable");
@@ -33,6 +56,11 @@ async function openNative(): Promise<WindowsSecurityReader> {
     flags: "uint32_t",
     security: "void *",
     quality: "void *",
+  });
+  const securityAttributes = koffi.struct({
+    length: "uint32_t",
+    descriptor: "void *",
+    inherit: "int",
   });
   const overlapped = koffi.struct({
     internal: "uintptr_t",
@@ -69,6 +97,19 @@ async function openNative(): Promise<WindowsSecurityReader> {
     "int __stdcall GetOverlappedResult(void *handle, void *overlapped, _Out_ uint32_t *returned, int wait)",
   );
   const lastError = kernel32.func("uint32_t __stdcall GetLastError()");
+  const getAttributes = kernel32.func(
+    "uint32_t __stdcall GetFileAttributesW(str16 path)",
+  );
+  const makeDirectory = kernel32.func("__stdcall", "CreateDirectoryW", "int", [
+    "str16",
+    koffi.pointer(securityAttributes),
+  ]);
+  const moveFile = kernel32.func(
+    "int __stdcall MoveFileExW(str16 source, str16 target, uint32_t flags)",
+  );
+  const deleteDirectory = kernel32.func(
+    "int __stdcall RemoveDirectoryW(str16 path)",
+  );
   const getSecurity = security.func(
     "uint32_t __stdcall GetSecurityInfo(void *handle, int type, uint32_t flags, void *owner, void *group, void *dacl, void *sacl, _Out_ void **descriptor)",
   );
@@ -95,7 +136,7 @@ async function openNative(): Promise<WindowsSecurityReader> {
     return Buffer.from(bytes);
   }
 
-  function openNoFollow(path: string) {
+  function withNoFollow<T>(path: string, use: (handle: unknown) => T): T {
     const name = Buffer.alloc(koffi.sizeof(ntName));
     const converted = Number(convertPath(path, name, null, null));
     if (converted !== 0)
@@ -122,9 +163,7 @@ async function openNative(): Promise<WindowsSecurityReader> {
           openReparsePoint | openForBackupIntent,
         ),
       );
-      if (status !== 0 || !handle[0])
-        throw new Error(`Cannot open Windows path: ${statusToError(status)}`);
-      return handle[0];
+      return withOwnedHandle(status, handle[0], close, use);
     } finally {
       freePath(name);
     }
@@ -190,8 +229,7 @@ async function openNative(): Promise<WindowsSecurityReader> {
       }
     },
     read(path, directory) {
-      const handle = openNoFollow(path);
-      try {
+      return withNoFollow(path, (handle) => {
         verifyKind(handle, directory);
         const descriptor: unknown[] = [null];
         try {
@@ -210,18 +248,30 @@ async function openNative(): Promise<WindowsSecurityReader> {
         } finally {
           if (descriptor[0]) free(descriptor[0]);
         }
-      } finally {
-        close(handle);
-      }
+      });
     },
+    isDirectory(path) {
+      const found = Number(getAttributes(path));
+      return found !== invalidAttributes && Boolean(found & directoryAttribute);
+    },
+    createDirectory(path, descriptor) {
+      const length = koffi.sizeof(securityAttributes);
+      return Boolean(makeDirectory(path, { length, descriptor, inherit: 0 }));
+    },
+    move: (source, target) => Boolean(moveFile(source, target, 0)),
+    removeDirectory: (path) => Boolean(deleteDirectory(path)),
   };
 }
 
-let native: Promise<WindowsSecurityReader> | undefined;
+let native: Promise<WindowsDirectoryCreator> | undefined;
 
-export function windowsSecurityReader(): Promise<WindowsSecurityReader> {
+export function windowsDirectoryCreator(): Promise<WindowsDirectoryCreator> {
   return (native ??= openNative().catch((error: unknown) => {
     native = undefined;
     throw error;
   }));
+}
+
+export function windowsSecurityReader(): Promise<WindowsSecurityReader> {
+  return windowsDirectoryCreator();
 }
