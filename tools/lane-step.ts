@@ -134,6 +134,10 @@ async function preflight(
       : caller?.actor === held.actor;
     if (!own || caller?.session !== held.session)
       return refuse(field, "LEASE_NOT_HELD");
+    const after = consuming ? await source.workspace(workspace) : tree;
+    if (after.head !== head) return refuse(headField, "CONTEXT_MISMATCH");
+    if (after.branch !== branch) return refuse("branch", "CONTEXT_MISMATCH");
+    if (after.status) return refuse("workspace", "WORKTREE_DIRTY");
     const context = { issue, workspace, branch, head, digest };
     return { context, bytes };
   } catch {
