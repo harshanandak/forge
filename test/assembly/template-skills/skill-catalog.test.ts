@@ -13,6 +13,7 @@ import {
   renderSkillCatalog,
   syncSkills,
 } from "../../../src/assembly/skills.ts";
+import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { candidate } from "../../surface/fixtures/catalog.ts";
 
 test("renders the same skill bytes as a fresh sync", () => {
@@ -77,11 +78,18 @@ test("catalog refuses a companion name that would split its ownership entry", ()
       sources: [{ root, file: "tpl/forge.template.json" }],
       values: undefined,
     };
-    const message = /Invalid companion path notes, appendix\.txt/;
-    expect(() => syncSkills(root, [], undefined, undefined, templates)).toThrow(
-      message,
-    );
-    expect(() => renderSkillCatalog([], undefined, templates)).toThrow(message);
+    for (const render of [
+      () => syncSkills(root, [], undefined, undefined, templates),
+      () => renderSkillCatalog([], undefined, templates),
+    ]) {
+      try {
+        render();
+        throw new Error("Expected invalid companion path refusal");
+      } catch (error) {
+        expect(error).toBeInstanceOf(ForgeFailure);
+        expect(error).toMatchObject({ error: { code: "INPUT_INVALID" } });
+      }
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

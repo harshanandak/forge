@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   mkdirSync,
@@ -87,10 +88,18 @@ async function withProject(
   }
 }
 
+interface WireSkill {
+  uri: string;
+  frontmatter: Record<string, unknown>;
+  resources: { uri: string; digest: string; size: number }[];
+}
+
 interface Reply {
   id: number;
   result?: {
-    contents?: { text?: string }[];
+    contents?: { text?: string; blob?: string }[];
+    skills?: WireSkill[];
+    skill?: WireSkill;
     tools?: { name: string }[];
     structuredContent?: unknown;
   };
@@ -250,13 +259,17 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
             "skill://review/SKILL.md?path=private.md",
           ])
             expect(await read(uri), uri).toMatchObject({
-              error: { code: -32602 },
+              error: { code: -32602, data: { uri } },
             });
           writeFileSync(join(folder, "SKILL.md"), `${skillSource}\nFresh.\n`);
           const changed = (await read(skillUri)).result?.contents?.[0];
           expect(changed?.text).toContain("Fresh.");
           const tools = (await rpc("tools/list")).result?.tools;
           expect(tools?.map(({ name }) => name)).toContain("catalog_list");
+          const call = await rpc("tools/call", { name: "catalog_list" });
+          expect(call).toMatchObject({
+            result: { structuredContent: { ok: true } },
+          });
         },
         era,
       );
@@ -271,6 +284,9 @@ test("MCP lists resources even when the project has no skill catalog", async () 
       async (rpc) => {
         expect(await rpc("resources/list")).toMatchObject({
           result: { ...noCache, resources: [] },
+        });
+        expect(await rpc("skills/list")).toMatchObject({
+          result: { ...noCache, skills: [] },
         });
       },
       modern,
@@ -303,7 +319,20 @@ for (const failure of [
       await withConnection(
         assembly,
         async (rpc) => {
-          const unavailable = { error: { code: -32603 } };
+          const limit = failure.startsWith("over 1")
+            ? { limit: "bytes", max: 1_048_576 }
+            : { limit: "entries", max: 512 };
+          const unavailable = {
+            error: {
+              code: -32603,
+              ...(failure.startsWith("over")
+                ? {
+                    message: `Skill resource catalog exceeds ${limit.max} ${limit.limit}.`,
+                    data: limit,
+                  }
+                : {}),
+            },
+          };
           expect(await rpc("resources/list")).toMatchObject(unavailable);
           const read = await rpc("resources/read", { uri: skillUri });
           expect(read).toMatchObject(unavailable);
@@ -314,6 +343,124 @@ for (const failure of [
     });
   }, 30_000);
 }
+
+test("MCP Skills returns complete manifests for every enabled skill", async () => {
+  await withProject(resourceConfig, async (assembly) => {
+    const folder = resourceFixture(assembly.root);
+    const reviewFile = join(folder, "SKILL.md");
+    const review = [
+      "---",
+      "name: review",
+      'description: "Review changes."',
+      "license: MIT",
+      "compatibility: Forge",
+      "allowed-tools: catalog_list",
+      "metadata:",
+      '  owner: "Forge"',
+      '  revision: "1"',
+      "---",
+      "",
+    ].join("\n");
+    writeFileSync(reviewFile, review);
+    const second = join(folder, "..", "plan");
+    mkdirSync(second);
+    writeFileSync(
+      join(second, "SKILL.md"),
+      '---\nname: plan\ndescription: "Plan the work."\n---\n',
+    );
+    const planUri = "skill://plan/SKILL.md";
+    const expected = new Map([
+      [
+        skillUri,
+        {
+          frontmatter: {
+            name: "review",
+            description: "Review changes.",
+            license: "MIT",
+            compatibility: "Forge",
+            "allowed-tools": "catalog_list",
+            metadata: { owner: "Forge", revision: "1" },
+          },
+          uris: [skillUri, notesUri],
+        },
+      ],
+      [
+        planUri,
+        {
+          frontmatter: { name: "plan", description: "Plan the work." },
+          uris: [planUri],
+        },
+      ],
+    ]);
+    await withConnection(
+      assembly,
+      async (rpc, discovery) => {
+        expect(discovery).toMatchObject({
+          result: {
+            capabilities: {
+              resources: {},
+              extensions: { "io.modelcontextprotocol/skills": {} },
+            },
+          },
+        });
+        const get = (uri: string) => rpc("skills/get", { uri });
+        const direct = await get(skillUri);
+        expect(direct).toMatchObject({ result: noCache });
+        expect(direct.result?.skill?.uri).toBe(skillUri);
+        const listing = await rpc("skills/list");
+        expect(listing).toMatchObject({ result: noCache });
+        expect(listing.result).not.toHaveProperty("nextCursor");
+        const skills = listing.result?.skills ?? [];
+        const uris = skills.map(({ uri }) => uri).sort();
+        expect(uris).toEqual([planUri, skillUri]);
+        for (const skill of skills) {
+          const wanted = expected.get(skill.uri)!;
+          expect(skill.frontmatter).toEqual(wanted.frontmatter);
+          expect(skill.frontmatter.name).toBe(skill.uri.split("/").at(-2));
+          expect(skill.resources.map(({ uri }) => uri)).toEqual(wanted.uris);
+          expect(await get(skill.uri)).toMatchObject({
+            result: { ...noCache, skill },
+          });
+          for (const entry of skill.resources) {
+            const { result } = await rpc("resources/read", { uri: entry.uri });
+            const content = result?.contents?.[0];
+            if (content?.text === undefined && content?.blob === undefined)
+              throw new Error(`No resource content for ${entry.uri}`);
+            const bytes =
+              content.text === undefined
+                ? Buffer.from(content.blob!, "base64")
+                : Buffer.from(content.text, "utf8");
+            expect(entry.size).toBe(bytes.byteLength);
+            const hash = createHash("sha256").update(bytes).digest("hex");
+            expect(entry.digest).toBe(`sha256:${hash}`);
+          }
+        }
+        const listedReview = skills.find((entry) => entry.uri === skillUri);
+        expect(direct.result?.skill).toEqual(listedReview);
+        for (const uri of ["skill://missing/SKILL.md", notesUri])
+          expect(await get(uri)).toMatchObject({
+            error: { code: -32602, data: { uri } },
+          });
+        expect(await rpc("skills/list", { cursor: "bad" })).toMatchObject({
+          error: { code: -32602 },
+        });
+        writeFileSync(reviewFile, `${review}\nUpdated instructions.\n`);
+        const refreshed = (await get(skillUri)).result?.skill;
+        expect(refreshed?.frontmatter).toEqual(listedReview?.frontmatter);
+        const previousDigest = listedReview?.resources[0]?.digest;
+        expect(refreshed?.resources[0]?.digest).not.toBe(previousDigest);
+        expect(refreshed?.resources[1]).toEqual(listedReview?.resources[1]);
+        const mismatched = review.replace("name: review", "name: example");
+        writeFileSync(reviewFile, mismatched);
+        expect(await get(skillUri)).toMatchObject({ error: { code: -32603 } });
+        expect(await rpc("resources/read", { uri: skillUri })).toHaveProperty(
+          "result.contents",
+        );
+      },
+      modern,
+    );
+  });
+}, 30_000);
 
 test("MCP refuses tool requests after the config becomes invalid on an open connection", async () => {
   await withProject({ blocks: {}, mcp: {} }, async (assembly, file) => {
