@@ -20,7 +20,7 @@ async function openNative(): Promise<WindowsSecurityReader> {
     koffi.load(win32.join(system, "System32", `${name}.dll`));
   const nt = dll("ntdll");
   const security = dll("advapi32");
-  const kernel = dll("kernel32");
+  const kernel32 = dll("kernel32");
   const ntName = koffi.struct({
     length: "uint16_t",
     capacity: "uint16_t",
@@ -56,19 +56,19 @@ async function openNative(): Promise<WindowsSecurityReader> {
   const statusToError = nt.func(
     "uint32_t __stdcall RtlNtStatusToDosError(int32_t status)",
   );
-  const fileInfo = kernel.func(
+  const fileInfo = kernel32.func(
     "int __stdcall GetFileInformationByHandleEx(void *handle, int kind, void *info, uint32_t size)",
   );
-  const createEvent = kernel.func(
+  const createEvent = kernel32.func(
     "void * __stdcall CreateEventW(void *attributes, int manualReset, int initialState, str16 name)",
   );
-  const control = kernel.func(
+  const control = kernel32.func(
     "int __stdcall DeviceIoControl(void *handle, uint32_t code, void *input, uint32_t inputSize, void *output, uint32_t outputSize, void *returned, void *overlapped)",
   );
-  const wait = kernel.func(
+  const wait = kernel32.func(
     "int __stdcall GetOverlappedResult(void *handle, void *overlapped, _Out_ uint32_t *returned, int wait)",
   );
-  const lastError = kernel.func("uint32_t __stdcall GetLastError()");
+  const lastError = kernel32.func("uint32_t __stdcall GetLastError()");
   const getSecurity = security.func(
     "uint32_t __stdcall GetSecurityInfo(void *handle, int type, uint32_t flags, void *owner, void *group, void *dacl, void *sacl, _Out_ void **descriptor)",
   );
@@ -76,9 +76,9 @@ async function openNative(): Promise<WindowsSecurityReader> {
     "uint32_t __stdcall GetSecurityDescriptorLength(void *descriptor)",
   );
   const sidSize = security.func("uint32_t __stdcall GetLengthSid(void *sid)");
-  const free = kernel.func("void * __stdcall LocalFree(void *allocation)");
-  const current = kernel.func("void * __stdcall GetCurrentProcess()");
-  const close = kernel.func("int __stdcall CloseHandle(void *handle)");
+  const free = kernel32.func("void * __stdcall LocalFree(void *allocation)");
+  const current = kernel32.func("void * __stdcall GetCurrentProcess()");
+  const close = kernel32.func("int __stdcall CloseHandle(void *handle)");
   const openToken = security.func(
     "int __stdcall OpenProcessToken(void *process, uint32_t access, _Out_ void **token)",
   );
