@@ -55,11 +55,7 @@ for (const mode of [
     const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-overlap-")));
     let commands: Awaited<ReturnType<typeof laneCommands>> | undefined;
     try {
-      const { repo } = laneRepository(
-        root,
-        brief,
-        mode === "stale default policy" ? { base: "main" } : {},
-      );
+      const { repo } = laneRepository(root, brief);
       const configPath = join(repo, ".forge/config.yaml");
       const config = readFileSync(configPath, "utf8");
       if (mode === "stale default policy")
@@ -222,26 +218,64 @@ for (const mode of [
         return;
       }
       expect(claim(first).ok).toBe(true);
-      checkLane(start(first));
+      const original = start(first);
+      checkLane(original);
       const replay = start(first);
       checkLane(replay);
+      expect(replay.result).toEqual(original.result);
       const claimed = claim(second);
       expect(claimed.ok, JSON.stringify(claimed)).toBe(true);
-      const started = start(second);
+      const base = laneGit(["rev-parse", "HEAD"], repo);
+      const observed =
+        mode === "stale default policy"
+          ? observedCli(
+              root,
+              repo,
+              ["lane", "start", "--input", JSON.stringify(laneInput(second))],
+              { snapshot: { sha: base, config } },
+            )
+          : undefined;
+      const started = observed?.reply ?? start(second);
       checkLane(started);
       expect(hasIncompleteMap(replay)).toBe(true);
-      expect(hasIncompleteMap(started)).toBe(true);
       const linuxAdvisory = await advisoryGitAvailable(repo);
-      if (mode === "stale default policy") {
+      if (observed) {
         if (linuxAdvisory) expect(mapWarnings(claimed)).toEqual([]);
         else expectUnprovedGit(claimed);
         expect(laneGit(["rev-parse", trackedDefault], repo)).toBe(stale);
-        expect(started.result.base).not.toBe(stale);
+        expect(base).not.toBe(stale);
+        expect(started.result).toMatchObject({ issue: second, base });
+        expect(
+          laneGit(["rev-parse", "HEAD"], String(started.result.worktree)),
+        ).toBe(base);
+        const shown = cli(["lane", "show", second]);
+        expect(shown.ok).toBe(true);
+        expect(started.result).toEqual(shown.result);
+        const shownIssue = cli(["issue", "show", second]);
+        expect(shownIssue.ok).toBe(true);
+        expect(started.result.lease).toEqual(shownIssue.result.lease);
+        expect(started.result.lease).toMatchObject({
+          generation: claimed.result.generation,
+          expiresAt: claimed.result.expiresAt,
+        });
+        expect(observed.calls.filter(([op]) => op === "fetch")).toHaveLength(1);
+        expect(observed.calls.flat()).not.toContain("ls-remote");
+        expect(mapWarnings(started)).toMatchObject([
+          { code: "WORK_FILE_OVERLAP" },
+        ]);
+        expect(mapWarnings(started)[0]?.message).toContain(sharedFile);
+        expect(mapWarnings(started)[0]?.message).toContain(first);
         return;
       }
       if (!linuxAdvisory) {
         expectUnprovedGit(claimed);
+        expectUnprovedGit(started);
         return;
+      }
+      if (mode === "shared") {
+        expect(mapWarnings(started).map(({ code }) => code)).toEqual([
+          "WORK_FILE_OVERLAP",
+        ]);
       }
       {
         if (mode === "disjoint") expect(mapWarnings(claimed)).toEqual([]);
@@ -438,10 +472,14 @@ test("the later concurrent one-shot CLI claim reports overlap before lane start"
     ];
     const original = laneCli(root, repo, args, session, device);
     expect(original.ok, JSON.stringify(original)).toBe(true);
-    expect(hasIncompleteMap(original)).toBe(true);
+    if (linuxAdvisory)
+      expect(
+        mapWarnings(original).some(({ code }) => code === "WORK_FILE_OVERLAP"),
+      ).toBe(true);
+    else expectUnprovedGit(original);
     const replay = laneCli(root, repo, args, session, device);
     expect(replay.ok, JSON.stringify(replay)).toBe(true);
-    expect(replay.result.worktree).toBe(original.result.worktree);
+    expect(replay.result).toEqual(original.result);
     expect(hasIncompleteMap(replay)).toBe(true);
   });
 }, 30_000);
@@ -547,7 +585,15 @@ function observedCli(
   root: string,
   repo: string,
   args: string[],
-  failList = false,
+  {
+    failList = false,
+    snapshot,
+    now,
+  }: {
+    failList?: boolean;
+    snapshot?: { sha: string; config: string };
+    now?: number;
+  } = {},
 ) {
   const capture = join(root, "processes.log");
   writeFileSync(capture, "");
@@ -562,11 +608,33 @@ function observedCli(
     import { appendFileSync } from "node:fs";
     export async function runProcess(executable, args, ...tail) {
       appendFileSync(${JSON.stringify(capture)}, JSON.stringify(args) + "\\n");
+      const snapshot = ${JSON.stringify(snapshot)};
+      if (snapshot && args[0] === "--no-replace-objects") {
+        const op = args[2];
+        const stdout = op === "rev-parse" && args.at(-1) === snapshot.sha + "^{commit}"
+          ? snapshot.sha + "\\n"
+          : op === "ls-tree" && args.at(-1) === snapshot.sha
+            ? "tracked\\0"
+            : op === "cat-file" && args.at(-1) === snapshot.sha + ":.forge/config.yaml"
+              ? snapshot.config : undefined;
+        return { exitCode: stdout === undefined ? 1 : 0, stdout: stdout ?? "",
+          stderr: "", signal: null, timedOut: false, truncated: false, durationMs: 0 };
+      }
       return run(executable, args, ...tail);
+    }
+  `);
+  const resolver = built("adapters/process/resolve");
+  const proof = moduleUrl(`
+    export * from ${JSON.stringify(resolver)};
+    export async function proveAdvisoryGit(executable) {
+      return { executable, unchanged: () => true };
     }
   `);
   const hooks = moduleUrl(`
     import { registerHooks } from "node:module";
+    if (${now !== undefined}) Date.now = () => ${now};
+    if (${snapshot !== undefined})
+      Object.defineProperty(performance, "now", { value: () => 0 });
     if (${failList}) {
       const { Runtime } = await import(${JSON.stringify(built("core/runtime/index"))});
       const invoke = Runtime.prototype.invoke;
@@ -578,6 +646,9 @@ function observedCli(
     registerHooks({ resolve(specifier, context, next) {
       const found = next(specifier, context);
       const wrapped = ${JSON.stringify(wrappedRun)};
+      const proof = ${JSON.stringify(proof)};
+      if (${snapshot !== undefined} && found.url === ${JSON.stringify(resolver)} && context.parentURL !== proof)
+        return { ...found, url: proof };
       return found.url === ${JSON.stringify(run)} && context.parentURL !== wrapped
         ? { ...found, url: wrapped } : found;
     } });
@@ -662,6 +733,80 @@ test("lane starts never launch an advisory-owned remote helper", async () => {
   });
 }, 30_000);
 
+for (const mode of [
+  "adoption",
+  "configured base",
+  "short grant",
+  "disjoint",
+] as const)
+  test(`a lane start preserves its result and warning for ${mode}`, async () => {
+    await project(async ({ good }, repo, root) => {
+      const id = String((await good("issue.create", planned)).id);
+      const cli = (args: string[]) =>
+        laneCli(root, repo, args, "coordinator", {
+          FORGE_DEVICE_ID: "lane-fixture",
+        });
+      const claim = cli(["issue", "claim", id]);
+      expect(claim.ok).toBe(true);
+      const sha = laneGit(["rev-parse", "HEAD"], repo);
+      const configPath = join(repo, ".forge/config.yaml");
+      const config = readFileSync(configPath, "utf8");
+      if (mode === "adoption")
+        laneGit(
+          [
+            "worktree",
+            "add",
+            "-b",
+            laneInput(id).branch,
+            join(repo, ".worktrees", id),
+            sha,
+          ],
+          repo,
+        );
+      if (mode === "configured base") {
+        laneGit(["push", "origin", "HEAD:refs/heads/alternate"], repo);
+        writeFileSync(
+          configPath,
+          config.replace('"max":3', '"max":3,"base":"alternate"'),
+        );
+      }
+      const { reply, calls } = observedCli(
+        root,
+        repo,
+        ["lane", "start", "--input", JSON.stringify(laneInput(id))],
+        {
+          snapshot: { sha, config },
+          ...(mode === "short grant"
+            ? { now: Date.parse(String(claim.result.expiresAt)) - 1000 }
+            : {}),
+        },
+      );
+      expect(reply.ok, JSON.stringify(reply)).toBe(true);
+      expect(reply.result).toMatchObject({
+        issue: id,
+        base: sha,
+        lease: { expiresAt: claim.result.expiresAt },
+      });
+      const shown = cli(["lane", "show", id]);
+      expect(shown.ok).toBe(true);
+      expect(reply.result).toEqual(shown.result);
+      const reason =
+        mode === "short grant"
+          ? "claim lease is too short"
+          : "trusted default policy unavailable";
+      expect(mapWarnings(reply)).toEqual([
+        {
+          code: "WORK_FILE_MAP_INCOMPLETE",
+          message: `File overlap map incomplete (${reason}). Some overlap may be missing.`,
+        },
+      ]);
+      expect(calls.flat()).not.toContain("ls-remote");
+      if (mode === "disjoint")
+        expect(calls.filter(advisoryGit).length).toBeGreaterThan(0);
+      else expect(calls.filter(advisoryGit)).toEqual([]);
+    });
+  }, 30_000);
+
 test("a successful lane replay sees a claim made after its original start", async () => {
   await project(async ({ call, good }) => {
     const first = String((await good("issue.create", planned)).id);
@@ -719,7 +864,9 @@ test("a broken lane registry preserves claim overlap and reports incomplete evid
 test("a failed holder read marks the successful claim incomplete", async () => {
   await project(async ({ good }, repo, root) => {
     const id = String((await good("issue.create", planned)).id);
-    const { reply } = observedCli(root, repo, ["issue", "claim", id], true);
+    const { reply } = observedCli(root, repo, ["issue", "claim", id], {
+      failList: true,
+    });
     expect(reply.ok).toBe(true);
     expect(hasIncompleteMap(reply)).toBe(true);
   });
