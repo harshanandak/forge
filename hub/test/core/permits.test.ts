@@ -2,10 +2,30 @@ import { expect, test } from "bun:test";
 import { renderAskCard } from "../../src/chat/cards.ts";
 import { renderTelegramAskCard } from "../../src/chat/telegram-cards.ts";
 import { WORK_REQUEST_CHOICES } from "../../src/contract/domain.ts";
+import { SECRET_REMOVED_TEXT } from "../../src/contract/errors.ts";
 import { a, p1, p2, caller, seedItem, value } from "./fixture.ts";
 import { askFixture, button, refA, rows, slackA } from "./fakes.ts";
 
 const timeout = 30_000;
+
+test(
+  "initial choice card redacts the caller name in Slack and Telegram",
+  async () => {
+    const f = await askFixture();
+    const displayName = "xapp" + "-" + "fixture".repeat(3);
+    const { askId } = value(
+      await f.choice({}, { ...caller, person: { ...a, displayName } }),
+    );
+    const card = f.chat.askCards[0]!;
+    const heading = `Ask for ${SECRET_REMOVED_TEXT}`;
+    expect({
+      view: card.askId === askId && card.askedForName === SECRET_REMOVED_TEXT,
+      slack: JSON.stringify(renderAskCard(card)).includes(heading),
+      telegram: renderTelegramAskCard(card).text.startsWith(heading),
+    }).toEqual({ view: true, slack: true, telegram: true });
+  },
+  timeout,
+);
 
 test(
   "P1: an explicit issue request always goes to the owner",

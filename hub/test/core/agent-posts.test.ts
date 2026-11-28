@@ -1,7 +1,16 @@
 import { expect, test } from "bun:test";
+import { SECRET_REMOVED_TEXT } from "../../src/contract/errors.ts";
 import { LIMITS } from "../../src/contract/mcp.ts";
+import { recoverAgentPosts } from "../../src/core/agent-posts.ts";
 import { createCoreContext } from "../../src/core/core.ts";
-import { baseFixture, seedThread, type BaseFixture } from "./base-fixture.ts";
+import { byConversation } from "../../src/core/thread.ts";
+import {
+  baseFixture,
+  channel,
+  seedThread,
+  thread,
+  type BaseFixture,
+} from "./base-fixture.ts";
 import { refusal } from "./base-fakes.ts";
 import { a, b, p1, value } from "./fixture.ts";
 
@@ -29,6 +38,68 @@ async function setup() {
       text,
     });
   return { f, alpha, conversationId, reply };
+}
+
+for (const mode of [
+  "reserved",
+  "unknown",
+  "confirmed",
+  "ordinary",
+  "refused",
+] as const) {
+  test(
+    `journal replay preserves identity and applies the text policy for ${mode}`,
+    async () => {
+      const { f, alpha, conversationId } = await setup();
+      const phase = mode === "ordinary" ? "reserved" : mode;
+      const id = "unconfirmed:legacy";
+      const ref = {
+        chatThreadId: thread,
+        channelId: channel,
+        chatMessageId: "confirmed-legacy",
+      };
+      const text =
+        mode === "ordinary"
+          ? "Ordinary reply"
+          : "xapp" + "-" + "fixture".repeat(3) + "'s agent: Reply";
+      const sessionId = alpha.sessionId;
+      const personId = a.personId;
+      const at = f.now() - 100;
+      const conversation = byConversation(f.db, conversationId);
+      const insert = f.db.prepare("INSERT INTO meta (key,value) VALUES (?,?)");
+      const payload = JSON.stringify({
+        phase,
+        id,
+        ref,
+        text,
+        at,
+        conversation,
+        sessionId,
+        personId,
+      });
+      for (let replay = 0; replay < 2; replay++) {
+        insert.run("agent-post:" + thread, payload);
+        recoverAgentPosts(f.context, mode === "unknown" ? thread : undefined);
+        expect(journal(f)).toEqual([]);
+      }
+      expect(f.writes("postText")).toEqual([]);
+      const rows = f.rows("thread_messages WHERE kind = 'agent'");
+      expect(rows).toHaveLength(mode === "refused" ? 0 : 1);
+      if (mode === "refused") return;
+      const { text: persisted, ...identity } = rows[0]!;
+      expect(identity).toMatchObject({
+        chat_message_id: phase === "confirmed" ? ref.chatMessageId : id,
+        person_id: personId,
+        session_id: sessionId,
+        project_id: p1,
+        created_at: at,
+      });
+      expect(
+        persisted === (mode === "ordinary" ? text : SECRET_REMOVED_TEXT),
+      ).toBe(true);
+    },
+    timeout,
+  );
 }
 
 for (const abandon of [false, true]) {

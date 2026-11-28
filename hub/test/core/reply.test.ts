@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { SUMMARY_KEY_MARKER } from "../../src/contract/chat.ts";
-import type { HubErrorCode } from "../../src/contract/errors.ts";
+import {
+  SECRET_REMOVED_TEXT,
+  type HubErrorCode,
+} from "../../src/contract/errors.ts";
 import {
   LIMITS,
   LONG_ANSWER_SEPARATOR,
@@ -332,6 +335,62 @@ test(
   },
   timeout,
 );
+
+for (const form of ["thread", "project", "long fallback"] as const) {
+  test(
+    `${form} reply redacts the name in its label, post and stored text`,
+    async () => {
+      const f = await baseFixture();
+      const { sessionId } = f.bind();
+      const root = form === "project";
+      if (!root) await f.emit("root");
+      const target = root
+        ? { projectId: p1 }
+        : { conversationId: f.read(sessionId).items[0]!.conversationId! };
+      const fallback = form === "long fallback";
+      if (fallback) f.chat.nextWrite = { kind: "refused" };
+      const name = "xapp" + "-" + "fixture".repeat(3);
+      const text = fallback
+        ? ["Summary", LONG_ANSWER_SEPARATOR, "Details"].join("\n")
+        : "Reply";
+      const label = `Forge (${SECRET_REMOVED_TEXT}'s agent)`;
+      const suffix = ` (The full answer could not be posted as a canvas. Ask ${SECRET_REMOVED_TEXT}'s agent for the detail.)`;
+      const body = `${SECRET_REMOVED_TEXT}'s agent: ${fallback ? "Summary" + suffix : text}`;
+      const post = f.chat.postText.bind(f.chat);
+      let journalSafe = false;
+      f.chat.postText = (...args) => {
+        const rows = f.col("meta WHERE key GLOB 'agent-post:*'", "value");
+        journalSafe = root
+          ? rows.length === 0
+          : rows.length === 1 && String(rows[0]).includes(JSON.stringify(body));
+        return post(...args);
+      };
+      const out = value(
+        await f.core.reply(f.caller({ ...a, displayName: name }), {
+          ...target,
+          sessionId,
+          text,
+        }),
+      );
+      const [, posted, options] = f.writes("postText")[0]?.args ?? [];
+      expect({
+        label:
+          out.postedAs === label &&
+          JSON.stringify(options) === JSON.stringify({ agentLabel: label }),
+        posted: posted === body,
+        journal: journalSafe,
+        projection:
+          f.col("thread_messages WHERE kind = 'agent'", "text")[0] === body,
+      }).toEqual({
+        label: true,
+        posted: true,
+        journal: true,
+        projection: true,
+      });
+    },
+    timeout,
+  );
+}
 
 test(
   "R6.reply projectId form posts a new top-level thread and binds the conversation",
