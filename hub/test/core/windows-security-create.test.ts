@@ -112,7 +112,7 @@ async function candidate() {
 async function dropBackupPrivileges() {
   const koffi = await import("koffi");
   const advapi = koffi.load("advapi32.dll");
-  const kernel = koffi.load("kernel32.dll");
+  const kernel32 = koffi.load("kernel32.dll");
   const open = advapi.func(
     "int __stdcall OpenProcessToken(void *process, uint32_t access, _Out_ void **token)",
   );
@@ -122,8 +122,8 @@ async function dropBackupPrivileges() {
   const adjust = advapi.func(
     "int __stdcall AdjustTokenPrivileges(void *token, int all, void *state, uint32_t size, void *previous, _Out_ uint32_t *length)",
   );
-  const current = kernel.func("void * __stdcall GetCurrentProcess()");
-  const close = kernel.func("int __stdcall CloseHandle(void *handle)");
+  const current = kernel32.func("void * __stdcall GetCurrentProcess()");
+  const close = kernel32.func("int __stdcall CloseHandle(void *handle)");
   const handle: unknown[] = [null];
   if (!open(current(), 0x28, handle)) throw new Error("OpenProcessToken");
   const state = Buffer.alloc(28);
