@@ -17,6 +17,7 @@ $base = $inputData.base
 $root = Join-Path $base 'volume'
 $drive = $null
 $context = 'volume root'
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 Add-Type @'
 using System;
 using System.Collections.Generic;
