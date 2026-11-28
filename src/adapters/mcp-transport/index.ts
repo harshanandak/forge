@@ -29,7 +29,6 @@ export function createMcpTransport(): McpTransportPort {
   return {
     open: (options) => {
       try {
-        let instance: Server | undefined;
         let activeToolCalls = 0;
         const callTool = async (
           name: string,
@@ -58,9 +57,8 @@ export function createMcpTransport(): McpTransportPort {
           () => {
             const server = new Server(
               { name: options.serverName, version: options.serverVersion },
-              { capabilities: { tools: { listChanged: true } } },
+              { capabilities: { tools: {} } },
             );
-            instance = server;
             server.setRequestHandler(
               "tools/list",
               { params: specTypeSchemas.PaginatedRequestParams },
@@ -98,11 +96,7 @@ export function createMcpTransport(): McpTransportPort {
           ok: true,
           handle: {
             ownership: "owned",
-            value: {
-              notifyToolsChanged: async () => {
-                await instance?.sendToolListChanged();
-              },
-            },
+            value: {},
             close: async () => {
               if (!closed) {
                 closed = true;

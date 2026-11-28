@@ -22,9 +22,7 @@ export interface McpServeOptions {
   readonly onOutputError?: () => void;
 }
 
-export interface McpServer {
-  /** Tell subscribed clients the tool list changed. */
-  notifyToolsChanged(): Promise<void>;
-}
-
-export type McpTransportPort = LifetimeProvider<McpServer, McpServeOptions>;
+export type McpTransportPort = LifetimeProvider<
+  Record<string, never>,
+  McpServeOptions
+>;
