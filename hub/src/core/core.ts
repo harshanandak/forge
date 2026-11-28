@@ -106,7 +106,9 @@ export const createCoreBase: CreateCoreBase = (ctx, extras) => {
         afterCommit(digit.after);
         const text = digit.ephemeralText ?? "Answer recorded.";
         await bestEffort(ctx, () =>
-          chat.postEphemeral(event, event.slackUserId, text),
+          deps.config.chat?.adapter === "telegram" && event.isDirect
+            ? postNotice(chat, event, text)
+            : chat.postEphemeral(event, event.slackUserId, text),
         );
       } else if (slackContext.chat) {
         await route(ctx, event);
