@@ -17,7 +17,7 @@ type Recipe = {
   inject?: "read" | "absent" | "custom" | "compound" | "sddl";
 };
 
-function recipes(): Recipe[] {
+export function recipes(): Recipe[] {
   const full = "0x1f01ff";
   const trusted = [
     "@",
@@ -230,23 +230,18 @@ function recipes(): Recipe[] {
   ];
 }
 
-const setup = `
-$ProgressPreference = 'SilentlyContinue'
-$ErrorActionPreference = 'Stop'
-$inputData = ${readInput}
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-function Encode($value) {
+export const rawDescriptorHelpers = `
+function Bytes($value) {
   $bytes = [byte[]]::new($value.BinaryLength)
   $value.GetBinaryForm($bytes, 0)
-  [Convert]::ToBase64String($bytes)
+  return ,$bytes
 }
 function Raw($sddl) {
-  $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new($sddl.Replace('@', $sid.Value).Replace('NO_ACCESS_CONTROL', ''))
+  $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new($sddl.Replace('@', $me).Replace('NO_ACCESS_CONTROL', ''))
   if ($sddl.Contains('NO_ACCESS_CONTROL')) { $descriptor.DiscretionaryAcl = $null }
   $descriptor
 }
-$safe = Encode (Raw 'O:@G:@D:P(A;OICI;FA;;;@)')
-$cases = foreach ($recipe in $inputData) {
+function CaseDescriptor($recipe) {
   $descriptor = if ($recipe.sddl) { Raw $recipe.sddl } else { Raw 'O:@G:@D:P(A;OICI;FA;;;@)' }
   if ($recipe.inject -eq 'absent') {
     $descriptor.DiscretionaryAcl = $null
@@ -259,7 +254,21 @@ $cases = foreach ($recipe in $inputData) {
     }
     $descriptor.DiscretionaryAcl.InsertAce(0, $ace)
   }
-  Encode $descriptor
+  $descriptor
+}
+`;
+
+const setup = `
+$ProgressPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
+$inputData = ${readInput}
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$me = $sid.Value
+${rawDescriptorHelpers}
+function Encode($value) { [Convert]::ToBase64String((Bytes $value)) }
+$safe = Encode (Raw 'O:@G:@D:P(A;OICI;FA;;;@)')
+$cases = foreach ($recipe in $inputData) {
+  Encode (CaseDescriptor $recipe)
 }
 ConvertTo-Json -InputObject @{ user = (Encode $sid); safe = $safe; cases = @($cases) } -Compress
 `;

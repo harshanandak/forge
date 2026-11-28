@@ -73,19 +73,18 @@ export type Request = {
   descriptors: Record<string, { directory: boolean; bytes: string }>;
 };
 
-export function powershellCommand(script: string) {
+export type DiskRequest = Omit<Request, "descriptors"> & {
+  fault?: string;
+  bytes?: string;
+};
+
+export function powershellCommand(...scriptArgs: string[]) {
   return [
     join(
       process.env.SystemRoot ?? "C:/Windows",
       "System32/WindowsPowerShell/v1.0/powershell.exe",
     ),
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-NoLogo",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
+    ["-NoProfile", "-NonInteractive", "-NoLogo", ...scriptArgs],
   ] as const;
 }
 
@@ -94,7 +93,10 @@ export function powershell<T>(
   input: unknown,
   timeout: number,
 ): T {
-  const [file, args] = powershellCommand(script);
+  const [file, args] = powershellCommand(
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64"),
+  );
   const result = spawnSync(file, args, {
     encoding: "utf8",
     timeout,
@@ -112,7 +114,7 @@ export const readInput =
   "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())) | ConvertFrom-Json";
 
 export function reference(
-  requests: Request[],
+  requests: (Request | DiskRequest)[],
 ): { ok: boolean; diagnostic: string }[] {
   if (createHash("sha256").update(predicates).digest("hex") !== predicateHash)
     throw new Error(`Frozen helper differs from ${baseline}`);
@@ -120,11 +122,19 @@ export function reference(
     predicates +
       `
 $requests = ${readInput}
+Set-Item Function:Read-NtfsDescriptor \${function:Read-Descriptor}
 function Read-Descriptor($path, $isDir) {
-  $entry = $request.descriptors.$path
-  if (!$entry -or $entry.directory -ne $isDir) { throw 'kind' }
+  if ($request.descriptors) {
+    $entry = $request.descriptors.$path
+    if (!$entry -or $entry.directory -ne $isDir) { throw 'kind' }
+    $bytes = $entry.bytes
+  } else {
+    if ($path -ne $request.fault) { return Read-NtfsDescriptor $path $isDir }
+    $bytes = $request.bytes
+    if (!$bytes) { throw 'injected read failure' }
+  }
   $acl = if ($isDir) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
-  $acl.SetSecurityDescriptorBinaryForm([Convert]::FromBase64String($entry.bytes))
+  $acl.SetSecurityDescriptorBinaryForm([Convert]::FromBase64String($bytes))
   $acl
 }
 $results = foreach ($request in $requests) {

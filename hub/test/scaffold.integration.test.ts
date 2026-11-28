@@ -151,6 +151,7 @@ const ownFiles = [
   "THIRD_PARTY_NOTICES.md",
   "bin/forge-hub.mjs",
   "manifests/slack-socket.yaml",
+  "dist/adapters/windows-security.js",
   "dist/chat/canvas.js",
   "dist/chat/cards.js",
   "dist/chat/config.js",
