@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { createCloneFiles } from "../src/adapters/fs/clone-files.ts";
 import { nodeDeviceIdentity } from "../src/adapters/fs/device-identity.ts";
 import { resolveIn } from "../src/adapters/fs/index.ts";
+import { nodeProjectFiles } from "../src/adapters/fs/project-files.ts";
 import { createProcessPort } from "../src/adapters/process/index.ts";
 import { cloudBinding } from "../src/assembly/cloud-binding.ts";
 import { sessionIdentity } from "../src/assembly/identity.ts";
@@ -147,6 +148,7 @@ async function localReads(): Promise<InspectReads> {
     write: false,
     signal: new AbortController().signal,
   });
+  const briefFiles = nodeProjectFiles(main, { strict: true });
   const filter = /^filter[.].+[.](clean|smudge|process|required)$/;
   return {
     lane(issue) {
@@ -155,7 +157,7 @@ async function localReads(): Promise<InspectReads> {
     },
     brief(path) {
       const within = relative(main, path).split(sep).join("/");
-      return Promise.resolve(readBrief(resolveIn(main, within, "refuse")));
+      return Promise.resolve(briefFiles.read(within, 262_144));
     },
     async workspace(path) {
       const [top, common] = await locate(path);
@@ -199,20 +201,6 @@ async function localReads(): Promise<InspectReads> {
 }
 function disableFilter(key: string) {
   return ["-c", `${key}=${key.endsWith(".required") ? "false" : ""}`];
-}
-function readBrief(path: string): Uint8Array {
-  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
-  const file = fs.openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
-  try {
-    if (!fs.fstatSync(file).isFile()) throw new Error("Brief is not a file");
-    const buffer = Buffer.alloc(262_145);
-    const count = fs.readSync(file, buffer);
-    if (count === buffer.length || count !== fs.fstatSync(file).size)
-      throw new Error("Brief size changed or exceeded its limit");
-    return buffer.subarray(0, count);
-  } finally {
-    fs.closeSync(file);
-  }
 }
 type Files = ReturnType<typeof createCloneFiles>;
 const namespace = "forge/work";

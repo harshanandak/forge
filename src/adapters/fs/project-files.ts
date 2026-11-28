@@ -1,5 +1,6 @@
 import {
   closeSync,
+  constants,
   fstatSync,
   lstatSync,
   openSync,
@@ -16,7 +17,7 @@ const same = (a: BigIntStats, b: BigIntStats): boolean =>
 /** Bounded pathname mitigation, not directory-handle-relative, race-free access. */
 export function nodeProjectFiles(
   root: string,
-  options: { beforeOpen?: () => void } = {},
+  options: { beforeOpen?: () => void; strict?: boolean } = {},
 ) {
   return {
     read(path: string, maxBytes: number): Uint8Array {
@@ -32,6 +33,8 @@ export function nodeProjectFiles(
       const walked = new Map<string, BigIntStats>();
       const remember = (entry: string): BigIntStats => {
         const info = lstatSync(entry, { bigint: true });
+        if (options.strict && (info.isSymbolicLink() || info.ino === 0n))
+          refuse("unsafe project path component");
         walked.set(entry, info);
         return info;
       };
@@ -59,9 +62,14 @@ export function nodeProjectFiles(
       }
       const leaf = walked.get(current)!;
       // Opening a FIFO with no writer blocks forever, so refuse a special file before opening it.
-      if (!leaf.isFile() && !leaf.isDirectory()) refuse("not a regular file");
+      if (!leaf.isFile() && (options.strict || !leaf.isDirectory()))
+        refuse("not a regular file");
       options.beforeOpen?.();
-      const fd = openSync(current, "r");
+      const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants;
+      const fd = openSync(
+        current,
+        options.strict ? O_RDONLY | O_NOFOLLOW | O_NONBLOCK : "r",
+      );
       try {
         const opened = fstatSync(fd, { bigint: true });
         if (
@@ -80,6 +88,11 @@ export function nodeProjectFiles(
           count += read;
         }
         if (count > maxBytes) throw fileLimitExceeded(path, maxBytes);
+        if (
+          options.strict &&
+          fstatSync(fd, { bigint: true }).size !== BigInt(count)
+        )
+          refuse("file size changed during read");
         return buffer.subarray(0, count);
       } finally {
         closeSync(fd);

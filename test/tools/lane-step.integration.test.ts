@@ -1,7 +1,17 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { InspectRefusal } from "../../tools/lane-step-contract.ts";
 import { inspect } from "../../tools/lane-step.ts";
 import {
@@ -180,6 +190,108 @@ test("I4 refuses a branch switch at the same HEAD during status", async () => {
       refusal("workspace", "UNAVAILABLE"),
     );
     expect(result.exitCode).toBe(2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.each(["ancestor swap", "in-project ancestor link"] as const)(
+  "A9 refuses a brief opened through an %s",
+  async (scenario) => {
+    const root = realpathSync.native(
+      mkdtempSync(join(tmpdir(), "forge-brief-path-")),
+    );
+    try {
+      const f = cliFixture(root);
+      const { path } = f.request.brief;
+      const parent = dirname(path);
+      const outside = join(root, "outside");
+      const inside = join(dirname(parent), "other-briefs");
+      const link = scenario === "ancestor swap" ? outside : inside;
+      const preload = join(root, "swap-before-brief-open.ts");
+      let args: string[] = [];
+      if (scenario === "ancestor swap") {
+        mkdirSync(outside);
+        linkSync(path, join(outside, basename(path)));
+        writeFileSync(
+          preload,
+          `
+import { mock } from "bun:test";
+import * as fs from "node:fs";
+import { relative } from "node:path";
+const original = { ...fs };
+const brief = ${JSON.stringify(path)};
+mock.module("node:fs", () => ({
+  ...original,
+  openSync(path, ...args) {
+    if (typeof path === "string" && relative(brief, path) === "") {
+      original.renameSync(${JSON.stringify(parent)}, ${JSON.stringify(inside)});
+      original.symlinkSync(${JSON.stringify(outside)}, ${JSON.stringify(parent)}, "junction");
+    }
+    return original.openSync(path, ...args);
+  },
+}));
+`,
+        );
+        args = ["--preload", preload];
+      } else {
+        renameSync(parent, inside);
+        symlinkSync(inside, parent, "junction");
+      }
+      const result = await f.run(f.request, args);
+      expect(realpathSync.native(parent), result.stderr).toBe(link);
+      expect(result.exitCode, result.stdout || result.stderr).toBe(2);
+      expect(JSON.parse(result.stdout)).toEqual(
+        refusal("brief.path", "UNAVAILABLE"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
+test("A9 refuses a brief truncated after the first read", async () => {
+  const root = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "forge-brief-truncate-")),
+  );
+  try {
+    const f = cliFixture(root);
+    const { path } = f.request.brief;
+    const preload = join(root, "truncate-after-brief-read.ts");
+    writeFileSync(
+      preload,
+      `
+import { mock } from "bun:test";
+import * as fs from "node:fs";
+import { relative } from "node:path";
+const original = { ...fs };
+const brief = ${JSON.stringify(path)};
+let briefFd;
+mock.module("node:fs", () => ({
+  ...original,
+  openSync(path, ...args) {
+    const fd = original.openSync(path, ...args);
+    if (typeof path === "string" && relative(brief, path) === "") briefFd = fd;
+    return fd;
+  },
+  readSync(fd, ...args) {
+    const read = original.readSync(fd, ...args);
+    if (fd === briefFd && read > 0) {
+      original.truncateSync(brief, 0);
+      briefFd = undefined;
+    }
+    return read;
+  },
+}));
+`,
+    );
+    const result = await f.run(f.request, ["--preload", preload]);
+    expect(statSync(path).size, result.stderr).toBe(0);
+    expect(result.exitCode, result.stdout || result.stderr).toBe(2);
+    expect(JSON.parse(result.stdout)).toEqual(
+      refusal("brief.path", "UNAVAILABLE"),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
