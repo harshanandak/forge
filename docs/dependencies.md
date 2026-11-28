@@ -127,6 +127,17 @@ Each one gets an entry here and an adapter in the same pull request.
 
 ## Hub dependencies
 
+### koffi
+
+- **Saves:** direct Win32 calls from Node and Bun without maintaining a native addon.
+- **Maintenance:** maintained Koffi 3.x project. [Official changelog](https://koffi.dev/changelog)
+- **Transitive packages:** no required JavaScript dependencies. Optional `@koromix/koffi-*` packages carry platform-specific native binaries.
+- **Fit:** the standalone hub bundles the native prebuild for the pack runner. The Windows x64 CI job checks both script-disabled and normal offline installs and exercises Win32 under Node 24 and Bun 1.4.4.
+- **Licence:** MIT, from the pinned package's `LICENSE.txt` and the prebuild manifests.
+- **Trust:** exact 3.3.3 pin in `hub/package.json` with integrity for the package and its native closure in `hub/bun.lock`.
+- **Swap proof:** only the hosted hub proof imports the dependency in this change. The pack and runtime checks would have to pass for a replacement.
+- **Adapter:** `hub/test/koffi-load.fixture.ts` owns the Koffi load and Win32 bindings for the hosted proof. The hub has no production Koffi adapter in this PR.
+
 ### chat
 
 - **Saves:** message and action routing, conversation state and portable card building.

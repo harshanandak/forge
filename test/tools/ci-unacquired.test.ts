@@ -268,6 +268,7 @@ const needed = [
   "Structure guards",
   "Lint and format",
   "Pack artifact",
+  "Hub Windows ACL proof",
   "Comment guard (windows-latest, Node 24)",
   "Speed (${{ matrix.os }}, Node 24)",
   "Verify (${{ matrix.os }}, Node ${{ matrix.node }})",
@@ -303,9 +304,11 @@ test("reruns everything when needed jobs were never created", () => {
 test("reruns everything when a docs-only run lost its verify job", () => {
   const jobs = [
     ...created,
+    named("Hub Windows ACL proof"),
     { ...skipped, name: "Pack artifact" },
     { ...skipped, name: "Comment guard (windows-latest, Node 24)" },
     { ...skipped, name: "Speed (${{ matrix.os }}, Node 24)" },
+    { ...skipped, name: node26Name },
     gate,
   ];
   const decision = decide(jobs);
@@ -345,6 +348,7 @@ test("does not treat missing jobs as a problem without a needed list", () => {
 const complete = [
   ...created,
   named("Pack artifact"),
+  named("Hub Windows ACL proof"),
   named("Comment guard (windows-latest, Node 24)"),
   named("Speed (ubuntu-latest, Node 24)"),
   ...[
@@ -404,6 +408,7 @@ test("reads the needed jobs from the CI Gate in ci.yml", () => {
     "Structure guards",
     "Lint and format",
     "Pack artifact",
+    "Hub Windows ACL proof",
     "Comment guard (",
     "Speed (",
     "Speed main (",
@@ -476,6 +481,7 @@ test("does not rerun a red draft with GitHub's rewritten Verify name", () => {
   const jobs = [
     named("Changes"),
     named("Quick"),
+    named("Hub Windows ACL proof"),
     ...[
       "Speed (${{ matrix.os }}, Node 24)",
       "Lint and format",

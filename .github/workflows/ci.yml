@@ -473,6 +473,106 @@ jobs:
           - { os: macos-latest, node: "26", suite: pack }
     steps: *verify-steps
 
+  hub-windows-acl:
+    name: Hub Windows ACL proof
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CI_HEAD }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts --linker hoisted
+        working-directory: hub
+      - run: bun run build:hub
+      - name: Pack the Windows hub
+        working-directory: hub
+        shell: pwsh
+        run: |
+          $proof = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/hub-acl-proof"
+          npm pack --ignore-scripts --json --pack-destination $proof.FullName > "$proof/inventory.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "Hub tarball SHA-256: $((Get-FileHash "$proof/*.tgz").Hash)" | Tee-Object -FilePath "$proof/digest.txt"
+      - name: Verify the packed dependency closure
+        run: node hub/test/koffi-package.fixture.ts inventory
+      - name: Install offline and audit the normal lifecycle
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          Remove-Item Env:NODE_PATH,Env:NODE_OPTIONS -ErrorAction SilentlyContinue
+          $proof = "$env:RUNNER_TEMP/hub-acl-proof"
+          $tarball = (Get-ChildItem "$proof/*.tgz").FullName
+          $node = (Get-Command node.exe).Source
+          $npm = Join-Path (Split-Path $node) 'node_modules/npm/bin/npm-cli.js'
+          $cache = "$proof/npm-cache"
+          & $node $npm cache add $tarball --cache $cache --offline --ignore-scripts
+          foreach ($name in 'offline', 'normal') {
+            New-Item -ItemType Directory -Path "$proof/$name" | Out-Null
+            '{"private":true}' > "$proof/$name/package.json"
+          }
+          $install = @('install', $tarball, '--offline', '--cache', $cache, '--no-audit', '--no-fund')
+          & $node $npm --prefix "$proof/offline" @install --ignore-scripts
+          @'
+          import cp from 'node:child_process';
+          import { appendFileSync } from 'node:fs';
+          import { syncBuiltinESMExports } from 'node:module';
+          import { basename } from 'node:path';
+          const lifecycle = ['/d', '/s', '/c', 'node ./cnoke.cjs -P . -D src/koffi --prebuild --release'];
+          for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
+            const launch = cp[method];
+            cp[method] = function (file, args, ...rest) {
+              const executable = basename(file).toLowerCase();
+              let kind = `blocked ${method}`;
+              if (/^cmd(?:\.exe)?$/.test(executable) && JSON.stringify(args) === JSON.stringify(lifecycle)) {
+                kind = 'koffi lifecycle';
+              } else if (file === process.execPath && args?.length === 3 && args[0] === '-e' &&
+                         args[1] === 'require(process.argv[1])' && basename(args[2]) === 'koffi') {
+                kind = 'koffi prebuild';
+              }
+              appendFileSync(process.env.HUB_INSTALL_TRACE, `${kind}\n`);
+              if (kind.startsWith('blocked ')) throw new Error(kind);
+              return Reflect.apply(launch, this, [file, args, ...rest]);
+            };
+          }
+          syncBuiltinESMExports();
+          '@ > "$proof/install-audit.mjs"
+          $env:NODE_OPTIONS = "--import=$([Uri]::new("$proof/install-audit.mjs").AbsoluteUri)"
+          $env:HUB_INSTALL_TRACE = "$proof/install-trace.txt"
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          & $node $npm --prefix "$proof/normal" @install --ignore-scripts=false --foreground-scripts 2>&1 | Tee-Object -FilePath "$proof/install.log"
+          $trace = Get-Content $env:HUB_INSTALL_TRACE
+          if ($trace -match '^blocked ' -or 'koffi lifecycle' -notin $trace -or 'koffi prebuild' -notin $trace) {
+            throw "Unexpected install process trace: $trace"
+          }
+          "Normal install: no build process, $($timer.ElapsedMilliseconds) ms. Audited: $trace"
+      - name: Probe the installed Windows hub
+        run: node hub/test/koffi-package.fixture.ts 2>&1 | tee "$RUNNER_TEMP/hub-acl-proof/probes.log"
+      - name: Publish worker deadline measurements
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/hub-acl-proof/probes.log"
+          if [ -f "$report" ]; then
+            echo '### Windows worker deadline measurements' >> "$GITHUB_STEP_SUMMARY"
+            awk '/^Feasibility summary$/{summary=1} summary && /^MEASURED /{print "- " $0}' "$report" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hub-acl-proof
+          path: |
+            ${{ runner.temp }}/hub-acl-proof/inventory.json
+            ${{ runner.temp }}/hub-acl-proof/digest.txt
+            ${{ runner.temp }}/hub-acl-proof/install.log
+            ${{ runner.temp }}/hub-acl-proof/install-trace.txt
+            ${{ runner.temp }}/hub-acl-proof/probes.log
+
   ci-gate:
     name: CI Gate
     if: always()
@@ -489,6 +589,7 @@ jobs:
         verify-main,
         verify-node26,
         comment-guard,
+        hub-windows-acl,
       ]
     runs-on: ubuntu-latest
     steps:
@@ -508,6 +609,7 @@ jobs:
           VERIFY_MAIN: ${{ needs.verify-main.result }}
           VERIFY_NODE26: ${{ needs.verify-node26.result }}
           COMMENT_GUARD: ${{ needs.comment-guard.result }}
+          HUB_WINDOWS_ACL: ${{ needs.hub-windows-acl.result }}
           GUARD_CHANGED: ${{ needs.changes.outputs.comment_guard }}
           STARTED: ${{ needs.changes.outputs.started }}
         run: |
@@ -590,4 +692,5 @@ jobs:
           require "verify-main" "$VERIFY_MAIN" "$verify_main"
           require "verify-node26" "$VERIFY_NODE26" "$node26"
           require "comment-guard" "$COMMENT_GUARD" "$admission"
+          require "hub-windows-acl" "$HUB_WINDOWS_ACL"
           [ "$ok" = "1" ]

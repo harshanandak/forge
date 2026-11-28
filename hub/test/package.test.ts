@@ -2,7 +2,7 @@
 
 import { ok } from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { expect, test } from "bun:test";
@@ -16,6 +16,7 @@ const dependencies = {
   "@chat-adapter/slack": "4.45.0",
   "@modelcontextprotocol/server": "2.3.1",
   "@modelcontextprotocol/node": "2.1.1",
+  koffi: "3.3.3",
 };
 const fields = {
   name: "forge-hub",
@@ -63,7 +64,7 @@ function checkPackage(pkg: Record<string, unknown>): void {
     ok(!Object.hasOwn(pkg, key), "Forbidden hub manifest field: " + key);
   ok(
     isDeepStrictEqual(pkg.dependencies, dependencies),
-    "Hub dependencies must match the four exact pins",
+    "Hub dependencies must match the five exact pins",
   );
   ok(
     Array.isArray(pkg.bundleDependencies) &&
@@ -116,23 +117,27 @@ const licences = {
   "@chat-adapter/slack": "MIT",
   "@modelcontextprotocol/server": "Apache-2.0",
   "@modelcontextprotocol/node": "Apache-2.0",
+  koffi: "MIT",
 };
 
 test(
-  "notices contain the full correctly labelled text of all four installed licences",
+  "notices contain the full correctly labelled text of all five installed licences",
   () => {
     const noticePath = join(hub, "THIRD_PARTY_NOTICES.md");
     const actual = lf(readFileSync(noticePath, "utf8"));
     const sections = Object.entries(licences).map(([name, licence]) => {
       const installed = join(hub, "node_modules", name);
-      const installedPackage = readJson(join(installed, "package.json"));
+      const installedManifest = join(installed, "package.json");
+      ok(existsSync(installedManifest), `Hub must install ${name} for notices`);
+      const installedPackage = readJson(installedManifest);
       ok(
         installedPackage.version ===
           dependencies[name as keyof typeof dependencies] &&
           installedPackage.license === licence,
         "Installed notice source must match the pinned licence",
       );
-      const text = lf(readFileSync(join(installed, "LICENSE"), "utf8"));
+      const licenseFile = name === "koffi" ? "LICENSE.txt" : "LICENSE";
+      const text = lf(readFileSync(join(installed, licenseFile), "utf8"));
       ok(
         /^[ \t]*Copyright \(c\) /im.test(text),
         "Installed licence lacks its copyright notice",
@@ -152,6 +157,7 @@ test(
       [
         "# Third-party notices",
         "Bundled transitive packages keep their own licence files inside the bundled `node_modules` folders.",
+        "Koffi's MIT licence also covers the platform-specific prebuilds in the `@koromix/koffi-*` packages.",
         ...sections,
       ].join("\n\n") + "\n";
     const check = (notice: string) =>

@@ -254,8 +254,8 @@ test("CI pins the exact verification matrices and their event policy", () => {
 
 const draftMessage =
   "Draft PR: the quick tier ran. Mark the PR ready for review to run the merge tier.";
-const resultKeys =
-  "CHANGES PR_TITLE STRUCTURE STATIC PACK SPEED SPEED_WINDOWS VERIFY VERIFY_MAIN VERIFY_NODE26 COMMENT_GUARD";
+const windowsProof = "HUB_WINDOWS_ACL";
+const resultKeys = `CHANGES PR_TITLE STRUCTURE STATIC PACK SPEED SPEED_WINDOWS VERIFY VERIFY_MAIN VERIFY_NODE26 COMMENT_GUARD ${windowsProof}`;
 const fixture = {
   EVENT: "pull_request",
   DRAFT: "false",
@@ -264,18 +264,15 @@ const fixture = {
   GUARD_CHANGED: "true",
   STARTED: "",
 };
-const readyFull =
-  "CHANGES PR_TITLE STRUCTURE STATIC PACK SPEED VERIFY VERIFY_MAIN";
-const readyDocs = "CHANGES PR_TITLE STRUCTURE STATIC";
+const readyFull = `CHANGES PR_TITLE STRUCTURE STATIC PACK SPEED VERIFY VERIFY_MAIN ${windowsProof}`;
+const readyDocs = `CHANGES PR_TITLE STRUCTURE STATIC ${windowsProof}`;
 const ready = `${readyFull} COMMENT_GUARD`;
 const draft = { DRAFT: "true", TIER: "quick" };
 const full = { DRAFT: "", TIER: "full" };
-const push =
-  "CHANGES STRUCTURE STATIC PACK SPEED SPEED_WINDOWS VERIFY VERIFY_MAIN VERIFY_NODE26 COMMENT_GUARD";
-const schedule = "CHANGES PACK VERIFY_NODE26";
+const push = `CHANGES STRUCTURE STATIC PACK SPEED SPEED_WINDOWS VERIFY VERIFY_MAIN VERIFY_NODE26 COMMENT_GUARD ${windowsProof}`;
+const schedule = `CHANGES PACK VERIFY_NODE26 ${windowsProof}`;
 const mergeGroup = { EVENT: "merge_group", DRAFT: "", GUARD_CHANGED: "false" };
-const mergeGroupFull =
-  "CHANGES STRUCTURE STATIC PACK SPEED VERIFY COMMENT_GUARD";
+const mergeGroupFull = `CHANGES STRUCTURE STATIC PACK SPEED VERIFY COMMENT_GUARD ${windowsProof}`;
 
 function evaluateGate(passedJobs: string, overrides: Record<string, string>) {
   const passed = passedJobs.split(" ");
@@ -318,7 +315,7 @@ test("merge group CI Gate passes when all required jobs succeed", () => {
 for (const scope of ["docs", "full"]) {
   test(`draft ${scope} CI Gate gives the ready message`, () => {
     const env = { ...draft, SCOPE: scope };
-    const result = evaluateGate("CHANGES STRUCTURE", env);
+    const result = evaluateGate(`CHANGES STRUCTURE ${windowsProof}`, env);
     assert.equal(result.log.trim(), `::error::${draftMessage}`);
     assert.equal(result.summary, draftMessage);
     assert.equal(result.exit, 1, result.log);
@@ -346,7 +343,7 @@ for (const [event, passed] of Object.entries({
 }
 
 const expectedJobs: [string, string, Record<string, string>][] = [
-  ["draft push", "CHANGES STRUCTURE", draft],
+  ["draft push", `CHANGES STRUCTURE ${windowsProof}`, draft],
   ["ready code PR", ready, {}],
   ["docs-only PR", readyDocs, { SCOPE: "docs", GUARD_CHANGED: "false" }],
   ["push to main", push, { ...full, EVENT: "push" }],
@@ -355,7 +352,7 @@ const expectedJobs: [string, string, Record<string, string>][] = [
 ];
 for (const [event, passed, env] of expectedJobs) {
   for (const key of passed.split(" ")) {
-    const name = key.toLowerCase().replace("_", "-");
+    const name = key.toLowerCase().replaceAll("_", "-");
     test(`${event} CI Gate rejects skipped or missing ${name}`, () => {
       for (const outcome of env.EVENT === "merge_group"
         ? ["skipped", "", "failure", "cancelled"]
