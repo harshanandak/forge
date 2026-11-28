@@ -331,6 +331,8 @@ test.skipIf(process.platform !== "win32")(
         );
         results.push({ expected, actual, elapsed, launches });
       }
+      restore();
+      restore = undefined;
       const states = fixture.snapshot();
       const entries = (state: string) => state.split("\n").slice(0, -1);
       for (const [index, { recipe }] of fixture.cases.entries()) {
