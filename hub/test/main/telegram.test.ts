@@ -18,6 +18,7 @@ import {
   caller,
   closeDb,
   fixture,
+  openDb,
   p1,
   seedDirectory,
   seedHost,
@@ -234,43 +235,61 @@ test(
   timeout,
 );
 
-test(
-  "W10 signals cancel the Telegram handshake before polling starts",
-  async () => {
-    const f = await telegramHub();
-    const fake = fakeTelegram();
-    const entered = Promise.withResolvers<AbortSignal>();
-    const response = Promise.withResolvers<Response>();
-    const entry = telegramEntry(f, (url, init) => {
-      if (!url.pathname.endsWith("/getWebhookInfo"))
-        return fake.fetch(url, init);
-      const signal = init.signal;
-      if (!signal) throw new Error("Expected a startup abort signal");
-      signal.addEventListener("abort", () => response.reject(signal.reason), {
-        once: true,
+for (const preflight of ["getWebhookInfo", "getMe"] as const)
+  test(
+    "W10 shutdown cancels Telegram " + preflight + " before polling starts",
+    async () => {
+      const f = await telegramHub();
+      const fake = fakeTelegram();
+      const entered = Promise.withResolvers<AbortSignal>();
+      const response = Promise.withResolvers<Response>();
+      const entry = telegramEntry(f, (url, init) => {
+        if (!url.pathname.endsWith("/" + preflight))
+          return fake.fetch(url, init);
+        const signal = init.signal;
+        if (!signal) throw new Error("Expected a startup abort signal");
+        signal.addEventListener("abort", () => response.reject(signal.reason), {
+          once: true,
+        });
+        entered.resolve(signal);
+        return response.promise;
       });
-      entered.resolve(signal);
-      return response.promise;
-    });
-    const run = entry.run(["serve"], tokenEnv);
-    try {
-      const signal = await Promise.race([entered.promise, run]);
-      if (typeof signal === "number") throw new Error(entry.stderr.join(""));
-      process.emit("SIGTERM");
-      await nextTurn();
-      expect(signal.aborted).toBe(true);
-      expect(await run).toBe(0);
-      expect(entry.stderr).toEqual([]);
-      expect(fake.only("getMe")).toEqual([]);
-      expect(fake.only("getUpdates")).toEqual([]);
-    } finally {
-      response.resolve(telegramOk({ url: "" }));
-      process.emit("SIGTERM");
-      await run;
-    }
-  },
-  timeout,
-);
+      const timers = spyOn(globalThis, "setTimeout");
+      const cleared = spyOn(globalThis, "clearTimeout");
+      const run = entry.run(["serve"], tokenEnv);
+      try {
+        const signal = await Promise.race([entered.promise, run]);
+        if (typeof signal === "number") throw new Error(entry.stderr.join(""));
+        process.emit("SIGTERM");
+        await nextTurn();
+        expect(signal.aborted).toBe(true);
+        expect(await run).toBe(0);
+        expect(entry.stderr).toEqual([]);
+        expect(fake.only("getMe")).toEqual([]);
+        expect(fake.only("getUpdates")).toEqual([]);
+        const deadlines = timers.mock.calls.flatMap(([, ms], i) =>
+          ms === 10_000 ? [timers.mock.results[i]?.value] : [],
+        );
+        expect(deadlines).toHaveLength(preflight === "getMe" ? 2 : 1);
+        expect(deadlines).not.toContain(undefined);
+        for (const timer of deadlines)
+          expect(cleared).toHaveBeenCalledWith(timer);
+        openDb(join(f.config.dataDir, "hub.sqlite")).claimWorker().release();
+      } finally {
+        response.resolve(
+          telegramOk({ url: "", id: 201, first_name: "Forge", is_bot: true }),
+        );
+        process.emit("SIGTERM");
+        try {
+          await run;
+        } finally {
+          timers.mockRestore();
+          cleared.mockRestore();
+        }
+      }
+    },
+    timeout,
+  );
 
 test(
   "W3 Telegram refuses missing, empty and unmapped people before constructing a port",
