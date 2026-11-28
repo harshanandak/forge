@@ -109,6 +109,43 @@ async function candidate() {
   };
 }
 
+async function dropBackupPrivileges() {
+  const koffi = await import("koffi");
+  const advapi = koffi.load("advapi32.dll");
+  const kernel = koffi.load("kernel32.dll");
+  const open = advapi.func(
+    "int __stdcall OpenProcessToken(void *process, uint32_t access, _Out_ void **token)",
+  );
+  const lookup = advapi.func(
+    "int __stdcall LookupPrivilegeValueW(str16 system, str16 name, void *luid)",
+  );
+  const adjust = advapi.func(
+    "int __stdcall AdjustTokenPrivileges(void *token, int all, void *state, uint32_t size, void *previous, _Out_ uint32_t *length)",
+  );
+  const current = kernel.func("void * __stdcall GetCurrentProcess()");
+  const close = kernel.func("int __stdcall CloseHandle(void *handle)");
+  const handle: unknown[] = [null];
+  if (!open(current(), 0x28, handle)) throw new Error("OpenProcessToken");
+  const state = Buffer.alloc(28);
+  state.writeUInt32LE(2, 0);
+  for (const [index, name] of [
+    "SeBackupPrivilege",
+    "SeRestorePrivilege",
+  ].entries())
+    if (!lookup(null, name, state.subarray(4 + 12 * index, 12 + 12 * index)))
+      throw new Error(`LookupPrivilegeValueW ${name}`);
+  const previous = Buffer.alloc(28);
+  if (!adjust(handle[0], 0, state, 28, previous, [0]))
+    throw new Error("AdjustTokenPrivileges");
+  console.log(
+    `BACKUP PRIVILEGES DISABLED: ${previous.readUInt32LE(0)} were enabled`,
+  );
+  return () => {
+    adjust(handle[0], 0, previous, 0, null, [0]);
+    close(handle[0]);
+  };
+}
+
 function hooked(
   fixture: ReturnType<typeof creationFixtures>,
   side: CreationSide,
@@ -272,8 +309,11 @@ const matrix: CreationRecipe[] = [
 test.skipIf(process.platform !== "win32")(
   "rows 38-43 and path transport match the frozen reference on real NTFS objects",
   async () => {
-    const fixture = creationFixtures(matrix);
+    let restore: (() => void) | undefined;
+    let fixture: ReturnType<typeof creationFixtures> | undefined;
     try {
+      restore = await dropBackupPrivileges();
+      fixture = creationFixtures(matrix);
       const run = await candidate();
       const results = [];
       for (const { recipe, reference, candidate: side } of fixture.cases) {
@@ -323,7 +363,8 @@ test.skipIf(process.platform !== "win32")(
       for (const row of rows.slice(0, -1)) covered.add(row);
       console.log(`HOSTED ROWS 38-43 AND 86: ${matrix.length} cases`);
     } finally {
-      fixture.close();
+      restore?.();
+      fixture?.close();
     }
   },
   120_000,
