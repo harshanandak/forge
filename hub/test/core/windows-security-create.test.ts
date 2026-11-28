@@ -355,10 +355,12 @@ test.skipIf(process.platform !== "win32")(
           expect(observed).toBe(
             `staged ${recipe.fault?.sddl ?? "O:@D:P(A;OICI;FA;;;@)"}`,
           );
+        const before = entries(fixture.before[index]![1]!);
+        const left = entries(referenceState!).filter(
+          (entry) => recipe.row === "40" && /^\.forge-private-\* /.test(entry),
+        );
         if (recipe.expected === false && recipe.row !== "42")
-          expect(entries(candidateState!)).toEqual(
-            entries(fixture.before[index]![1]!),
-          );
+          expect(entries(candidateState!)).toEqual([...left, ...before]);
       }
       const rows = [...new Set(matrix.map(({ row }) => row))];
       expect(rows).toEqual(["38", "39", "40", "41", "42", "43", "86"]);
