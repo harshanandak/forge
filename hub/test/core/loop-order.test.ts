@@ -113,6 +113,15 @@ function loseNextSlackResponse(f: BaseFixture) {
   return accepted;
 }
 
+async function deliverOlderOutsiders(f: BaseFixture) {
+  for (let i = 1; i <= LIMITS.threadKeep; i++)
+    await f.follow(ts(i), {
+      chatThreadId: thread,
+      slackUserId: unknownUser,
+      mentionsBot: false,
+    });
+}
+
 test.each([false, true])(
   "forge-2024 a member reopens a paused run (with retention pressure: %s)",
   async (sweep) => {
@@ -121,12 +130,7 @@ test.each([false, true])(
     await r.post(LIMITS.agentRunMax);
     expect(r.notices()).toBe(1);
     if (sweep) {
-      for (let i = 1; i <= LIMITS.threadKeep; i++)
-        await f.follow(ts(i), {
-          chatThreadId: thread,
-          slackUserId: unknownUser,
-          mentionsBot: false,
-        });
+      await deliverOlderOutsiders(f);
       expect(f.rows("thread_messages WHERE kind = 'outsider'")).toHaveLength(
         LIMITS.threadKeep,
       );
@@ -167,17 +171,15 @@ test(
 );
 
 test.each([false, true])(
-  "forge-2024 replay of an unknown outcome settled before a recorded member does not count in the next run (with retention: %s)",
+  "forge-2024 replay with a confirmed Slack timestamp before the member does not count in the next run (with retention: %s)",
   async (sweep) => {
     const r = await slackRun(1, 2);
     const { f } = r;
     const unblock = blockProjection(f);
-    const accepted = loseNextSlackResponse(f);
-    expect(await r.reply("post with a lost response")).toMatchObject({
-      ok: false,
-      error: { retry: "reconcile_first" },
+    expect(await r.reply("confirmed post awaiting projection")).toMatchObject({
+      ok: true,
+      value: { chatMessageId: ts(1) },
     });
-    expect(accepted).toEqual([ts(1)]);
     await r.member(ts(2));
     expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
     if (sweep) {
@@ -191,13 +193,70 @@ test.each([false, true])(
     const recovered = replayRun(r);
     expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(0);
     expect(
-      f.rows("thread_messages WHERE chat_message_id LIKE 'unconfirmed:%'"),
-    ).toHaveLength(1);
+      f.rows("thread_messages WHERE chat_message_id = ?", "kind", ts(1)),
+    ).toEqual([{ kind: "agent" }]);
     await recovered.post(LIMITS.agentRunMax - 1);
     expect(recovered.notices()).toBe(0);
     await recovered.post(1);
     await recovered.paused();
     expect(recovered.notices()).toBe(1);
+  },
+  timeout,
+);
+
+test(
+  "forge-2024 an unknown still counts when a late member falls between it and the confirmed predecessor",
+  async () => {
+    const r = await slackRun(1, 2);
+    await r.post(1);
+    const { f } = r;
+    expect(
+      f.col("thread_messages WHERE kind = 'agent'", "chat_message_id"),
+    ).toEqual([ts(1)]);
+    const unblock = blockProjection(f);
+    const accepted = loseNextSlackResponse(f);
+    expect(await r.reply("post with a lost response")).toMatchObject({
+      ok: false,
+      error: { retry: "reconcile_first" },
+    });
+    expect(accepted).toEqual([ts(3)]);
+    await r.member(ts(2));
+    expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
+    unblock();
+    const recovered = replayRun(r);
+    await recovered.post(LIMITS.agentRunMax - 1);
+    await recovered.paused();
+  },
+  timeout,
+);
+
+test(
+  "forge-2024 pruning a prior pause notice does not uncharge a replayed unknown",
+  async () => {
+    const r = await slackRun(1001, undefined, (i) => ts(i < 1011 ? i : i + 2));
+    const { f } = r;
+    await r.post(LIMITS.agentRunMax);
+    const notice = ts(1013);
+    const noticeRows = () =>
+      f.rows("thread_messages WHERE chat_message_id = ?", "kind", notice);
+    expect(noticeRows()).toEqual([{ kind: "system" }]);
+    await r.member(ts(1011));
+    await deliverOlderOutsiders(f);
+    const unblock = blockProjection(f);
+    const accepted = loseNextSlackResponse(f);
+    expect(await r.reply("post with a lost response")).toMatchObject({
+      ok: false,
+      error: { retry: "reconcile_first" },
+    });
+    expect(accepted).toEqual([ts(1014)]);
+    await sweepHistory(f);
+    expect(noticeRows()).toEqual([]);
+    await r.member(ts(1012));
+    expect(f.rows("meta WHERE key LIKE 'agent-post:%'")).toHaveLength(1);
+    unblock();
+    const recovered = replayRun(r);
+    await recovered.post(LIMITS.agentRunMax - 1);
+    await recovered.paused();
   },
   timeout,
 );
