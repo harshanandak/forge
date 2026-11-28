@@ -136,6 +136,7 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Licence:** MIT, from the pinned package's `LICENSE.txt` and the prebuild manifests.
 - **Trust:** exact 3.3.3 pin in `hub/package.json` with integrity for the package and its native closure in `hub/bun.lock`.
 - **Swap proof:** only the hosted hub proof imports the dependency in this change. The pack and runtime checks would have to pass for a replacement.
+- **Adapter:** `hub/test/koffi-load.fixture.ts` owns the Koffi load and Win32 bindings for the hosted proof. The hub has no production Koffi adapter in this PR.
 
 ### chat
 

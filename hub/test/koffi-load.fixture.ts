@@ -29,7 +29,7 @@ export function load(): Koffi {
 export function descriptor(
   path: string,
   advapi: Library,
-  kernel: Library,
+  kernel32: Library,
   koffi: Koffi,
 ): void {
   const get = advapi.func(
@@ -45,12 +45,12 @@ export function descriptor(
     );
     ok(Number(length(pointer[0])) >= 20);
   } finally {
-    equal(kernel.func("void *LocalFree(void *memory)")(pointer[0]), null);
+    equal(kernel32.func("void *LocalFree(void *memory)")(pointer[0]), null);
   }
 }
 
-function tokenUser(advapi: Library, kernel: Library, koffi: Koffi): void {
-  const current = kernel.func("void *GetCurrentProcess()");
+function tokenUser(advapi: Library, kernel32: Library, koffi: Koffi): void {
+  const current = kernel32.func("void *GetCurrentProcess()");
   const open = advapi.func(
     "int OpenProcessToken(void *process, uint32_t access, _Out_ void **token)",
   );
@@ -66,19 +66,19 @@ function tokenUser(advapi: Library, kernel: Library, koffi: Koffi): void {
     ok(sid);
     ok(advapi.func("int IsValidSid(void *sid)")(sid));
   } finally {
-    ok(kernel.func("int CloseHandle(void *handle)")(token[0]));
+    ok(kernel32.func("int CloseHandle(void *handle)")(token[0]));
   }
 }
 
 if (mode === "load" || mode === "cold") {
   const started = performance.now();
   const koffi = load();
-  const kernel = koffi.load(systemDll("kernel32"));
+  const kernel32 = koffi.load(systemDll("kernel32"));
   const advapi = koffi.load(systemDll("advapi32"));
-  descriptor(target, advapi, kernel, koffi);
+  descriptor(target, advapi, kernel32, koffi);
   if (mode === "load") {
-    equal(kernel.func("uint32_t GetCurrentProcessId()")(), process.pid);
-    tokenUser(advapi, kernel, koffi);
+    equal(kernel32.func("uint32_t GetCurrentProcessId()")(), process.pid);
+    tokenUser(advapi, kernel32, koffi);
     const native = createRequire(requireHub.resolve("koffi")).resolve(
       nativeName,
     );

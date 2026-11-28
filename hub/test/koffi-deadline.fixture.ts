@@ -4,8 +4,8 @@ import { isMainThread, Worker, workerData } from "node:worker_threads";
 import { load, mode, systemDll, target } from "./koffi-load.fixture.ts";
 
 const slow = 8_000;
-const kernel = () => load().load(systemDll("kernel32"));
-const sleep = () => kernel().func("void Sleep(uint32_t ms)");
+const kernel32 = () => load().load(systemDll("kernel32"));
+const sleep = () => kernel32().func("void Sleep(uint32_t ms)");
 const elapsed = (start: number) =>
   Number((performance.now() - start).toFixed(1));
 
@@ -31,7 +31,7 @@ function startWorker(ms: number) {
 
 if (!isMainThread) {
   const { state, ms } = workerData as { state: Int32Array; ms: number };
-  const library = kernel();
+  const library = kernel32();
   equal(library.func("uint32_t GetCurrentProcessId()")(), process.pid);
   const wait = library.func("void Sleep(uint32_t ms)");
   Atomics.store(state, 0, process.pid);
