@@ -207,22 +207,24 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
     const capture = spyOn(blockCapture, "open").mockImplementation((path) =>
       open(path === source ? built : path),
     );
-    const assembly = await createAssembly({
-      root,
-      deviceRoot: join(root, "device"),
-      providers: { env: {} },
-    });
+    let assembly: Assembly | undefined;
     try {
+      const running = await createAssembly({
+        root,
+        deviceRoot: join(root, "device"),
+        providers: { env: {} },
+      });
+      assembly = running;
       let requestId = 0;
       const invoke = (op: string, input: unknown) =>
-        assembly.catalog.invoke({
+        running.catalog.invoke({
           schemaVersion: "forge.invocation/1",
           requestId: `admit-${++requestId}`,
           op,
           input,
           caller: "human",
           context: localContext(
-            assembly,
+            running,
             { kind: "human", id: "fixture" },
             "fixture",
           ),
@@ -233,7 +235,7 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
       const { digest } = checked.result as { digest: string };
       const admitted = await relay(invoke, "block.admit", { digest });
       expect(admitted).toMatchObject({ ok: true });
-      await withWire(assembly, era, async (rpc) => {
+      await withWire(running, era, async (rpc) => {
         const tools = (await rpc("tools/list")).result?.tools ?? [];
         const call = async (name: string, args: object) =>
           (await rpc("tools/call", { name, arguments: args })).result
@@ -301,7 +303,7 @@ for (const era of ["2025-11-25", "2026-07-28"]) {
       });
     } finally {
       capture.mockRestore();
-      await assembly.close();
+      await assembly?.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

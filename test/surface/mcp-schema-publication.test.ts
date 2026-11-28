@@ -40,22 +40,14 @@ test("MCP publication refuses extension anchors before the SDK can throw", () =>
     projectSchema: () => publication,
   };
   let failure: unknown;
-  let schema: object | undefined;
   try {
-    schema = createMcpHandlers(fakeCatalog([entry]))
-      .listTools()
-      .find((tool) => tool.name === "sample_echo")?.inputSchema;
+    createMcpHandlers(fakeCatalog([entry])).listTools();
   } catch (error) {
     failure = error;
   }
-  if (failure === undefined) {
-    expect(() => compile(schema)).not.toThrow();
-    return;
-  }
-  const message =
-    failure instanceof Error
-      ? failure.message
-      : "non-Error publication failure";
+  if (!(failure instanceof Error))
+    throw new Error("Expected Forge publication refusal");
+  const message = failure.message;
   expect(message).toMatch(/cannot publish its input schema/);
   expect(message).toMatch(/\$anchor|\$id/);
   expect(message).not.toMatch(/duplicate anchor/i);
