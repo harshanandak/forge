@@ -139,7 +139,12 @@ export function cliFixture(root: string) {
     )
       env[key] = value;
   }
-  const run = (input: unknown, args: string[] = [], command = ["inspect"]) =>
+  const run = (
+    input: unknown,
+    args: string[] = [],
+    command = ["inspect"],
+    cwd = repo,
+  ) =>
     proc.run(
       { kind: "resolved", path: process.execPath },
       [
@@ -148,7 +153,7 @@ export function cliFixture(root: string) {
         ...command,
       ],
       {
-        cwd: repo,
+        cwd,
         env,
         stdin: JSON.stringify(input),
         timeoutMs: 20_000,

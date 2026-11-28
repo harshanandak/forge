@@ -57,6 +57,13 @@ const digestId = (input: unknown): input is string =>
   text(input) && /^sha256:[0-9a-f]{64}$/.test(input);
 const revision = (input: unknown): input is string =>
   text(input) && /^[a-f0-9]{40}$/i.test(input);
+const branchName = (input: unknown): input is string =>
+  text(input) &&
+  input !== "HEAD" &&
+  !/^[-/]|[/.]$|[ ~^:?*[\\]|\.\.|@\{|\/\//.test(input) &&
+  input
+    .split("/")
+    .every((part) => !part.startsWith(".") && !part.endsWith(".lock"));
 
 export function parseInspectRequest(input: unknown) {
   if (!object(input)) return invalid("request");
@@ -69,7 +76,7 @@ export function parseInspectRequest(input: unknown) {
   const { path, digest } = brief;
   if (!issueId(issue)) return invalid("issue");
   if (!text(workspace) || !isAbsolute(workspace)) return invalid("workspace");
-  if (!text(branch)) return invalid("branch");
+  if (!branchName(branch)) return invalid("branch");
   if (!text(path) || !isAbsolute(path)) return invalid("brief.path");
   if (!digestId(digest)) return invalid("brief.digest");
   if (!revision(expectedHead)) return invalid("expectedHead");
@@ -96,7 +103,7 @@ export function parseConsumeRequest(
   if (!issueId(issue)) return invalid("context.issue");
   if (!text(workspace) || !isAbsolute(workspace))
     return invalid("context.workspace");
-  if (!text(branch)) return invalid("context.branch");
+  if (!branchName(branch)) return invalid("context.branch");
   if (!revision(head)) return invalid("context.head");
   if (!digestId(digest)) return invalid("context.digest");
   if (!object(step)) return invalid("step");

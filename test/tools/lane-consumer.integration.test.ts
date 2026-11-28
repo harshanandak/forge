@@ -230,6 +230,26 @@ consumerTest("A4 rechecks workspace and current lease", async () => {
   }
 });
 
+consumerTest(
+  "A1 refuses malformed literal branch names before reading authority",
+  async () => {
+    const { input, reads, calls } = consumerFixture();
+    for (const branch of [
+      "feat/a..b",
+      "feat/.hidden",
+      "feat/a.lock",
+      "HEAD",
+      "-feat",
+      "@{-1}",
+    ]) {
+      expect(
+        await consume!(request({ ...input.context, branch }), reads),
+      ).toEqual(refused("context.branch", "INPUT_INVALID"));
+    }
+    expect(calls).toEqual([]);
+  },
+);
+
 consumerTest("A5 CLI honors the config switch and a local stop", () =>
   withLane(async (f) => {
     const input = await inspected(f);
@@ -272,6 +292,62 @@ consumerTest("A5 CLI refuses a cloud-bound project", () =>
     rmSync(join(f.repo, ".forge/project.json"));
     expect(f.snapshot()).toEqual(before);
   }),
+);
+
+consumerTest(
+  "A5 uses the invoking linked checkout's stop config with shared state",
+  () =>
+    withLane(async (f) => {
+      const workspace = f.request.workspace;
+      const config = readFileSync(join(f.repo, ".forge/config.yaml"), "utf8");
+      mkdirSync(join(workspace, ".forge"), { recursive: true });
+      writeFileSync(
+        join(workspace, ".forge/config.yaml"),
+        config.replace("lanes: {", 'lanes: {"autopilot":{"enabled":false},'),
+      );
+      laneGit(["add", "-f", ".forge/config.yaml"], workspace);
+      laneGit(["commit", "-m", "stop linked checkout"], workspace);
+      const input = await inspected({
+        ...f,
+        request: { ...f.request, expectedHead: f.head() },
+      });
+      const fromMain = await f.run(input, [], ["consume"]);
+      expect(fromMain.exitCode, fromMain.stdout || fromMain.stderr).toBe(0);
+      const fromLinked = await f.run(input, [], ["consume"], workspace);
+      expect(fromLinked.exitCode, fromLinked.stdout || fromLinked.stderr).toBe(
+        2,
+      );
+      expect(JSON.parse(fromLinked.stdout)).toEqual(
+        refused("control", "LANE_STOPPED"),
+      );
+    }),
+);
+
+consumerTest(
+  "A8 consumes a CRLF brief with an implied built-in work source",
+  () =>
+    withLane(async (f) => {
+      const config = join(f.repo, ".forge/config.yaml");
+      writeFileSync(
+        config,
+        readFileSync(config, "utf8").replace(
+          "    source: { builtin: forge/work }\n",
+          "",
+        ),
+      );
+      const bytes = Buffer.from("Approved brief\r\n");
+      const path = f.request.brief.path;
+      writeFileSync(path, bytes);
+      const digest =
+        "sha256:" + createHash("sha256").update(bytes).digest("hex");
+      const input = await inspected({
+        ...f,
+        request: { ...f.request, brief: { path, digest } },
+      });
+      const result = await f.run(input, [], ["consume"]);
+      expect(result.exitCode, result.stdout || result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ status: "verified" });
+    }),
 );
 
 consumerTest(

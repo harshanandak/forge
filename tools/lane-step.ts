@@ -8,7 +8,12 @@ import { resolveIn } from "../src/adapters/fs/index.ts";
 import { nodeProjectFiles } from "../src/adapters/fs/project-files.ts";
 import { createProcessPort } from "../src/adapters/process/index.ts";
 import { cloudBinding } from "../src/assembly/cloud-binding.ts";
-import { nodeConfigFiles, yamlConfigCodec } from "../src/assembly/config.ts";
+import {
+  createConfig,
+  nodeConfigFiles,
+  yamlConfigCodec,
+} from "../src/assembly/config.ts";
+import { firstPartyBlocks } from "../src/assembly/first-party.ts";
 import { sessionIdentity } from "../src/assembly/identity.ts";
 import { resolveOutside } from "../src/assembly/providers.ts";
 import { LocalState } from "../src/assembly/state.ts";
@@ -17,7 +22,6 @@ import workEntry from "../src/blocks/work/entry.cts";
 import workConfigSchema from "../src/blocks/work/schemas/config.json" with { type: "json" };
 import { validateWithSchema } from "../src/contract/schema.ts";
 import { isObject } from "../src/core/config/pointer.ts";
-import { readProject } from "../src/core/config/store.ts";
 import { validateLeaseRecord } from "../src/generated/validators.ts";
 import type { StateRecord } from "../src/generated/types.ts";
 import { parseInspectRequest, refuse } from "./lane-step-contract.ts";
@@ -247,7 +251,7 @@ async function localReads(): Promise<ConsumeReads> {
     },
     async control(issue) {
       requireLocal(main);
-      const work = workInstance(main);
+      const work = workInstance(root);
       if (!work) return "unknown";
       if (work.enabled === false) return "stopped";
       return withState(files, (owner) =>
@@ -277,24 +281,27 @@ const { localStop } = workEntry as unknown as {
   ) => "running" | "stopped";
 };
 function workInstance(root: string) {
-  const config = readProject({
+  const config = createConfig({
     files: nodeConfigFiles(root),
     codec: yamlConfigCodec,
     clock: { now: Date.now },
-  });
-  const blocks = config.document?.blocks;
-  if (config.unreadable || config.problems.length || !isObject(blocks)) return;
-  const work = Object.entries(blocks).flatMap(([name, block]) =>
-    isObject(block) &&
-    (isObject(block.source)
-      ? block.source.builtin === "forge/work"
-      : name === "work")
-      ? [block]
-      : [],
+    detect: () => [],
+    builtinSource(name) {
+      const builtin = `forge/${name}`;
+      return Object.hasOwn(firstPartyBlocks, builtin) ? { builtin } : undefined;
+    },
+  }).show();
+  const blocks = config.effective.blocks;
+  if (!config.valid || !isObject(blocks)) return;
+  const work = Object.values(blocks).filter(
+    (block) =>
+      isObject(block) &&
+      isObject(block.source) &&
+      block.source.builtin === "forge/work",
   );
   const instance = work.length === 1 ? work[0] : undefined;
   if (
-    instance &&
+    isObject(instance) &&
     !validateWithSchema(workConfigSchema, instance.config ?? {}).length
   )
     return instance;
