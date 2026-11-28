@@ -134,6 +134,7 @@ async function preflight(
       : caller?.actor === held.actor;
     if (!own || caller?.session !== held.session)
       return refuse(field, "LEASE_NOT_HELD");
+    field = "workspace";
     const after = consuming ? await source.workspace(workspace) : tree;
     if (after.head !== head) return refuse(headField, "CONTEXT_MISMATCH");
     if (after.branch !== branch) return refuse("branch", "CONTEXT_MISMATCH");
