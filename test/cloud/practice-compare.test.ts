@@ -7,7 +7,7 @@ import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
 import { limitsFrom } from "../../cloud/src/dump.ts";
 import * as f from "./import-current-state.fixture.ts";
 
-setDefaultTimeout(120_000);
+setDefaultTimeout(30_000);
 type Comparison = {
   tables: Record<
     Table,

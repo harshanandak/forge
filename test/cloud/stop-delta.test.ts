@@ -1,8 +1,8 @@
 ﻿import assert from "node:assert/strict";
-import { spyOn, test } from "bun:test";
+import { mock, spyOn, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
-import { roundTrip } from "../../cloud/conformance/conformance.ts";
 import {
   SHAPE,
   scratchStorage,
@@ -27,9 +27,33 @@ import {
   type Expected,
   FLOOR,
 } from "../../cloud/conformance/digest.ts";
-import { stopObservation } from "../../cloud/conformance/stop-live.ts";
+import {
+  expectsStop,
+  liveStops,
+  stopObservation,
+  stopWindowOf,
+} from "../../cloud/conformance/stop-live.ts";
 import type { StopDelta } from "../../cloud/conformance/restored.ts";
 import { digester } from "../../cloud/conformance/budget.ts";
+
+const nativeStopLive = {
+  expectsStop,
+  liveStops,
+  stopObservation,
+  stopWindowOf,
+};
+const restoreObservers: ReturnType<typeof liveStops>[] = [];
+await mock.module(
+  resolve(import.meta.dirname, "../../cloud/conformance/stop-live.ts"),
+  () => ({
+    ...nativeStopLive,
+    liveStops: () => {
+      const live = nativeStopLive.liveStops();
+      restoreObservers.push(live);
+      return live;
+    },
+  }),
+);
 
 const at = "2027-01-15T08:00:00.000Z";
 const actor = { kind: "agent", id: "cloud-restore" } as const;
@@ -41,7 +65,7 @@ const deltas = [1, 2].map((n) => ({
   auditId: `22222222-2222-4222-8222-${String(n).padStart(12, "0")}`,
   window: [Date.parse(at) - 1, Date.parse(at) + 1] as const,
 }));
-const record = (key: string, value: unknown, revision = 1) => ({
+const record = (key: string, value: unknown, revision = 1, updatedAt = at) => ({
   namespace,
   key,
   revision,
@@ -50,7 +74,7 @@ const record = (key: string, value: unknown, revision = 1) => ({
     key,
     revision,
     value,
-    updatedAt: at,
+    updatedAt,
     updatedBy: actor,
   }),
 });
@@ -85,7 +109,12 @@ function fixture(prior: boolean): Tables {
   return tables;
 }
 // Independent synthetic producer: no product stop implementation or checker renderer is called.
-function inject(source: Tables, n: number, prior: boolean): Tables {
+function inject(
+  source: Tables,
+  n: number,
+  prior: boolean,
+  stopAt = at,
+): Tables {
   const epoch = (prior ? 7 : 0) + n,
     revision = (prior ? 3 : 0) + n;
   const global = record(
@@ -95,20 +124,26 @@ function inject(source: Tables, n: number, prior: boolean): Tables {
       incarnation,
       epoch,
       resumeAllEpoch: prior ? 5 : 0,
-      stopAll: at,
+      stopAll: stopAt,
     },
     revision,
+    stopAt,
   );
-  const audit = record(`lane-control:audit:${deltas[n - 1]!.auditId}`, {
-    version: 1,
-    action: "stop",
-    scope: { all: true },
-    device: "cloud-restore",
-    session: "cloud-restore",
-    at,
-    incarnation,
-    epoch,
-  });
+  const audit = record(
+    `lane-control:audit:${deltas[n - 1]!.auditId}`,
+    {
+      version: 1,
+      action: "stop",
+      scope: { all: true },
+      device: "cloud-restore",
+      session: "cloud-restore",
+      at: stopAt,
+      incarnation,
+      epoch,
+    },
+    1,
+    stopAt,
+  );
   const events = [global, audit].map((row, i) => ({
     sequence: Number(source.state_events!.at(-1)!.sequence) + i + 1,
     namespace,
@@ -118,7 +153,7 @@ function inject(source: Tables, n: number, prior: boolean): Tables {
       namespace,
       key: row.key,
       revision: row.revision,
-      at,
+      at: stopAt,
       actor,
       data: (JSON.parse(row.body) as { value: unknown }).value,
     }),
@@ -148,7 +183,7 @@ type Comparison = {
   target: StopDelta | (() => StopDelta);
 };
 // Main ignores the extra parameter: red is a comparison assertion, not an import failure.
-const compare = roundTrip as (
+const compare = async (
   source: string,
   target: string,
   label: string,
@@ -156,7 +191,10 @@ const compare = roundTrip as (
   each: undefined,
   expected: undefined,
   comparison: Comparison,
-) => ReturnType<typeof roundTrip>;
+) => {
+  const { roundTrip } = await import("../../cloud/conformance/conformance.ts");
+  return roundTrip(source, target, label, budget, each, expected, comparison);
+};
 
 test("stop delta: none preserves references and sparse merge preserves SQL order", () => {
   const source = fixture(false);
@@ -625,15 +663,22 @@ test.each(["correct", "floor record", "floor event"] as const)(
 );
 
 test.each([
-  ["a 1 s clock offset passes", 1000, 0, true],
-  ["wider than the caller round trip fails", 0, 5000, false],
+  ["a 1 s clock offset passes", 1000, 0, 0, null],
+  ["wider than the caller round trip fails", 0, 5000, 0, /restore stop window/],
+  [
+    "readback outside the returned window fails",
+    1000,
+    0,
+    -1000,
+    /stop request window/,
+  ],
 ] as const)(
   "stop delta caller path: server window %s",
-  async (_name, offset, width, accepted) => {
+  async (_name, offset, width, readbackOffset, refusal) => {
     const original = fixture(false),
-      source = inject(original, 1, false),
-      target = inject(source, 2, false);
-    let restored = false;
+      source = inject(original, 1, false);
+    let target: Tables | undefined,
+      restored = false;
     const transport = spyOn(globalThis, "fetch").mockImplementation(
       Object.assign(
         async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -648,23 +693,28 @@ test.each([
             });
           if (request.method === "POST") {
             restored = true;
-            const from = Date.now() + offset;
+            const from = Date.now() + offset,
+              window = [from, from + width] as const,
+              readbackAt = new Date(from + readbackOffset).toISOString();
+            target = inject(source, 2, false, readbackAt);
             return Response.json({
               ok: true,
               value: {
                 page: 0,
                 done: true,
-                stopWindow: [from, from + width],
+                stopWindow: window,
                 restored: Object.fromEntries(
                   Object.entries(source).map(([t, rows]) => [t, rows.length]),
                 ),
               },
             });
           }
-          return Response.json({
-            ok: true,
-            value: page(url.pathname.includes("/target/") ? target : source),
-          });
+          if (url.pathname.includes("/target/")) {
+            const tables = target;
+            assert.ok(tables, "target readback follows restore");
+            return Response.json({ ok: true, value: page(tables) });
+          }
+          return Response.json({ ok: true, value: page(source) });
         },
         { preconnect: () => {} },
       ),
@@ -672,20 +722,26 @@ test.each([
     const previous = process.env.CLOUD_RESTORE_STOP;
     process.env.CLOUD_RESTORE_STOP = "1";
     try {
-      const failure = await compare(
-        "source",
-        "target",
-        "stop caller path",
-        16384,
-        undefined,
-        undefined,
-        { fixture: original, seed: deltas[0]!, target: deltas[1]! },
-      ).then(
-        () => "",
-        (error: unknown) => String((error as Error).message),
-      );
-      if (accepted) assert.doesNotMatch(failure, /restore stop window/);
-      else assert.match(failure, /restore stop window/);
+      const run = () =>
+        compare(
+          "source",
+          "target",
+          "stop caller path",
+          16384,
+          undefined,
+          undefined,
+          {
+            fixture: original,
+            seed: deltas[0]!,
+            target: () => {
+              const [live] = restoreObservers;
+              assert.ok(live, "restore caller observation");
+              return live.get("target")!;
+            },
+          },
+        );
+      if (refusal === null) await assert.doesNotReject(run);
+      else await assert.rejects(run, refusal);
     } finally {
       if (previous === undefined) delete process.env.CLOUD_RESTORE_STOP;
       else process.env.CLOUD_RESTORE_STOP = previous;
