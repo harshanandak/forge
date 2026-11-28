@@ -22,25 +22,45 @@ function skillFrontmatter(
   const frontmatter = decoded?.ok === true ? record(decoded.value) : undefined;
   const name = frontmatter?.name;
   const description = frontmatter?.description;
+  const compatibility = frontmatter?.compatibility;
   if (
     frontmatter === undefined ||
     typeof name !== "string" ||
     name !== file.noun ||
-    name.length > 64 ||
-    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) ||
+    [...name].length > 64 ||
+    name !== name.toLowerCase() ||
+    !/^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$/u.test(name) ||
     typeof description !== "string" ||
     description.trim() === "" ||
-    description.length > SKILL_DESCRIPTION_MAX
+    description.length > SKILL_DESCRIPTION_MAX ||
+    (compatibility !== undefined &&
+      (typeof compatibility !== "string" ||
+        compatibility.length === 0 ||
+        [...compatibility].length > 500))
   )
     refuse("OUTPUT_INVALID", `Invalid frontmatter in ${file.path}`);
   return frontmatter;
 }
 
+function isPrimary(file: SkillResourceFile): boolean {
+  return file.path === `${file.noun}/SKILL.md`;
+}
+
 export function skillManifests(
   files: ReadonlyMap<string, SkillResourceFile>,
+  requestedUri?: string,
 ): ReadonlyMap<string, SkillManifest> {
+  const manifests = new Map<string, SkillManifest>();
+  const selected =
+    requestedUri === undefined ? undefined : files.get(requestedUri);
+  if (
+    requestedUri !== undefined &&
+    (selected === undefined || !isPrimary(selected))
+  )
+    return manifests;
   const byNoun = new Map<string, SkillManifestFile[]>();
   for (const [uri, { noun, bytes }] of files) {
+    if (selected !== undefined && noun !== selected.noun) continue;
     const entries = byNoun.get(noun) ?? [];
     entries.push({
       uri,
@@ -49,9 +69,12 @@ export function skillManifests(
     });
     byNoun.set(noun, entries);
   }
-  const manifests = new Map<string, SkillManifest>();
   for (const [uri, file] of files) {
-    if (file.path !== `${file.noun}/SKILL.md`) continue;
+    if (
+      !isPrimary(file) ||
+      (requestedUri !== undefined && uri !== requestedUri)
+    )
+      continue;
     manifests.set(uri, {
       uri,
       frontmatter: skillFrontmatter(file),

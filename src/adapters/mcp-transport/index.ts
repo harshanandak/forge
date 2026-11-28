@@ -104,7 +104,8 @@ function registerResources(
 }
 
 function registerSkills(server: Server, provider: SkillResourceProvider): void {
-  const manifests = () => loadSkillCatalog(() => provider.manifests());
+  const manifests = (uri?: string) =>
+    loadSkillCatalog(() => provider.manifests(uri));
   server.setRequestHandler(
     "skills/list",
     { params: specTypeSchemas.PaginatedRequestParams },
@@ -119,7 +120,7 @@ function registerSkills(server: Server, provider: SkillResourceProvider): void {
     { params: specTypeSchemas.ReadResourceRequestParams },
     async ({ uri }) => {
       const skill = uri.startsWith("skill://")
-        ? (await manifests()).get(uri)
+        ? (await manifests(uri)).get(uri)
         : undefined;
       if (skill === undefined) throw new ResourceNotFoundError(uri);
       return { ...PRIVATE_RESOURCE, skill };

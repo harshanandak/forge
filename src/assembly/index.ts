@@ -2945,9 +2945,9 @@ export async function createAssembly(
           }),
         );
       },
-      async manifests() {
+      async manifests(uri) {
         const { skillManifests } = await loadSkillManifests();
-        return skillManifests(await this.catalog());
+        return skillManifests(await this.catalog(), uri);
       },
     },
     root,

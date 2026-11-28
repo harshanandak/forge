@@ -18,5 +18,5 @@ export interface SkillManifest {
 
 export interface SkillResourceProvider {
   catalog(): Promise<ReadonlyMap<string, SkillResourceFile>>;
-  manifests(): Promise<ReadonlyMap<string, SkillManifest>>;
+  manifests(uri?: string): Promise<ReadonlyMap<string, SkillManifest>>;
 }
