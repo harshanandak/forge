@@ -6,7 +6,7 @@ import {
   type ChatPort,
 } from "../contract/chat.ts";
 import { WORK_REQUEST_CHOICES } from "../contract/domain.ts";
-import type { HubErrorCode } from "../contract/errors.ts";
+import { redactSecretText, type HubErrorCode } from "../contract/errors.ts";
 import { ISSUE_ID_PATTERN } from "../contract/ids.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import { expire, queueEdits } from "./askEffects.ts";
@@ -166,7 +166,7 @@ export function createAsk(
         kind,
         state,
         projectName: project.name,
-        askedForName: caller.person.displayName,
+        askedForName: redactSecretText(caller.person.displayName),
         question: guards.storedText(question),
         choices,
         ...(item

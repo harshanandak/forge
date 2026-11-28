@@ -2,7 +2,7 @@ import { ChatWriteFailure, type ChatPostTarget } from "../contract/chat.ts";
 import type { ChatMessageRef } from "../contract/chat.ts";
 import type { HubCore } from "../contract/core.ts";
 import type { Conversation } from "../contract/domain.ts";
-import type { HubError } from "../contract/errors.ts";
+import { redactSecretText, type HubError } from "../contract/errors.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import {
   recoverAgentPosts,
@@ -122,7 +122,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
           return refused("INPUT_INVALID", "/text");
         const error = guards.outboundText(text, "/text");
         if (error) return { ok: false, error } as const;
-        const name = person.displayName;
+        const name = redactSecretText(person.displayName);
         const label = "Forge (" + name + "'s agent)";
         return {
           ok: true,
@@ -130,6 +130,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
           projectId: project.projectId,
           projectName: project.name,
           channelId,
+          name,
           label,
           prefix: name + "'s agent:",
           sessionId: own.value.sessionId,
@@ -150,7 +151,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         return refused("INPUT_INVALID", "/text");
       const error = guards.outboundText(text, "/text");
       if (error) return { ok: false, error } as const;
-      const name = person.displayName;
+      const name = redactSecretText(person.displayName);
       const label = "Forge (" + name + "'s agent)";
       let prefix = name + "'s agent:";
       const latest = db
@@ -180,6 +181,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         ok: true,
         form: "thread",
         conversation: existing,
+        name,
         label,
         prefix,
         owedCandidates,
@@ -205,7 +207,7 @@ export function createReply(ctx: CoreContext): HubCore["reply"] {
         label: result.label,
         prefix: result.prefix,
         text,
-        fallbackName: person.displayName,
+        fallbackName: result.name,
       };
       if (result.form === "channel") {
         const posted = await postAgentText(ctx, {
