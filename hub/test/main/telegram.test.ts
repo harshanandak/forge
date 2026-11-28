@@ -27,6 +27,7 @@ import {
   tap,
   telegramA,
   telegramGroup,
+  telegramMessage,
 } from "../fakes/fake-telegram.ts";
 import { mainFixture } from "./main-fixture.ts";
 
@@ -168,6 +169,16 @@ test(
         .filter(({ chat_id }) => chat_id === telegramGroup);
       expect(edits.map(({ message_id }) => message_id)).toEqual([500, 500]);
       expect(edits[1]?.text).toContain("Working on the approved issue.");
+      for (const [index, chatId] of [telegramA, telegramGroup].entries())
+        fake.push({
+          update_id: index + 2,
+          message: telegramMessage(chatId, 999, { text: `${askId} 1` }),
+        });
+      await fake.handled(3);
+      const feedback = fake.only("sendMessage").slice(1);
+      expect(feedback.map(({ chat_id }) => chat_id)).toEqual([telegramA]);
+      expect(feedback[0]?.text).toContain("Already answered");
+      expect(rows(f.db, "ask_answers")).toHaveLength(1);
       expect(fake.only("getMe")).toHaveLength(1);
       expect(fake.maxActivePolls).toBe(1);
       expect(fake.activePolls).toBe(1);
