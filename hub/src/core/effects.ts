@@ -418,10 +418,13 @@ export function createEffectWorker(
 
   function start(): Promise<void> {
     if (stopped || started) return Promise.resolve();
+    let claimedByStart = false;
     starting ??= Promise.resolve(draining)
       .then(() => {
         if (stopped) return;
+        const hadOwnership = ownership !== undefined;
         prepare();
+        claimedByStart = !hadOwnership;
         if (isSlack) {
           reconcile();
           scheduleSweep();
@@ -430,7 +433,7 @@ export function createEffectWorker(
       })
       .catch((error: unknown) => {
         refuseSummaryWaiters();
-        releaseOwnership();
+        if (claimedByStart) releaseOwnership();
         throw error;
       })
       .finally(() => {
