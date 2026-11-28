@@ -3,7 +3,7 @@ import { constants } from "node:os";
 import { captureStreams } from "./capture.ts";
 import { ProcessSpawnError } from "./errors.ts";
 import type { SpawnPlan } from "./plan.ts";
-import { endProcessGroup } from "./process-tree.ts";
+import { endProcessGroup, watchGroupAbort } from "./process-tree.ts";
 import type { SupervisionOptions } from "./supervision.ts";
 
 async function within(pending: Promise<unknown>, ms: number): Promise<void> {
@@ -49,6 +49,7 @@ export async function runBunProcessTree(
     );
   }
   timeline.spawn = now();
+  const groupAbort = watchGroupAbort(child.pid, options.signal);
   const bytes = { stdout: 0, stderr: 0 };
   const ended = { stdout: false, stderr: false };
   let failure: Error | undefined;
@@ -129,7 +130,10 @@ export async function runBunProcessTree(
     supervision,
     undefined,
     reaped,
+    undefined,
+    groupAbort.state,
   );
+  groupAbort.dispose();
   if (child.exitCode === null && child.signalCode === null)
     await within(reaped, supervision.cleanupTimeoutMs);
   await within(drained, supervision.drainTimeoutMs);

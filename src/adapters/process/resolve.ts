@@ -343,9 +343,11 @@ export async function proveAdvisoryGit(
       "/var/lib/dpkg",
       "/var/lib/dpkg/info",
     ]) {
+      signal.throwIfAborted();
       const stat = await lstat(path);
       if (!stat.isDirectory() || stat.uid !== 0 || stat.mode & 0o022) return;
     }
+    signal.throwIfAborted();
     const manifest = await readManagedFile(gitManifest, 128 * 1024);
     const expected = manifest?.data
       .toString("ascii")

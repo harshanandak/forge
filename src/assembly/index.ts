@@ -86,7 +86,10 @@ import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
 import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
 import { advisoryLeaseReader, WORK_MAP_LIMITS } from "./work-map-read.ts";
-import { proveAdvisoryGit } from "../adapters/process/index.ts";
+import {
+  immediateProcessAbort,
+  proveAdvisoryGit,
+} from "../adapters/process/index.ts";
 import {
   blockCapture,
   resolveBlock,
@@ -723,12 +726,13 @@ export async function createAssembly(
       signal: AbortSignal,
     ) => Promise<{ result: unknown; leaseUnavailable?: true }>,
     signal: AbortSignal,
+    deadline: number,
   ): ReturnType<typeof readWorkWarnings> {
     const scope = {
       op: "work-file-map",
       effects: ["environment:read", "external:process", "files:read"],
       signal,
-      deadline: Date.now() + advisoryMs,
+      deadline,
       processContainment: "supervised" as const,
     };
     const process = providers.process(scope);
@@ -753,6 +757,7 @@ export async function createAssembly(
     if (gitExecutable.kind !== "resolved")
       return unavailableMap("advisory Git executable unavailable");
     const gitPin = await proveAdvisoryGit(gitExecutable, platform, signal);
+    signal.throwIfAborted();
     if (!gitPin) return unavailableMap("advisory Git process cost unavailable");
     const run = { cwd: stateRoot, env, signal, timeoutMs: advisoryMs };
     let bytes: number = WORK_MAP_LIMITS.outputBytes;
@@ -762,6 +767,7 @@ export async function createAssembly(
     };
     const read = async (op: string, input: object) => {
       signal.throwIfAborted();
+      if (Date.now() >= deadline) throw new Error("Work map deadline exceeded");
       if (bytes <= 0) throw new Error("Work map output limit reached");
       const answer = await command(op, input, signal);
       charge(Buffer.byteLength(JSON.stringify(answer.result)));
@@ -779,6 +785,7 @@ export async function createAssembly(
         }
       })
       .catch(() => undefined);
+    signal.throwIfAborted();
     const map = await readWorkWarnings(
       {
         now: Date.now,
@@ -825,6 +832,7 @@ export async function createAssembly(
       },
       {
         ...run,
+        deadline,
         defaultRef: "refs/remotes/origin/HEAD",
         workInstance,
         candidateId,
@@ -1463,7 +1471,10 @@ export async function createAssembly(
       return [...configCandidates(), grantCandidate, ...candidates];
     },
     async invoke(request, signal) {
-      const cliAdvisories = !mcp && consumeDirectRequest(request);
+      const advisoryDeadline =
+        !mcp && consumeDirectRequest(request)
+          ? performance.now() + advisoryMs
+          : undefined;
       const derived: DetectionObservation[] = [];
       const deviceMemory =
         !mcp && deviceMemoryRequest(request.op, request.input);
@@ -1594,7 +1605,7 @@ export async function createAssembly(
         request,
         mcp,
         deviceMemory,
-        cliAdvisories,
+        advisoryDeadline,
         signal,
       );
       if (
@@ -1623,7 +1634,7 @@ export async function createAssembly(
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
       mcp: boolean,
       deviceMemory: boolean,
-      cliAdvisories: boolean,
+      advisoryDeadline: number | undefined,
       signal?: AbortSignal,
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
@@ -2673,22 +2684,28 @@ export async function createAssembly(
           const output = record(result.result);
           const id = output?.id;
           const skip =
-            mcp || !cliAdvisories
+            advisoryDeadline === undefined
               ? "advisory skipped: shared process runner"
               : laneStart
                 ? "trusted default policy unavailable"
                 : leaseAdvisorySkip(output?.expiresAt, Date.now());
+          const remaining = Math.floor(
+            (advisoryDeadline ?? 0) - performance.now(),
+          );
           if (skip) call.workMap = unavailableMap(skip);
           else if (typeof id !== "string")
             call.workMap = unavailableMap("candidate unavailable");
+          else if (remaining <= 0)
+            call.workMap = unavailableMap("read timed out");
+          else if (signal?.aborted)
+            call.workMap = unavailableMap("read unavailable");
           else {
             const controller = new AbortController();
-            const bounded = signal
-              ? AbortSignal.any([signal, controller.signal])
-              : controller.signal;
-            const instance = runtimeCatalog.resolve(request.op).operation
-              .instance;
+            const cancel = () => controller.abort(immediateProcessAbort);
+            signal?.addEventListener("abort", cancel, { once: true });
             try {
+              const instance = runtimeCatalog.resolve(request.op).operation
+                .instance;
               const read: Parameters<typeof workAdvisory>[2] = async (
                 op,
                 input,
@@ -2724,16 +2741,30 @@ export async function createAssembly(
                   advisoryIssues = undefined;
                 }
               };
-              call.workMap = await Promise.race([
-                delay(advisoryMs, unavailableMap("read timed out"), {
-                  signal: bounded,
+              const timedOut = unavailableMap("read timed out");
+              const map = await Promise.race([
+                delay(remaining, timedOut, {
+                  signal: controller.signal,
                 }),
-                workAdvisory(id, instance, read, bounded),
+                workAdvisory(
+                  id,
+                  instance,
+                  read,
+                  controller.signal,
+                  Date.now() + remaining,
+                ),
               ]);
+              call.workMap =
+                performance.now() >= (advisoryDeadline ?? 0) ? timedOut : map;
             } catch {
-              call.workMap = unavailableMap("read unavailable");
+              call.workMap = unavailableMap(
+                performance.now() >= (advisoryDeadline ?? 0)
+                  ? "read timed out"
+                  : "read unavailable",
+              );
             } finally {
-              controller.abort();
+              cancel();
+              signal?.removeEventListener("abort", cancel);
             }
           }
         }

@@ -11,6 +11,7 @@ const useBun =
   process.platform !== "win32" && process.versions.bun !== undefined;
 
 type Kill = (pid: number, signal: NodeJS.Signals | 0) => void;
+type KillState = "present" | "gone" | "refused" | "failed";
 
 /** The time source the stop sequence paces itself by; tests pass one they advance themselves. */
 export interface StopClock {
@@ -42,16 +43,17 @@ export async function endProcessGroup(
   kill: Kill = (target, signal) => process.kill(target, signal),
   reaped: Promise<unknown> = Promise.resolve(),
   clock: StopClock = realClock,
+  immediateKill?: () => KillState | undefined,
 ): Promise<boolean> {
   const deadline = clock.now() + timing.cleanupTimeoutMs;
   const grace = deadline - timing.cleanupTimeoutMs / 2;
-  let state = signalGroup(kill, pid, "SIGTERM");
-  while (state === "present" && clock.now() < grace) {
+  let state = immediateKill?.() ?? signalGroup(kill, pid, "SIGTERM");
+  while (state === "present" && !immediateKill?.() && clock.now() < grace) {
     await clock.sleep(Math.min(timing.pollIntervalMs, grace - clock.now()));
     state = signalGroup(kill, pid, 0);
   }
   if (state === "gone") return true;
-  state = signalGroup(kill, pid, "SIGKILL");
+  state = immediateKill?.() ?? signalGroup(kill, pid, "SIGKILL");
   // A member forking while the first SIGKILL lands can publish a child that misses it, so the
   // group is sent SIGKILL again a few times; ESRCH means it is gone. These are safety repeats,
   // not policy, and they stay inside the cleanup budget.
@@ -81,7 +83,7 @@ function signalGroup(
   kill: Kill,
   pid: number,
   signal: NodeJS.Signals | 0,
-): "present" | "gone" | "refused" | "failed" {
+): KillState {
   try {
     kill(-pid, signal);
     return "present";
@@ -89,6 +91,34 @@ function signalGroup(
     const code = (error as NodeJS.ErrnoException).code;
     return code === "ESRCH" ? "gone" : code === "EPERM" ? "refused" : "failed";
   }
+}
+
+export const immediateProcessAbort: unique symbol = Symbol(
+  "immediate process abort",
+);
+
+export function watchGroupAbort(
+  pid: number | undefined,
+  signal: AbortSignal | undefined,
+): { state: () => KillState | undefined; dispose(): void } {
+  let state: KillState | undefined;
+  const stop = () => {
+    if (pid === undefined || signal?.reason !== immediateProcessAbort) return;
+    const result = signalGroup(
+      (target, kind) => process.kill(target, kind),
+      pid,
+      "SIGKILL",
+    );
+    if (result === "present" || result === "gone") state = result;
+  };
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
+  return {
+    state: () => state,
+    dispose() {
+      signal?.removeEventListener("abort", stop);
+    },
+  };
 }
 
 async function within(pending: Promise<unknown>, ms: number): Promise<void> {
@@ -126,6 +156,7 @@ export function runProcessTree(
       detached: true,
       shell: false,
     });
+    const groupAbort = watchGroupAbort(child.pid, options.signal);
     const { stdout, stderr } = captureStreams(options);
     let failure: Error | undefined;
     const capture = (stream: StreamCapture, chunk: Buffer): void => {
@@ -179,7 +210,15 @@ export function runProcessTree(
       const pid = child.pid;
       const confirmed =
         pid === undefined ||
-        (await endProcessGroup(pid, supervision, undefined, exited));
+        (await endProcessGroup(
+          pid,
+          supervision,
+          undefined,
+          exited,
+          undefined,
+          groupAbort.state,
+        ));
+      groupAbort.dispose();
       if (pid !== undefined) {
         if (child.exitCode === null && child.signalCode === null)
           await within(exited, supervision.cleanupTimeoutMs);
