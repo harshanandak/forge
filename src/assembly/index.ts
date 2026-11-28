@@ -729,10 +729,12 @@ export async function createAssembly(
     ) => Promise<{ result: unknown; leaseUnavailable?: true }>,
     {
       signal,
+      scanDeadline,
       remainingMs,
       advisoryProviders,
     }: {
       signal: AbortSignal;
+      scanDeadline: number;
       remainingMs: () => number;
       advisoryProviders: ReturnType<typeof createAssemblyProviders>;
     },
@@ -741,9 +743,8 @@ export async function createAssembly(
       op: "work-file-map",
       effects: ["environment:read", "external:process", "files:read"],
       signal,
-      get deadline() {
-        return Date.now() + Math.max(0, remainingMs());
-      },
+      deadline: scanDeadline,
+      deadlineNow: () => performance.now(),
       processContainment: "supervised" as const,
     };
     const process = advisoryProviders.process(scope);
@@ -2785,6 +2786,7 @@ export async function createAssembly(
                 }),
                 workAdvisory(id, instance, read, {
                   signal: controller.signal,
+                  scanDeadline,
                   remainingMs,
                   advisoryProviders,
                 }),

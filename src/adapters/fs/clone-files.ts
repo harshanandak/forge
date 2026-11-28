@@ -62,6 +62,7 @@ export interface CloneFilesOptions {
   readonly write: boolean;
   readonly signal: AbortSignal;
   readonly deadline?: number;
+  readonly deadlineNow?: () => number;
   readonly maxBytes?: number;
 }
 export interface CloneFileCondition {
@@ -476,7 +477,10 @@ function recoverableLock(
 }
 function active(options: CloneFilesOptions): void {
   options.signal.throwIfAborted();
-  if (options.deadline !== undefined && Date.now() >= options.deadline)
+  if (
+    options.deadline !== undefined &&
+    (options.deadlineNow ?? Date.now)() >= options.deadline
+  )
     failure(
       "INVOCATION_TIMEOUT",
       "Clone file service invocation deadline expired",
