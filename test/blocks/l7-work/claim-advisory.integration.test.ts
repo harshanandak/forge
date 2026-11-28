@@ -11,12 +11,14 @@ const built = (path: string) =>
 
 function claimPreload(mode: string, report: string) {
   const stalls = mode === "stalls" || mode === "too late to launch";
+  const resolutionStall = mode.startsWith("blocks ");
+  const overlap = mode.startsWith("finishes with overlap");
   const resolver = built("adapters/process/resolve");
   const proof = dataModule(`
     export * from ${JSON.stringify(resolver)};
     export async function proveAdvisoryGit(executable) {
       if (${JSON.stringify(mode)} === "throws") throw new Error("Advisory failed");
-      if (${stalls || mode === "finishes across a wall-clock step"})
+      if (${stalls || resolutionStall || overlap || mode === "finishes across a wall-clock step"})
         return { executable, unchanged: () => true };
     }
   `);
@@ -48,15 +50,41 @@ function claimPreload(mode: string, report: string) {
   `);
   return dataModule(`
     import { registerHooks, syncBuiltinESMExports } from "node:module";
-    import { writeFileSync } from "node:fs";
+    import fs from "node:fs";
     import timers from "node:timers/promises";
     const mode = ${JSON.stringify(mode)};
+    const { writeFileSync } = fs;
     let elapsed = 0;
     let remaining;
     let cleanupSleeps = 0;
     let wallOffset = 0;
+    let stepped = false;
+    let resolutionStalled = false;
     const wallNow = Date.now;
-    Date.now = () => wallNow() + wallOffset;
+    Date.now = () => {
+      const sampled = wallNow() + wallOffset;
+      if (mode === "finishes with overlap after a backward clock step" &&
+          globalThis.claimed && !stepped &&
+          new Error().stack.includes("at Object.select (")) {
+        stepped = true;
+        wallOffset = -30_000;
+      }
+      return sampled;
+    };
+    const realpath = fs.realpathSync.native;
+    fs.realpathSync.native = function(path, ...args) {
+      if (${resolutionStall} && globalThis.claimed && !resolutionStalled) {
+        const stack = new Error().stack;
+        if ((mode === "blocks the first lookup" && stack.includes("at createGitScope (")) ||
+            (mode === "blocks discovery revalidation" && stack.includes("at Object.files (")) ||
+            (mode === "blocks before Git launch" && stack.includes("at gitText ("))) {
+          resolutionStalled = true;
+          globalThis.expireAdvisory();
+          elapsed = 5500;
+        }
+      }
+      return realpath(path, ...args);
+    };
     Object.defineProperty(performance, "now", { value: () => elapsed });
     const timeout = timers.setTimeout;
     timers.setTimeout = (ms, value, options) => {
@@ -67,7 +95,7 @@ function claimPreload(mode: string, report: string) {
           resolve();
         }));
       }
-      if (!${stalls} || value?.warnings?.[0]?.code !== "WORK_FILE_MAP_INCOMPLETE")
+      if (!${stalls || resolutionStall} || value?.warnings?.[0]?.code !== "WORK_FILE_MAP_INCOMPLETE")
         return timeout(ms, value, options);
       remaining = ms;
       return new Promise((resolve) => {
@@ -101,6 +129,7 @@ function claimPreload(mode: string, report: string) {
     process.stdout.write = function(...args) {
       writeFileSync(${JSON.stringify(report)}, JSON.stringify({
         remaining, elapsed, started: Boolean(globalThis.advisoryChild), stopped,
+        resolutionStalled, stepped,
       }));
       return write.apply(this, args);
     };
@@ -131,7 +160,7 @@ function claimPreload(mode: string, report: string) {
       if (request.op === "issue.claim" && result.ok) {
         globalThis.claimed = true;
         elapsed = mode === "too late to launch" ? 4999
-          : mode === "finishes across a wall-clock step" ? 1000 : 4000;
+          : ${overlap} || mode === "finishes across a wall-clock step" ? 1000 : 4000;
       }
       if (mode === "finishes across a wall-clock step" && request.op === "issue.links" && result.ok) {
         wallOffset = 30_000;
@@ -148,6 +177,11 @@ for (const [mode, reason] of [
   ["finishes", "advisory Git process cost unavailable"],
   ["throws", "read unavailable"],
   ["finishes across a wall-clock step", null],
+  ["finishes with overlap", null],
+  ["finishes with overlap after a backward clock step", null],
+  ["blocks the first lookup", "read timed out"],
+  ["blocks discovery revalidation", "read timed out"],
+  ["blocks before Git launch", "read timed out"],
 ] as const) {
   test(`a claim keeps its lease when its advisory ${mode}`, async () => {
     await advisoryProject(
@@ -221,6 +255,14 @@ for (const [mode, reason] of [
           expect(JSON.parse(readFileSync(report, "utf8"))).toMatchObject({
             started: false,
           });
+        }
+        if (mode.startsWith("blocks ")) {
+          const response = JSON.parse(readFileSync(report, "utf8")) as {
+            elapsed: number;
+            resolutionStalled: boolean;
+          };
+          expect(response.resolutionStalled).toBe(true);
+          expect(response.elapsed).toBeLessThanOrEqual(5000);
         }
       },
     );
