@@ -52,6 +52,11 @@ type SummaryEdit = {
 
 type SummaryStatus = ReportOutput["summary"];
 
+type SummaryWaiter = {
+  wake(projectId: string, revision: number): void;
+  refuse(): void;
+};
+
 export function createEffectWorker(
   { chat, deps: { config, db, log, now }, store: { asks, tx } }: CoreContext,
   schedule: EffectSchedule = scheduleTimer,
@@ -164,21 +169,42 @@ export function createEffectWorker(
   const pruneReplyOwed = db.prepare(
     "DELETE FROM reply_owed WHERE created_at < ?",
   );
-  const summaryWaiters = new Set<
-    (projectId: string, revision: number) => void
-  >();
+  const summaryWaiters = new Set<SummaryWaiter>();
   let draining: Promise<void> | undefined;
   let drainRequested = false;
   let starting: Promise<void> | undefined;
   let started = false;
   let stopped = false;
   let abandoned = false;
+  let closeDeadline: number | undefined;
   let closing: Promise<void> | undefined;
   let cancelSweep: (() => void) | undefined;
   let ownership: WorkerClaim | undefined;
 
   function prepare(): void {
     ownership ??= db.claimWorker();
+  }
+
+  function releaseOwnership(): void {
+    const claim = ownership;
+    claim?.release();
+    ownership = undefined;
+  }
+
+  function writeAbandoned(): boolean {
+    return abandoned || (closeDeadline !== undefined && now() >= closeDeadline);
+  }
+
+  function refuseSummaryWaiters(): void {
+    for (const waiter of summaryWaiters) waiter.refuse();
+  }
+
+  function cancelScheduled(cancel: () => void): void {
+    try {
+      cancel();
+    } catch {
+      log.warn("effect_schedule_cancel_failed");
+    }
   }
 
   function retainHistory(): void {
@@ -291,11 +317,11 @@ export function createEffectWorker(
     try {
       result = await write();
     } catch (error) {
-      if (abandoned) return false;
+      if (writeAbandoned()) return false;
       recordFailure(attempts, error, reschedule);
       return true;
     }
-    if (abandoned) return false;
+    if (writeAbandoned()) return false;
     if (result === "missing") recordFailure(attempts, undefined, reschedule);
     else complete();
     return true;
@@ -340,8 +366,8 @@ export function createEffectWorker(
             return integer(row.published_revision);
           });
           if (publishedRevision !== undefined)
-            for (const wake of summaryWaiters)
-              wake(projectId, publishedRevision);
+            for (const waiter of summaryWaiters)
+              waiter.wake(projectId, publishedRevision);
         },
         (deadline, at) => summaryFailed.run(deadline, at, ...identity),
       );
@@ -357,6 +383,9 @@ export function createEffectWorker(
         drainRequested = false;
         await drainDue();
       } while (drainRequested && !stopped && !starting);
+    } catch (error) {
+      refuseSummaryWaiters();
+      throw error;
     } finally {
       draining = undefined;
     }
@@ -399,6 +428,11 @@ export function createEffectWorker(
         }
         started = true;
       })
+      .catch((error: unknown) => {
+        refuseSummaryWaiters();
+        releaseOwnership();
+        throw error;
+      })
       .finally(() => {
         starting = undefined;
       });
@@ -408,21 +442,22 @@ export function createEffectWorker(
   function close(): Promise<void> {
     if (closing) return closing;
     stopped = true;
-    cancelSweep?.();
+    if (cancelSweep) cancelScheduled(cancelSweep);
     cancelSweep = undefined;
     const active = draining;
-    const release = () => ownership?.release();
+    const release = () => releaseOwnership();
     if (!active) {
       closing = Promise.resolve().then(release);
       return closing;
     }
     closing = new Promise<void>((resolve, reject) => {
+      closeDeadline = now() + closeMs;
       const cancelLimit = schedule(() => {
         abandoned = true;
         resolve();
       }, closeMs);
       const finish = () => {
-        cancelLimit();
+        cancelScheduled(cancelLimit);
         try {
           release();
           resolve();
@@ -455,13 +490,17 @@ export function createEffectWorker(
           if (updatedProject === projectId && updatedRevision >= revision)
             finish("edited");
         }
+        function refuse(): void {
+          finish("queued");
+        }
         function finish(status: SummaryStatus): void {
           clearTimeout(timer);
-          summaryWaiters.delete(wake);
+          summaryWaiters.delete(waiter);
           resolve(status);
         }
+        const waiter = { wake, refuse };
         const timer = setTimeout(() => finish("queued"), LIMITS.reportWaitMs);
-        summaryWaiters.add(wake);
+        summaryWaiters.add(waiter);
       });
     },
   };
