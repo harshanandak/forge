@@ -316,10 +316,12 @@ test(
   "W8 releases the lock when close timer cancellation throws",
   async () => {
     const timers = new Map<number, () => void>();
+    let cancelCalls = 0;
     const schedule: EffectSchedule = (run, delay) => {
       timers.set(delay, run);
       if (delay === closeMs)
         return () => {
+          cancelCalls += 1;
           throw new Error("injected cancel failure");
         };
       return () => {
@@ -338,6 +340,7 @@ test(
       edit.release();
       await draining;
       await closing;
+      expect(cancelCalls).toBe(1);
       await expect(replacement.worker.start()).resolves.toBeUndefined();
     } finally {
       edit.release();
@@ -365,6 +368,25 @@ test(
     ).toEqual([{ published_revision: 1 }]);
     expect(f.chat.writes.map(({ name }) => name)).toEqual(["editSummary"]);
     await expect(f.worker.close()).resolves.toBeUndefined();
+  },
+  timeout,
+);
+
+test(
+  "W10 does not acquire a new lock after close",
+  async () => {
+    const f = await lifeFixture(idleSchedule);
+    const replacement = await f.anotherWorker(f.openPeer());
+    try {
+      await f.worker.start();
+      await f.worker.close();
+      f.worker.prepare();
+      await f.worker.close();
+      await expect(replacement.worker.start()).resolves.toBeUndefined();
+    } finally {
+      await f.worker.close();
+      await replacement.worker.close();
+    }
   },
   timeout,
 );

@@ -182,6 +182,7 @@ export function createEffectWorker(
   let ownership: WorkerClaim | undefined;
 
   function prepare(): void {
+    if (stopped) return;
     ownership ??= db.claimWorker();
   }
 
