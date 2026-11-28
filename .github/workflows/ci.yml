@@ -520,26 +520,39 @@ jobs:
           }
           $install = @('install', $tarball, '--offline', '--cache', $cache, '--no-audit', '--no-fund')
           & $node $npm --prefix "$proof/offline" @install --ignore-scripts
-          auditpol.exe /set '/subcategory:{0CCE922B-69AE-11D9-BED3-505054503030}' /success:enable
-          $watermark = (Get-WinEvent -LogName Security -MaxEvents 1).RecordId
+          @'
+          import cp from 'node:child_process';
+          import { appendFileSync } from 'node:fs';
+          import { syncBuiltinESMExports } from 'node:module';
+          import { basename } from 'node:path';
+          const lifecycle = ['/d', '/s', '/c', 'node ./cnoke.cjs -P . -D src/koffi --prebuild --release'];
+          for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
+            const launch = cp[method];
+            cp[method] = function (file, args, ...rest) {
+              const executable = basename(file).toLowerCase();
+              let kind = `blocked ${method}`;
+              if (/^cmd(?:\.exe)?$/.test(executable) && JSON.stringify(args) === JSON.stringify(lifecycle)) {
+                kind = 'koffi lifecycle';
+              } else if (file === process.execPath && args?.length === 3 && args[0] === '-e' &&
+                         args[1] === 'require(process.argv[1])' && basename(args[2]) === 'koffi') {
+                kind = 'koffi prebuild';
+              }
+              appendFileSync(process.env.HUB_INSTALL_TRACE, `${kind}\n`);
+              if (kind.startsWith('blocked ')) throw new Error(kind);
+              return Reflect.apply(launch, this, [file, args, ...rest]);
+            };
+          }
+          syncBuiltinESMExports();
+          '@ > "$proof/install-audit.mjs"
+          $env:NODE_OPTIONS = "--import=$([Uri]::new("$proof/install-audit.mjs").AbsoluteUri)"
+          $env:HUB_INSTALL_TRACE = "$proof/install-trace.txt"
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          $logs = & $node $npm --prefix "$proof/normal" @install --ignore-scripts=false --foreground-scripts 2>&1
-          $logs | Tee-Object -FilePath "$proof/install.log"
-          $tree = @{('0x{0:x}' -f $PID) = $true}
-          $children = Get-WinEvent -LogName Security -FilterXPath "*[System[(EventID=4688) and (EventRecordID > $watermark)]]" -Oldest | ForEach-Object {
-            $data = @{}
-            ([xml]$_.ToXml()).Event.EventData.Data | ForEach-Object { $data[$_.Name] = $_.'#text' }
-            if ($tree.ContainsKey($data.ProcessId)) {
-              $tree[$data.NewProcessId] = $true
-              [IO.Path]::GetFileName($data.NewProcessName)
-            }
+          & $node $npm --prefix "$proof/normal" @install --ignore-scripts=false --foreground-scripts 2>&1 | Tee-Object -FilePath "$proof/install.log"
+          $trace = Get-Content $env:HUB_INSTALL_TRACE
+          if ($trace -match '^blocked ' -or 'koffi lifecycle' -notin $trace -or 'koffi prebuild' -notin $trace) {
+            throw "Unexpected install process trace: $trace"
           }
-          if (($logs -join "`n") -notmatch 'cnoke\.cjs .*--prebuild' -or @($children -eq 'node.exe').Count -lt 3) {
-            throw "Missing Koffi lifecycle or prebuild check in the process trace: $children"
-          }
-          $unexpected = $children -notmatch '^(node|cmd|conhost|openconsole)\.exe$'
-          if ($unexpected -or ($logs -join "`n") -match 'node-gyp|gyp info|rebuilding from source') { throw "Native build detected: $unexpected" }
-          "Normal install: no build process, $($timer.ElapsedMilliseconds) ms. Audited: $children"
+          "Normal install: no build process, $($timer.ElapsedMilliseconds) ms. Audited: $trace"
       - name: Probe the installed Windows hub
         run: node hub/test/koffi-package.fixture.ts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -550,6 +563,7 @@ jobs:
             ${{ runner.temp }}/hub-acl-proof/inventory.json
             ${{ runner.temp }}/hub-acl-proof/digest.txt
             ${{ runner.temp }}/hub-acl-proof/install.log
+            ${{ runner.temp }}/hub-acl-proof/install-trace.txt
 
   ci-gate:
     name: CI Gate

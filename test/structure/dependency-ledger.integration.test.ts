@@ -110,6 +110,7 @@ test(
       "@modelcontextprotocol/node",
       "@modelcontextprotocol/server",
       "chat",
+      "koffi",
     ]);
     const check = (section: string | undefined) =>
       format(findLedgerViolations(section, pkg, [], today));
