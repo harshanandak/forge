@@ -188,10 +188,20 @@ function compareKeys(a: OrderKey, b: OrderKey): number {
   );
 }
 
-function pausedBoundary(db: HubDb, thread: string): number | undefined {
+type GuardRetention = {
+  cutoff: number;
+  keep: Set<number>;
+  pendingPost: boolean;
+};
+
+function pausedBoundary(
+  db: HubDb,
+  thread: string,
+  retention?: GuardRetention,
+): number | undefined {
   const rows = db
     .prepare(
-      `SELECT seq,kind,chat_message_id FROM thread_messages WHERE adapter = 'slack'
+      `SELECT seq,kind,chat_message_id,created_at FROM thread_messages WHERE adapter = 'slack'
     AND chat_thread_id = ? AND (kind IN ('agent','person') OR (kind = 'system' AND text = ?))
     ORDER BY seq DESC`,
     )
@@ -208,29 +218,60 @@ function pausedBoundary(db: HubDb, thread: string): number | undefined {
     }
   }
   const rootId = thread.slice(thread.lastIndexOf(":") + 1);
-  let earlierSlackPost = false;
+  let earlierSlackPost: number | undefined;
+  let legacyNotice: number | undefined;
+  const chargedRows = retention && new Set<number>();
   let count = 0;
   const seen = new Set<string>();
   for (const { seq, kind, chat_message_id: id } of rows) {
     if (kind === "person") continue;
+    const rowSeq = num(seq);
+    if (kind === "system" && rowSeq > boundary) legacyNotice ??= rowSeq;
     const key = tsKey(id);
     const order = key && personKey ? compareKeys(key, personKey) : undefined;
     if (order !== undefined && order < 0 && id !== rootId)
-      earlierSlackPost = true;
-    if (kind !== "agent") continue;
+      earlierSlackPost ??= rowSeq;
+    if (kind !== "agent" || count === LIMITS.agentRunMax) continue;
     if (typeof id === "string") {
       if (seen.has(id)) continue;
       seen.add(id);
     }
-    let inRun = num(seq) > boundary;
-    if (personKey) inRun = order === undefined ? !earlierSlackPost : order > 0;
-    if (inRun && ++count === LIMITS.agentRunMax) return boundary;
+    let inRun = rowSeq > boundary;
+    if (personKey)
+      inRun = order === undefined ? earlierSlackPost === undefined : order > 0;
+    if (inRun) {
+      chargedRows?.add(rowSeq);
+      if (++count === LIMITS.agentRunMax && !retention) return boundary;
+    }
   }
-  return undefined;
+  if (
+    retention &&
+    (retention.pendingPost ||
+      count > 0 ||
+      rows.some(
+        (row) =>
+          row.kind === "agent" && num(row.created_at) >= retention.cutoff,
+      ))
+  ) {
+    if (boundary !== -1) retention.keep.add(boundary);
+    if (earlierSlackPost !== undefined) retention.keep.add(earlierSlackPost);
+    if (count === LIMITS.agentRunMax && legacyNotice !== undefined)
+      retention.keep.add(legacyNotice);
+    for (const seq of chargedRows ?? []) retention.keep.add(seq);
+  }
+  return count === LIMITS.agentRunMax ? boundary : undefined;
 }
 
 export function paused(db: HubDb, thread: string): boolean {
   return pausedBoundary(db, thread) !== undefined;
+}
+
+export function keepLoopGuardRows(
+  db: HubDb,
+  thread: string,
+  retention: GuardRetention,
+): void {
+  pausedBoundary(db, thread, retention);
 }
 
 export async function enterThread(

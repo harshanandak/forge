@@ -33,8 +33,8 @@ export class AgentPostJournalError extends Error {
   }
 }
 
-const journalPrefix = "agent-post:";
-const journalKey = (thread: string) => journalPrefix + thread;
+export const AGENT_POST_JOURNAL_PREFIX = "agent-post:";
+const journalKey = (thread: string) => AGENT_POST_JOURNAL_PREFIX + thread;
 
 type JournalRead =
   { readonly ok: true; readonly post: JournalPost } | { readonly ok: false };
@@ -77,7 +77,7 @@ function validRef(value: unknown): value is ChatMessageRef {
 }
 
 function readJournalPost(key: string, value: unknown): JournalRead {
-  if (!key.startsWith(journalPrefix) || typeof value !== "string")
+  if (!key.startsWith(AGENT_POST_JOURNAL_PREFIX) || typeof value !== "string")
     return { ok: false };
   let parsed: unknown;
   try {
@@ -102,7 +102,7 @@ function readJournalPost(key: string, value: unknown): JournalRead {
   const at = parsed.at;
   if (typeof id !== "string") return { ok: false };
   if (!validConversation(conversation)) return { ok: false };
-  if (conversation.chatThreadId !== key.slice(journalPrefix.length))
+  if (conversation.chatThreadId !== key.slice(AGENT_POST_JOURNAL_PREFIX.length))
     return { ok: false };
   if (typeof sessionId !== "string") return { ok: false };
   if (typeof personId !== "string") return { ok: false };
