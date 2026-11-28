@@ -554,6 +554,8 @@ jobs:
           "Normal install: no build process, $($timer.ElapsedMilliseconds) ms. Audited: $trace"
       - name: Probe the installed Windows hub
         run: node hub/test/koffi-package.fixture.ts 2>&1 | tee "$RUNNER_TEMP/hub-acl-proof/probes.log"
+      - name: Compare the same-handle Windows ACL reader
+        run: bun test hub/test/core/windows-security-native.test.ts 2>&1 | tee "$RUNNER_TEMP/hub-acl-proof/native-comparison.log"
       - name: Publish worker deadline measurements
         if: always()
         run: |
@@ -572,6 +574,7 @@ jobs:
             ${{ runner.temp }}/hub-acl-proof/install.log
             ${{ runner.temp }}/hub-acl-proof/install-trace.txt
             ${{ runner.temp }}/hub-acl-proof/probes.log
+            ${{ runner.temp }}/hub-acl-proof/native-comparison.log
 
   ci-gate:
     name: CI Gate
