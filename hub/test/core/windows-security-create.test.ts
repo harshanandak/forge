@@ -73,6 +73,34 @@ function outcome(run: () => string): Outcome {
   }
 }
 
+let processes = () => 0;
+let excluded = 0;
+let counter: Promise<() => number> | undefined;
+
+async function processCounter() {
+  const koffi = await import("koffi");
+  const kernel32 = koffi.load("kernel32.dll");
+  const create = kernel32.func(
+    "void * __stdcall CreateJobObjectW(void *attributes, void *name)",
+  );
+  const assign = kernel32.func(
+    "int __stdcall AssignProcessToJobObject(void *job, void *process)",
+  );
+  const query = kernel32.func(
+    "int __stdcall QueryInformationJobObject(void *job, int kind, void *info, uint32_t size, void *length)",
+  );
+  const current = kernel32.func("void * __stdcall GetCurrentProcess()");
+  const job: unknown = create(null, null);
+  if (!job || !assign(job, current()))
+    throw new Error("AssignProcessToJobObject");
+  const accounting = Buffer.alloc(48);
+  return () => {
+    if (!query(job, 1, accounting, 48, null))
+      throw new Error("QueryInformationJobObject");
+    return accounting.readUInt32LE(36);
+  };
+}
+
 async function candidate() {
   let launches = 0;
   if (!windowsDirectoryCreator) {
@@ -94,19 +122,24 @@ async function candidate() {
       },
     };
   }
+  processes = await (counter ??= processCounter());
+  const loading = processes();
   const creator = await windowsDirectoryCreator();
+  launches = processes() - loading;
   return {
     native: true,
     launches: () => launches,
-    create: (target: string, hook: Hook) =>
-      Promise.resolve(
-        outcome(() =>
-          createPrivateWindowsDirectory(hook(creator), target, {
-            end: Date.now() + budget,
-            now: Date.now,
-          }),
-        ),
-      ),
+    create(target: string, hook: Hook) {
+      const [started, skipped] = [processes(), excluded];
+      const result = outcome(() =>
+        createPrivateWindowsDirectory(hook(creator), target, {
+          end: Date.now() + budget,
+          now: Date.now,
+        }),
+      );
+      launches += processes() - started - (excluded - skipped);
+      return Promise.resolve(result);
+    },
   };
 }
 
@@ -155,7 +188,10 @@ function hooked(
   return (creator) => {
     let staging = "";
     const barrier = (name: string, path: string) => {
-      if (fault?.barrier === name) fixture.fault(fault, path, side.log);
+      if (fault?.barrier !== name) return;
+      const before = processes();
+      fixture.fault(fault, path, side.log);
+      excluded += processes() - before;
     };
     return {
       user: () => creator.user(),

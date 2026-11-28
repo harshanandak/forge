@@ -39,8 +39,11 @@ export function createPrivateWindowsDirectory(
   clock: CreationClock,
 ): WindowsCreation {
   const expired = () => clock.now() >= clock.end;
-  if (target.includes("\0") || expired()) return "refused";
-  const resolved = win32.resolve(target);
+  if (target.includes("\0") || !/[\\/:]/.test(target) || expired())
+    return "refused";
+  const resolved = target.startsWith("\\\\?\\")
+    ? target
+    : win32.resolve(target);
   const parent = win32.dirname(resolved);
   if (parent === resolved || !native.isDirectory(parent)) return "refused";
   const descriptor = privateDescriptor(native.user(), true);
