@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import type { WindowsSecurityReader } from "../../src/contract/windows-security.ts";
-import { decodeWindowsDescriptor } from "../../src/core/windows-security-read.ts";
-import { verifyWindowsDescriptor } from "../../src/core/windows-security.ts";
 import {
-  nativeFixtures,
-  type HandleProbe,
-} from "./protect-windows-native-fixture.ts";
+  decodeWindowsDescriptor,
+  readSid,
+} from "../../src/core/windows-security-read.ts";
+import { verifyWindowsDescriptor } from "../../src/core/windows-security.ts";
+import { nativeFixtures } from "./protect-windows-native-fixture.ts";
 import { reference, type DiskRequest } from "./protect-windows-reference.ts";
 
 const adapter = new URL(
@@ -27,18 +27,6 @@ function withReadFault(
       return Buffer.from(request.bytes, "base64");
     },
   };
-}
-
-function readsEmptyAncestor(probe: HandleProbe, owner: string): boolean {
-  if (probe.OpenError || probe.AclError || !probe.Descriptor) return false;
-  const directory =
-    probe.KindError === 0 && probe.Directory && probe.ReparseError === 4390;
-  const descriptor = decodeWindowsDescriptor(
-    Buffer.from(probe.Descriptor, "base64"),
-  );
-  return (
-    directory && descriptor.owner === owner && descriptor.dacl?.length === 0
-  );
 }
 
 test.skipIf(process.platform !== "win32")(
@@ -73,43 +61,42 @@ test.skipIf(process.platform !== "win32")(
         }),
       );
       for (const result of observations) console.log(JSON.stringify(result));
-      const emptyAncestor = fixtures.cases.find(
-        ({ row }) => row === "26",
-      )?.probe;
-      if (!emptyAncestor)
-        throw new Error("Missing empty ancestor handle probe");
-      const readControl = readsEmptyAncestor(
-        emptyAncestor.readControl,
-        emptyAncestor.owner,
-      );
-      const withAttributes = readsEmptyAncestor(
-        emptyAncestor.withAttributes,
-        emptyAncestor.owner,
-      );
-      const overlapped = readsEmptyAncestor(
-        emptyAncestor.overlapped,
-        emptyAncestor.owner,
-      );
-      const nativeOpen = readsEmptyAncestor(
-        emptyAncestor.nativeOpen,
-        emptyAncestor.owner,
-      );
-      console.log(
-        JSON.stringify({
-          row: "26",
-          handleProbe: emptyAncestor,
-          readControl,
-          withAttributes,
-          overlapped,
-          nativeOpen,
-        }),
-      );
       expect(observations.map(({ reference }) => reference)).toEqual(
         observations.map(({ expected }) => expected),
       );
-      expect(readControl || withAttributes || overlapped || nativeOpen).toBe(
-        true,
-      );
+      const user = reader!.user();
+      const me = readSid(user, 0, user.length).sid;
+      for (const [
+        index,
+        { variant, request, stored },
+      ] of fixtures.cases.entries()) {
+        if (!variant.endsWith("junction")) continue;
+        const bytes = stored.at(-1)!;
+        const link = decodeWindowsDescriptor(Buffer.from(bytes, "base64"));
+        expect([
+          link.owner,
+          link.protectedDacl,
+          link.dacl?.map(({ type, mask, sid }) => [type, mask, sid]),
+        ]).toEqual([me, true, [[0, 0x1f01ff, me]]]);
+        const linkDescriptor = withReadFault(reader!, {
+          ...request,
+          fault: request.path,
+          bytes,
+        });
+        expect(
+          verifyWindowsDescriptor(
+            linkDescriptor,
+            request.path,
+            request.kind,
+            request.chain,
+          ),
+        ).toBe(true);
+        const { native, reference } = observations[index]!;
+        expect([variant, native, reference]).toEqual([variant, false, false]);
+        expect(() => reader!.read(request.path, true)).toThrow(
+          "Cannot verify Windows reparse status: 0",
+        );
+      }
       expect(observations.map(({ native }) => native)).toEqual(
         observations.map(({ reference }) => reference),
       );

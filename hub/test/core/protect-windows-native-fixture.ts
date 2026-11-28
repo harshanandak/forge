@@ -17,7 +17,6 @@ $base = $inputData.base
 $root = Join-Path $base 'volume'
 $drive = $null
 $context = 'volume root'
-$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 Add-Type @'
 using System;
 using System.Collections.Generic;
@@ -41,41 +40,6 @@ public static class AclFixture {
   [DllImport("advapi32.dll")] static extern int GetSecurityDescriptorLength(IntPtr descriptor);
   [DllImport("advapi32.dll")]
   static extern int GetSecurityInfo(IntPtr handle, int type, uint flags, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr descriptor);
-  [DllImport("kernel32.dll", SetLastError=true)]
-  static extern bool GetFileInformationByHandleEx(IntPtr handle, int kind, [Out] byte[] info, uint length);
-  [DllImport("kernel32.dll", SetLastError=true)]
-  static extern bool DeviceIoControl(IntPtr handle, uint code, IntPtr input, uint inputLength,
-      [Out] byte[] output, uint outputLength, out uint returned, IntPtr overlapped);
-  [StructLayout(LayoutKind.Sequential)]
-  struct NtName { public ushort Length, Capacity; public IntPtr Buffer; }
-  [StructLayout(LayoutKind.Sequential)]
-  struct ObjectAttributes {
-    public int Length;
-    public IntPtr Root, Name;
-    public uint Flags;
-    public IntPtr Security, Quality;
-  }
-  [StructLayout(LayoutKind.Sequential)]
-  struct IoStatus { public IntPtr Status; public UIntPtr Information; }
-  [StructLayout(LayoutKind.Sequential)]
-  struct OverlappedData {
-    public UIntPtr Internal, InternalHigh;
-    public uint Offset, OffsetHigh;
-    public IntPtr Event;
-  }
-  [DllImport("ntdll.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
-  static extern int RtlDosPathNameToNtPathName_U_WithStatus(string path, out NtName name, IntPtr part, IntPtr relative);
-  [DllImport("ntdll.dll")] static extern void RtlFreeUnicodeString(ref NtName name);
-  [DllImport("ntdll.dll")] static extern int RtlNtStatusToDosError(int status);
-  [DllImport("ntdll.dll")]
-  static extern int NtOpenFile(out IntPtr handle, uint access, ref ObjectAttributes attributes, out IoStatus status, uint share, uint options);
-  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-  static extern IntPtr CreateEvent(IntPtr attributes, bool manualReset, bool initialState, IntPtr name);
-  [DllImport("kernel32.dll", EntryPoint="DeviceIoControl", SetLastError=true)]
-  static extern bool DeviceIoControlOverlapped(IntPtr handle, uint code, IntPtr input, uint inputLength,
-      IntPtr output, uint outputLength, IntPtr returned, IntPtr overlapped);
-  [DllImport("kernel32.dll", SetLastError=true)]
-  static extern bool GetOverlappedResult(IntPtr handle, IntPtr overlapped, out uint returned, bool wait);
   [DllImport("advapi32.dll")]
   static extern int SetSecurityInfo(IntPtr handle, int type, uint flags, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
   public static void Grant(string privilege, bool enabled) {
@@ -128,78 +92,6 @@ public static class AclFixture {
     catch { CloseHandle(handle); throw; }
     Write(handle, bytes);
     return Read(handle);
-  }
-  static IntPtr OpenNt(string path, uint access, out int status) {
-    NtName name;
-    status = RtlDosPathNameToNtPathName_U_WithStatus(path, out name, IntPtr.Zero, IntPtr.Zero);
-    if (status != 0) return new IntPtr(-1);
-    IntPtr namePointer = IntPtr.Zero;
-    try {
-      namePointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(NtName)));
-      Marshal.StructureToPtr(name, namePointer, false);
-      var attributes = new ObjectAttributes {
-        Length=Marshal.SizeOf(typeof(ObjectAttributes)), Name=namePointer, Flags=0x40
-      };
-      IntPtr handle;
-      IoStatus io;
-      status = NtOpenFile(out handle, access, ref attributes, out io, 7, 0x00204000);
-      return status == 0 ? handle : new IntPtr(-1);
-    } finally {
-      if (namePointer != IntPtr.Zero) Marshal.FreeHGlobal(namePointer);
-      RtlFreeUnicodeString(ref name);
-    }
-  }
-  static int QueryOverlappedReparse(IntPtr handle) {
-    IntPtr signal = CreateEvent(IntPtr.Zero, true, false, IntPtr.Zero);
-    if (signal == IntPtr.Zero) return Marshal.GetLastWin32Error();
-    IntPtr output = IntPtr.Zero, context = IntPtr.Zero;
-    try {
-      output = Marshal.AllocHGlobal(16384);
-      context = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(OverlappedData)));
-      Marshal.StructureToPtr(new OverlappedData { Event=signal }, context, false);
-      if (DeviceIoControlOverlapped(handle, 0x900a8, IntPtr.Zero, 0, output, 16384, IntPtr.Zero, context))
-        return 0;
-      int error = Marshal.GetLastWin32Error();
-      if (error != 997) return error;
-      uint returned;
-      return GetOverlappedResult(handle, context, out returned, true) ? 0 : Marshal.GetLastWin32Error();
-    } finally {
-      if (context != IntPtr.Zero) Marshal.FreeHGlobal(context);
-      if (output != IntPtr.Zero) Marshal.FreeHGlobal(output);
-      CloseHandle(signal);
-    }
-  }
-  public sealed class HandleProbe {
-    public int OpenError, KindError, ReparseError, AclError;
-    public int NtOpenStatus;
-    public bool Directory;
-    public string Descriptor;
-  }
-  public static HandleProbe Probe(string path, uint access, string opener) {
-    var result = new HandleProbe();
-    bool asynchronous = opener != "win32";
-    uint flags = asynchronous ? 0x42200000u : 0x02200000u;
-    IntPtr handle = opener == "native"
-      ? OpenNt(path, access, out result.NtOpenStatus)
-      : CreateFile(path, access, 7, IntPtr.Zero, 3, flags, IntPtr.Zero);
-    if (handle == new IntPtr(-1)) {
-      result.OpenError = opener == "native"
-        ? RtlNtStatusToDosError(result.NtOpenStatus)
-        : Marshal.GetLastWin32Error();
-      return result;
-    }
-    try {
-      byte[] standard = new byte[24], reparse = new byte[16384];
-      if (GetFileInformationByHandleEx(handle, 1, standard, (uint)standard.Length)) result.Directory = standard[21] != 0;
-      else result.KindError = Marshal.GetLastWin32Error();
-      uint returned;
-      if (asynchronous) result.ReparseError = QueryOverlappedReparse(handle);
-      else if (!DeviceIoControl(handle, 0x900a8, IntPtr.Zero, 0, reparse, (uint)reparse.Length, out returned, IntPtr.Zero))
-        result.ReparseError = Marshal.GetLastWin32Error();
-      try { result.Descriptor = Convert.ToBase64String(Read(handle)); }
-      catch (Win32Exception error) { result.AclError = error.NativeErrorCode; }
-      return result;
-    } finally { CloseHandle(handle); }
   }
   public static void Restore() {
     var errors = new List<Exception>();
@@ -255,7 +147,7 @@ $results = foreach ($recipe in $inputData.recipes) {
   if ($recipe.kind) { $request.kind = $recipe.kind }
   $stored = @()
   foreach ($level in 2..0) {
-    if ($level -eq 0 -and $recipe.shape -in 'missing','junction','symlink','dangling') { continue }
+    if ($level -eq 0 -and $recipe.shape -eq 'missing') { continue }
     $descriptor = if ($level -eq $depth -and $recipe.sddl -and !$recipe.inject) { Raw $recipe.sddl } else { $safe }
     $stored += Set-Raw $paths[$level] $descriptor
   }
@@ -265,25 +157,7 @@ $results = foreach ($recipe in $inputData.recipes) {
       $request.bytes = [Convert]::ToBase64String((Bytes (CaseDescriptor $recipe)))
     }
   }
-  $probe = $null
-  if ($recipe.row -eq '26') {
-    $probePath = $drive + $path.Substring($root.Length)
-    try {
-      [AclFixture]::Grant('SeBackupPrivilege', $false)
-      [AclFixture]::Grant('SeRestorePrivilege', $false)
-      $probe = @{
-        owner = $me
-        readControl = [AclFixture]::Probe($probePath, 0x20000, 'win32')
-        withAttributes = [AclFixture]::Probe($probePath, 0x20080, 'win32')
-        overlapped = [AclFixture]::Probe($probePath, 0x20000, 'overlapped')
-        nativeOpen = [AclFixture]::Probe($probePath, 0x20000, 'native')
-      }
-    } finally {
-      [AclFixture]::Grant('SeBackupPrivilege', $true)
-      [AclFixture]::Grant('SeRestorePrivilege', $true)
-    }
-  }
-  @{ row = $recipe.row; variant = $recipe.variant; request = $request; expected = $recipe.expected; stored = $stored; probe = $probe }
+  @{ row = $recipe.row; variant = $recipe.variant; request = $request; expected = $recipe.expected; stored = $stored }
 }
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject @($results) -Compress -Depth 5))
 $null = [Console]::In.ReadLine()
@@ -301,28 +175,11 @@ $null = [Console]::In.ReadLine()
 }
 `;
 
-export type HandleProbe = {
-  OpenError: number;
-  KindError: number;
-  ReparseError: number;
-  AclError: number;
-  NtOpenStatus: number;
-  Directory: boolean;
-  Descriptor: string | null;
-};
-
 type Observation = Pick<
   ReturnType<typeof recipes>[number],
   "row" | "variant" | "expected"
 > & {
   request: DiskRequest;
-  probe: {
-    owner: string;
-    readControl: HandleProbe;
-    withAttributes: HandleProbe;
-    overlapped: HandleProbe;
-    nativeOpen: HandleProbe;
-  } | null;
   stored: string[];
 };
 
