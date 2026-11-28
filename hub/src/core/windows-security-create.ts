@@ -33,60 +33,19 @@ export function privateDescriptor(sid: Buffer, directory: boolean): Buffer {
   return descriptor;
 }
 
-const separator = (char: string | undefined) => char === "\\" || char === "/";
-const extended = (path: string) => /^\\[\\?]\?\\/.test(path);
+const reserved = (char: string) => char < " " || '"<>|*?:'.includes(char);
 
-function normalize(path: string): string {
-  if (extended(path)) return path;
-  const spaces = path.search(/[^ ]|$/);
-  const skip =
-    separator(path[spaces]) ||
-    (path[spaces + 1] === ":" && /[a-z]/i.test(path[spaces] ?? ""));
-  let start = skip ? spaces : 0;
-  let out = separator(path[start]) ? "\\" : "";
-  if (out) start += 1;
-  for (let i = start; i < path.length; i += 1)
-    if (!separator(path[i])) out += path[i];
-    else if (!separator(path[i + 1])) out += "\\";
-  return out;
-}
-
-function rootLength(path: string): number {
-  const prefixed = path.startsWith("\\\\?\\");
-  const unc = path.startsWith("\\\\?\\UNC\\");
-  if ((!prefixed || unc) && separator(path[0])) {
-    if (!unc && !separator(path[1])) return 1;
-    let left = 2;
-    for (let i = unc ? 8 : 2; i < path.length; i += 1) {
-      if (!separator(path[i])) continue;
-      left -= 1;
-      if (left === 0) return i;
-    }
-    return path.length;
-  }
-  const colon = prefixed ? 6 : 2;
-  if (path.length < colon || path[colon - 1] !== ":") return 0;
-  return separator(path[colon]) ? colon + 1 : colon;
-}
-
-export function directoryName(target: string): string | undefined {
-  const device = extended(target) || /^[\\/]{2}[.?][\\/]/.test(target);
-  const invalid = (char: string) => char < " " || '"<>|'.includes(char);
-  if (!device && [...target].some(invalid)) return undefined;
-  const path = normalize(target);
-  if (!path.trim()) return undefined;
-  const root = rootLength(path);
-  if (path.length <= root) return undefined;
-  let i = path.length - 1;
-  while (i > root && !separator(path[i])) i -= 1;
-  return path.slice(0, i);
-}
-
-function namesRoot(target: string): boolean {
-  const full = win32.resolve(
-    target.replace(/^\\\\\?\\(UNC\\)?/, (_, unc) => (unc ? "\\\\" : "")),
-  );
-  return win32.dirname(full) === full;
+function canonical(target: string): boolean {
+  if (target.length >= 260 || target !== win32.resolve(target)) return false;
+  const drive = /^[a-z]:\\/i.test(target);
+  if (!drive && !/^\\\\[^\\]+\\[^\\]+/.test(target)) return false;
+  return target
+    .slice(drive ? 3 : 2)
+    .split("\\")
+    .every(
+      (part) =>
+        part.length <= 255 && !/[. ]$/.test(part) && ![...part].some(reserved),
+    );
 }
 
 export function createPrivateWindowsDirectory(
@@ -95,13 +54,12 @@ export function createPrivateWindowsDirectory(
   clock: CreationClock,
 ): WindowsCreation {
   const expired = () => clock.now() >= clock.end;
-  if (target.includes("\0") || expired()) return "refused";
-  const parent = directoryName(target);
-  if (!parent || namesRoot(target) || !native.isDirectory(parent))
-    return "refused";
+  if (expired() || !canonical(target)) return "refused";
+  const parent = win32.dirname(target);
+  if (parent === target || !native.isDirectory(parent)) return "refused";
   const descriptor = privateDescriptor(native.user(), true);
   const name = `.forge-private-${randomUUID().replaceAll("-", "")}`;
-  const staging = /[\\/:]$/.test(parent) ? parent + name : `${parent}\\${name}`;
+  const staging = win32.join(parent, name);
   if (expired() || !native.createDirectory(staging, descriptor))
     return "refused";
   let published = false;
