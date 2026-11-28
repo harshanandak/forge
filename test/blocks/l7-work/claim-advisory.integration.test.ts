@@ -12,6 +12,8 @@ const built = (path: string) =>
 function claimPreload(mode: string, report: string) {
   const stalls = mode === "stalls" || mode === "too late to launch";
   const resolutionStall = mode.startsWith("blocks ");
+  const delayedReap =
+    mode === "blocks the first lookup until after the deadline";
   const overlap = mode.startsWith("finishes with overlap");
   const resolver = built("adapters/process/resolve");
   const proof = dataModule(`
@@ -22,14 +24,13 @@ function claimPreload(mode: string, report: string) {
         return { executable, unchanged: () => true };
     }
   `);
-  const phase =
-    mode === "blocks the first lookup"
-      ? "initial"
-      : mode === "blocks discovery revalidation"
-        ? "discovery"
-        : mode === "blocks before Git launch"
-          ? "launch"
-          : undefined;
+  const phase = mode.startsWith("blocks the first lookup")
+    ? "initial"
+    : mode === "blocks discovery revalidation"
+      ? "discovery"
+      : mode === "blocks before Git launch"
+        ? "launch"
+        : undefined;
   const readerPreload = dataModule(`
     import fs from "node:fs";
     import { registerHooks } from "node:module";
@@ -95,6 +96,9 @@ function claimPreload(mode: string, report: string) {
     let stepped = false;
     let resolutionStalled = false;
     let resolutionTerminated = false;
+    let finishReader;
+    let wroteResponse = false;
+    let readerPid;
     const wallNow = Date.now;
     Date.now = () => {
       const sampled = wallNow() + wallOffset;
@@ -110,8 +114,19 @@ function claimPreload(mode: string, report: string) {
     childProcess.fork = (file, args, options) => {
       if (!file.endsWith("advisory-git.js")) return fork(file, args, options);
       const child = fork(file, args, { ...options, execArgv: ["--import", ${JSON.stringify(readerPreload)}] });
+      if (${delayedReap}) {
+        const kill = child.kill;
+        child.kill = function(signal) {
+          readerPid = child.pid;
+          return kill.call(this, signal);
+        };
+      }
       const emit = child.emit;
       child.emit = function(event, ...args) {
+        if (${delayedReap} && event === "close" && !wroteResponse) {
+          finishReader = () => emit.call(this, event, ...args);
+          return true;
+        }
         if (event === "message" && args[0]?.resolutionStalled) {
           resolutionStalled = true;
           globalThis.expireAdvisory();
@@ -126,7 +141,7 @@ function claimPreload(mode: string, report: string) {
     fs.realpathSync.native = function(path, ...args) {
       if (${resolutionStall} && globalThis.claimed && !resolutionStalled) {
         const stack = new Error().stack;
-        if ((mode === "blocks the first lookup" && stack.includes("at createGitScope (")) ||
+        if ((mode.startsWith("blocks the first lookup") && stack.includes("at createGitScope (")) ||
             (mode === "blocks discovery revalidation" && stack.includes("at Object.files (")) ||
             (mode === "blocks before Git launch" && stack.includes("at gitText ("))) {
           resolutionStalled = true;
@@ -135,6 +150,15 @@ function claimPreload(mode: string, report: string) {
         }
       }
       return realpath(path, ...args);
+    };
+    const timer = globalThis.setTimeout;
+    globalThis.setTimeout = (callback, ms, ...args) => {
+      if (readerPid === undefined || wroteResponse) return timer(callback, ms, ...args);
+      queueMicrotask(() => {
+        elapsed += ms;
+        callback(...args);
+      });
+      return 0;
     };
     Object.defineProperty(performance, "now", { value: () => elapsed });
     const timeout = timers.setTimeout;
@@ -181,9 +205,12 @@ function claimPreload(mode: string, report: string) {
     process.stdout.write = function(...args) {
       writeFileSync(${JSON.stringify(report)}, JSON.stringify({
         remaining, elapsed, started: Boolean(globalThis.advisoryChild), stopped,
-        resolutionStalled, resolutionTerminated, stepped,
+        resolutionStalled, resolutionTerminated, readerPid, stepped,
       }));
-      return write.apply(this, args);
+      const written = write.apply(this, args);
+      wroteResponse = true;
+      finishReader?.();
+      return written;
     };
     process.once("exit", () => {
       writeFileSync(${JSON.stringify(report + ".exit")}, JSON.stringify({
@@ -232,6 +259,7 @@ for (const [mode, reason] of [
   ["finishes with overlap", null],
   ["finishes with overlap after a backward clock step", null],
   ["blocks the first lookup", "read timed out"],
+  ["blocks the first lookup until after the deadline", "read timed out"],
   ["blocks discovery revalidation", "read timed out"],
   ["blocks before Git launch", "read timed out"],
 ] as const) {
@@ -313,10 +341,25 @@ for (const [mode, reason] of [
             elapsed: number;
             resolutionStalled: boolean;
             resolutionTerminated: boolean;
+            readerPid?: number;
           };
           expect(response.resolutionStalled).toBe(true);
           expect(response.elapsed).toBeLessThanOrEqual(5000);
-          expect(response.resolutionTerminated).toBe(true);
+          if (mode === "blocks the first lookup until after the deadline") {
+            expect(response.resolutionTerminated).toBe(false);
+            expect(response.readerPid).toBeGreaterThan(0);
+            const supervision = warnings
+              .filter(({ code }) => code === "PROCESS_SUPERVISION")
+              .map(({ message }) => JSON.parse(message) as unknown);
+            expect(supervision).toContainEqual({
+              commandPid: response.readerPid,
+              confirmed: false,
+              killSent: true,
+              reaped: false,
+            });
+          } else {
+            expect(response.resolutionTerminated).toBe(true);
+          }
         }
         if (mode === "finishes with overlap after a backward clock step") {
           expect(JSON.parse(readFileSync(report, "utf8"))).toMatchObject({
