@@ -16,7 +16,7 @@ import {
   text,
 } from "./askEffects.ts";
 import { newStoreId } from "./credentials.ts";
-import { isTelegramId } from "./directory.ts";
+import { isTelegramId, readStoredDisplayName } from "./directory.ts";
 import type {
   AnswerAfter,
   AskStore,
@@ -123,7 +123,7 @@ export function createAnswers(
     }
     const intended =
       verdict === "not_allowed"
-        ? names.all(id).map((row) => text(row.display_name))
+        ? names.all(id).map((row) => readStoredDisplayName(row.display_name))
         : [];
     const ephemeralText =
       verdict === "not_allowed"

@@ -5,6 +5,7 @@ import type {
 } from "../contract/chat.ts";
 import type { AskAnswer, AskChoice } from "../contract/domain.ts";
 import type { HubDb, SqlRow } from "../contract/runtime.ts";
+import { readStoredDisplayName } from "./directory.ts";
 import type { AskStore, StoreDeps } from "./store.ts";
 
 function invalid(): never {
@@ -62,7 +63,7 @@ export function readAnswer(row: SqlRow): AskAnswer {
     choiceId: id,
     choiceLabel: choice?.label ?? invalid(),
     answeredByPersonId: text(row.answered_by_person_id),
-    answeredByName: text(row.display_name),
+    answeredByName: readStoredDisplayName(row.display_name),
     answeredAt: integer(row.answered_at),
     source: oneOf(row.source, ["button", "digit"]),
   };
@@ -152,7 +153,7 @@ export function createAskEffects({
           askId,
           kind: type,
           projectName: text(row.project_name),
-          askedForName: text(row.asked_for_name),
+          askedForName: readStoredDisplayName(row.asked_for_name),
           question: text(row.question),
           choices: choices(row.choices_json),
           state,
@@ -160,7 +161,7 @@ export function createAskEffects({
             ? {}
             : row.inbox_item_id === null
               ? { issueId: text(row.issue_id) }
-              : { requesterName: text(row.sender_name) }),
+              : { requesterName: readStoredDisplayName(row.sender_name) }),
         };
         const ref = {
           chatThreadId: text(row.chat_thread_id),

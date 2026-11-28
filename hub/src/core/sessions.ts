@@ -6,6 +6,7 @@ import { HUB_RULES, HUB_RULES_NO_SLACK, LIMITS } from "../contract/mcp.ts";
 import type { HubStatement, SqlRow, SqlValue } from "../contract/runtime.ts";
 import { unresolvedAgentPost } from "./agent-posts.ts";
 import { newStoreId } from "./credentials.ts";
+import { readStoredDisplayName } from "./directory.ts";
 import { fail } from "./errors.ts";
 import type { SessionStore, StoreDeps } from "./store.ts";
 
@@ -75,7 +76,7 @@ function readSender(row: SqlRow): Sender {
   if (kind === "system") return { kind };
   const person = {
     personId: text(row.sender_person_id),
-    displayName: text(row.sender_name),
+    displayName: readStoredDisplayName(row.sender_name),
   };
   return kind === "person"
     ? { kind, ...person }

@@ -1,5 +1,5 @@
 import type { Conversation, InboxItem, Session } from "../contract/domain.ts";
-import { SECRET_PATTERNS, SECRET_REMOVED_TEXT } from "../contract/errors.ts";
+import { redactSecretText } from "../contract/errors.ts";
 import {
   LIMITS,
   THREAD_CONTEXT_NOTICE,
@@ -7,6 +7,7 @@ import {
   type ThreadContextEntry,
 } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
+import { readStoredDisplayName } from "./directory.ts";
 import { isUnconfirmedMessage, num, str } from "./thread.ts";
 
 export function deliveryContext(
@@ -55,14 +56,13 @@ export function deliveryContext(
     const { kind } = row;
     if (kind !== "person" && kind !== "agent" && kind !== "outsider")
       throw new Error("Invalid context sender");
-    const raw = str(row.text);
-    const text = SECRET_PATTERNS.some((pattern) => pattern.test(raw))
-      ? SECRET_REMOVED_TEXT
-      : raw;
+    const text = redactSecretText(str(row.text));
     chars += text.length;
     if (chars > LIMITS.contextChars) break;
     const name =
-      kind === "outsider" ? "a person outside Forge" : str(row.display_name);
+      kind === "outsider"
+        ? "a person outside Forge"
+        : readStoredDisplayName(row.display_name);
     const suffix = isUnconfirmedMessage(row.chat_message_id)
       ? " (delivery unconfirmed)"
       : "";

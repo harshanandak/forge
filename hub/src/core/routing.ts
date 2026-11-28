@@ -5,6 +5,7 @@ import {
   recoverAgentPosts,
 } from "./agent-posts.ts";
 import type { Conversation, Person, Session } from "../contract/domain.ts";
+import { redactSecretText } from "../contract/errors.ts";
 import { LIMITS } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
 import { bestEffort, type Notice, postNotice } from "./doorbell.ts";
@@ -123,7 +124,7 @@ export function insertItem(
       senderSession?.kind ?? "person",
       sender.personId,
       senderSession?.sessionId ?? null,
-      sender.displayName,
+      redactSecretText(sender.displayName),
       Number(senderSession !== undefined || sender.personId !== owner.personId),
       Number(projectId === undefined),
       item.text,

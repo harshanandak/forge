@@ -218,6 +218,16 @@ export async function baseFixture(
 
 export type BaseFixture = Awaited<ReturnType<typeof baseFixture>>;
 
+export function observePostJournal(f: BaseFixture) {
+  const post = f.chat.postText.bind(f.chat);
+  let rows: ReturnType<BaseFixture["col"]> = [];
+  f.chat.postText = (...args) => {
+    rows = f.col("meta WHERE key GLOB 'agent-post:*'", "value");
+    return post(...args);
+  };
+  return () => rows;
+}
+
 export function seedThread(
   f: BaseFixture,
   id: string,

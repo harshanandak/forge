@@ -10,6 +10,7 @@ import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import { configFixture } from "./config-fixture.ts";
 import { a, b, caller, closeDb, openDb, p1, value } from "./fixture.ts";
+import { seedRemovedMemberName } from "./fixture.ts";
 import {
   askFixture,
   asksOf,
@@ -95,6 +96,25 @@ test(
     expect(rows(f.db, "ask_answers")).toMatchObject([
       { ask_id: id, choice_id: "second", source: "button" },
     ]);
+  },
+  timeout,
+);
+
+test(
+  "stored answers redact a removed member's name in inbox and card edits",
+  async () => {
+    const f = await askFixture();
+    const { askId } = value(await f.choice({ to: [b.personId] }));
+    const answer = f.asks.answerAction(button(askId, "legacy-answer", slackB));
+    expect(answer.after?.askId).toBe(askId);
+    seedRemovedMemberName(f.db, b.personId);
+    const view = f.asks.answerRows(f.sessionId, 1)[0]?.view;
+    const card = f.asks.pendingEdits(1)[0]?.card.state;
+    const name = "[possible secret removed]";
+    expect(view?.answeredBy.name === name).toBe(true);
+    expect(card?.kind === "answered" && card.answeredByName === name).toBe(
+      true,
+    );
   },
   timeout,
 );

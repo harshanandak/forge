@@ -145,6 +145,17 @@ test(
 );
 
 test(
+  "config refuses a secret-shaped display name without echoing it",
+  () => {
+    const pointer = "/people/0/displayName";
+    const name = "xapp" + "-" + "fixture".repeat(3);
+    const error = refuse([[pointer, name]], pointer);
+    expect((String(error) + JSON.stringify(error)).includes(name)).toBe(false);
+  },
+  timeout,
+);
+
+test(
   "T5: requires config fields, explicit block switches and a nonempty host allowlist",
   () => {
     for (const [pointer, edit] of required) refuse([edit], pointer);

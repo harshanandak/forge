@@ -9,7 +9,7 @@ import {
   thread,
   type BaseFixture,
 } from "./base-fixture.ts";
-import { a, b, p1, value } from "./fixture.ts";
+import { a, b, p1, seedRemovedMemberName, value } from "./fixture.ts";
 import { slackB } from "./fakes.ts";
 
 const timeout = 30_000;
@@ -65,6 +65,22 @@ test(
         answered: 0,
       },
     ]);
+  },
+  timeout,
+);
+
+test(
+  "thread context redacts a removed member's stored name",
+  async () => {
+    const f = await baseFixture();
+    const sessionId = await root(f);
+    append(f, "early", "Earlier reply");
+    seedRemovedMemberName(f.db, b.personId);
+    await f.follow("current");
+    const entries = f.read(sessionId).items[0]?.threadContext?.entries;
+    expect(entries?.map((entry) => entry.from === SECRET_REMOVED_TEXT)).toEqual(
+      [true],
+    );
   },
   timeout,
 );

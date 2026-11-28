@@ -12,6 +12,8 @@ import {
 } from "./base-fixture.ts";
 import { refusal, until } from "./base-fakes.ts";
 import { a, b, configPeople, p1, p2, value } from "./fixture.ts";
+import { observePostJournal } from "./base-fixture.ts";
+import { secretCaller, secretName } from "./fixture.ts";
 import { slackA, slackB } from "./fakes.ts";
 
 const timeout = 30_000;
@@ -73,6 +75,25 @@ test(
     });
     expect(f.rows("conversations")).toEqual([]);
     expect(f.rings).toHaveLength(1);
+  },
+  timeout,
+);
+
+test(
+  "agent send redacts a secret-shaped sender name in storage and inbox",
+  async () => {
+    const f = await baseFixture();
+    const alpha = f.bind();
+    const beta = f.bind(b);
+    value(
+      await f.core.send(f.caller(secretCaller.person), draft(alpha.sessionId)),
+    );
+    const storedName = f.col("inbox_items", "sender_name")[0];
+    const deliveredName = f.read(beta.sessionId, b).items[0]?.from.name;
+    expect({
+      stored: storedName === "[possible secret removed]",
+      delivered: deliveredName === "[possible secret removed]",
+    }).toEqual({ stored: true, delivered: true });
   },
   timeout,
 );
@@ -249,6 +270,35 @@ test(
       },
     ]);
     expect(f.rings).toHaveLength(rings);
+  },
+  timeout,
+);
+
+test(
+  "channel send redacts the sender name before journaling and posting",
+  async () => {
+    const f = await baseFixture();
+    const { sessionId } = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(sessionId).items[0]!.conversationId!;
+    const journal = observePostJournal(f);
+    const name = "[possible secret removed]";
+    const safe = (value: unknown) => {
+      const json = JSON.stringify(value);
+      return json.includes(name) && !json.includes(secretName);
+    };
+    const sent = value(
+      await f.core.send(f.caller(secretCaller.person), {
+        ...draft(sessionId),
+        conversationId,
+      }),
+    );
+    expect(sent.threadPost).toBe("posted");
+    expect({
+      journal: safe(journal()),
+      post: safe(f.writes("postText")),
+      projection: safe(f.col("thread_messages WHERE kind = 'agent'", "text")),
+    }).toEqual({ journal: true, post: true, projection: true });
   },
   timeout,
 );

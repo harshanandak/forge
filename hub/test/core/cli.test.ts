@@ -6,8 +6,42 @@ import { createCli } from "../../src/core/cli.ts";
 import { createCoreContext } from "../../src/core/core.ts";
 import { baseFixture, type BaseFixture } from "./base-fixture.ts";
 import { a, b, p1, p2, seedItem, value } from "./fixture.ts";
+import { secretCaller, secretName } from "./fixture.ts";
 
 const timeout = 30_000;
+
+test.each(["fresh send", "legacy inbox"] as const)(
+  "CLI %s redacts a secret-shaped sender name",
+  async (mode) => {
+    const f = await baseFixture();
+    const cli = createCli(f.context);
+    const project = { projectId: p1 };
+    const { sessionId } = value(cli.cliInbox(a, project));
+    const name = "[possible secret removed]";
+    let owner = a;
+    let targetSessionId = sessionId;
+    if (mode === "fresh send") {
+      owner = b;
+      targetSessionId = value(cli.cliInbox(b, project)).sessionId;
+      const input = {
+        ...project,
+        sessionId,
+        toPersonId: b.personId,
+        targetSessionId,
+        text: "CLI note",
+      };
+      value(await cli.cliSend(secretCaller.person, input));
+      expect(f.col("inbox_items", "sender_name")[0] === name).toBe(true);
+    } else {
+      const legacy = { target: sessionId, senderName: secretName };
+      seedItem(f.db, "itm_legacy", legacy);
+    }
+    const input = { ...project, sessionId: targetSessionId };
+    const inbox = value(cli.cliInbox(owner, input));
+    expect(inbox.items[0]?.from.name === name).toBe(true);
+  },
+  timeout,
+);
 
 function expectNoApproval(f: BaseFixture) {
   for (const table of ["asks", "ask_answers", "permits"])

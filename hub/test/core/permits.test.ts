@@ -1,9 +1,29 @@
 import { expect, test } from "bun:test";
+import { renderAskCard } from "../../src/chat/cards.ts";
+import { renderTelegramAskCard } from "../../src/chat/telegram-cards.ts";
 import { WORK_REQUEST_CHOICES } from "../../src/contract/domain.ts";
 import { a, p1, p2, caller, seedItem, value } from "./fixture.ts";
+import { secretCaller, secretName } from "./fixture.ts";
 import { askFixture, button, refA, rows, slackA } from "./fakes.ts";
 
 const timeout = 30_000;
+
+test(
+  "initial choice card redacts the caller name in Slack and Telegram",
+  async () => {
+    const f = await askFixture();
+    const { askId } = value(await f.choice({}, secretCaller));
+    const card = f.chat.askCards[0]!;
+    const name = "[possible secret removed]";
+    const heading = "Ask for " + name;
+    expect([
+      card.askId === askId && card.askedForName === name,
+      JSON.stringify(renderAskCard(card)).includes(heading),
+      renderTelegramAskCard(card).text.startsWith(heading),
+    ]).toEqual([true, true, true]);
+  },
+  timeout,
+);
 
 test(
   "P1: an explicit issue request always goes to the owner",
@@ -76,6 +96,35 @@ test(
       choices: WORK_REQUEST_CHOICES,
     });
     expect(f.chat.askCards[0]?.issueId).toBeUndefined();
+  },
+  timeout,
+);
+
+test(
+  "work-request cards redact the sender name from a legacy inbox item",
+  async () => {
+    const f = await askFixture();
+    const inboxItemId = "itm_legacy";
+    const source = { delivered: f.sessionId, senderName: secretName };
+    seedItem(f.db, inboxItemId, source);
+    const { askId, expiresAt } = value(await f.request({ inboxItemId }, false));
+    f.setTime(Date.parse(expiresAt));
+    expect(f.asks.sweepExpiry()).toBe(1);
+    const tables = ["asks", "ask_deliveries", "ask_edit_effects"] as const;
+    for (const table of tables) {
+      const records = rows(f.db, table);
+      expect(records).toMatchObject([{ ask_id: askId }]);
+      expect(JSON.stringify(records).includes(secretName)).toBe(false);
+    }
+    const delayed = f.asks.pendingEdits(2).map(({ card }) => card);
+    const cards = f.chat.askCards.concat(delayed);
+    expect(cards.map(({ state }) => state.kind)).toEqual(["open", "expired"]);
+    for (const card of cards) {
+      expect(card.requesterName === "[possible secret removed]").toBe(true);
+      const slack = JSON.stringify(renderAskCard(card));
+      expect(slack.includes(secretName)).toBe(false);
+      expect(renderTelegramAskCard(card).text.includes(secretName)).toBe(false);
+    }
   },
   timeout,
 );

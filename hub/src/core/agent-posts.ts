@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessageRef } from "../contract/chat.ts";
 import type { Conversation } from "../contract/domain.ts";
+import { redactSecretText } from "../contract/errors.ts";
 import type { HubDb } from "../contract/runtime.ts";
 import type { CoreContext } from "./core.ts";
 import { recordAgentPost, UNCONFIRMED_MESSAGE_PREFIX } from "./thread.ts";
@@ -113,7 +114,7 @@ function readJournalPost(key: string, value: unknown): JournalRead {
     conversation,
     sessionId,
     personId,
-    text,
+    text: redactSecretText(text),
     at,
   };
   if (phase === "confirmed") {

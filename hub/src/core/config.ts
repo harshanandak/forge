@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { hasSecretPattern } from "../contract/errors.ts";
 import { ID_PATTERN } from "../contract/ids.ts";
 import {
   HubConfigError,
@@ -256,10 +257,14 @@ export function loadConfig(path: string): HubConfig {
     );
     if (telegramUserId !== undefined)
       unique(telegramIds, telegramUserId, at + "/telegramUserId");
+    const namePointer = at + "/displayName";
+    const displayName = string(row.displayName, namePointer);
+    if (hasSecretPattern(displayName))
+      refuse(namePointer, "Display name matches a secret pattern.");
     return {
       personId,
       ...(telegramUserId === undefined ? {} : { telegramUserId }),
-      displayName: string(row.displayName, at + "/displayName"),
+      displayName,
       ...(slackUserId === undefined ? {} : { slackUserId }),
     };
   });

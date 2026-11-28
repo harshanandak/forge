@@ -65,8 +65,8 @@ export async function askFixture(
   const sessionId = bind(f.db, store);
   const asks = asksOf(store);
   const shared = { sessionId, projectId: p1, question };
-  const choice = (input: Partial<AskInput> = {}) =>
-    asks.ask(caller, {
+  const choice = (input: Partial<AskInput> = {}, from = caller) =>
+    asks.ask(from, {
       ...shared,
       kind: "choice",
       requestedAction: "choice",
