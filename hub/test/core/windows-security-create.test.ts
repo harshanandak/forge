@@ -141,7 +141,8 @@ async function dropBackupPrivileges() {
     `BACKUP PRIVILEGES DISABLED: ${previous.readUInt32LE(0)} were enabled`,
   );
   return () => {
-    adjust(handle[0], 0, previous, 0, null, [0]);
+    const restored = adjust(handle[0], 0, previous, 28, state, [0]);
+    console.log(`PRIVILEGES RESTORED ${restored} ${state.readUInt32LE(0)}`);
     close(handle[0]);
   };
 }
