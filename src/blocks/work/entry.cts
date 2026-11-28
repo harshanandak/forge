@@ -5,6 +5,7 @@ import type {
 } from "../../contract/author.ts";
 import type { LeaseStateClient } from "../../assembly/state-client.ts";
 import type { BatchEntry } from "../../ports/state.ts";
+import type { DefaultLaneSnapshot } from "./lane-admission.ts";
 const {
   isCommit,
   validReceipt,
@@ -4741,6 +4742,7 @@ const operations: Operations<WorkOperations> = {
       process?: ProcessService;
       environment?: EnvironmentService;
       crypto?: CryptoService;
+      captureDefaultLane?: (snapshot: DefaultLaneSnapshot) => void;
     };
     if (!bound.process || !bound.environment || !bound.crypto)
       fail(
@@ -4804,9 +4806,14 @@ const operations: Operations<WorkOperations> = {
     )
       fail("INPUT_INVALID", "Invalid lane branch name");
     const laneConfig = (config as WorkConfig | undefined)?.lanes;
-    const remoteHead = await laneMainBranch(config, () =>
-      run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true),
-    );
+    let observedDefault: string | undefined;
+    const remoteHead = await laneMainBranch(config, async () => {
+      observedDefault = await run(
+        ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+        true,
+      );
+      return observedDefault;
+    });
     const baseId = bound.crypto.randomUUID();
     await sweepPrivateRefs(
       executor,
@@ -4952,7 +4959,26 @@ const operations: Operations<WorkOperations> = {
           `Worktree preserved at ${worktree}; registry publication failed. Rerun ${input.attempt === undefined ? "lane.start" : "lane.attempt"} with the same arguments to adopt it`,
         );
       }
-      return { ...lane, ...(issue.lease ? { lease: issue.lease } : {}) };
+      const result = {
+        ...lane,
+        ...(issue.lease ? { lease: issue.lease } : {}),
+      };
+      const trackingRef = `refs/remotes/origin/${remoteHead}` as const;
+      if (
+        !adopted &&
+        input.attempt === undefined &&
+        observedDefault === trackingRef &&
+        isCommit(base)
+      ) {
+        try {
+          bound.captureDefaultLane?.(
+            Object.freeze({ trackingRef, commit: base }),
+          );
+        } catch {
+          return result;
+        }
+      }
+      return result;
     } finally {
       lock.release();
     }

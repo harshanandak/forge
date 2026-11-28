@@ -23,6 +23,7 @@ import { compatibleConfig } from "../core/config/compatible.ts";
 import { describeConfigFormat } from "./config-format.ts";
 import { parsePointer } from "../core/config/pointer.ts";
 import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
+import type { DefaultLaneSnapshot } from "../blocks/work/lane-admission.ts";
 import {
   Catalog,
   captureBlock,
@@ -732,11 +733,13 @@ export async function createAssembly(
       scanDeadline,
       remainingMs,
       advisoryProviders,
+      defaultRef,
     }: {
       signal: AbortSignal;
       scanDeadline: number;
       remainingMs: () => number;
       advisoryProviders: ReturnType<typeof createAssemblyProviders>;
+      defaultRef: string;
     },
   ): ReturnType<typeof readWorkWarnings> {
     const scope = {
@@ -845,7 +848,7 @@ export async function createAssembly(
       {
         ...run,
         remainingMs,
-        defaultRef: "refs/remotes/origin/HEAD",
+        defaultRef,
         workInstance,
         candidateId,
         initialProcesses: 1,
@@ -2304,11 +2307,24 @@ export async function createAssembly(
         );
         let advisoryIssues:
           { op: string; leaseUnavailable: boolean } | undefined;
+        let laneSnapshot: DefaultLaneSnapshot | undefined;
         const runtime = new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           drainServicePreparation: true,
           async services(instance, context, scope) {
             const clients: Record<string, unknown> = {};
+            if (
+              workOperation === "lane.start" &&
+              scope.op === request.op &&
+              advisoryDeadline !== undefined &&
+              !request.dryRun
+            )
+              clients.captureDefaultLane = (snapshot: DefaultLaneSnapshot) => {
+                laneSnapshot = Object.freeze({
+                  trackingRef: snapshot.trackingRef,
+                  commit: snapshot.commit,
+                });
+              };
             const leases: import("../ports/lifetime.ts").OwnedHandle<unknown>[] =
               [];
             try {
@@ -2696,13 +2712,16 @@ export async function createAssembly(
           (laneStart || workOperation === "issue.claim")
         ) {
           const output = record(result.result);
-          const id = output?.id;
+          const id = laneStart ? output?.issue : output?.id;
+          const lease = laneStart ? record(output?.lease) : output;
+          const snapshot = laneSnapshot;
           const skip =
             advisoryDeadline === undefined
               ? "advisory skipped: shared process runner"
-              : laneStart
+              : laneStart &&
+                  (!snapshot || snapshot.commit !== output?.base || !lease)
                 ? "trusted default policy unavailable"
-                : leaseAdvisorySkip(output?.expiresAt, Date.now());
+                : leaseAdvisorySkip(lease?.expiresAt, Date.now());
           const supervision = advisorySupervision(
             advisoryDeadline ?? 0,
             options.providers?.supervision,
@@ -2791,6 +2810,7 @@ export async function createAssembly(
                   scanDeadline,
                   remainingMs,
                   advisoryProviders,
+                  defaultRef: snapshot?.commit ?? "refs/remotes/origin/HEAD",
                 }),
               ]);
               call.workMap = remainingMs() <= 0 ? timedOut : map;
