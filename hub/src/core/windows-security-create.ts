@@ -33,7 +33,10 @@ export function privateDescriptor(sid: Buffer, directory: boolean): Buffer {
   return descriptor;
 }
 
-const reserved = (char: string) => char < " " || '"<>|*?:'.includes(char);
+const reserved = (char: string) =>
+  char < " " ||
+  (char >= "\u007f" && char <= "\u009f") ||
+  '"<>|*?:'.includes(char);
 
 function canonical(target: string): boolean {
   if (target.length >= 260 || target !== win32.resolve(target)) return false;

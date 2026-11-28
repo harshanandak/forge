@@ -589,6 +589,8 @@ test(
 
 const nonCanonical = [
   ["NUL", "C:\\parent\\a\0b"],
+  ["DEL", "C:\\parent\\a\u007fb"],
+  ["C1 control", "C:\\parent\\a\u0085b"],
   ["root", "C:\\"],
   ["root dot", "C:\\."],
   ["root dot space", "C:\\. "],
