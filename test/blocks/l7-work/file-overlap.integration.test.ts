@@ -277,6 +277,7 @@ for (const mode of [
           "WORK_FILE_OVERLAP",
         ]);
       }
+      if (mode === "disjoint") expect(mapWarnings(started)).toEqual([]);
       {
         if (mode === "disjoint") expect(mapWarnings(claimed)).toEqual([]);
         else {
@@ -739,7 +740,7 @@ for (const mode of [
   "short grant",
   "disjoint",
 ] as const)
-  test(`a lane start preserves its result and warning for ${mode}`, async () => {
+  test(`a lane start reports the available overlap evidence for ${mode}`, async () => {
     await project(async ({ good }, repo, root) => {
       const id = String((await good("issue.create", planned)).id);
       const cli = (args: string[]) =>
@@ -790,6 +791,12 @@ for (const mode of [
       const shown = cli(["lane", "show", id]);
       expect(shown.ok).toBe(true);
       expect(reply.result).toEqual(shown.result);
+      expect(calls.flat()).not.toContain("ls-remote");
+      if (mode === "disjoint") {
+        expect(mapWarnings(reply)).toEqual([]);
+        expect(calls.filter(advisoryGit).length).toBeGreaterThan(0);
+        return;
+      }
       const reason =
         mode === "short grant"
           ? "claim lease is too short"
@@ -800,10 +807,7 @@ for (const mode of [
           message: `File overlap map incomplete (${reason}). Some overlap may be missing.`,
         },
       ]);
-      expect(calls.flat()).not.toContain("ls-remote");
-      if (mode === "disjoint")
-        expect(calls.filter(advisoryGit).length).toBeGreaterThan(0);
-      else expect(calls.filter(advisoryGit)).toEqual([]);
+      expect(calls.filter(advisoryGit)).toEqual([]);
     });
   }, 30_000);
 
