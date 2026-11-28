@@ -211,6 +211,14 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Conservatively retains synthetic Node-launch guard fixtures.",
   "test/version/lazy-assembly.integration.test.ts":
     "Launches selected Node for lazy assembly coverage.",
+  "hub/test/remote/e2e.integration.test.ts":
+    "Launches selected Node on the hub and hook bins for the live hub journeys.",
+  "hub/test/remote/pre-tool.integration.test.ts":
+    "Launches selected Node on the built PreToolUse hook.",
+  "hub/test/remote/session-start.integration.test.ts":
+    "Launches selected Node on the built SessionStart hook.",
+  "hub/test/remote/stop.integration.test.ts":
+    "Launches selected Node on the built Stop hook.",
   "hub/test/scaffold.integration.test.ts":
     "Launches selected Node and npm on the built hub package.",
   "hub/test/node-entry.integration.test.ts":
