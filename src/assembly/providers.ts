@@ -158,15 +158,16 @@ export interface ProviderOptions {
   readonly maxFileBytes?: number;
   readonly env?: Readonly<Record<string, string>>;
 }
+type DeadlineScope = ServiceScope & { readonly deadlineNow?: () => number };
 export interface AssemblyProviders {
   deviceFiles?(scope: ServiceScope): DeviceFiles;
   cloudLogin?(scope: ServiceScope): CloudLogin;
-  process(scope: ServiceScope): ProcessService;
-  environment(scope: ServiceScope): EnvironmentService;
+  process(scope: DeadlineScope): ProcessService;
+  environment(scope: DeadlineScope): EnvironmentService;
   crypto(scope: ServiceScope): CryptoService;
   runnerOutput(scope: ServiceScope): RunnerOutputPort;
   openFiles(
-    scope: ServiceScope,
+    scope: DeadlineScope,
     discoveryOnly?: {
       executable: ResolvedExecutable;
       unchanged(): boolean;
@@ -175,7 +176,7 @@ export interface AssemblyProviders {
 }
 interface InternalProviders extends AssemblyProviders {
   files(
-    scope: ServiceScope,
+    scope: DeadlineScope,
     executor: ProcessPort,
   ): Promise<OwnedHandle<FilesService>>;
 }
@@ -241,17 +242,20 @@ export function assemblyProvides(required: string): boolean {
 function refuse(code: string, message: string): never {
   throw new ForgeFailure({ code, message, retry: "never" });
 }
-function active(scope: ServiceScope): void {
+function timeLeft(scope: DeadlineScope): number {
+  return scope.deadline - (scope.deadlineNow ?? Date.now)();
+}
+function active(scope: DeadlineScope): void {
   if (scope.signal.aborted)
     refuse("SERVICE_EXPIRED", "Invocation was cancelled");
-  if (Date.now() >= scope.deadline)
+  if (timeLeft(scope) <= 0)
     refuse("INVOCATION_TIMEOUT", "Invocation deadline exceeded");
 }
 
 /** The runtime also wraps this capability, drains pending calls and revokes cached methods. */
 export function createProcessService(
   port: ProcessPort,
-  scope: ServiceScope,
+  scope: DeadlineScope,
   cwd: string,
   supervision?: SupervisionOptions,
 ): ProcessService {
@@ -286,7 +290,7 @@ export function createProcessService(
         signal,
         timeoutMs: Math.min(
           options.timeoutMs,
-          Math.max(1, scope.deadline - Date.now()),
+          Math.max(1, Math.floor(timeLeft(scope))),
         ),
         containment: scope.processContainment,
       });
@@ -785,10 +789,10 @@ export function createAssemblyProviders(
         },
       };
     },
-    process(scope: ServiceScope): ProcessService {
+    process(scope: DeadlineScope): ProcessService {
       return createProcessService(port, scope, root, options.supervision);
     },
-    environment(scope: ServiceScope): EnvironmentService {
+    environment(scope: DeadlineScope): EnvironmentService {
       return {
         inherit() {
           active(scope);
@@ -912,7 +916,7 @@ export function createAssemblyProviders(
       };
     },
     async openFiles(
-      scope: ServiceScope,
+      scope: DeadlineScope,
       discoveryOnly?: Parameters<AssemblyProviders["openFiles"]>[1],
     ): Promise<OwnedHandle<FilesService>> {
       // A block can declare the slot for other operations. Do not discover Git when this
@@ -1026,7 +1030,7 @@ export function createAssemblyProviders(
       }
     },
     async files(
-      scope: ServiceScope,
+      scope: DeadlineScope,
       executor: ProcessPort,
     ): Promise<OwnedHandle<FilesService>> {
       active(scope);
@@ -1068,7 +1072,7 @@ export function createAssemblyProviders(
           cwd: root,
           env: discoveryEnv,
           signal: scope.signal,
-          timeoutMs: Math.max(1, scope.deadline - Date.now()),
+          timeoutMs: Math.max(1, Math.floor(timeLeft(scope))),
           maxOutputBytes: 16384,
         },
       );
@@ -1092,6 +1096,7 @@ export function createAssemblyProviders(
         get deadline() {
           return scope.deadline;
         },
+        ...(scope.deadlineNow && { deadlineNow: scope.deadlineNow }),
         ...(options.maxFileBytes === undefined
           ? {}
           : { maxBytes: options.maxFileBytes }),
@@ -1115,14 +1120,15 @@ export function createAssemblyProviders(
               "INPUT_INVALID",
               "Declare a positive snapshot timeout and output budget up to 1 MiB",
             );
+          const now = scope.deadlineNow ?? Date.now;
           const deadline = Math.min(
             scope.deadline,
-            Date.now() + Math.min(timeoutMs, SNAPSHOT_TIMEOUT_MS),
+            now() + Math.min(timeoutMs, SNAPSHOT_TIMEOUT_MS),
           );
           const cleanupMs = processCleanupBudgetMs(options.supervision);
           const snapshotActive = (): void => {
             active(scope);
-            if (Date.now() >= deadline)
+            if (now() >= deadline)
               refuse("INVOCATION_TIMEOUT", "Snapshot deadline exceeded");
           };
           const readGit = async (
@@ -1130,7 +1136,7 @@ export function createAssemblyProviders(
           ): Promise<string> => {
             const isHead = args[0] === "rev-parse";
             snapshotActive();
-            const remaining = deadline - Date.now() - cleanupMs;
+            const remaining = Math.floor(deadline - now() - cleanupMs);
             if (remaining < 1)
               refuse(
                 "INVOCATION_TIMEOUT",

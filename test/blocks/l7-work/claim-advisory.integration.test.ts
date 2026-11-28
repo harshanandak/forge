@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import { advisoryProject, laneCli } from "./lane-repository-fixture.ts";
@@ -11,12 +11,14 @@ const built = (path: string) =>
 
 function claimPreload(mode: string, report: string) {
   const stalls = mode === "stalls" || mode === "too late to launch";
+  const backward = mode === "finishes across a backward wall-clock step";
+  const chunkExpiry = mode === "expires between registry read chunks";
   const resolver = built("adapters/process/resolve");
   const proof = dataModule(`
     export * from ${JSON.stringify(resolver)};
     export async function proveAdvisoryGit(executable) {
       if (${JSON.stringify(mode)} === "throws") throw new Error("Advisory failed");
-      if (${stalls || mode === "finishes across a wall-clock step"})
+      if (${stalls || backward || chunkExpiry || mode === "finishes across a wall-clock step"})
         return { executable, unchanged: () => true };
     }
   `);
@@ -48,16 +50,38 @@ function claimPreload(mode: string, report: string) {
   `);
   return dataModule(`
     import { registerHooks, syncBuiltinESMExports } from "node:module";
-    import { writeFileSync } from "node:fs";
+    import fs, { writeFileSync } from "node:fs";
     import timers from "node:timers/promises";
     const mode = ${JSON.stringify(mode)};
     let elapsed = 0;
     let remaining;
     let cleanupSleeps = 0;
     let wallOffset = 0;
+    let stepped = false;
+    let chunks = 0;
     const wallNow = Date.now;
-    Date.now = () => wallNow() + wallOffset;
+    Date.now = () => {
+      const sampled = wallNow() + wallOffset;
+      if (${backward} && globalThis.claimed && !stepped &&
+          /at (Object.select|readWorkMap) /.test(new Error().stack)) {
+        stepped = true;
+        wallOffset = -30_000;
+      }
+      if (chunks > 0) wallOffset++;
+      return sampled;
+    };
     Object.defineProperty(performance, "now", { value: () => elapsed });
+    if (${chunkExpiry}) {
+      const read = fs.readSync;
+      fs.readSync = (fd, buffer, offset, length, position) => {
+        if (!globalThis.claimed || !new Error().stack.includes("at readBytes ("))
+          return read(fd, buffer, offset, length, position);
+        const bytes = read(fd, buffer, offset, 1, position);
+        chunks++;
+        elapsed = 5000;
+        return bytes;
+      };
+    }
     const timeout = timers.setTimeout;
     timers.setTimeout = (ms, value, options) => {
       if (globalThis.advisoryChild && value === undefined) {
@@ -101,6 +125,7 @@ function claimPreload(mode: string, report: string) {
     process.stdout.write = function(...args) {
       writeFileSync(${JSON.stringify(report)}, JSON.stringify({
         remaining, elapsed, started: Boolean(globalThis.advisoryChild), stopped,
+        stepped, chunks,
       }));
       return write.apply(this, args);
     };
@@ -131,7 +156,7 @@ function claimPreload(mode: string, report: string) {
       if (request.op === "issue.claim" && result.ok) {
         globalThis.claimed = true;
         elapsed = mode === "too late to launch" ? 4999
-          : mode === "finishes across a wall-clock step" ? 1000 : 4000;
+          : ${backward || chunkExpiry} || mode === "finishes across a wall-clock step" ? 1000 : 4000;
       }
       if (mode === "finishes across a wall-clock step" && request.op === "issue.links" && result.ok) {
         wallOffset = 30_000;
@@ -148,6 +173,8 @@ for (const [mode, reason] of [
   ["finishes", "advisory Git process cost unavailable"],
   ["throws", "read unavailable"],
   ["finishes across a wall-clock step", null],
+  ["finishes across a backward wall-clock step", null],
+  ["expires between registry read chunks", "read timed out"],
 ] as const) {
   test(`a claim keeps its lease when its advisory ${mode}`, async () => {
     await advisoryProject(
@@ -161,6 +188,8 @@ for (const [mode, reason] of [
         if (holder !== undefined)
           await good("issue.claim", { id: holder }, "holder");
         const id = String((await good("issue.create", plan)).id);
+        if (mode === "expires between registry read chunks")
+          writeFileSync(join(repo, ".git", "forge-lanes.json"), "[]");
         const report = join(root, "response.json");
         const reply = laneCli(
           root,
@@ -220,6 +249,16 @@ for (const [mode, reason] of [
         if (mode === "too late to launch") {
           expect(JSON.parse(readFileSync(report, "utf8"))).toMatchObject({
             started: false,
+          });
+        }
+        if (mode === "finishes across a backward wall-clock step") {
+          expect(JSON.parse(readFileSync(report, "utf8"))).toMatchObject({
+            stepped: true,
+          });
+        }
+        if (mode === "expires between registry read chunks") {
+          expect(JSON.parse(readFileSync(report, "utf8"))).toMatchObject({
+            chunks: 1,
           });
         }
       },
