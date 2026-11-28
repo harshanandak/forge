@@ -42,8 +42,6 @@ public static class AclFixture {
   [DllImport("advapi32.dll")]
   static extern int GetSecurityInfo(IntPtr handle, int type, uint flags, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr descriptor);
   [DllImport("kernel32.dll", SetLastError=true)]
-  static extern bool GetFileInformationByHandle(IntPtr handle, [Out] byte[] info);
-  [DllImport("kernel32.dll", SetLastError=true)]
   static extern bool GetFileInformationByHandleEx(IntPtr handle, int kind, [Out] byte[] info, uint length);
   [DllImport("kernel32.dll", SetLastError=true)]
   static extern bool DeviceIoControl(IntPtr handle, uint code, IntPtr input, uint inputLength,
@@ -71,8 +69,6 @@ public static class AclFixture {
   [DllImport("ntdll.dll")] static extern int RtlNtStatusToDosError(int status);
   [DllImport("ntdll.dll")]
   static extern int NtOpenFile(out IntPtr handle, uint access, ref ObjectAttributes attributes, out IoStatus status, uint share, uint options);
-  [DllImport("ntdll.dll")]
-  static extern int NtQueryInformationFile(IntPtr handle, out IoStatus status, [Out] byte[] info, uint size, int kind);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
   static extern IntPtr CreateEvent(IntPtr attributes, bool manualReset, bool initialState, IntPtr name);
   [DllImport("kernel32.dll", EntryPoint="DeviceIoControl", SetLastError=true)]
@@ -174,9 +170,8 @@ public static class AclFixture {
     }
   }
   public sealed class HandleProbe {
-    public int OpenError, AttributeError, KindError, ReparseError, AclError;
-    public int NtOpenStatus, StatStatus;
-    public uint Attributes, StatAttributes;
+    public int OpenError, KindError, ReparseError, AclError;
+    public int NtOpenStatus;
     public bool Directory;
     public string Descriptor;
   }
@@ -194,15 +189,9 @@ public static class AclFixture {
       return result;
     }
     try {
-      byte[] attributes = new byte[52], standard = new byte[24], reparse = new byte[16384];
-      if (GetFileInformationByHandle(handle, attributes)) result.Attributes = BitConverter.ToUInt32(attributes, 0);
-      else result.AttributeError = Marshal.GetLastWin32Error();
+      byte[] standard = new byte[24], reparse = new byte[16384];
       if (GetFileInformationByHandleEx(handle, 1, standard, (uint)standard.Length)) result.Directory = standard[21] != 0;
       else result.KindError = Marshal.GetLastWin32Error();
-      var stat = new byte[72];
-      IoStatus io;
-      result.StatStatus = NtQueryInformationFile(handle, out io, stat, (uint)stat.Length, 68);
-      if (result.StatStatus == 0) result.StatAttributes = BitConverter.ToUInt32(stat, 56);
       uint returned;
       if (asynchronous) result.ReparseError = QueryOverlappedReparse(handle);
       else if (!DeviceIoControl(handle, 0x900a8, IntPtr.Zero, 0, reparse, (uint)reparse.Length, out returned, IntPtr.Zero))
@@ -314,14 +303,10 @@ $null = [Console]::In.ReadLine()
 
 export type HandleProbe = {
   OpenError: number;
-  AttributeError: number;
   KindError: number;
   ReparseError: number;
   AclError: number;
-  Attributes: number;
   NtOpenStatus: number;
-  StatStatus: number;
-  StatAttributes: number;
   Directory: boolean;
   Descriptor: string | null;
 };

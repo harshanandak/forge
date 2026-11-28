@@ -32,9 +32,7 @@ function withReadFault(
 function readsEmptyAncestor(probe: HandleProbe, owner: string): boolean {
   if (probe.OpenError || probe.AclError || !probe.Descriptor) return false;
   const directory =
-    (probe.AttributeError === 0 && (probe.Attributes & 0x410) === 0x10) ||
-    (probe.StatStatus === 0 && (probe.StatAttributes & 0x410) === 0x10) ||
-    (probe.KindError === 0 && probe.Directory && probe.ReparseError === 4390);
+    probe.KindError === 0 && probe.Directory && probe.ReparseError === 4390;
   const descriptor = decodeWindowsDescriptor(
     Buffer.from(probe.Descriptor, "base64"),
   );
