@@ -64,3 +64,25 @@ test("renders the same skill bytes as a fresh sync", () => {
     rmSync(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("catalog refuses a companion name that would split its ownership entry", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-skill-catalog-name-"));
+  try {
+    const source = join(root, "tpl", "skills", "review");
+    mkdirSync(source, { recursive: true });
+    const frontmatter = '---\nname: review\ndescription: "Review."\n---\n';
+    writeFileSync(join(source, "SKILL.md"), frontmatter);
+    writeFileSync(join(source, "notes, appendix.txt"), "notes");
+    const templates = {
+      sources: [{ root, file: "tpl/forge.template.json" }],
+      values: undefined,
+    };
+    const message = /Invalid companion path notes, appendix\.txt/;
+    expect(() => syncSkills(root, [], undefined, undefined, templates)).toThrow(
+      message,
+    );
+    expect(() => renderSkillCatalog([], undefined, templates)).toThrow(message);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
