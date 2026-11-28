@@ -172,6 +172,9 @@ export async function lifeFixture(schedule?: EffectSchedule) {
     }
 
     return {
+      db,
+      config: ctx.deps.config,
+      log: f.log,
       chat,
       worker,
       bind,
