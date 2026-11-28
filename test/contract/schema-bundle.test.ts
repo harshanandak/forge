@@ -265,9 +265,19 @@ const documents = (count: number, path: (n: number) => string) =>
 test("repeated references and composition siblings count as expanded work", () => {
   const visits = "Schema work budget exceeded (4096 visits)";
   expect(() => bundle(doubling(30))).toThrow(visits);
-  expect(() =>
-    bundle({ type: "object", properties: { v: doubling(30) } }),
-  ).toThrow(visits);
+  const { $defs } = doubling(30);
+  const nested = {
+    type: "object",
+    $defs,
+    properties: { v: { $ref: "#/$defs/D30" } },
+  };
+  expect(() => bundle(nested)).toThrow(visits);
+  const named = (count: number) => {
+    const many = { allOf: Array.from({ length: count }, () => true) };
+    return { type: "object", propertyNames: many, properties: { x: many } };
+  };
+  expect(() => bundle(named(2_050))).toThrow(visits);
+  expect(accepts(bundle(named(1_000)), { x: 0 })).toBe(true);
   const compounding = (count: number) => ({
     $defs: {
       S: { properties: { x: refs(count, "T") } },
