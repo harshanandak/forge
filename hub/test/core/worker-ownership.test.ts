@@ -205,3 +205,166 @@ test(
   },
   timeout,
 );
+
+async function flushMicrotasks(turns = 20): Promise<void> {
+  for (let index = 0; index < turns; index += 1) await Promise.resolve();
+}
+
+test(
+  "W5 releases the lock when startup fails after ownership",
+  async () => {
+    let startupSchedule = true;
+    const schedule: EffectSchedule = () => {
+      if (startupSchedule) {
+        startupSchedule = false;
+        throw new Error("injected startup failure");
+      }
+      return () => {};
+    };
+    const owner = await lifeFixture(schedule);
+    const replacement = await owner.anotherWorker(owner.openPeer());
+    try {
+      await expect(owner.worker.start()).rejects.toThrow(
+        "injected startup failure",
+      );
+      await expect(replacement.worker.start()).resolves.toBeUndefined();
+    } finally {
+      await owner.worker.close();
+      await replacement.worker.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "W6 stops a write continuation after the close deadline before the timer fires",
+  async () => {
+    const timers = new Map<number, () => void>();
+    const f = await lifeFixture((run, delay) => {
+      timers.set(delay, run);
+      return () => {
+        timers.delete(delay);
+      };
+    });
+    f.queueSummary();
+    const edit = holdFirstSummaryEdit(f.chat);
+    const draining = f.worker.drain();
+    try {
+      await edit.started;
+      const closing = f.worker.close();
+      f.advance(closeMs + 1);
+      edit.release();
+      await draining;
+      await closing;
+      expect(f.rows(effects)).toEqual([{ status: "pending", attempts: 0 }]);
+      expect(
+        f.rows(
+          "SELECT published_revision FROM summaries WHERE project_id = ?",
+          p1,
+        ),
+      ).toEqual([{ published_revision: 0 }]);
+    } finally {
+      edit.release();
+      await draining;
+      await f.worker.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "W7 returns a refused report wait without the summary timeout",
+  async () => {
+    const owner = await lifeFixture(idleSchedule);
+    const peer = await owner.anotherWorker(owner.openPeer());
+    try {
+      await owner.worker.drain();
+      const session = peer.bind();
+      const requestAskId = await peer.workRequest(
+        session.owner,
+        session.sessionId,
+        "demo-31",
+      );
+      await peer.answer(session.owner, requestAskId, "approve");
+      let settled = false;
+      let summary: string | undefined;
+      const report = peer.report(session.owner, {
+        sessionId: session.sessionId,
+        requestAskId,
+        issueId: "demo-31",
+        projectId: p1,
+        state: "working",
+        text: "Reviewing the approved work.",
+      });
+      void report.then((result) => {
+        settled = true;
+        summary = result.ok ? result.value.summary : result.error.code;
+      });
+      await flushMicrotasks();
+      expect(settled).toBe(true);
+      expect(summary).toBe("queued");
+      await report;
+    } finally {
+      await peer.worker.close();
+      await owner.worker.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "W8 releases the lock when close timer cancellation throws",
+  async () => {
+    const timers = new Map<number, () => void>();
+    const schedule: EffectSchedule = (run, delay) => {
+      timers.set(delay, run);
+      if (delay === closeMs)
+        return () => {
+          throw new Error("injected cancel failure");
+        };
+      return () => {
+        timers.delete(delay);
+      };
+    };
+    const f = await lifeFixture(schedule);
+    const replacement = await f.anotherWorker(f.openPeer());
+    f.queueSummary();
+    const edit = holdFirstSummaryEdit(f.chat);
+    const draining = f.worker.drain();
+    try {
+      await edit.started;
+      const closing = f.worker.close();
+      timers.get(closeMs)?.();
+      edit.release();
+      await draining;
+      await closing;
+      await expect(replacement.worker.start()).resolves.toBeUndefined();
+    } finally {
+      edit.release();
+      await draining;
+      await f.worker.close();
+      await replacement.worker.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "W9 keeps the normal start write and close path unchanged",
+  async () => {
+    const f = await lifeFixture(idleSchedule);
+    f.queueSummary();
+    await f.worker.start();
+    await f.worker.drain();
+    expect(f.rows(effects)).toEqual([{ status: "done", attempts: 0 }]);
+    expect(
+      f.rows(
+        "SELECT published_revision FROM summaries WHERE project_id = ?",
+        p1,
+      ),
+    ).toEqual([{ published_revision: 1 }]);
+    expect(f.chat.writes.map(({ name }) => name)).toEqual(["editSummary"]);
+    await expect(f.worker.close()).resolves.toBeUndefined();
+  },
+  timeout,
+);
