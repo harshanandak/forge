@@ -6,7 +6,10 @@ import {
   readSid,
 } from "../../src/core/windows-security-read.ts";
 import { verifyWindowsDescriptor } from "../../src/core/windows-security.ts";
-import { nativeFixtures } from "./protect-windows-native-fixture.ts";
+import {
+  nativeFixtures,
+  type HandleProbe,
+} from "./protect-windows-native-fixture.ts";
 import { reference, type DiskRequest } from "./protect-windows-reference.ts";
 
 const adapter = new URL(
@@ -27,6 +30,18 @@ function withReadFault(
       return Buffer.from(request.bytes, "base64");
     },
   };
+}
+
+function readsEmptyAncestor(probe: HandleProbe, owner: string): boolean {
+  if (probe.OpenError || probe.AclError || !probe.Descriptor) return false;
+  const directory =
+    probe.KindError === 0 && probe.Directory && probe.ReparseError === 4390;
+  const descriptor = decodeWindowsDescriptor(
+    Buffer.from(probe.Descriptor, "base64"),
+  );
+  return (
+    directory && descriptor.owner === owner && descriptor.dacl?.length === 0
+  );
 }
 
 test.skipIf(process.platform !== "win32")(
@@ -61,6 +76,37 @@ test.skipIf(process.platform !== "win32")(
         }),
       );
       for (const result of observations) console.log(JSON.stringify(result));
+      const emptyAncestor = fixtures.cases.find(
+        ({ row }) => row === "26",
+      )?.probe;
+      if (!emptyAncestor)
+        throw new Error("Missing empty ancestor handle probe");
+      const readControl = readsEmptyAncestor(
+        emptyAncestor.readControl,
+        emptyAncestor.owner,
+      );
+      const withAttributes = readsEmptyAncestor(
+        emptyAncestor.withAttributes,
+        emptyAncestor.owner,
+      );
+      const overlapped = readsEmptyAncestor(
+        emptyAncestor.overlapped,
+        emptyAncestor.owner,
+      );
+      const nativeOpen = readsEmptyAncestor(
+        emptyAncestor.nativeOpen,
+        emptyAncestor.owner,
+      );
+      console.log(
+        JSON.stringify({
+          row: "26",
+          handleProbe: emptyAncestor,
+          readControl,
+          withAttributes,
+          overlapped,
+          nativeOpen,
+        }),
+      );
       expect(observations.map(({ reference }) => reference)).toEqual(
         observations.map(({ expected }) => expected),
       );
@@ -97,6 +143,9 @@ test.skipIf(process.platform !== "win32")(
           "Cannot verify Windows reparse status: 0",
         );
       }
+      expect(readControl || withAttributes || overlapped || nativeOpen).toBe(
+        true,
+      );
       expect(observations.map(({ native }) => native)).toEqual(
         observations.map(({ reference }) => reference),
       );
