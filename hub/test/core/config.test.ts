@@ -358,6 +358,7 @@ test(
         load([
           ["/slack", undefined],
           ["/chat", { adapter }],
+          ["/people/0/telegramUserId", "123"],
         ]).chat,
       ).toEqual({ adapter });
       refuse([["/chat", { adapter }]], "/chat/adapter");

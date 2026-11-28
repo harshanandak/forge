@@ -179,11 +179,11 @@ for (const [scenario, startup] of [
 }
 
 test(
-  "S4 Telegram selection is refused before resources open",
+  "S4 W3 Telegram without mapped people is refused before resources open",
   () => {
     expect(probe("telegram")).toMatchObject({
       code: 1,
-      stderr: ["Telegram is unavailable for the hub service\n"],
+      stderr: ["Telegram requires at least one mapped person\n"],
       events: [],
       listeningAfter: false,
     });
