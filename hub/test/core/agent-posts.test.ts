@@ -1,18 +1,17 @@
 import { expect, test } from "bun:test";
 import { SECRET_REMOVED_TEXT } from "../../src/contract/errors.ts";
-import { LIMITS } from "../../src/contract/mcp.ts";
-import { recoverAgentPosts } from "../../src/core/agent-posts.ts";
+import { LIMITS, LONG_ANSWER_SEPARATOR } from "../../src/contract/mcp.ts";
+import {
+  recoverAgentPosts,
+  reserveAgentPost,
+} from "../../src/core/agent-posts.ts";
 import { createCoreContext } from "../../src/core/core.ts";
 import { byConversation } from "../../src/core/thread.ts";
-import {
-  baseFixture,
-  channel,
-  seedThread,
-  thread,
-  type BaseFixture,
-} from "./base-fixture.ts";
+import { baseFixture, seedThread, type BaseFixture } from "./base-fixture.ts";
+import { observePostJournal } from "./base-fixture.ts";
 import { refusal } from "./base-fakes.ts";
 import { a, b, p1, value } from "./fixture.ts";
+import { secretCaller, secretName } from "./fixture.ts";
 
 const timeout = 30_000;
 const journal = (f: BaseFixture) =>
@@ -40,67 +39,80 @@ async function setup() {
   return { f, alpha, conversationId, reply };
 }
 
-for (const mode of [
-  "reserved",
-  "unknown",
-  "confirmed",
-  "ordinary",
-  "refused",
-] as const) {
-  test(
-    `journal replay preserves identity and applies the text policy for ${mode}`,
-    async () => {
-      const { f, alpha, conversationId } = await setup();
-      const phase = mode === "ordinary" ? "reserved" : mode;
-      const id = "unconfirmed:legacy";
-      const ref = {
-        chatThreadId: thread,
-        channelId: channel,
-        chatMessageId: "confirmed-legacy",
-      };
-      const text =
-        mode === "ordinary"
-          ? "Ordinary reply"
-          : "xapp" + "-" + "fixture".repeat(3) + "'s agent: Reply";
-      const sessionId = alpha.sessionId;
-      const personId = a.personId;
-      const at = f.now() - 100;
-      const conversation = byConversation(f.db, conversationId);
-      const insert = f.db.prepare("INSERT INTO meta (key,value) VALUES (?,?)");
-      const payload = JSON.stringify({
-        phase,
-        id,
-        ref,
-        text,
-        at,
-        conversation,
-        sessionId,
-        personId,
-      });
-      for (let replay = 0; replay < 2; replay++) {
-        insert.run("agent-post:" + thread, payload);
-        recoverAgentPosts(f.context, mode === "unknown" ? thread : undefined);
-        expect(journal(f)).toEqual([]);
-      }
-      expect(f.writes("postText")).toEqual([]);
-      const rows = f.rows("thread_messages WHERE kind = 'agent'");
-      expect(rows).toHaveLength(mode === "refused" ? 0 : 1);
-      if (mode === "refused") return;
-      const { text: persisted, ...identity } = rows[0]!;
-      expect(identity).toMatchObject({
-        chat_message_id: phase === "confirmed" ? ref.chatMessageId : id,
-        person_id: personId,
-        session_id: sessionId,
-        project_id: p1,
-        created_at: at,
-      });
-      expect(
-        persisted === (mode === "ordinary" ? text : SECRET_REMOVED_TEXT),
-      ).toBe(true);
-    },
-    timeout,
-  );
-}
+test.each(["thread", "project", "long fallback"] as const)(
+  "%s reply redacts the name in its label, post and stored text",
+  async (form) => {
+    const { f, alpha, conversationId } = await setup();
+    const project = form === "project";
+    const long = form === "long fallback";
+    if (long) f.chat.nextWrite = { kind: "refused" };
+    const name = SECRET_REMOVED_TEXT;
+    const label = `Forge (${name}'s agent)`;
+    const fallback = `Summary (The full answer could not be posted as a canvas. Ask ${name}'s agent for the detail.)`;
+    const body = `${name}'s agent: ${long ? fallback : "Reply"}`;
+    const reserved = observePostJournal(f);
+    const caller = f.caller(secretCaller.person);
+    const result = value(
+      await f.core.reply(caller, {
+        sessionId: alpha.sessionId,
+        ...(project ? { projectId: p1 } : { conversationId }),
+        text: long ? `Summary\n${LONG_ANSWER_SEPARATOR}\nDetails` : "Reply",
+      }),
+    );
+    const [, posted, options] = f.writes("postText")[0]!.args;
+    expect(reserved()).toHaveLength(project ? 0 : 1);
+    expect([
+      result.postedAs === label,
+      JSON.stringify(options) === JSON.stringify({ agentLabel: label }),
+      posted === body,
+      project || String(reserved()[0]).includes(JSON.stringify(body)),
+      f.col("thread_messages WHERE kind = 'agent'", "text")[0] === body,
+    ]).toEqual([true, true, true, true, true]);
+  },
+  timeout,
+);
+
+const phases = ["reserved", "unknown", "confirmed", "refused"] as const;
+test.each([...phases, "ordinary"] as const)(
+  "journal replay preserves identity and applies the text policy for %s",
+  async (mode) => {
+    const { f, alpha, conversationId } = await setup();
+    const ctx = f.context;
+    const chat = byConversation(f.db, conversationId)!;
+    const { chatThreadId, channelId } = chat;
+    const { sessionId } = alpha;
+    const { personId } = a;
+    const ordinary = "Ordinary reply";
+    const post = reserveAgentPost(ctx, chat, sessionId, personId, ordinary)!;
+    const phase = mode === "ordinary" ? "reserved" : mode;
+    const ref = { chatThreadId, channelId, chatMessageId: "legacy-confirmed" };
+    const at = post.at - 100;
+    const text =
+      mode === "ordinary" ? ordinary : `${secretName}'s agent: Reply`;
+    const payload = JSON.stringify({ ...post, phase, ref, at, text });
+    const put = f.db.prepare("REPLACE INTO meta (key,value) VALUES (?,?)");
+    for (let replay = 0; replay < 2; replay++) {
+      put.run("agent-post:" + chatThreadId, payload);
+      recoverAgentPosts(ctx, mode === "unknown" ? chatThreadId : undefined);
+      expect(journal(f)).toEqual([]);
+    }
+    expect(f.writes("postText")).toEqual([]);
+    const rows = f.rows("thread_messages WHERE kind = 'agent'");
+    expect(rows).toHaveLength(mode === "refused" ? 0 : 1);
+    if (mode === "refused") return;
+    const { text: stored, ...identity } = rows[0]!;
+    expect(identity).toMatchObject({
+      chat_message_id: mode === "confirmed" ? ref.chatMessageId : post.id,
+      person_id: personId,
+      session_id: sessionId,
+      project_id: p1,
+      created_at: at,
+    });
+    const expected = mode === "ordinary" ? text : SECRET_REMOVED_TEXT;
+    expect(stored === expected).toBe(true);
+  },
+  timeout,
+);
 
 for (const abandon of [false, true]) {
   test(

@@ -19,6 +19,11 @@ export const b = { personId: "per_b", displayName: "Fixture Beta" };
 export const p1 = "prj_one";
 export const p2 = "prj_two";
 export const caller = { person: a, tokenId: "tok_a" };
+export const secretName = "xapp" + "-" + "fixture".repeat(3);
+export const secretCaller = {
+  ...caller,
+  person: { ...a, displayName: secretName },
+};
 
 export function openDb(path: string): HubDb {
   const db = openHubDb(path);
@@ -86,7 +91,7 @@ export function seedHost(db: HubDb, id = "hst_a"): void {
 
 export function seedRemovedMemberName(db: HubDb, personId: string): void {
   db.prepare("UPDATE people SET display_name = ? WHERE person_id = ?").run(
-    "xapp" + "-" + "fixture".repeat(3),
+    secretName,
     personId,
   );
   db.prepare("DELETE FROM project_members WHERE person_id = ?").run(personId);
@@ -100,6 +105,7 @@ export function seedItem(
     readonly target?: string;
     readonly delivered?: string;
     readonly held?: boolean;
+    readonly senderName?: string;
   } = {},
 ): void {
   db.prepare(
@@ -107,13 +113,14 @@ export function seedItem(
     INSERT INTO inbox_items
       (item_id,dedupe_key,owner_person_id,target_session_id,project_id,kind,sender_kind,sender_person_id,
        sender_name,not_your_owner,held,text,received_at,delivered_at,delivered_to_session_id)
-    VALUES (?,?,'per_a',?,?,'chat_message','person','per_b','Fixture Beta',1,?,'sample message',1,?,?)
+    VALUES (?,?,'per_a',?,?,'chat_message','person','per_b',?,1,?,'sample message',1,?,?)
   `,
   ).run(
     itemId,
     itemId,
     options.target ?? null,
     options.projectId ?? p1,
+    options.senderName ?? "Fixture Beta",
     Number(options.held ?? false),
     options.delivered ? 1 : null,
     options.delivered ?? null,

@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { renderAskCard } from "../../src/chat/cards.ts";
 import { renderTelegramAskCard } from "../../src/chat/telegram-cards.ts";
 import { WORK_REQUEST_CHOICES } from "../../src/contract/domain.ts";
-import { SECRET_REMOVED_TEXT } from "../../src/contract/errors.ts";
 import { a, p1, p2, caller, seedItem, value } from "./fixture.ts";
+import { secretCaller, secretName } from "./fixture.ts";
 import { askFixture, button, refA, rows, slackA } from "./fakes.ts";
 
 const timeout = 30_000;
@@ -12,17 +12,15 @@ test(
   "initial choice card redacts the caller name in Slack and Telegram",
   async () => {
     const f = await askFixture();
-    const displayName = "xapp" + "-" + "fixture".repeat(3);
-    const { askId } = value(
-      await f.choice({}, { ...caller, person: { ...a, displayName } }),
-    );
+    const { askId } = value(await f.choice({}, secretCaller));
     const card = f.chat.askCards[0]!;
-    const heading = `Ask for ${SECRET_REMOVED_TEXT}`;
-    expect({
-      view: card.askId === askId && card.askedForName === SECRET_REMOVED_TEXT,
-      slack: JSON.stringify(renderAskCard(card)).includes(heading),
-      telegram: renderTelegramAskCard(card).text.startsWith(heading),
-    }).toEqual({ view: true, slack: true, telegram: true });
+    const name = "[possible secret removed]";
+    const heading = "Ask for " + name;
+    expect([
+      card.askId === askId && card.askedForName === name,
+      JSON.stringify(renderAskCard(card)).includes(heading),
+      renderTelegramAskCard(card).text.startsWith(heading),
+    ]).toEqual([true, true, true]);
   },
   timeout,
 );
@@ -107,36 +105,26 @@ test(
   async () => {
     const f = await askFixture();
     const inboxItemId = "itm_legacy";
-    const legacyName = "xapp" + "-" + "fixture".repeat(3);
-    seedItem(f.db, inboxItemId, { delivered: f.sessionId });
-    f.db
-      .prepare("UPDATE inbox_items SET sender_name = ? WHERE item_id = ?")
-      .run(legacyName, inboxItemId);
+    const source = { delivered: f.sessionId, senderName: secretName };
+    seedItem(f.db, inboxItemId, source);
     const { askId, expiresAt } = value(await f.request({ inboxItemId }, false));
     f.setTime(Date.parse(expiresAt));
     expect(f.asks.sweepExpiry()).toBe(1);
-    for (const table of [
-      "asks",
-      "ask_deliveries",
-      "ask_edit_effects",
-    ] as const) {
+    const tables = ["asks", "ask_deliveries", "ask_edit_effects"] as const;
+    for (const table of tables) {
       const records = rows(f.db, table);
       expect(records).toMatchObject([{ ask_id: askId }]);
-      expect(JSON.stringify(records).includes(legacyName)).toBe(false);
+      expect(JSON.stringify(records).includes(secretName)).toBe(false);
     }
-    const cards = [
-      ...f.chat.askCards,
-      ...f.asks.pendingEdits(2).map(({ card }) => card),
-    ].map((card) => ({
-      state: card.state.kind,
-      redacted: card.requesterName === "[possible secret removed]",
-      slackSafe: !JSON.stringify(renderAskCard(card)).includes(legacyName),
-      telegramSafe: !renderTelegramAskCard(card).text.includes(legacyName),
-    }));
-    expect(cards).toEqual([
-      { state: "open", redacted: true, slackSafe: true, telegramSafe: true },
-      { state: "expired", redacted: true, slackSafe: true, telegramSafe: true },
-    ]);
+    const delayed = f.asks.pendingEdits(2).map(({ card }) => card);
+    const cards = f.chat.askCards.concat(delayed);
+    expect(cards.map(({ state }) => state.kind)).toEqual(["open", "expired"]);
+    for (const card of cards) {
+      expect(card.requesterName === "[possible secret removed]").toBe(true);
+      const slack = JSON.stringify(renderAskCard(card));
+      expect(slack.includes(secretName)).toBe(false);
+      expect(renderTelegramAskCard(card).text.includes(secretName)).toBe(false);
+    }
   },
   timeout,
 );

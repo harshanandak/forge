@@ -19,13 +19,9 @@ test(
     f.queueSummary();
     await f.worker.drain();
     const edits = f.chat.writes.filter(({ name }) => name === "editSummary");
-    expect(
-      edits.map(({ args }) =>
-        JSON.stringify(args).includes(
-          '"personName":"[possible secret removed]"',
-        ),
-      ),
-    ).toEqual([true]);
+    const label = '"personName":"[possible secret removed]"';
+    expect(edits).toHaveLength(1);
+    expect(JSON.stringify(edits[0]?.args).includes(label)).toBe(true);
   },
   timeout,
 );

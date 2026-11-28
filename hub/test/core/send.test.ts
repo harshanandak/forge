@@ -12,6 +12,8 @@ import {
 } from "./base-fixture.ts";
 import { refusal, until } from "./base-fakes.ts";
 import { a, b, configPeople, p1, p2, value } from "./fixture.ts";
+import { observePostJournal } from "./base-fixture.ts";
+import { secretCaller, secretName } from "./fixture.ts";
 import { slackA, slackB } from "./fakes.ts";
 
 const timeout = 30_000;
@@ -81,10 +83,11 @@ test(
   "agent send redacts a secret-shaped sender name in storage and inbox",
   async () => {
     const f = await baseFixture();
-    const sender = { ...a, displayName: "xapp" + "-" + "fixture".repeat(3) };
     const alpha = f.bind();
     const beta = f.bind(b);
-    value(await f.core.send(f.caller(sender), draft(alpha.sessionId)));
+    value(
+      await f.core.send(f.caller(secretCaller.person), draft(alpha.sessionId)),
+    );
     const storedName = f.col("inbox_items", "sender_name")[0];
     const deliveredName = f.read(beta.sessionId, b).items[0]?.from.name;
     expect({
@@ -278,29 +281,21 @@ test(
     const { sessionId } = f.bind();
     await f.emit("root");
     const conversationId = f.read(sessionId).items[0]!.conversationId!;
-    const sender = { ...a, displayName: "xapp" + "-" + "fixture".repeat(3) };
-    const post = f.chat.postText.bind(f.chat);
-    let journalSafe = false;
+    const journal = observePostJournal(f);
+    const name = "[possible secret removed]";
     const safe = (value: unknown) => {
       const json = JSON.stringify(value);
-      return (
-        json.includes("[possible secret removed]") &&
-        !json.includes(sender.displayName)
-      );
-    };
-    f.chat.postText = (...args) => {
-      journalSafe = safe(f.col("meta WHERE key GLOB 'agent-post:*'", "value"));
-      return post(...args);
+      return json.includes(name) && !json.includes(secretName);
     };
     const sent = value(
-      await f.core.send(f.caller(sender), {
+      await f.core.send(f.caller(secretCaller.person), {
         ...draft(sessionId),
         conversationId,
       }),
     );
     expect(sent.threadPost).toBe("posted");
     expect({
-      journal: journalSafe,
+      journal: safe(journal()),
       post: safe(f.writes("postText")),
       projection: safe(f.col("thread_messages WHERE kind = 'agent'", "text")),
     }).toEqual({ journal: true, post: true, projection: true });

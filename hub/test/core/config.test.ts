@@ -149,17 +149,8 @@ test(
   () => {
     const pointer = "/people/0/displayName";
     const name = "xapp" + "-" + "fixture".repeat(3);
-    let caught: unknown;
-    try {
-      load([[pointer, name]]);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(HubConfigError);
-    expect(caught).toMatchObject({ pointer });
-    expect((String(caught) + JSON.stringify(caught)).includes(name)).toBe(
-      false,
-    );
+    const error = refuse([[pointer, name]], pointer);
+    expect((String(error) + JSON.stringify(error)).includes(name)).toBe(false);
   },
   timeout,
 );

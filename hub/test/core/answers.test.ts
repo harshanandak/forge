@@ -9,16 +9,8 @@ import { createPeopleDirectory } from "../../src/core/directory.ts";
 import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import { configFixture } from "./config-fixture.ts";
-import {
-  a,
-  b,
-  caller,
-  closeDb,
-  openDb,
-  p1,
-  seedRemovedMemberName,
-  value,
-} from "./fixture.ts";
+import { a, b, caller, closeDb, openDb, p1, value } from "./fixture.ts";
+import { seedRemovedMemberName } from "./fixture.ts";
 import {
   askFixture,
   asksOf,
@@ -113,19 +105,16 @@ test(
   async () => {
     const f = await askFixture();
     const { askId } = value(await f.choice({ to: [b.personId] }));
-    expect(
-      f.asks.answerAction(button(askId, "legacy-answer", slackB)).after?.askId,
-    ).toBe(askId);
+    const answer = f.asks.answerAction(button(askId, "legacy-answer", slackB));
+    expect(answer.after?.askId).toBe(askId);
     seedRemovedMemberName(f.db, b.personId);
-    const answeredNames = f.asks
-      .answerRows(f.sessionId, 1)
-      .map(({ view }) => view.answeredBy.name);
-    for (const { card } of f.asks.pendingEdits(1))
-      if (card.state.kind === "answered")
-        answeredNames.push(card.state.answeredByName);
-    expect(
-      answeredNames.map((name) => name === "[possible secret removed]"),
-    ).toEqual([true, true]);
+    const view = f.asks.answerRows(f.sessionId, 1)[0]?.view;
+    const card = f.asks.pendingEdits(1)[0]?.card.state;
+    const name = "[possible secret removed]";
+    expect(view?.answeredBy.name === name).toBe(true);
+    expect(card?.kind === "answered" && card.answeredByName === name).toBe(
+      true,
+    );
   },
   timeout,
 );

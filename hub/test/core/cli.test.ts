@@ -6,54 +6,39 @@ import { createCli } from "../../src/core/cli.ts";
 import { createCoreContext } from "../../src/core/core.ts";
 import { baseFixture, type BaseFixture } from "./base-fixture.ts";
 import { a, b, p1, p2, seedItem, value } from "./fixture.ts";
+import { secretCaller, secretName } from "./fixture.ts";
 
 const timeout = 30_000;
 
-test(
-  "CLI send redacts a secret-shaped sender name in storage and inbox",
-  async () => {
+test.each(["fresh send", "legacy inbox"] as const)(
+  "CLI %s redacts a secret-shaped sender name",
+  async (mode) => {
     const f = await baseFixture();
     const cli = createCli(f.context);
-    const sender = { ...a, displayName: "xapp" + "-" + "fixture".repeat(3) };
     const project = { projectId: p1 };
     const { sessionId } = value(cli.cliInbox(a, project));
-    const target = value(cli.cliInbox(b, project));
-    value(
-      await cli.cliSend(sender, {
+    const name = "[possible secret removed]";
+    let owner = a;
+    let targetSessionId = sessionId;
+    if (mode === "fresh send") {
+      owner = b;
+      targetSessionId = value(cli.cliInbox(b, project)).sessionId;
+      const input = {
         ...project,
         sessionId,
         toPersonId: b.personId,
-        targetSessionId: target.sessionId,
+        targetSessionId,
         text: "CLI note",
-      }),
-    );
-    const storedName = f.col("inbox_items", "sender_name")[0];
-    const inbox = value(
-      cli.cliInbox(b, { ...project, sessionId: target.sessionId }),
-    );
-    expect({
-      stored: storedName === "[possible secret removed]",
-      delivered: inbox.items[0]?.from.name === "[possible secret removed]",
-    }).toEqual({ stored: true, delivered: true });
-  },
-  timeout,
-);
-
-test(
-  "CLI inbox redacts a secret-shaped name already stored on an item",
-  async () => {
-    const f = await baseFixture();
-    const cli = createCli(f.context);
-    const project = { projectId: p1 };
-    const { sessionId } = value(cli.cliInbox(a, project));
-    seedItem(f.db, "itm_legacy", { target: sessionId });
-    f.db
-      .prepare("UPDATE inbox_items SET sender_name = ? WHERE item_id = ?")
-      .run("xapp" + "-" + "fixture".repeat(3), "itm_legacy");
-    const inbox = value(cli.cliInbox(a, { ...project, sessionId }));
-    expect(inbox.items[0]?.from.name === "[possible secret removed]").toBe(
-      true,
-    );
+      };
+      value(await cli.cliSend(secretCaller.person, input));
+      expect(f.col("inbox_items", "sender_name")[0] === name).toBe(true);
+    } else {
+      const legacy = { target: sessionId, senderName: secretName };
+      seedItem(f.db, "itm_legacy", legacy);
+    }
+    const input = { ...project, sessionId: targetSessionId };
+    const inbox = value(cli.cliInbox(owner, input));
+    expect(inbox.items[0]?.from.name === name).toBe(true);
   },
   timeout,
 );
