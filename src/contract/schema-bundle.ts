@@ -14,7 +14,7 @@ const SAME_VALUE: ReadonlySet<string> = new Set(["not", "if", "then", "else"]);
 const CHILDREN: ReadonlyMap<string, string> = new Map([
   ["items", "[]"],
   ["additionalProperties", "*"],
-  ["propertyNames", "names"],
+  ["propertyNames", "*"],
 ]);
 const RESOURCES: ReadonlySet<string> = new Set(["$id", "$schema", "$defs"]);
 const CAP = MAX_SCHEMA_VISITS_PER_VALUE;
