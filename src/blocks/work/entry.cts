@@ -4814,6 +4814,7 @@ const operations: Operations<WorkOperations> = {
       );
       return observedDefault;
     });
+    const trackingRef = `refs/remotes/origin/${remoteHead}` as const;
     const baseId = bound.crypto.randomUUID();
     await sweepPrivateRefs(
       executor,
@@ -4828,6 +4829,7 @@ const operations: Operations<WorkOperations> = {
         recoverDeadOwner: true,
       }),
       baseRef = privateRefName("lane-base", baseId, clock());
+    let fetched: string | undefined;
     let base: string;
     try {
       await run([
@@ -4836,7 +4838,21 @@ const operations: Operations<WorkOperations> = {
         "+refs/heads/" + remoteHead + ":" + baseRef,
         ...PRIVATE_FETCH_FLAGS,
       ]);
-      base = await run(["rev-parse", "--verify", baseRef + "^{commit}"]);
+      if (
+        observedDefault === trackingRef &&
+        input.attempt === undefined &&
+        bound.captureDefaultLane
+      ) {
+        const [raw, peeled] = (
+          await run(["rev-parse", baseRef, baseRef + "^{commit}"])
+        ).split(/\r?\n/);
+        if (!isCommit(peeled))
+          fail("INPUT_CONFLICT", "Git did not resolve a lane base commit");
+        fetched = raw;
+        base = peeled;
+      } else {
+        base = await run(["rev-parse", "--verify", baseRef + "^{commit}"]);
+      }
     } finally {
       await dropPrivateRefs(executor, git, files.root, env, [baseRef]);
       releaseRefLock(baseLock);
@@ -4963,13 +4979,7 @@ const operations: Operations<WorkOperations> = {
         ...lane,
         ...(issue.lease ? { lease: issue.lease } : {}),
       };
-      const trackingRef = `refs/remotes/origin/${remoteHead}` as const;
-      if (
-        !adopted &&
-        input.attempt === undefined &&
-        observedDefault === trackingRef &&
-        isCommit(base)
-      ) {
+      if (!adopted && fetched === base) {
         try {
           bound.captureDefaultLane?.(
             Object.freeze({ trackingRef, commit: base }),
