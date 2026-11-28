@@ -88,6 +88,11 @@ export function nodeProjectFiles(
           count += read;
         }
         if (count > maxBytes) throw fileLimitExceeded(path, maxBytes);
+        if (
+          options.strict &&
+          fstatSync(fd, { bigint: true }).size !== BigInt(count)
+        )
+          refuse("file size changed during read");
         return buffer.subarray(0, count);
       } finally {
         closeSync(fd);
