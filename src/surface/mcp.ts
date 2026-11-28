@@ -1,4 +1,5 @@
 import {
+  mcpObjectInput,
   selectMcpTools,
   projectMcpTool,
   type McpCandidate,
@@ -20,18 +21,54 @@ import { discoveryOperations } from "./discovery.ts";
 const STANDALONE_ID = "https://mcp.invalid/schema.json";
 const COMPOSITIONS: ReadonlySet<string> = new Set(["allOf", "anyOf", "oneOf"]);
 const MAPS: ReadonlySet<string> = new Set(["properties", "$defs"]);
+const SDK_ARRAYS = { items: true, allOf: true, anyOf: true, oneOf: true };
+const SDK_MAPS = {
+  $defs: true,
+  definitions: true,
+  properties: true,
+  patternProperties: true,
+  dependencies: true,
+};
+const SDK_LITERAL_KEYS = {
+  default: true,
+  enum: true,
+  const: true,
+  required: true,
+  maximum: true,
+  minimum: true,
+  exclusiveMaximum: true,
+  exclusiveMinimum: true,
+  multipleOf: true,
+  maxLength: true,
+  minLength: true,
+  pattern: true,
+  format: true,
+  maxItems: true,
+  minItems: true,
+  uniqueItems: true,
+  maxProperties: true,
+  minProperties: true,
+};
 
 function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function unsafeExtension(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(unsafeExtension);
   if (!isObject(value)) return false;
-  return Object.entries(value).some(
-    ([key, child]) =>
-      key === "$anchor" || key === "$id" || unsafeExtension(child),
-  );
+  if (
+    typeof value.$anchor === "string" ||
+    typeof value.$dynamicAnchor === "string" ||
+    typeof value.$id === "string"
+  )
+    return true;
+  return Object.entries(value).some(([key, child]) => {
+    if (Array.isArray(child))
+      return key in SDK_ARRAYS && child.some(unsafeExtension);
+    if (key in SDK_MAPS)
+      return isObject(child) && Object.values(child).some(unsafeExtension);
+    return !(key in SDK_LITERAL_KEYS) && unsafeExtension(child);
+  });
 }
 
 function checkExtensions(schema: unknown): void {
@@ -39,7 +76,7 @@ function checkExtensions(schema: unknown): void {
   for (const [key, value] of Object.entries(schema)) {
     if (key.startsWith("x-") && unsafeExtension(value)) {
       throw new Error(
-        "MCP schema publication refuses $anchor or $id inside x-* extension values",
+        "MCP schema publication refuses $anchor, $dynamicAnchor or $id inside x-* extension values",
       );
     }
     if (MAPS.has(key) && isObject(value))
@@ -65,21 +102,42 @@ function bundle(
   );
 }
 
-function project(
-  candidate: McpCandidate,
+function publishing<T>(
+  name: string,
   side: "input" | "output",
-): SchemaObject {
+  action: () => T,
+): T {
   try {
-    const schema = bundle(candidate, side);
-    checkExtensions(schema);
-    return schema;
+    return action();
   } catch (error) {
-    const name = mcpToolName(candidate.op) ?? candidate.op;
     throw new Error(
       `MCP tool ${name} cannot publish its ${side} schema: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }
+}
+
+function project(
+  candidate: McpCandidate,
+  side: "input" | "output",
+): SchemaObject {
+  return publishing(mcpToolName(candidate.op) ?? candidate.op, side, () => {
+    const schema = bundle(candidate, side);
+    checkExtensions(schema);
+    return schema;
+  });
+}
+
+function checkProjection(
+  name: string,
+  side: "input" | "output",
+  schema: SchemaObject,
+): void {
+  publishing(name, side, () => {
+    const root = side === "input" ? mcpObjectInput(schema) : schema;
+    const registry = new SchemaRegistry([{ ...root, $id: STANDALONE_ID }]);
+    bundleSchema(registry, STANDALONE_ID);
+  });
 }
 
 function published(candidate: McpCandidate): McpCandidate {
@@ -182,7 +240,11 @@ export function createMcpHandlers(
   };
   const listed = (candidate: McpCandidate, prefix?: string) => {
     const tool = projectMcpTool(publishable(candidate), prefix);
-    return tool === undefined ? [] : [tool];
+    if (tool === undefined) return [];
+    checkProjection(tool.name, "input", tool.inputSchema);
+    if (tool.outputSchema !== undefined)
+      checkProjection(tool.name, "output", tool.outputSchema);
+    return [tool];
   };
   return {
     listTools: () => [

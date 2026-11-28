@@ -8,6 +8,7 @@ import {
   serveStdio,
   StdioServerTransport,
 } from "@modelcontextprotocol/server/stdio";
+import { mcpObjectInput } from "../../contract/mcp.ts";
 import type { McpTransportPort } from "../../ports/mcp-transport.ts";
 import type { FailureEnvelope } from "../../generated/types.ts";
 
@@ -22,20 +23,6 @@ const MCP_BUSY: FailureEnvelope = {
   },
   warnings: [],
 };
-
-function objectRoot(schema: Readonly<Record<string, unknown>>) {
-  const { type, allOf } = schema;
-  return type === undefined || type === "object"
-    ? { ...schema, type: "object" as const }
-    : {
-        ...schema,
-        type: "object" as const,
-        allOf: [
-          ...(Array.isArray(allOf) ? (allOf as unknown[]) : []),
-          { type },
-        ],
-      };
-}
 
 /** SDK owns framing, negotiation, era-specific wire codecs and connection cleanup. */
 export function createMcpTransport(): McpTransportPort {
@@ -83,7 +70,7 @@ export function createMcpTransport(): McpTransportPort {
                 return {
                   tools: options.handlers.listTools().map((tool) => ({
                     ...tool,
-                    inputSchema: objectRoot(tool.inputSchema),
+                    inputSchema: mcpObjectInput(tool.inputSchema),
                   })),
                 };
               },

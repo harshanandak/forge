@@ -81,6 +81,20 @@ export function cliOperation(entry: McpCandidate): string {
     : entry.op;
 }
 
+export function mcpObjectInput(schema: SchemaObject) {
+  const { type, allOf } = schema;
+  return type === undefined || type === "object"
+    ? { ...schema, type: "object" as const }
+    : {
+        ...schema,
+        type: "object" as const,
+        allOf: [
+          ...(Array.isArray(allOf) ? (allOf as unknown[]) : []),
+          { type },
+        ],
+      };
+}
+
 export function projectMcpTool(
   candidate: McpCandidate,
   prefix?: string,
