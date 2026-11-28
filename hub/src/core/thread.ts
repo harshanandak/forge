@@ -134,7 +134,6 @@ export function recordThread(
 }
 
 export const UNCONFIRMED_MESSAGE_PREFIX = "unconfirmed:";
-export const BEFORE_MEMBER_SUFFIX = ":before-member";
 
 export function recordAgentPost(
   ctx: CoreContext,
@@ -189,53 +188,6 @@ function compareKeys(a: OrderKey, b: OrderKey): number {
   );
 }
 
-function loopGuardRows(db: HubDb, thread: string) {
-  return db
-    .prepare(
-      `SELECT seq,kind,chat_message_id,created_at FROM thread_messages WHERE adapter = 'slack'
-    AND chat_thread_id = ? AND (kind IN ('agent','person') OR (kind = 'system' AND text = ?))
-    ORDER BY seq DESC`,
-    )
-    .all(thread, LOOP_PAUSE_TEXT);
-}
-
-function latestMember(rows: readonly SqlRow[]) {
-  let key: OrderKey | undefined;
-  let boundary = -1;
-  for (const { seq, kind, chat_message_id: id } of rows) {
-    if (kind !== "person") continue;
-    if (boundary === -1) boundary = num(seq);
-    const stamp = tsKey(id);
-    if (stamp && (!key || compareKeys(stamp, key) > 0)) {
-      key = stamp;
-      boundary = num(seq);
-    }
-  }
-  return { key, boundary };
-}
-
-export function replayBeforeMember(
-  db: HubDb,
-  thread: string,
-  settledThroughSeq: number,
-): boolean {
-  const rows = loopGuardRows(db, thread);
-  const { key, boundary } = latestMember(rows);
-  if (boundary <= settledThroughSeq) return false;
-  if (!key) return true;
-
-  const rootId = thread.slice(thread.lastIndexOf(":") + 1);
-  const predecessorAtOrAfterMember = rows.some(
-    ({ seq, kind, chat_message_id: id }) => {
-      if (kind === "person" || id === rootId || num(seq) > settledThroughSeq)
-        return false;
-      const stamp = tsKey(id);
-      return stamp !== undefined && compareKeys(stamp, key) >= 0;
-    },
-  );
-  return !predecessorAtOrAfterMember;
-}
-
 type GuardRetention = {
   cutoff: number;
   keep: Set<number>;
@@ -247,8 +199,24 @@ function pausedBoundary(
   thread: string,
   retention?: GuardRetention,
 ): number | undefined {
-  const rows = loopGuardRows(db, thread);
-  const { key: personKey, boundary } = latestMember(rows);
+  const rows = db
+    .prepare(
+      `SELECT seq,kind,chat_message_id,created_at FROM thread_messages WHERE adapter = 'slack'
+    AND chat_thread_id = ? AND (kind IN ('agent','person') OR (kind = 'system' AND text = ?))
+    ORDER BY seq DESC`,
+    )
+    .all(thread, LOOP_PAUSE_TEXT);
+  let personKey: OrderKey | undefined;
+  let boundary = -1;
+  for (const { seq, kind, chat_message_id: id } of rows) {
+    if (kind !== "person") continue;
+    if (boundary === -1) boundary = num(seq);
+    const key = tsKey(id);
+    if (key && (!personKey || compareKeys(key, personKey) > 0)) {
+      personKey = key;
+      boundary = num(seq);
+    }
+  }
   const rootId = thread.slice(thread.lastIndexOf(":") + 1);
   let earlierSlackPost: number | undefined;
   let legacyNotice: number | undefined;
@@ -265,8 +233,6 @@ function pausedBoundary(
       earlierSlackPost ??= rowSeq;
     if (kind !== "agent" || count === LIMITS.agentRunMax) continue;
     if (typeof id === "string") {
-      if (isUnconfirmedMessage(id) && id.endsWith(BEFORE_MEMBER_SUFFIX))
-        continue;
       if (seen.has(id)) continue;
       seen.add(id);
     }
