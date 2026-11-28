@@ -1250,6 +1250,8 @@ export async function createAssembly(
               ) as McpCandidate["inputSchema"],
               outputSchema:
                 described.outputSchema as McpCandidate["inputSchema"],
+              projectSchema: (side: "input" | "output") =>
+                captured.mcpSchema(operation.declaration[side]),
             };
           });
         blocks.set(name, block);

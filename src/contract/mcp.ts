@@ -27,6 +27,7 @@ export interface McpCandidate {
   /** Resolved top-level fields for CLI arguments and skill summaries; the full schema stays raw. */
   readonly argumentSchema?: SchemaObject;
   readonly outputSchema?: SchemaObject;
+  readonly projectSchema?: (side: "input" | "output") => SchemaObject;
   /** The instance's local noun renames; a deprecation's replacement is projected through them. */
   readonly rename?: Readonly<Record<string, string>>;
 }
@@ -78,6 +79,22 @@ export function cliOperation(entry: McpCandidate): string {
   return entry.op === (entry.declaredOp ?? entry.op)
     ? (entry.declaration.cli ?? entry.op)
     : entry.op;
+}
+
+export function mcpObjectInput(
+  schema: SchemaObject,
+): SchemaObject & { readonly type: "object" } {
+  const { type, allOf } = schema;
+  return type === undefined || type === "object"
+    ? { ...schema, type: "object" as const }
+    : {
+        ...schema,
+        type: "object" as const,
+        allOf: [
+          ...(Array.isArray(allOf) ? (allOf as unknown[]) : []),
+          { type },
+        ],
+      };
 }
 
 export function projectMcpTool(
