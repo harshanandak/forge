@@ -548,6 +548,17 @@ export function creationFixtures(recipes: CreationRecipe[]) {
       ),
     fault: (fault: CreationFault, path: string, log: string) =>
       call({ op: "fault", fault, path, log }),
-    close: () => rmSync(base, { recursive: true }),
+    close: () => {
+      const system = process.env.SystemRoot ?? "C:\\Windows";
+      const reset = spawnSync(
+        join(system, "System32", "icacls.exe"),
+        [base, "/reset", "/t", "/c", "/q"],
+        { encoding: "utf8" },
+      );
+      console.log(
+        `CLEANUP RESET ${reset.status} ${reset.stdout}${reset.stderr}`,
+      );
+      rmSync(base, { recursive: true });
+    },
   };
 }

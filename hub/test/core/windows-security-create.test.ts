@@ -141,8 +141,7 @@ async function dropBackupPrivileges() {
     `BACKUP PRIVILEGES DISABLED: ${previous.readUInt32LE(0)} were enabled`,
   );
   return () => {
-    const restored = adjust(handle[0], 0, previous, 28, state, [0]);
-    console.log(`PRIVILEGES RESTORED ${restored} ${state.readUInt32LE(0)}`);
+    adjust(handle[0], 0, previous, 0, null, [0]);
     close(handle[0]);
   };
 }
@@ -520,9 +519,9 @@ test(
   () => {
     const faults: Faults = { create: "fail" };
     const { run, calls } = fake(faults);
-    expect([run(100, "C:\\parent\\a\0b"), run(100, "C:\\"), calls]).toEqual([
-      "refused",
-      "refused",
+    const roots = ["C:\\parent\\a\0b", "C:\\", "C:\\.", "C:\\parent\\.."];
+    expect([...roots.map((root) => run(100, root)), calls]).toEqual([
+      ...roots.map(() => "refused"),
       [],
     ]);
     expect(run()).toBe("refused");
