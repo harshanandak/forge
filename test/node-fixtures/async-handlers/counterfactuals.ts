@@ -31,7 +31,7 @@ export function asyncCounterfactuals(platform: NodeJS.Platform) {
         }
       : {
           file: "adapters/process/process-tree.js",
-          from: "(await endProcessGroup(pid, supervision, undefined, exited))",
+          from: "(await endProcessGroup(pid, supervision, undefined, exited, undefined, groupAbort.state))",
           to: "(child.kill('SIGKILL'), true)",
           mode: "default-cleanup",
           // Only the exited root is signaled, so the grandchild keeps stdout open and the pipes
