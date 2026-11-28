@@ -10,6 +10,7 @@ import {
 } from "@modelcontextprotocol/server/stdio";
 import { mcpObjectInput } from "../../contract/mcp.ts";
 import type { McpTransportPort } from "../../ports/mcp-transport.ts";
+import type { SkillResourceProvider } from "../../ports/skill-resources.ts";
 import type { FailureEnvelope } from "../../generated/types.ts";
 
 const MCP_TOOL_CONCURRENCY_LIMIT = 8;
@@ -23,6 +24,73 @@ const MCP_BUSY: FailureEnvelope = {
   },
   warnings: [],
 };
+
+const PRIVATE_RESOURCE = {
+  resultType: "complete",
+  ttlMs: 0,
+  cacheScope: "private",
+} as const;
+
+function resourceMimeType(path: string): string {
+  return /\.md$/i.test(path) ? "text/markdown" : "application/octet-stream";
+}
+
+function resourceText(bytes: Uint8Array): string | undefined {
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    return decoder.decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+function registerResources(
+  server: Server,
+  skills: SkillResourceProvider,
+): void {
+  const catalog = async () => {
+    try {
+      return await skills.catalog();
+    } catch {
+      throw new ProtocolError(-32603, "Skill resource catalog unavailable.");
+    }
+  };
+  server.setRequestHandler(
+    "resources/list",
+    { params: specTypeSchemas.PaginatedRequestParams },
+    async ({ cursor }) => {
+      if (cursor !== undefined && cursor !== "")
+        throw new ProtocolError(-32602, "Unknown cursor.");
+      const resources = [...(await catalog())].map(([uri, file]) => ({
+        uri,
+        name: file.path.split("/").at(-1)!,
+        mimeType: resourceMimeType(file.path),
+        size: file.bytes.byteLength,
+      }));
+      return { ...PRIVATE_RESOURCE, resources };
+    },
+  );
+  server.setRequestHandler(
+    "resources/read",
+    { params: specTypeSchemas.ReadResourceRequestParams },
+    async ({ uri }) => {
+      const file = uri.startsWith("skill://")
+        ? (await catalog()).get(uri)
+        : undefined;
+      if (file === undefined)
+        throw new ProtocolError(-32602, "Unknown resource URI.");
+      const mimeType = resourceMimeType(file.path);
+      const text =
+        mimeType === "text/markdown" ? resourceText(file.bytes) : undefined;
+      const content =
+        text === undefined
+          ? { blob: Buffer.from(file.bytes).toString("base64") }
+          : { text };
+      const contents = [{ uri, mimeType, ...content }];
+      return { ...PRIVATE_RESOURCE, contents };
+    },
+  );
+}
 
 /** SDK owns framing, negotiation, era-specific wire codecs and connection cleanup. */
 export function createMcpTransport(): McpTransportPort {
@@ -57,8 +125,15 @@ export function createMcpTransport(): McpTransportPort {
           () => {
             const server = new Server(
               { name: options.serverName, version: options.serverVersion },
-              { capabilities: { tools: {} } },
+              {
+                capabilities: {
+                  tools: {},
+                  ...(options.skills === undefined ? {} : { resources: {} }),
+                },
+              },
             );
+            if (options.skills !== undefined)
+              registerResources(server, options.skills);
             server.setRequestHandler(
               "tools/list",
               { params: specTypeSchemas.PaginatedRequestParams },

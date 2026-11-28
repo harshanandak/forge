@@ -15,6 +15,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  opendirSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -65,7 +66,7 @@ function within(realRoot: string, candidate: string): boolean {
 }
 
 /** How a symlink in the LAST component is treated: followed (list), refused, or left alone (remove). */
-type FinalLink = "follow" | "refuse" | "keep";
+type FinalLink = "follow" | "refuse" | "keep" | "refuse-all";
 
 export function resolveIn(
   root: string,
@@ -103,7 +104,7 @@ export function resolveIn(
       continue;
     }
     if (last && finalLink === "keep") return next;
-    if (last && finalLink === "refuse")
+    if (finalLink === "refuse-all" || (last && finalLink === "refuse"))
       throw escape(path, "symlinked file is not followed");
     let real: string;
     try {
@@ -122,9 +123,11 @@ export function resolveIn(
 export function entryKind(
   root: string,
   path: string,
+  refuseLinks = false,
 ): "file" | "directory" | "link" | "missing" | "other" {
   try {
-    const info = lstatSync(resolveIn(root, path, "keep"));
+    const target = resolveIn(root, path, refuseLinks ? "refuse-all" : "keep");
+    const info = lstatSync(target);
     if (info.isSymbolicLink()) return "link";
     if (info.isDirectory()) return "directory";
     return info.isFile() ? "file" : "other";
@@ -254,7 +257,11 @@ function holdsExpected(
 
 export function nodeConfigFiles(
   root: string,
-  options: { beforeOpen?: () => void; requireExistingRemove?: boolean } = {},
+  options: {
+    beforeOpen?: () => void;
+    requireExistingRemove?: boolean;
+    strict?: boolean;
+  } = {},
 ): ConfigFiles {
   const files = nodeProjectFiles(root, options);
   return {
@@ -319,9 +326,23 @@ export function nodeConfigFiles(
           restoreAfterRemoveFailure(path, target, claimed, error);
       }
     },
-    list(dir) {
+    list(dir, maxEntries) {
       try {
-        return readdirSync(resolveIn(root, dir, "follow")).sort();
+        const links = options.strict ? "refuse-all" : "follow";
+        const target = resolveIn(root, dir, links);
+        if (maxEntries === undefined) return readdirSync(target).sort();
+        const entries: string[] = [];
+        const opened = opendirSync(target);
+        try {
+          for (let item = opened.readSync(); item; item = opened.readSync()) {
+            if (entries.length >= maxEntries)
+              throw escape(dir, "directory entry limit exceeded");
+            entries.push(item.name);
+          }
+          return entries.sort();
+        } finally {
+          opened.closeSync();
+        }
       } catch (error) {
         if (errorCode(error) === "ENOENT") return [];
         throw error;

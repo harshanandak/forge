@@ -69,6 +69,7 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
         await import("../adapters/mcp-transport/index.ts");
       return createMcpTransport().open({
         ...options,
+        skills: assembly.mcpSkills,
         handlers: {
           listTools: () => request().handlers.listTools(),
           async callTool(name, args, signal) {

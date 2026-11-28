@@ -34,7 +34,7 @@ export interface ConfigFiles {
   /** Remove a file; absent is fine. */
   remove(path: string, expected: Uint8Array): void;
   /** File names in a directory; empty when it does not exist. */
-  list(dir: string): readonly string[];
+  list(dir: string, maxEntries?: number): readonly string[];
   /** Create a file only if it does not exist; false when it already does. */
   createExclusive(path: string, bytes: Uint8Array): boolean;
 }

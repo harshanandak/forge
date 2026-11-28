@@ -23,6 +23,10 @@ export type {
   SpawnOptions,
 } from "./process.ts";
 export type {
+  SkillResourceFile,
+  SkillResourceProvider,
+} from "./skill-resources.ts";
+export type {
   BatchEntry,
   BatchOptions,
   ExtendedStateClient,
