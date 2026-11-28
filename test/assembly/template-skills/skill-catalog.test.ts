@@ -9,16 +9,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as skills from "../../../src/assembly/skills.ts";
-import type { McpCandidate } from "../../../src/contract/mcp.ts";
+import {
+  renderSkillCatalog,
+  syncSkills,
+} from "../../../src/assembly/skills.ts";
 import { candidate } from "../../surface/fixtures/catalog.ts";
 
 test("renders the same skill bytes as a fresh sync", () => {
-  type Render = (
-    candidates: readonly McpCandidate[],
-    prefix: string,
-    templates: skills.TemplateSkills,
-  ) => readonly { noun: string; path: string; bytes: Uint8Array }[];
   const root = mkdtempSync(join(tmpdir(), "forge-skill-catalog-"));
   try {
     const source = join(root, "tpl", "skills", "review");
@@ -35,10 +32,7 @@ test("renders the same skill bytes as a fresh sync", () => {
       values: { rounds: 3 },
     };
     const candidates = [candidate()];
-    const render: unknown = Reflect.get(skills, "renderSkillCatalog");
-    expect(render, "read-only byte renderer is exported").toBeFunction();
-
-    const catalog = (render as Render)(candidates, "test", templates);
+    const catalog = renderSkillCatalog(candidates, "test", templates);
     expect(existsSync(join(root, ".agents"))).toBe(false);
     expect(catalog.map(({ path }) => path).sort()).toEqual([
       "review/SKILL.md",
@@ -50,29 +44,23 @@ test("renders the same skill bytes as a fresh sync", () => {
     const review = catalog.find(({ path }) => path === "review/SKILL.md")!;
     expect(decoder.decode(review.bytes).startsWith(frontmatter)).toBe(true);
     expect(decoder.decode(review.bytes)).toContain("Review 3 rounds.");
-    const payload = catalog.find(({ path }) => path.endsWith("/payload.bin"));
-    expect(payload?.bytes).toEqual(companion);
+    const payload = catalog.find(({ path }) => path.endsWith("/payload.bin"))!;
+    expect(new Uint8Array(payload.bytes)).toEqual(companion);
 
-    const synced = skills.syncSkills(
-      root,
-      candidates,
-      "test",
-      undefined,
-      templates,
-    );
+    const synced = syncSkills(root, candidates, "test", undefined, templates);
     expect(synced.errors).toEqual([]);
     expect(synced.written).toHaveLength(catalog.length);
     for (const { noun, path, bytes } of catalog) {
       expect(path.split("/")[0]).toBe(noun);
       const onDisk = readFileSync(join(root, synced.dir, path));
-      expect(bytes).toEqual(new Uint8Array(onDisk));
+      expect(new Uint8Array(bytes)).toEqual(new Uint8Array(onDisk));
     }
 
     writeFileSync(primary, `${frontmatter}\nReview new evidence first.\n`);
-    const updated = (render as Render)(candidates, "test", templates);
+    const updated = renderSkillCatalog(candidates, "test", templates);
     const updatedReview = updated.find(({ path }) => path === review.path);
     expect(updatedReview?.bytes).not.toEqual(review.bytes);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);

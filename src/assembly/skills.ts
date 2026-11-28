@@ -135,6 +135,27 @@ function companions(
 }
 
 type Copy = SkillFile & { readonly bytes?: Uint8Array };
+
+export interface RenderedSkillFile {
+  readonly noun: string;
+  readonly path: string;
+  readonly bytes: Uint8Array;
+}
+
+const EMPTY_TEMPLATES: TemplateSkills = { sources: [], values: undefined };
+
+function skillBytes(copy: Copy, adopted: readonly string[]): Uint8Array {
+  return (
+    copy.bytes ??
+    new TextEncoder().encode(
+      copy.text.replace(
+        GENERATED_MARKER,
+        `${GENERATED_MARKER}${adopted.length ? `\n${companionLine(adopted)}` : ""}`,
+      ),
+    )
+  );
+}
+
 function tree(
   files: ReturnType<typeof nodeConfigFiles>,
   dir: string,
@@ -200,37 +221,13 @@ function templateSkills(templates: TemplateSkills): Copy[] {
   return skills;
 }
 
-/**
- * `skills.sync`: write each enabled block noun's skill and each imported template's skill under
- * the project root. Readable marked files are replaced, or deleted once no longer produced.
- * Oversized files follow the same left-alone path as unmarked user files.
- */
-export function syncSkills(
-  root: string,
+function collectSkills(
   candidates: readonly McpCandidate[],
   prefix: string | undefined,
-  requested: string | readonly string[] = DEFAULT_SKILLS_DIR,
-  templates: TemplateSkills = { sources: [], values: undefined },
-  check = false,
-): SkillsSyncResult {
-  const files = nodeConfigFiles(root);
-  let dirs: string[];
+  templates: TemplateSkills,
+): Copy[] {
   let skills: Copy[];
   try {
-    const unique = new Map<string, string>();
-    for (const path of typeof requested === "string"
-      ? [requested]
-      : requested) {
-      files.list(path.replace(/\\/g, "/"));
-      const dir =
-        path
-          .replace(/\\/g, "/")
-          .split("/")
-          .filter((part) => part !== "." && part !== "")
-          .join("/") || ".";
-      unique.set(key(dir), dir);
-    }
-    dirs = [...unique.values()];
     skills = [
       ...renderSkills(candidates, prefix),
       ...templateSkills(templates),
@@ -267,6 +264,66 @@ export function syncSkills(
       "OUTPUT_INVALID",
       `Generated skills fail the lint: ${problems.join("; ")}`,
     );
+  return skills;
+}
+
+export function renderSkillCatalog(
+  candidates: readonly McpCandidate[],
+  prefix?: string,
+  templates: TemplateSkills = EMPTY_TEMPLATES,
+): readonly RenderedSkillFile[] {
+  const skills = collectSkills(candidates, prefix, templates);
+  const pathsByNoun = new Map<string, string[]>();
+  for (const copy of skills) {
+    if (copy.bytes === undefined) continue;
+    const paths = pathsByNoun.get(copy.noun) ?? [];
+    paths.push(copy.path.slice(copy.noun.length + 1));
+    pathsByNoun.set(copy.noun, paths);
+  }
+  return skills.map((copy) => ({
+    noun: copy.noun,
+    path: copy.path,
+    bytes: skillBytes(copy, pathsByNoun.get(copy.noun) ?? []),
+  }));
+}
+
+/**
+ * `skills.sync`: write each enabled block noun's skill and each imported template's skill under
+ * the project root. Readable marked files are replaced, or deleted once no longer produced.
+ * Oversized files follow the same left-alone path as unmarked user files.
+ */
+export function syncSkills(
+  root: string,
+  candidates: readonly McpCandidate[],
+  prefix: string | undefined,
+  requested: string | readonly string[] = DEFAULT_SKILLS_DIR,
+  templates: TemplateSkills = EMPTY_TEMPLATES,
+  check = false,
+): SkillsSyncResult {
+  const files = nodeConfigFiles(root);
+  let dirs: string[];
+  try {
+    const unique = new Map<string, string>();
+    for (const path of typeof requested === "string"
+      ? [requested]
+      : requested) {
+      files.list(path.replace(/\\/g, "/"));
+      const dir =
+        path
+          .replace(/\\/g, "/")
+          .split("/")
+          .filter((part) => part !== "." && part !== "")
+          .join("/") || ".";
+      unique.set(key(dir), dir);
+    }
+    dirs = [...unique.values()];
+  } catch (error) {
+    refuse(
+      "INPUT_INVALID",
+      error instanceof Error ? error.message : "Cannot read template skills",
+    );
+  }
+  const skills = collectSkills(candidates, prefix, templates);
   const written: string[] = [];
   const unchanged: string[] = [];
   const skipped: string[] = [];
@@ -411,15 +468,7 @@ export function syncSkills(
             continue;
           }
           if (copy.bytes !== undefined && !adopted.includes(relative)) continue;
-          let bytes = copy.bytes;
-          if (bytes === undefined) {
-            bytes = new TextEncoder().encode(
-              copy.text.replace(
-                GENERATED_MARKER,
-                `${GENERATED_MARKER}${adopted.length ? `\n${companionLine(adopted)}` : ""}`,
-              ),
-            );
-          }
+          const bytes = skillBytes(copy, adopted);
           const target = `${folder}/${relative}`;
           const existing = readFile(local, relative);
           if (existing !== undefined && equal(existing, bytes))
