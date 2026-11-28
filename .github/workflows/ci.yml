@@ -567,6 +567,7 @@ jobs:
         verify-main,
         verify-node26,
         comment-guard,
+        hub-windows-acl,
       ]
     runs-on: ubuntu-latest
     steps:
@@ -586,6 +587,7 @@ jobs:
           VERIFY_MAIN: ${{ needs.verify-main.result }}
           VERIFY_NODE26: ${{ needs.verify-node26.result }}
           COMMENT_GUARD: ${{ needs.comment-guard.result }}
+          HUB_WINDOWS_ACL: ${{ needs.hub-windows-acl.result }}
           GUARD_CHANGED: ${{ needs.changes.outputs.comment_guard }}
           STARTED: ${{ needs.changes.outputs.started }}
         run: |
@@ -668,4 +670,5 @@ jobs:
           require "verify-main" "$VERIFY_MAIN" "$verify_main"
           require "verify-node26" "$VERIFY_NODE26" "$node26"
           require "comment-guard" "$COMMENT_GUARD" "$admission"
+          require "hub-windows-acl" "$HUB_WINDOWS_ACL"
           [ "$ok" = "1" ]
