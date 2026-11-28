@@ -131,11 +131,16 @@ function readSwitch(value: unknown, at: string) {
   };
 }
 
-function summaryRef(value: unknown, at: string, channel: string | undefined) {
+function summaryRef(
+  value: unknown,
+  at: string,
+  channel: string | undefined,
+  legacyChannel?: string,
+) {
   if (value === undefined) return undefined;
   const row = object(value, at, "channelId chatThreadId chatMessageId");
   const channelId = string(row.channelId, at + "/channelId");
-  if (channelId !== channel)
+  if (channelId !== channel && channelId !== legacyChannel)
     refuse(at + "/channelId", "Summary message must use the summary channel.");
   return {
     channelId,
@@ -317,11 +322,16 @@ export function loadConfig(path: string): HubConfig {
     if (slackChannelId === undefined && explicitSummary !== undefined)
       refuse(at + "/summaryChannelId", "Project channel required.");
     const summaryChannelId = explicitSummary ?? slackChannelId;
-    const summaryMessage = summaryRef(
+    const configuredSummary = summaryRef(
       row.summaryMessage,
       at + "/summaryMessage",
       adapter === "telegram" ? telegramChatId : summaryChannelId,
+      adapter === "telegram" ? summaryChannelId : undefined,
     );
+    const summaryMessage =
+      adapter === "telegram" && configuredSummary?.channelId !== telegramChatId
+        ? undefined
+        : configuredSummary;
     const purpose = row.purpose;
     if (
       purpose !== undefined &&

@@ -354,13 +354,17 @@ test(
       configFixture().slack,
     );
     for (const adapter of ["off", "telegram"] as const) {
-      expect(
-        load([
-          ["/slack", undefined],
-          ["/chat", { adapter }],
-          ["/people/0/telegramUserId", "123"],
-        ]).chat,
-      ).toEqual({ adapter });
+      const config = load([
+        ["/slack", undefined],
+        ["/chat", { adapter }],
+        ["/people/0/telegramUserId", "123"],
+        ["/projects/0/telegramChatId", "-123"],
+      ]);
+      expect(config.chat).toEqual({ adapter });
+      if (adapter === "telegram")
+        expect(
+          config.projects.map(({ summaryMessage }) => summaryMessage),
+        ).toEqual([undefined, undefined]);
       refuse([["/chat", { adapter }]], "/chat/adapter");
     }
     refuse(
