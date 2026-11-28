@@ -139,13 +139,13 @@ export function cliFixture(root: string) {
     )
       env[key] = value;
   }
-  const run = (input: unknown, args: string[] = []) =>
+  const run = (input: unknown, args: string[] = [], command = ["inspect"]) =>
     proc.run(
       { kind: "resolved", path: process.execPath },
       [
         ...args,
         resolve(import.meta.dirname, "../../tools/lane-step.ts"),
-        "inspect",
+        ...command,
       ],
       {
         cwd: repo,
@@ -189,5 +189,5 @@ mock.module(${JSON.stringify(adapter)}, () => ({
     return run(request, ["--preload", preload]);
   }
   const head = () => laneGit(["rev-parse", "HEAD"], workspace);
-  return { request, snapshot, run, runWithBranchSwitch, head };
+  return { repo, request, snapshot, run, runWithBranchSwitch, head, forge };
 }
