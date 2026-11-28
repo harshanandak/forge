@@ -180,6 +180,7 @@ import {
 // Only skills.sync writes skill files, so no other command loads the writer.
 const loadLaneCoordinator = lazy(() => import("./cloud-lane-coordinator.ts"));
 const loadSkills = lazy(() => import("./skills.ts"));
+const loadSkillManifests = lazy(() => import("./skill-manifests.ts"));
 const advisoryMs = 5000;
 const unavailableMap = (reason: string) => ({
   warnings: [
@@ -2943,6 +2944,10 @@ export async function createAssembly(
             return [`skill://${path.join("/")}`, file];
           }),
         );
+      },
+      async manifests() {
+        const { skillManifests } = await loadSkillManifests();
+        return skillManifests(await this.catalog());
       },
     },
     root,

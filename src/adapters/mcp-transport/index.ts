@@ -2,6 +2,7 @@ import { Readable, Writable } from "node:stream";
 import {
   Server,
   ProtocolError,
+  ResourceNotFoundError,
   specTypeSchemas,
 } from "@modelcontextprotocol/server";
 import {
@@ -9,6 +10,7 @@ import {
   StdioServerTransport,
 } from "@modelcontextprotocol/server/stdio";
 import { mcpObjectInput } from "../../contract/mcp.ts";
+import { SkillCatalogLimit } from "../../contract/skill-resource.ts";
 import type { McpTransportPort } from "../../ports/mcp-transport.ts";
 import type { SkillResourceProvider } from "../../ports/skill-resources.ts";
 import type { FailureEnvelope } from "../../generated/types.ts";
@@ -30,6 +32,10 @@ const PRIVATE_RESOURCE = {
   ttlMs: 0,
   cacheScope: "private",
 } as const;
+const SKILL_CAPABILITIES = {
+  resources: {},
+  extensions: { "io.modelcontextprotocol/skills": {} },
+};
 
 function resourceMimeType(path: string): string {
   return /\.md$/i.test(path) ? "text/markdown" : "application/octet-stream";
@@ -44,17 +50,23 @@ function resourceText(bytes: Uint8Array): string | undefined {
   }
 }
 
+async function loadSkillCatalog<T>(load: () => Promise<T>): Promise<T> {
+  try {
+    return await load();
+  } catch (error) {
+    if (error instanceof SkillCatalogLimit) {
+      const { message, expected } = error.error;
+      throw new ProtocolError(-32603, message, expected);
+    }
+    throw new ProtocolError(-32603, "Skill resource catalog unavailable.");
+  }
+}
+
 function registerResources(
   server: Server,
   skills: SkillResourceProvider,
 ): void {
-  const catalog = async () => {
-    try {
-      return await skills.catalog();
-    } catch {
-      throw new ProtocolError(-32603, "Skill resource catalog unavailable.");
-    }
-  };
+  const catalog = () => loadSkillCatalog(() => skills.catalog());
   server.setRequestHandler(
     "resources/list",
     { params: specTypeSchemas.PaginatedRequestParams },
@@ -77,8 +89,7 @@ function registerResources(
       const file = uri.startsWith("skill://")
         ? (await catalog()).get(uri)
         : undefined;
-      if (file === undefined)
-        throw new ProtocolError(-32602, "Unknown resource URI.");
+      if (file === undefined) throw new ResourceNotFoundError(uri);
       const mimeType = resourceMimeType(file.path);
       const text =
         mimeType === "text/markdown" ? resourceText(file.bytes) : undefined;
@@ -88,6 +99,30 @@ function registerResources(
           : { text };
       const contents = [{ uri, mimeType, ...content }];
       return { ...PRIVATE_RESOURCE, contents };
+    },
+  );
+}
+
+function registerSkills(server: Server, provider: SkillResourceProvider): void {
+  const manifests = () => loadSkillCatalog(() => provider.manifests());
+  server.setRequestHandler(
+    "skills/list",
+    { params: specTypeSchemas.PaginatedRequestParams },
+    async ({ cursor }) => {
+      if (cursor !== undefined && cursor !== "")
+        throw new ProtocolError(-32602, "Unknown cursor.");
+      return { ...PRIVATE_RESOURCE, skills: [...(await manifests()).values()] };
+    },
+  );
+  server.setRequestHandler(
+    "skills/get",
+    { params: specTypeSchemas.ReadResourceRequestParams },
+    async ({ uri }) => {
+      const skill = uri.startsWith("skill://")
+        ? (await manifests()).get(uri)
+        : undefined;
+      if (skill === undefined) throw new ResourceNotFoundError(uri);
+      return { ...PRIVATE_RESOURCE, skill };
     },
   );
 }
@@ -128,12 +163,14 @@ export function createMcpTransport(): McpTransportPort {
               {
                 capabilities: {
                   tools: {},
-                  ...(options.skills === undefined ? {} : { resources: {} }),
+                  ...(options.skills === undefined ? {} : SKILL_CAPABILITIES),
                 },
               },
             );
-            if (options.skills !== undefined)
+            if (options.skills !== undefined) {
               registerResources(server, options.skills);
+              registerSkills(server, options.skills);
+            }
             server.setRequestHandler(
               "tools/list",
               { params: specTypeSchemas.PaginatedRequestParams },

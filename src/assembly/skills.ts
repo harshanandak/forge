@@ -5,6 +5,7 @@ import {
 } from "../adapters/fs/index.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { SkillCatalogLimit } from "../contract/skill-resource.ts";
 import type { ConfigFiles } from "../core/config/files.ts";
 import { refuse } from "../core/trust/index.ts";
 import {
@@ -99,7 +100,7 @@ function checkCompanionPath(path: string, origin: string): readonly string[] {
     parts.some((part) => ["", ".", ".."].includes(part)) ||
     key(path) === key("SKILL.md")
   )
-    throw new Error(`Invalid companion path ${path} in ${origin}`);
+    refuse("INPUT_INVALID", `Invalid companion path ${path} in ${origin}`);
   return parts;
 }
 
@@ -148,6 +149,22 @@ type SkillCatalogBudget = { bytes: number; entries: number };
 export const SKILL_CATALOG_MAX_BYTES = 1_048_576;
 export const SKILL_CATALOG_MAX_ENTRIES = 512;
 
+function duringSkillScan<T>(limit: "bytes" | "entries", read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (
+      error instanceof ForgeFailure &&
+      error.error.code === "LIMIT_EXCEEDED"
+    ) {
+      const max =
+        limit === "bytes" ? SKILL_CATALOG_MAX_BYTES : SKILL_CATALOG_MAX_ENTRIES;
+      throw new SkillCatalogLimit(limit, max);
+    }
+    throw error;
+  }
+}
+
 export interface RenderedSkillFile {
   readonly noun: string;
   readonly path: string;
@@ -191,7 +208,9 @@ function skillSourceFiles(
   const files = nodeConfigFiles(root, { strict: true });
   return {
     list(dir) {
-      const entries = files.list(dir, budget.entries);
+      const entries = duringSkillScan("entries", () =>
+        files.list(dir, budget.entries),
+      );
       budget.entries -= entries.length;
       const privateName = /^(?:\.|id_(?:rsa|dsa|ecdsa|ed25519)$)|\.pem$/i;
       if (entries.some((name) => privateName.test(name)))
@@ -200,7 +219,9 @@ function skillSourceFiles(
     },
     read(path) {
       if (entryKind(root, path, true) === "directory") return undefined;
-      const bytes = files.read(path, budget.bytes);
+      const bytes = duringSkillScan("bytes", () =>
+        files.read(path, budget.bytes),
+      );
       if (bytes === undefined) return undefined;
       budget.bytes -= bytes.byteLength;
       return bytes;
@@ -217,7 +238,7 @@ function templateSkills(
   for (const source of templates.sources) {
     if (budget !== undefined) {
       if (budget.entries === 0)
-        refuse("LIMIT_EXCEEDED", "Skill catalog entry limit exceeded");
+        throw new SkillCatalogLimit("entries", SKILL_CATALOG_MAX_ENTRIES);
       budget.entries--;
     }
     const files = skillSourceFiles(source.root, budget);
@@ -237,6 +258,7 @@ function templateSkills(
       try {
         bytes = files.read(path);
       } catch (error) {
+        if (error instanceof SkillCatalogLimit) throw error;
         refuse(
           "INPUT_INVALID",
           `Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`,
@@ -534,6 +556,8 @@ export function syncSkills(
       }
     }
   } catch (error) {
+    if (error instanceof ForgeFailure && error.error.code === "INPUT_INVALID")
+      throw error;
     refuse(
       "INPUT_INVALID",
       error instanceof Error ? error.message : "Cannot write skills",
@@ -563,6 +587,7 @@ function collectSkills(
       ...templateSkills(templates, budget),
     ];
   } catch (error) {
+    if (error instanceof SkillCatalogLimit) throw error;
     refuse(
       "INPUT_INVALID",
       error instanceof Error ? error.message : "Cannot read template skills",
@@ -607,10 +632,7 @@ export function renderSkillCatalog(
     entries: SKILL_CATALOG_MAX_ENTRIES,
   });
   if (skills.length > SKILL_CATALOG_MAX_ENTRIES)
-    refuse(
-      "LIMIT_EXCEEDED",
-      `Skill catalog exceeds ${SKILL_CATALOG_MAX_ENTRIES} files`,
-    );
+    throw new SkillCatalogLimit("entries", SKILL_CATALOG_MAX_ENTRIES);
   const pathsByNoun = new Map<string, string[]>();
   for (const copy of skills) {
     if (copy.bytes === undefined) continue;
@@ -627,9 +649,6 @@ export function renderSkillCatalog(
   }));
   const size = rendered.reduce((sum, file) => sum + file.bytes.byteLength, 0);
   if (size > SKILL_CATALOG_MAX_BYTES)
-    refuse(
-      "LIMIT_EXCEEDED",
-      `Skill catalog exceeds ${SKILL_CATALOG_MAX_BYTES} bytes`,
-    );
+    throw new SkillCatalogLimit("bytes", SKILL_CATALOG_MAX_BYTES);
   return rendered;
 }

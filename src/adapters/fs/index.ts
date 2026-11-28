@@ -336,7 +336,12 @@ export function nodeConfigFiles(
         try {
           for (let item = opened.readSync(); item; item = opened.readSync()) {
             if (entries.length >= maxEntries)
-              throw escape(dir, "directory entry limit exceeded");
+              throw new ForgeFailure({
+                code: "LIMIT_EXCEEDED",
+                message: "Directory entry limit exceeded",
+                expected: { maxEntries },
+                retry: "never",
+              });
             entries.push(item.name);
           }
           return entries.sort();
