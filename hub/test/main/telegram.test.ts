@@ -1,7 +1,9 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { createTelegramChatPort } from "../../src/chat/index.ts";
+import type { TelegramFetch } from "../../src/chat/telegram-wire.ts";
 import type { HubCore } from "../../src/contract/core.ts";
 import type { HubConfig } from "../../src/contract/runtime.ts";
 import {
@@ -28,6 +30,7 @@ import {
   telegramA,
   telegramGroup,
   telegramMessage,
+  telegramOk,
 } from "../fakes/fake-telegram.ts";
 import { mainFixture } from "./main-fixture.ts";
 
@@ -69,6 +72,27 @@ async function telegramHub() {
   return { ...f, config, path, save };
 }
 
+function telegramEntry(
+  f: Awaited<ReturnType<typeof telegramHub>>,
+  fetch: TelegramFetch,
+  create = createHubCore,
+) {
+  return mainFixture({
+    loadConfig: () => ({
+      ...f.config,
+      listen: { host: "127.0.0.1", port: 0 },
+    }),
+    loadCore: () =>
+      Promise.resolve({
+        nullTracker,
+        openHubDb: () => ({ ...f.db, close: () => closeDb(f.db) }),
+        createHubCore: create,
+      }),
+    createChatPort: (deps) =>
+      Promise.resolve(createTelegramChatPort(deps, { fetch })),
+  });
+}
+
 test(
   "W1 W4 W8 serve runs one Telegram poller, answers an ask, recovers and edits its summary, and stops on signals",
   async () => {
@@ -85,33 +109,20 @@ test(
     const fake = fakeTelegram();
     fake.cards.set(500, undefined);
     const started = Promise.withResolvers<HubCore>();
-    const entry = mainFixture({
-      loadConfig: () => ({
-        ...f.config,
-        listen: { host: "127.0.0.1", port: 0 },
-      }),
-      loadCore: () =>
-        Promise.resolve({
-          nullTracker,
-          openHubDb: () => ({ ...f.db, close: () => closeDb(f.db) }),
-          createHubCore(deps) {
-            const core = createHubCore(deps);
-            return {
-              ...core,
-              async start() {
-                await core.start();
-                started.resolve(core);
-              },
-              close() {
-                const closing = core.close();
-                expect(core.close()).toBe(closing);
-                return closing;
-              },
-            };
-          },
-        }),
-      createChatPort: (deps) =>
-        Promise.resolve(createTelegramChatPort(deps, { fetch: fake.fetch })),
+    const entry = telegramEntry(f, fake.fetch, (deps) => {
+      const core = createHubCore(deps);
+      return {
+        ...core,
+        async start() {
+          await core.start();
+          started.resolve(core);
+        },
+        close() {
+          const closing = core.close();
+          expect(core.close()).toBe(closing);
+          return closing;
+        },
+      };
     });
     const listeners = process.listenerCount("SIGTERM");
     const timers = spyOn(globalThis, "setTimeout");
@@ -207,17 +218,56 @@ test(
 );
 
 test(
-  "W2 a missing Telegram token gives a typed startup refusal",
+  "W2 a missing or blank Telegram token gives a typed startup refusal",
   async () => {
     const f = await telegramHub();
     const entry = mainFixture();
-    await expect(
-      runService(f.config, () => undefined, entry.services),
-    ).rejects.toMatchObject({
-      kind: "telegramToken",
-      message: "Missing TELEGRAM_BOT_TOKEN",
-    });
+    for (const token of [undefined, " \t "])
+      await expect(
+        runService(f.config, () => token, entry.services),
+      ).rejects.toMatchObject({
+        kind: "telegramToken",
+        message: "Missing TELEGRAM_BOT_TOKEN",
+      });
     expect(entry.calls).toEqual([]);
+  },
+  timeout,
+);
+
+test(
+  "W10 signals cancel the Telegram handshake before polling starts",
+  async () => {
+    const f = await telegramHub();
+    const fake = fakeTelegram();
+    const entered = Promise.withResolvers<AbortSignal>();
+    const response = Promise.withResolvers<Response>();
+    const entry = telegramEntry(f, (url, init) => {
+      if (!url.pathname.endsWith("/getWebhookInfo"))
+        return fake.fetch(url, init);
+      const signal = init.signal;
+      if (!signal) throw new Error("Expected a startup abort signal");
+      signal.addEventListener("abort", () => response.reject(signal.reason), {
+        once: true,
+      });
+      entered.resolve(signal);
+      return response.promise;
+    });
+    const run = entry.run(["serve"], tokenEnv);
+    try {
+      const signal = await Promise.race([entered.promise, run]);
+      if (typeof signal === "number") throw new Error(entry.stderr.join(""));
+      process.emit("SIGTERM");
+      await nextTurn();
+      expect(signal.aborted).toBe(true);
+      expect(await run).toBe(0);
+      expect(entry.stderr).toEqual([]);
+      expect(fake.only("getMe")).toEqual([]);
+      expect(fake.only("getUpdates")).toEqual([]);
+    } finally {
+      response.resolve(telegramOk({ url: "" }));
+      process.emit("SIGTERM");
+      await run;
+    }
   },
   timeout,
 );

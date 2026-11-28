@@ -379,6 +379,32 @@ test(
 );
 
 test(
+  "W11 Telegram projects can share a chat but cannot share one summary message",
+  () => {
+    const target = (message: string, root = message) => ({
+      channelId: "-123",
+      chatMessageId: message,
+      chatThreadId: "telegram:-123:root:" + root,
+    });
+    const base: readonly Edit[] = [
+      ["/slack", undefined],
+      ["/chat", { adapter: "telegram" }],
+      ["/people/0/telegramUserId", "123"],
+      ["/projects/0/telegramChatId", "-123"],
+      ["/projects/1/telegramChatId", "-123"],
+      ["/projects/0/summaryMessage", target("10")],
+    ];
+    const pointer = "/projects/1/summaryMessage";
+    const config = load([...base, [pointer, target("11")]]);
+    expect(config.projects[1]?.summaryMessage).toEqual(target("11"));
+    expect(
+      refuse([...base, [pointer, target("10", "99")]], pointer).otherPointer,
+    ).toBe("/projects/0/summaryMessage");
+  },
+  timeout,
+);
+
+test(
   "T1A-CFG2 accepts decimal Telegram text and refuses invalid IDs at their paths",
   () => {
     const user = "/people/0/telegramUserId";
