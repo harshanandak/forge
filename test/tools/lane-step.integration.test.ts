@@ -6,6 +6,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -249,3 +250,49 @@ mock.module("node:fs", () => ({
   },
   30_000,
 );
+
+test("A9 refuses a brief truncated after the first read", async () => {
+  const root = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "forge-brief-truncate-")),
+  );
+  try {
+    const f = cliFixture(root);
+    const { path } = f.request.brief;
+    const preload = join(root, "truncate-after-brief-read.ts");
+    writeFileSync(
+      preload,
+      `
+import { mock } from "bun:test";
+import * as fs from "node:fs";
+import { relative } from "node:path";
+const original = { ...fs };
+const brief = ${JSON.stringify(path)};
+let briefFd;
+mock.module("node:fs", () => ({
+  ...original,
+  openSync(path, ...args) {
+    const fd = original.openSync(path, ...args);
+    if (typeof path === "string" && relative(brief, path) === "") briefFd = fd;
+    return fd;
+  },
+  readSync(fd, ...args) {
+    const read = original.readSync(fd, ...args);
+    if (fd === briefFd && read > 0) {
+      original.truncateSync(brief, 0);
+      briefFd = undefined;
+    }
+    return read;
+  },
+}));
+`,
+    );
+    const result = await f.run(f.request, ["--preload", preload]);
+    expect(statSync(path).size, result.stderr).toBe(0);
+    expect(result.exitCode, result.stdout || result.stderr).toBe(2);
+    expect(JSON.parse(result.stdout)).toEqual(
+      refusal("brief.path", "UNAVAILABLE"),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
