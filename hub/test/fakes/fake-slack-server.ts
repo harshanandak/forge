@@ -22,6 +22,8 @@ export type Script = {
   readonly status?: number;
   readonly delayMs?: number;
   readonly cutOff?: boolean;
+  readonly until?: Promise<void>;
+  readonly started?: () => void;
 };
 
 export type ApiCall = {
@@ -257,6 +259,8 @@ export async function fakeSlackServer(socketMode = false) {
       throw new Error("invalid credential placement in fixture request");
     calls.push({ method, body });
     const script = scripts.get(method)?.shift();
+    script?.started?.();
+    if (script?.until) await script.until;
     if (script?.delayMs !== undefined) {
       const timer = setTimeout(() => {
         timers.delete(timer);

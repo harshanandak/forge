@@ -189,6 +189,37 @@ test(
 );
 
 test(
+  "A3-atomic: direct edit completion rolls back when the delivery update fails",
+  async () => {
+    const f = await askFixture();
+    const { askId } = value(await f.choice({ to: [a.personId] }));
+    expect(f.asks.answerAction(button(askId, "A3-atomic")).after?.askId).toBe(
+      askId,
+    );
+    f.db.exec(`
+      CREATE TRIGGER fail_delivery_edit
+      BEFORE UPDATE ON ask_deliveries
+      WHEN NEW.edited_at IS NOT NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'forced delivery edit failure');
+      END
+    `);
+    let failed = false;
+    try {
+      f.asks.markEditDone(askId, a.personId);
+    } catch {
+      failed = true;
+    }
+    expect(failed).toBe(true);
+    expect(rows(f.db, "ask_edit_effects")).toMatchObject([
+      { status: "pending" },
+    ]);
+    expect(rows(f.db, "ask_deliveries")).toMatchObject([{ edited_at: null }]);
+  },
+  timeout,
+);
+
+test(
   "A4: a second open database handle sees the persisted winner",
   async () => {
     const f = await askFixture();

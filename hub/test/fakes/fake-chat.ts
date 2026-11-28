@@ -13,6 +13,7 @@ import {
   type ChatPostOptions,
   type ChatPostTarget,
   type ChatProbe,
+  type ChatWriteDeadline,
   type SummaryLookup,
 } from "../../src/contract/chat.ts";
 import type { Summary } from "../../src/contract/domain.ts";
@@ -235,7 +236,8 @@ export class FakeChatPort implements ChatPort {
   editSummary(
     ref: ChatMessageRef,
     summary: Summary,
-  ): Promise<"edited" | "missing"> {
+    _deadline?: ChatWriteDeadline,
+  ): Promise<"edited" | "missing" | "abandoned"> {
     const found = [...this.summaries.values()].some(
       (row) =>
         row.channelId === ref.channelId &&

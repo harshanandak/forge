@@ -1,9 +1,13 @@
-import { ChatWriteFailure, type ChatMessageRef } from "../contract/chat.ts";
+import {
+  ChatWriteFailure,
+  type ChatMessageRef,
+  type ChatWriteDeadline,
+} from "../contract/chat.ts";
 import type { Summary, SummaryLine } from "../contract/domain.ts";
 import { LIMITS, type ReportOutput } from "../contract/mcp.ts";
 import type { SqlRow, WorkerClaim } from "../contract/runtime.ts";
 import { AGENT_POST_JOURNAL_PREFIX } from "./agent-posts.ts";
-import { integer, oneOf, text } from "./askEffects.ts";
+import { createAskEditCompletion, integer, oneOf, text } from "./askEffects.ts";
 import type { CoreContext } from "./core.ts";
 import { readStoredDisplayName } from "./directory.ts";
 import { keepLoopGuardRows } from "./thread.ts";
@@ -74,6 +78,7 @@ export function createEffectWorker(
   }
   const chatPort = chat;
   const askStore = asks;
+  const askEditCompletion = createAskEditCompletion(db, now);
 
   const configuredRefs = JSON.stringify(
     config.projects.flatMap(({ projectId, summaryMessage }) =>
@@ -181,6 +186,10 @@ export function createEffectWorker(
   let closing: Promise<void> | undefined;
   let cancelSweep: (() => void) | undefined;
   let ownership: WorkerClaim | undefined;
+  const writeDeadline: ChatWriteDeadline = {
+    expiresAt: () => closeDeadline,
+    now,
+  };
 
   function prepare(): void {
     if (stopped) return;
@@ -287,7 +296,7 @@ export function createEffectWorker(
     attempts: number,
     error: unknown,
     reschedule: (deadline: number, at: number) => void,
-  ): void {
+  ): boolean {
     const at = now();
     const retryAfter =
       error instanceof ChatWriteFailure && error.effect === "refused"
@@ -300,33 +309,34 @@ export function createEffectWorker(
         ? retryAfter
         : undefined;
     const delay = Math.max(backoffMs[attempts] ?? 600_000, retryAfterMs ?? 0);
-    tx(() => {
+    return tx(() => {
+      if (writeAbandoned()) return false;
       if (isSlack && retryAfterMs !== undefined)
         extendCooldown.run(String(at + retryAfterMs));
       reschedule(at + delay, at);
+      return true;
     });
   }
 
   async function attempt(
     attempts: number,
-    write: () => Promise<void | "edited" | "missing">,
-    complete: () => void,
+    write: () => Promise<void | "edited" | "missing" | "abandoned">,
+    complete: () => boolean | void,
     reschedule: (deadline: number, at: number) => void,
   ): Promise<boolean> {
     if (stopped || starting || (isSlack && coolingDown.get(now())))
       return false;
-    let result: void | "edited" | "missing";
+    let result: void | "edited" | "missing" | "abandoned";
     try {
       result = await write();
     } catch (error) {
       if (writeAbandoned()) return false;
-      recordFailure(attempts, error, reschedule);
-      return true;
+      return recordFailure(attempts, error, reschedule);
     }
-    if (writeAbandoned()) return false;
-    if (result === "missing") recordFailure(attempts, undefined, reschedule);
-    else complete();
-    return true;
+    if (writeAbandoned() || result === "abandoned") return false;
+    if (result === "missing")
+      return recordFailure(attempts, undefined, reschedule);
+    return complete() !== false;
   }
 
   async function drainDue(): Promise<void> {
@@ -336,7 +346,12 @@ export function createEffectWorker(
         const sent = await attempt(
           ask.attempts,
           () => chatPort.editAskDm(ask.ref, ask.card),
-          () => askStore.markEditDone(ask.askId, ask.personId),
+          () =>
+            tx(() => {
+              if (writeAbandoned()) return false;
+              askEditCompletion.done(ask.askId, ask.personId);
+              return true;
+            }),
           (deadline) =>
             askStore.markEditFailed(ask.askId, ask.personId, deadline),
         );
@@ -359,14 +374,20 @@ export function createEffectWorker(
       ];
       const sent = await attempt(
         job.attempts,
-        () => chatPort.editSummary(ref, summary),
+        () => chatPort.editSummary(ref, summary, writeDeadline),
         () => {
+          let expired = false;
           const publishedRevision = tx(() => {
+            if (writeAbandoned()) {
+              expired = true;
+              return;
+            }
             const row = publish.get(revision, ...identity);
             if (!row) return;
             summaryDone.run(now(), projectId, revision);
             return integer(row.published_revision);
           });
+          if (expired) return false;
           if (publishedRevision !== undefined)
             for (const waiter of summaryWaiters)
               waiter.wake(projectId, publishedRevision);

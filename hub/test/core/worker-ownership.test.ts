@@ -7,16 +7,63 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createSlackChatPort } from "../../src/chat/index.ts";
+import type { HubDb } from "../../src/contract/runtime.ts";
 import type { EffectSchedule } from "../../src/core/effects.ts";
+import { fixtureSecret, ref as slackRef, testDb } from "../chat/fixtures.ts";
+import { fakeSlackServer } from "../fakes/fake-slack-server.ts";
+import { configPeople, openDb, p1 } from "./fixture.ts";
 import { lifeFixture } from "./life-fixture.ts";
-import { holdFirstSummaryEdit } from "./life-fakes.ts";
-import { openDb, p1 } from "./fixture.ts";
+import { holdFirstAskEdit, holdFirstSummaryEdit } from "./life-fakes.ts";
 
 const timeout = 30_000;
 const closeMs = 5_000;
 const lockRefusal = /effect worker lock/i;
 const effects = "SELECT status, attempts FROM summary_effects";
 const idleSchedule: EffectSchedule = () => () => {};
+
+type Life = Awaited<ReturnType<typeof lifeFixture>>;
+type HeldWrite = ReturnType<typeof holdFirstSummaryEdit>;
+
+async function drainAcrossBoundary(
+  boundary: Life,
+  edit: HeldWrite,
+  expire: () => void,
+): Promise<void> {
+  const draining = boundary.worker.drain();
+  try {
+    await edit.started;
+    const closing = boundary.worker.close();
+    expire();
+    edit.release();
+    await draining;
+    await closing;
+  } finally {
+    edit.release();
+    await draining;
+    await boundary.worker.close();
+  }
+}
+
+async function transactionBoundaryWorker(f: Life) {
+  let expired = false;
+  const peer = f.openPeer();
+  const db: HubDb = {
+    ...peer,
+    transaction<T>(work: () => T): T {
+      return peer.transaction(() => {
+        if (expired) f.advance(closeMs + 1);
+        return work();
+      });
+    },
+  };
+  return {
+    boundary: await f.anotherWorker(db),
+    expire: () => {
+      expired = true;
+    },
+  };
+}
 
 test.each([
   { handle: "the same handle", enter: "start" },
@@ -387,6 +434,142 @@ test(
       await f.worker.close();
       await replacement.worker.close();
     }
+  },
+  timeout,
+);
+
+test(
+  "W11 carries the close deadline through Slack summary history",
+  async () => {
+    const f = await (await lifeFixture(idleSchedule)).reopen(slackRef);
+    await using slack = await fakeSlackServer();
+    const chatDb = testDb(":memory:", true);
+    const historyStarted = Promise.withResolvers<void>();
+    const releaseHistory = Promise.withResolvers<void>();
+    const chat = createSlackChatPort({
+      config: f.config,
+      db: chatDb,
+      log: f.log,
+      people: configPeople(f.config.people),
+      secret: fixtureSecret,
+      slackApiUrl: slack.url,
+    });
+    f.chat.editSummary = chat.editSummary.bind(chat);
+    slack.script("conversations.history", {
+      started: () => historyStarted.resolve(),
+      until: releaseHistory.promise,
+      result: {
+        ok: true,
+        messages: [
+          {
+            ts: slackRef.chatMessageId,
+            user: "U0BOT",
+            bot_id: "B0FORGE",
+            text: "Fixture One",
+            blocks: [
+              {
+                type: "context",
+                elements: [{ type: "mrkdwn", text: "forge-summary:sum_valid" }],
+              },
+            ],
+          },
+        ],
+        has_more: false,
+        response_metadata: { next_cursor: "" },
+      },
+    });
+    f.queueSummary();
+    const draining = f.worker.drain();
+    try {
+      await historyStarted.promise;
+      const closing = f.worker.close();
+      f.advance(closeMs + 1);
+      releaseHistory.resolve();
+      await draining;
+      await closing;
+      expect(slack.only("chat.update")).toEqual([]);
+      expect(f.rows(effects)).toEqual([{ status: "pending", attempts: 0 }]);
+      expect(
+        f.rows(
+          "SELECT published_revision FROM summaries WHERE project_id = ?",
+          p1,
+        ),
+      ).toEqual([{ published_revision: 0 }]);
+    } finally {
+      releaseHistory.resolve();
+      await draining;
+      await f.worker.close();
+      chatDb.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "W12 skips summary completion when the deadline passes in the transaction",
+  async () => {
+    const f = await lifeFixture(idleSchedule);
+    const { boundary, expire } = await transactionBoundaryWorker(f);
+    boundary.queueSummary();
+    const edit = holdFirstSummaryEdit(boundary.chat);
+    await drainAcrossBoundary(boundary, edit, expire);
+    expect(boundary.rows(effects)).toEqual([
+      { status: "pending", attempts: 0 },
+    ]);
+    expect(
+      boundary.rows(
+        "SELECT published_revision FROM summaries WHERE project_id = ?",
+        p1,
+      ),
+    ).toEqual([{ published_revision: 0 }]);
+  },
+  timeout,
+);
+
+test(
+  "W13 skips failure bookkeeping when the deadline passes in the transaction",
+  async () => {
+    const f = await lifeFixture(idleSchedule);
+    const { boundary, expire } = await transactionBoundaryWorker(f);
+    boundary.queueSummary();
+    const queuedAt = boundary.now();
+    const edit = holdFirstSummaryEdit(boundary.chat, "unknown");
+    await drainAcrossBoundary(boundary, edit, expire);
+    expect(
+      boundary.rows(
+        "SELECT status, attempts, next_attempt_at FROM summary_effects",
+      ),
+    ).toEqual([{ status: "pending", attempts: 0, next_attempt_at: queuedAt }]);
+  },
+  timeout,
+);
+
+test(
+  "W14 skips ask completion when the deadline passes in the transaction",
+  async () => {
+    const f = await lifeFixture(idleSchedule);
+    const { boundary, expire } = await transactionBoundaryWorker(f);
+    const session = boundary.bind();
+    const askId = await boundary.workRequest(
+      session.owner,
+      session.sessionId,
+      "demo-2078",
+    );
+    await boundary.answer(session.owner, askId, "approve");
+    const edit = holdFirstAskEdit(boundary.chat);
+    await drainAcrossBoundary(boundary, edit, expire);
+    expect(
+      boundary.rows(
+        "SELECT status, attempts FROM ask_edit_effects WHERE ask_id = ?",
+        askId,
+      ),
+    ).toEqual([{ status: "pending", attempts: 0 }]);
+    expect(
+      boundary.rows(
+        "SELECT edited_at FROM ask_deliveries WHERE ask_id = ?",
+        askId,
+      ),
+    ).toEqual([{ edited_at: null }]);
   },
   timeout,
 );

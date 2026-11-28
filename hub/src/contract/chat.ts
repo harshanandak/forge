@@ -99,6 +99,11 @@ export type SummaryLookup =
   | { readonly kind: "absent" }
   | { readonly kind: "unknown" };
 
+export interface ChatWriteDeadline {
+  readonly expiresAt: () => number | undefined;
+  readonly now: () => number;
+}
+
 export type ChatFailureReason =
   | "not_in_channel"
   | "channel_not_found"
@@ -147,7 +152,8 @@ export interface ChatPort {
   editSummary(
     ref: ChatMessageRef,
     summary: Summary,
-  ): Promise<"edited" | "missing">;
+    deadline?: ChatWriteDeadline,
+  ): Promise<"edited" | "missing" | "abandoned">;
   react(ref: ChatMessageRef, emoji: string): Promise<void>;
   createLongAnswer(
     channelId: string,

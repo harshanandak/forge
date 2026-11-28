@@ -99,6 +99,42 @@ export function expire(
   return expired.length;
 }
 
+export function createAskEditCompletion(
+  db: HubDb,
+  now: () => number,
+): {
+  done(askId: string, personId: string): void;
+  failed(askId: string, personId: string, nextAttemptAt: number): void;
+} {
+  const transition = db.prepare(`
+    UPDATE ask_edit_effects SET status = ?, attempts = attempts + (? IS NOT NULL),
+      next_attempt_at = coalesce(?, next_attempt_at), updated_at = ?
+    WHERE ask_id = ? AND person_id = ? AND status = 'pending'
+  `);
+  const edited = db.prepare(`
+    UPDATE ask_deliveries SET edited_at = ? WHERE ask_id = ? AND person_id = ? AND delivery_state = 'delivered'
+  `);
+  return {
+    done(askId, personId) {
+      const at = now();
+      if (
+        Number(transition.run("done", null, null, at, askId, personId).changes)
+      )
+        edited.run(at, askId, personId);
+    },
+    failed(askId, personId, nextAttemptAt) {
+      transition.run(
+        "pending",
+        nextAttemptAt,
+        nextAttemptAt,
+        now(),
+        askId,
+        personId,
+      );
+    },
+  };
+}
+
 type Effects = Omit<
   AskStore,
   "ask" | "answerAction" | "answerDigit" | "answerRows" | "findApprovedPermit"
@@ -124,14 +160,7 @@ export function createAskEffects({
       AND d.adapter = ? AND a.status IN ('answered','expired')
     ORDER BY e.next_attempt_at, e.ask_id, e.person_id LIMIT ?
   `);
-  const transition = db.prepare(`
-    UPDATE ask_edit_effects SET status = ?, attempts = attempts + (? IS NOT NULL),
-      next_attempt_at = coalesce(?, next_attempt_at), updated_at = ?
-    WHERE ask_id = ? AND person_id = ? AND status = 'pending'
-  `);
-  const edited = db.prepare(`
-    UPDATE ask_deliveries SET edited_at = ? WHERE ask_id = ? AND person_id = ? AND delivery_state = 'delivered'
-  `);
+  const completion = createAskEditCompletion(db, now);
   const interrupted = db.prepare(
     "UPDATE ask_deliveries SET delivery_state = 'unknown' WHERE delivery_state = 'posting'",
   );
@@ -178,25 +207,10 @@ export function createAskEffects({
       });
     },
     markEditDone(askId, personId) {
-      db.transaction(() => {
-        const at = now();
-        if (
-          Number(
-            transition.run("done", null, null, at, askId, personId).changes,
-          )
-        )
-          edited.run(at, askId, personId);
-      });
+      return db.transaction(() => completion.done(askId, personId));
     },
     markEditFailed(askId, personId, nextAttemptAt) {
-      transition.run(
-        "pending",
-        nextAttemptAt,
-        nextAttemptAt,
-        now(),
-        askId,
-        personId,
-      );
+      completion.failed(askId, personId, nextAttemptAt);
     },
     sweepExpiry: () => db.transaction(() => expire(db, now())),
     reconcileEdits() {
