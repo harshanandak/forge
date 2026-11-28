@@ -103,7 +103,7 @@ interface Reply {
     tools?: { name: string }[];
     structuredContent?: unknown;
   };
-  error?: { message: string };
+  error?: { message: string; data?: unknown };
 }
 
 async function withConnection(
@@ -461,6 +461,146 @@ test("MCP Skills returns complete manifests for every enabled skill", async () =
     );
   });
 }, 30_000);
+
+function putSkill(root: string, name: string, frontmatter: string): void {
+  const dir = join(root, "template", "skills", name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "SKILL.md"), `---\n${frontmatter}\n---\n`);
+}
+
+const planSkillUri = "skill://plan/SKILL.md";
+for (const uri of [planSkillUri, "skill://missing/SKILL.md", notesUri]) {
+  test(`MCP Skills lookup isolates ${uri} from an invalid Review header`, async () => {
+    await withProject(resourceConfig, async (assembly) => {
+      const folder = resourceFixture(assembly.root);
+      const invalid = skillSource.replace("name: review", "name: example");
+      writeFileSync(join(folder, "SKILL.md"), invalid);
+      const name = "plan";
+      const description = "Plan the work.";
+      const frontmatter = `name: ${name}\ndescription: ${description}`;
+      putSkill(assembly.root, name, frontmatter);
+      await withConnection(
+        assembly,
+        async (rpc) => {
+          const reply = await rpc("skills/get", { uri });
+          if (uri === planSkillUri) {
+            const read = await rpc("resources/read", { uri });
+            const text = read.result?.contents?.[0]?.text;
+            expect(typeof text).toBe("string");
+            const bytes = Buffer.from(text!, "utf8");
+            const hash = createHash("sha256").update(bytes).digest("hex");
+            const resources = [
+              { uri, digest: `sha256:${hash}`, size: bytes.length },
+            ];
+            const skill = {
+              uri,
+              frontmatter: { name, description },
+              resources,
+            };
+            expect(reply).toMatchObject({ result: { ...noCache, skill } });
+          } else {
+            expect(reply).toMatchObject({ error: { code: -32602 } });
+            expect(reply.error?.data).toEqual({ uri });
+          }
+          expect(await rpc("skills/get", { uri: skillUri })).toMatchObject({
+            error: { code: -32603 },
+          });
+        },
+        modern,
+      );
+    });
+  }, 30_000);
+}
+
+for (const name of ["café", `${"a".repeat(63)}\u{10428}`]) {
+  test(`MCP Skills lists and reads the Unicode skill ${name}`, async () => {
+    await withProject(resourceConfig, async (assembly) => {
+      const description = "Review changes.";
+      const frontmatter = `name: ${name}\ndescription: ${description}`;
+      putSkill(assembly.root, name, frontmatter);
+      const uri = `skill://${encodeURIComponent(name)}/SKILL.md`;
+      await withConnection(
+        assembly,
+        async (rpc) => {
+          const read = await rpc("resources/read", { uri });
+          const text = read.result?.contents?.[0]?.text;
+          expect(typeof text).toBe("string");
+          const bytes = Buffer.from(text!, "utf8");
+          const hash = createHash("sha256").update(bytes).digest("hex");
+          const resources = [
+            { uri, digest: `sha256:${hash}`, size: bytes.length },
+          ];
+          const skill = { uri, frontmatter: { name, description }, resources };
+          expect(await rpc("skills/get", { uri })).toMatchObject({
+            result: { ...noCache, skill },
+          });
+          expect(await rpc("skills/list")).toMatchObject({
+            result: { ...noCache, skills: [skill] },
+          });
+        },
+        modern,
+      );
+    });
+  }, 30_000);
+}
+
+const invalidNames = [
+  "Review",
+  "-review",
+  "review-",
+  "re--view",
+  "x".repeat(65),
+];
+for (const name of invalidNames) {
+  test(`MCP Skills rejects invalid name ${name}`, async () => {
+    await withProject(resourceConfig, async (assembly) => {
+      const frontmatter = `name: ${name}\ndescription: Review changes.`;
+      putSkill(assembly.root, name, frontmatter);
+      await withConnection(
+        assembly,
+        async (rpc) => {
+          const uri = `skill://${encodeURIComponent(name)}/SKILL.md`;
+          expect(await rpc("skills/get", { uri })).toMatchObject({
+            error: { code: -32603 },
+          });
+        },
+        modern,
+      );
+    });
+  }, 30_000);
+}
+
+const compatibilityCases = [
+  { label: "500 characters", value: "x".repeat(500), valid: true },
+  { label: "501 characters", value: "x".repeat(501), valid: false },
+  { label: "an empty string", value: "", valid: false },
+  { label: "a non-string", value: 42, valid: false },
+];
+for (const { label, value, valid } of compatibilityCases) {
+  test(`MCP Skills validates compatibility with ${label}`, async () => {
+    await withProject(resourceConfig, async (assembly) => {
+      const name = "review";
+      const description = "Review changes.";
+      const compatibility = JSON.stringify(value);
+      const frontmatter = [
+        `name: ${name}`,
+        `description: ${description}`,
+        `compatibility: ${compatibility}`,
+      ].join("\n");
+      putSkill(assembly.root, name, frontmatter);
+      await withConnection(
+        assembly,
+        async (rpc) => {
+          const reply = await rpc("skills/get", { uri: skillUri });
+          if (valid)
+            expect(reply.result?.skill?.frontmatter.compatibility).toBe(value);
+          else expect(reply).toMatchObject({ error: { code: -32603 } });
+        },
+        modern,
+      );
+    });
+  }, 30_000);
+}
 
 test("MCP refuses tool requests after the config becomes invalid on an open connection", async () => {
   await withProject({ blocks: {}, mcp: {} }, async (assembly, file) => {
