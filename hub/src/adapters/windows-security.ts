@@ -165,6 +165,8 @@ async function openNative(): Promise<WindowsSecurityReader> {
       if (error === ioPending)
         error = wait(handle, operation, [0], 1) ? 0 : Number(lastError());
       data.fill(0);
+      if (error !== notAReparsePoint)
+        throw new Error(`Cannot verify Windows reparse status: ${error}`);
     } finally {
       close(event);
     }
