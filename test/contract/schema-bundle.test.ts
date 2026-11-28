@@ -365,6 +365,21 @@ test("reference, name and key text is charged before it is processed", () => {
   );
 });
 
+test("the registry implicit base is charged before bundle resolution", () => {
+  const id = "https://example.org/tool.json";
+  const document: SchemaObject = { $id: id, type: "string" };
+  const work = "Schema work budget exceeded (20000 nodes)";
+  const longBase = `https://example.org/${"a".repeat(200_000)}`;
+  expect(() =>
+    bundleSchema(new SchemaRegistry([document], longBase), id),
+  ).toThrow(work);
+  const out = bundleSchema(
+    new SchemaRegistry([document], "https://example.org/base/"),
+    id,
+  );
+  expect(out).toEqual({ $schema: SCHEMA_DIALECT, type: "string" });
+});
+
 test("literal walks carry real depth and charge width before expanding", () => {
   expect(() => bundle({ type: "object", "x-note": wrap(100) })).toThrow(
     "Schema depth limit exceeded (64)",

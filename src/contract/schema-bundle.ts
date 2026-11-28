@@ -49,6 +49,8 @@ export function bundleSchema(
   const spend = schemaBudget();
   const text = (depth: number, value: string): void =>
     spend(depth, 1 + Math.ceil(Math.max(0, value.length - 64) / 8));
+  const registryBase = registry.base;
+  text(0, registryBase);
   const targets = new Map<string, Target>();
   const names = new Set<string>();
   const suffixes = new Map<string, number>();
@@ -59,7 +61,7 @@ export function bundleSchema(
   ): [string, string, JsonSchema, string[]] => {
     text(0, ref);
     if (base !== undefined) text(0, base);
-    const uri = registry.resolve(ref, base);
+    const uri = registry.resolve(ref, base ?? registryBase);
     text(0, uri);
     const [document, fragment] = split(uri);
     let segments: string[] | undefined;
@@ -68,7 +70,8 @@ export function bundleSchema(
     } catch {
       segments = undefined;
     }
-    const schema = segments === undefined ? undefined : registry.lookup(uri);
+    const schema =
+      segments === undefined ? undefined : registry.lookup(uri, registryBase);
     if (segments === undefined || schema === undefined)
       throw new Error(`Schema reference ${uri} does not resolve`);
     return [`${document}#${JSON.stringify(segments)}`, uri, schema, segments];
