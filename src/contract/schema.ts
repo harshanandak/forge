@@ -498,6 +498,10 @@ export class SchemaRegistry {
     }
   }
 
+  get base(): string {
+    return this.#base;
+  }
+
   /** The full URI a short reference resolves to. */
   resolve(reference: string, base: string = this.#base): string {
     const key = `${base}\u0000${reference}`;
