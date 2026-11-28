@@ -407,8 +407,9 @@ export type CreationSide = {
 
 const creationFaults = `
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$alias = [regex]::Escape([Security.AccessControl.RawSecurityDescriptor]::new("O:$me").GetSddlForm('Owner').Substring(2))
 function Get-Sddl($path, $sections = 'Owner, Access') {
-  (Get-Item -LiteralPath $path -Force).GetAccessControl().GetSecurityDescriptorSddlForm($sections).Replace($me, '@')
+  (Get-Item -LiteralPath $path -Force).GetAccessControl().GetSecurityDescriptorSddlForm($sections) -creplace "(?<=[:;])$alias(?=[;)GDS]|$)", '@'
 }
 function Set-Sddl($path, $sddl) {
   $item = Get-Item -LiteralPath $path -Force

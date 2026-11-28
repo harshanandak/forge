@@ -97,12 +97,14 @@ async function candidate() {
   return {
     native: true,
     launches: () => launches,
-    create: async (target: string, hook: Hook) =>
-      outcome(() =>
-        createPrivateWindowsDirectory(hook(creator), target, {
-          end: Date.now() + budget,
-          now: Date.now,
-        }),
+    create: (target: string, hook: Hook) =>
+      Promise.resolve(
+        outcome(() =>
+          createPrivateWindowsDirectory(hook(creator), target, {
+            end: Date.now() + budget,
+            now: Date.now,
+          }),
+        ),
       ),
   };
 }
@@ -301,7 +303,7 @@ test.skipIf(process.platform !== "win32")(
           recipe.expected,
           0,
         ]);
-        expect(candidateState).toBe(referenceState!);
+        expect(candidateState).toBe(referenceState);
         expect(elapsed).toBeLessThan(budget);
         const observed = candidateState!
           .split("\n")
