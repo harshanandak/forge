@@ -231,6 +231,7 @@ function recipes(): Recipe[] {
 }
 
 const setup = `
+$ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $inputData = ${readInput}
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
