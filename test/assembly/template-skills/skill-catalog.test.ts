@@ -1,0 +1,88 @@
+import { expect, test } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  renderSkillCatalog,
+  syncSkills,
+} from "../../../src/assembly/skills.ts";
+import { candidate } from "../../surface/fixtures/catalog.ts";
+
+test("renders the same skill bytes as a fresh sync", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-skill-catalog-"));
+  try {
+    const source = join(root, "tpl", "skills", "review");
+    mkdirSync(join(source, "examples"), { recursive: true });
+    const frontmatter =
+      '---\nname: review\ndescription: "Use when reviewing patches."\nmetadata:\n  author: "Forge"\n---\n';
+    const primary = join(source, "SKILL.md");
+    const body = "Review {{values.rounds}} rounds.";
+    writeFileSync(primary, `${frontmatter}\n${body}\n`);
+    const companion = Uint8Array.of(0, 13, 10, 255);
+    writeFileSync(join(source, "examples", "payload.bin"), companion);
+    const templates = {
+      sources: [{ root, file: "tpl/forge.template.json" }],
+      values: { rounds: 3 },
+    };
+    const candidates = [candidate()];
+    const catalog = renderSkillCatalog(candidates, "test", templates);
+    expect(existsSync(join(root, ".agents"))).toBe(false);
+    expect(catalog.map(({ path }) => path).sort()).toEqual([
+      "review/SKILL.md",
+      "review/examples/payload.bin",
+      "sample/SKILL.md",
+      "sample/reference.md",
+    ]);
+    const decoder = new TextDecoder();
+    const review = catalog.find(({ path }) => path === "review/SKILL.md")!;
+    expect(decoder.decode(review.bytes).startsWith(frontmatter)).toBe(true);
+    expect(decoder.decode(review.bytes)).toContain("Review 3 rounds.");
+    const payload = catalog.find(({ path }) => path.endsWith("/payload.bin"))!;
+    expect(new Uint8Array(payload.bytes)).toEqual(companion);
+
+    const synced = syncSkills(root, candidates, "test", undefined, templates);
+    expect(synced.errors).toEqual([]);
+    expect(synced.written).toHaveLength(catalog.length);
+    for (const { noun, path, bytes } of catalog) {
+      expect(path.split("/")[0]).toBe(noun);
+      const onDisk = readFileSync(join(root, synced.dir, path));
+      expect(new Uint8Array(bytes)).toEqual(new Uint8Array(onDisk));
+    }
+
+    writeFileSync(primary, `${frontmatter}\nReview new evidence first.\n`);
+    const updated = renderSkillCatalog(candidates, "test", templates);
+    const updatedReview = updated.find(({ path }) => path === review.path);
+    expect(updatedReview?.bytes).not.toEqual(review.bytes);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("catalog refuses a companion name that would split its ownership entry", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-skill-catalog-name-"));
+  try {
+    const source = join(root, "tpl", "skills", "review");
+    mkdirSync(source, { recursive: true });
+    const frontmatter = '---\nname: review\ndescription: "Review."\n---\n';
+    writeFileSync(join(source, "SKILL.md"), frontmatter);
+    writeFileSync(join(source, "notes, appendix.txt"), "notes");
+    const templates = {
+      sources: [{ root, file: "tpl/forge.template.json" }],
+      values: undefined,
+    };
+    const message = /Invalid companion path notes, appendix\.txt/;
+    expect(() => syncSkills(root, [], undefined, undefined, templates)).toThrow(
+      message,
+    );
+    expect(() => renderSkillCatalog([], undefined, templates)).toThrow(message);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
