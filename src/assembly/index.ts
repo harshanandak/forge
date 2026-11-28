@@ -23,6 +23,7 @@ import { compatibleConfig } from "../core/config/compatible.ts";
 import { describeConfigFormat } from "./config-format.ts";
 import { parsePointer } from "../core/config/pointer.ts";
 import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
+import type { DefaultLaneSnapshot } from "../blocks/work/lane-admission.ts";
 import {
   Catalog,
   captureBlock,
@@ -39,6 +40,7 @@ import {
 } from "../contract/display-text.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
+import { decideLease } from "../contract/lease.ts";
 import { bindContext } from "../contract/context.ts";
 import { validateWithSchema } from "../contract/schema.ts";
 import {
@@ -57,6 +59,7 @@ import {
   validateConfigDocument,
   validateInvocationRequest,
   validateBlockManifest,
+  validateLeaseRecord,
 } from "../generated/validators.ts";
 import { cliOperation, type McpCandidate } from "../contract/mcp.ts";
 import type {
@@ -719,6 +722,38 @@ export async function createAssembly(
     if (exposure?.readOnly && declaration.effects.length > 0)
       refuse("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
   }
+  async function laneGrantAdvisorySkip(
+    output: Record<string, unknown> | undefined,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    const admitted = validateLeaseRecord(output?.lease);
+    if (!admitted.ok || typeof output?.issueId !== "string")
+      return "lane grant unavailable";
+    const subject = `issue:${output.issueId}`;
+    if (admitted.value.subject !== subject) return "lane grant unavailable";
+    const state = await projectState.acquire(false, signal);
+    try {
+      signal.throwIfAborted();
+      const current = validateLeaseRecord(
+        state.value?.lease("forge/work", subject),
+      );
+      if (!current.ok || current.value.subject !== subject)
+        return "lane grant unavailable";
+      const nowMs = Date.now();
+      const held = decideLease(current.value, {
+        mode: "held",
+        subject,
+        holder: admitted.value.holder,
+        generation: admitted.value.generation,
+        nowMs,
+      });
+      return held.ok
+        ? leaseAdvisorySkip(current.value.expiresAt, nowMs)
+        : "lane grant changed or expired";
+    } finally {
+      await state.close();
+    }
+  }
   async function workAdvisory(
     candidateId: string,
     workInstance: string,
@@ -731,14 +766,25 @@ export async function createAssembly(
       signal,
       scanDeadline,
       remainingMs,
-      advisoryProviders,
+      openAdvisoryProviders,
+      checkGrant,
+      defaultRef,
     }: {
       signal: AbortSignal;
       scanDeadline: number;
       remainingMs: () => number;
-      advisoryProviders: ReturnType<typeof createAssemblyProviders>;
+      openAdvisoryProviders: () => ReturnType<typeof createAssemblyProviders>;
+      checkGrant?: (signal: AbortSignal) => Promise<string | undefined>;
+      defaultRef: string;
     },
   ): ReturnType<typeof readWorkWarnings> {
+    if (checkGrant) {
+      const skip = await checkGrant(signal);
+      signal.throwIfAborted();
+      if (remainingMs() <= 0) return unavailableMap("read timed out");
+      if (skip) return unavailableMap(skip);
+    }
+    const advisoryProviders = openAdvisoryProviders();
     const scope = {
       op: "work-file-map",
       effects: ["environment:read", "external:process", "files:read"],
@@ -845,7 +891,7 @@ export async function createAssembly(
       {
         ...run,
         remainingMs,
-        defaultRef: "refs/remotes/origin/HEAD",
+        defaultRef,
         workInstance,
         candidateId,
         initialProcesses: 1,
@@ -2304,11 +2350,24 @@ export async function createAssembly(
         );
         let advisoryIssues:
           { op: string; leaseUnavailable: boolean } | undefined;
+        let laneSnapshot: DefaultLaneSnapshot | undefined;
         const runtime = new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           drainServicePreparation: true,
           async services(instance, context, scope) {
             const clients: Record<string, unknown> = {};
+            if (
+              workOperation === "lane.start" &&
+              scope.op === request.op &&
+              advisoryDeadline !== undefined &&
+              !request.dryRun
+            )
+              clients.captureDefaultLane = (snapshot: DefaultLaneSnapshot) => {
+                laneSnapshot = Object.freeze({
+                  trackingRef: snapshot.trackingRef,
+                  commit: snapshot.commit,
+                });
+              };
             const leases: import("../ports/lifetime.ts").OwnedHandle<unknown>[] =
               [];
             try {
@@ -2696,12 +2755,17 @@ export async function createAssembly(
           (laneStart || workOperation === "issue.claim")
         ) {
           const output = record(result.result);
-          const id = output?.id;
+          const id = laneStart ? output?.issue : output?.id;
+          const snapshot = laneSnapshot;
           const skip =
             advisoryDeadline === undefined
               ? "advisory skipped: shared process runner"
               : laneStart
-                ? "trusted default policy unavailable"
+                ? !snapshot ||
+                  snapshot.commit !== output?.base ||
+                  !output?.lease
+                  ? "trusted default policy unavailable"
+                  : undefined
                 : leaseAdvisorySkip(output?.expiresAt, Date.now());
           const supervision = advisorySupervision(
             advisoryDeadline ?? 0,
@@ -2721,27 +2785,31 @@ export async function createAssembly(
           else {
             const controller = new AbortController();
             const cancel = () => controller.abort(immediateProcessAbort);
-            const port = createProcessPort({ supervision });
-            let running: ReturnType<typeof port.run> | undefined;
+            let running:
+              | ReturnType<ReturnType<typeof createProcessPort>["run"]>
+              | undefined;
             signal?.addEventListener("abort", cancel, { once: true });
             try {
-              const advisoryProviders = createAssemblyProviders(
-                root,
-                { ...options.providers, supervision, deviceRoot },
-                {
-                  ...port,
-                  run(executable, args, spawn) {
-                    const left = remainingMs();
-                    if (left <= 0)
-                      throw new Error("Work map deadline exceeded");
-                    running = port.run(executable, args, {
-                      ...spawn,
-                      timeoutMs: Math.min(spawn.timeoutMs, left),
-                    });
-                    return running;
+              const openAdvisoryProviders = () => {
+                const port = createProcessPort({ supervision });
+                return createAssemblyProviders(
+                  root,
+                  { ...options.providers, supervision, deviceRoot },
+                  {
+                    ...port,
+                    run(executable, args, spawn) {
+                      const left = remainingMs();
+                      if (left <= 0)
+                        throw new Error("Work map deadline exceeded");
+                      running = port.run(executable, args, {
+                        ...spawn,
+                        timeoutMs: Math.min(spawn.timeoutMs, left),
+                      });
+                      return running;
+                    },
                   },
-                },
-              );
+                );
+              };
               const instance = runtimeCatalog.resolve(request.op).operation
                 .instance;
               const read: Parameters<typeof workAdvisory>[2] = async (
@@ -2790,7 +2858,14 @@ export async function createAssembly(
                   signal: controller.signal,
                   scanDeadline,
                   remainingMs,
-                  advisoryProviders,
+                  openAdvisoryProviders,
+                  ...(laneStart
+                    ? {
+                        checkGrant: (signal: AbortSignal) =>
+                          laneGrantAdvisorySkip(output, signal),
+                      }
+                    : {}),
+                  defaultRef: snapshot?.commit ?? "refs/remotes/origin/HEAD",
                 }),
               ]);
               call.workMap = remainingMs() <= 0 ? timedOut : map;

@@ -42,7 +42,7 @@ The reader allows up to 1,000 issues, 128 delivered links per issue, 20,000 trac
 
 ### Claim and lane advisories
 
-In local projects, the dedicated single-command Forge CLI checks for overlapping files after a successful claim.
+In local projects, the dedicated single-command Forge CLI checks for overlapping files after a successful claim or a fresh lane start with a live grant on the default branch.
 `WORK_FILE_OVERLAP` names the path, the other issue's ID and title, its branch when known, and its live lease.
 Forge follows known dependencies, including indirect ones. Otherwise, finish the incumbent lane first.
 
@@ -53,8 +53,8 @@ Delivered PR links report incomplete evidence. Forge still reports overlaps it c
 `WORK_FILE_MAP_INCOMPLETE` means some overlaps may be missing. The result carries at most 32 warnings, with messages
 limited to 2,000 characters. `WORK_FILE_MAP_TRUNCATED` reports how many warning rows were omitted.
 
-Embedded hosts and MCP skip advisory processes to keep the shared runner free. Local lane starts report incomplete evidence until Forge can reuse the admitted default policy snapshot (forge-2052).
-Short grants and failed registry or issue reads also report incomplete evidence. Cloud-bound calls and direct cloud HTTP claims are outside this scope.
+Fresh lane starts reuse the commit fetched during admission. Replays, adopted worktrees and configured lane bases report incomplete evidence.
+Embedded hosts and MCP skip advisory processes to keep the shared runner free. Short grants and failed registry or issue reads also report incomplete evidence. Cloud-bound calls and direct cloud HTTP claims are outside this scope.
 
 The CLI and MCP surfaces supply both, so `forge issue claim <id>`, `forge issue link ...` and `forge issue close --input '{"id":"<id>","receipt":"<receipt>"}'` need no explicit context:
 
