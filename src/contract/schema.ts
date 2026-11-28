@@ -8,7 +8,7 @@ export type JsonSchema = boolean | SchemaObject;
 
 export const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
 
-const DIRECT_SUBSCHEMAS: ReadonlySet<string> = new Set([
+export const DIRECT_SUBSCHEMAS: ReadonlySet<string> = new Set([
   "items",
   "additionalProperties",
   "propertyNames",
@@ -40,7 +40,7 @@ export function schemaBudget(maxDepth = 64, maxNodes = 20_000): SchemaBudget {
 
 const MAX_VALIDATION_DEPTH = 256;
 const MAX_VALIDATION_VISITS = 1_000_000;
-const MAX_SCHEMA_VISITS_PER_VALUE = 4_096;
+export const MAX_SCHEMA_VISITS_PER_VALUE: number = 4_096;
 
 function validationBudget(): ValidationBudget {
   const spend = schemaBudget(MAX_VALIDATION_DEPTH, MAX_VALIDATION_VISITS);
