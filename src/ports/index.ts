@@ -10,7 +10,6 @@ export type {
 export type {
   McpHandlers,
   McpServeOptions,
-  McpServer,
   McpTransportPort,
 } from "./mcp-transport.ts";
 export type {

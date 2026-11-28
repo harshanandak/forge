@@ -46,7 +46,14 @@ async function checkProtocol(era: string, readOnly: boolean) {
     return message;
   };
   try {
-    await rpc(modern ? "server/discover" : "initialize", modern ? {} : init);
+    const initialize = await rpc(
+      modern ? "server/discover" : "initialize",
+      modern ? {} : init,
+    );
+    const { capabilities } = initialize.result as {
+      capabilities: { tools?: { listChanged?: boolean } };
+    };
+    expect(capabilities.tools?.listChanged).not.toBe(true);
     if (!modern)
       input.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
     if (readOnly) {

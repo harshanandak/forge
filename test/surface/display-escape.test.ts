@@ -240,7 +240,7 @@ test.each(Object.entries(commands))(
                 ok: true,
                 handle: {
                   ownership: "owned",
-                  value: { notifyToolsChanged: async () => {} },
+                  value: {},
                   close: async () => {},
                 },
               };
