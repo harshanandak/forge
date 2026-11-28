@@ -223,6 +223,25 @@ consumerTest(
   },
 );
 
+consumerTest(
+  "names the workspace when the final workspace read fails",
+  async () => {
+    const { input, reads } = consumerFixture();
+    let workspaceReads = 0;
+    const result = await consume!(input, {
+      ...reads,
+      workspace: (path) => {
+        workspaceReads += 1;
+        return workspaceReads === 1
+          ? reads.workspace(path)
+          : Promise.reject(new Error("Git status timed out"));
+      },
+    });
+    expect(workspaceReads).toBe(2);
+    expect(result).toEqual(refused("workspace", "UNAVAILABLE"));
+  },
+);
+
 consumerTest("A1 and A12 reject complete input before any read", async () => {
   const { input, calls, reads } = consumerFixture();
   const { head: _head, ...missingHead } = input.context;
