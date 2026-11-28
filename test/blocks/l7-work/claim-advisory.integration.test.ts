@@ -55,6 +55,11 @@ function claimPreload(mode: string, report: string) {
     Object.defineProperty(performance, "now", { value: () => elapsed });
     const timeout = timers.setTimeout;
     timers.setTimeout = (ms, value, options) => {
+      if (globalThis.advisoryChild && value === undefined)
+        return new Promise((resolve) => setImmediate(() => {
+          elapsed += ms;
+          resolve();
+        }));
       if (mode !== "stalls" || value?.warnings?.[0]?.code !== "WORK_FILE_MAP_INCOMPLETE")
         return timeout(ms, value, options);
       remaining = ms;
@@ -74,6 +79,7 @@ function claimPreload(mode: string, report: string) {
       child.signalCode = "SIGKILL";
       child.emit("exit", null, "SIGKILL");
       child.emit("close");
+      writeFileSync(${JSON.stringify(report + ".reaped")}, child.signalCode);
     }
     process.kill = (pid, signal) => {
       if (pid !== -globalThis.advisoryChild?.pid) return kill(pid, signal);
@@ -89,8 +95,6 @@ function claimPreload(mode: string, report: string) {
       writeFileSync(${JSON.stringify(report)}, JSON.stringify({
         remaining, elapsed, started: Boolean(globalThis.advisoryChild), stopped,
       }));
-      stopped = true;
-      exitChild();
       return write.apply(this, args);
     };
     const shim = ${JSON.stringify(proof)};
@@ -160,13 +164,15 @@ for (const [mode, reason] of [
             message: `File overlap map incomplete (${reason}). Some overlap may be missing.`,
           },
         ]);
-        if (mode === "stalls")
+        if (mode === "stalls") {
           expect(JSON.parse(readFileSync(report, "utf8"))).toEqual({
             remaining: 1000,
             elapsed: 5000,
             started: true,
             stopped: true,
           });
+          expect(readFileSync(report + ".reaped", "utf8")).toBe("SIGKILL");
+        }
       },
     );
   }, 30_000);
