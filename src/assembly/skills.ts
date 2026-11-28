@@ -89,20 +89,25 @@ function accessFailure(error: unknown): boolean {
   );
 }
 
+function checkCompanionPath(path: string, origin: string): readonly string[] {
+  const parts = path.split("/");
+  if (
+    /[\\:,\r\n]/.test(path) ||
+    path !== path.trim() ||
+    parts.some((part) => ["", ".", ".."].includes(part)) ||
+    key(path) === key("SKILL.md")
+  )
+    throw new Error(`Invalid companion path ${path} in ${origin}`);
+  return parts;
+}
+
 function validate(
   inspect: (path: string) => ReturnType<typeof entryKind>,
   path: string,
   origin: string,
 ): boolean {
-  if (
-    /[\\:,\r\n]/.test(path) ||
-    path !== path.trim() ||
-    path.split("/").some((part) => ["", ".", ".."].includes(part)) ||
-    key(path) === key("SKILL.md")
-  )
-    throw new Error(`Invalid companion path ${path} in ${origin}`);
+  const parts = checkCompanionPath(path, origin);
   // Probe every component as a final component, so even an internal link is refused.
-  const parts = path.split("/");
   try {
     for (let i = 1; i <= parts.length; i++) {
       const kind = inspect(parts.slice(0, i).join("/"));
@@ -558,8 +563,10 @@ export function renderSkillCatalog(
   const pathsByNoun = new Map<string, string[]>();
   for (const copy of skills) {
     if (copy.bytes === undefined) continue;
+    const relative = copy.path.slice(copy.noun.length + 1);
+    checkCompanionPath(relative, `${copy.noun}/SKILL.md`);
     const paths = pathsByNoun.get(copy.noun) ?? [];
-    paths.push(copy.path.slice(copy.noun.length + 1));
+    paths.push(relative);
     pathsByNoun.set(copy.noun, paths);
   }
   return skills.map((copy) => ({
