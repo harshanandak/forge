@@ -75,7 +75,7 @@ function recipes(): Recipe[] {
     set("08", "unprotected directory", "", false, {
       sddl: "O:@G:@D:" + privateDir,
     }),
-    set("09a", "split masks on disk", splitMask, true),
+    set("09a", "split masks from SDDL", splitMask, true),
     set("09a", "split masks raw", splitMask, true, { inject: "sddl" }),
     set(
       "09b",
