@@ -81,7 +81,9 @@ export function cliOperation(entry: McpCandidate): string {
     : entry.op;
 }
 
-export function mcpObjectInput(schema: SchemaObject) {
+export function mcpObjectInput(
+  schema: SchemaObject,
+): SchemaObject & { readonly type: "object" } {
   const { type, allOf } = schema;
   return type === undefined || type === "object"
     ? { ...schema, type: "object" as const }
