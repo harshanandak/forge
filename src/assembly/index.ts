@@ -143,7 +143,8 @@ import {
   sessionIdentity,
 } from "./identity.ts";
 import { lazy } from "./lazy.ts";
-import type { TemplateFile } from "./skills.ts";
+import type { TemplateFile, TemplateSkills } from "./skills.ts";
+import type { SkillResourceProvider } from "../ports/skill-resources.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
 import {
   ASYNC_PROJECT_STATE,
@@ -289,6 +290,7 @@ export interface Assembly {
     unavailable(): readonly UnavailableBlock[];
   };
   readonly mcpCatalog: SurfaceCatalog;
+  readonly mcpSkills: SkillResourceProvider;
   readonly root: string;
   readonly deviceRoot: string;
   readonly exposure: McpExposure;
@@ -687,6 +689,21 @@ export async function createAssembly(
       );
     }
     return checked.value;
+  }
+  function templateSkillsFor(
+    call: CallScope,
+    show: ShowResult,
+  ): TemplateSkills {
+    return {
+      sources: show.templates.flatMap((t): TemplateFile[] => {
+        if (t.source !== undefined) return [{ root, file: t.source }];
+        const dir = call.shipped.dirOf(
+          t.template.slice(0, t.template.lastIndexOf("@")),
+        );
+        return dir === undefined ? [] : [{ root: dir, file: TEMPLATE_FILE }];
+      }),
+      values: show.effective.values,
+    };
   }
   function mcpConfig(call: CallScope): ShowResult {
     let show: ShowResult;
@@ -1956,18 +1973,7 @@ export async function createAssembly(
                 : directories.length
                   ? directories
                   : undefined,
-              {
-                sources: show.templates.flatMap((t): TemplateFile[] => {
-                  if (t.source !== undefined) return [{ root, file: t.source }];
-                  const dir = call.shipped.dirOf(
-                    t.template.slice(0, t.template.lastIndexOf("@")),
-                  );
-                  return dir === undefined
-                    ? []
-                    : [{ root: dir, file: TEMPLATE_FILE }];
-                }),
-                values: show.effective.values,
-              },
+              templateSkillsFor(call, show),
               input.check === true,
             );
             const bounded = (message: string, limit: number): string =>
@@ -2916,6 +2922,29 @@ export async function createAssembly(
   return {
     catalog,
     mcpCatalog,
+    mcpSkills: {
+      async catalog() {
+        const call = callScope([], true);
+        const { candidates, document, show } = snapshot(
+          call,
+          false,
+          false,
+          mcpConfig(call),
+        );
+        const { renderSkillCatalog } = await loadSkills();
+        const files = renderSkillCatalog(
+          candidates,
+          document.mcp?.toolPrefix,
+          templateSkillsFor(call, show),
+        );
+        return new Map(
+          files.map((file) => {
+            const path = file.path.split("/").map(encodeURIComponent);
+            return [`skill://${path.join("/")}`, file];
+          }),
+        );
+      },
+    },
     root,
     deviceRoot,
     get exposure() {

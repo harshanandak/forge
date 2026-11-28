@@ -80,17 +80,19 @@ export function nodeProjectFiles(
         )
           refuse("project root or file changed during open");
         if (opened.size > maxBytes) throw fileLimitExceeded(path, maxBytes);
-        const buffer = Buffer.allocUnsafe(maxBytes + 1);
+        const readLimit = options.strict ? Number(opened.size) : maxBytes;
+        const buffer = Buffer.allocUnsafe(readLimit + 1);
         let count = 0;
-        while (count <= maxBytes) {
-          const read = readSync(fd, buffer, count, maxBytes + 1 - count, null);
+        while (count <= readLimit) {
+          const read = readSync(fd, buffer, count, buffer.length - count, null);
           if (read === 0) break;
           count += read;
         }
         if (count > maxBytes) throw fileLimitExceeded(path, maxBytes);
         if (
           options.strict &&
-          fstatSync(fd, { bigint: true }).size !== BigInt(count)
+          (count !== readLimit ||
+            fstatSync(fd, { bigint: true }).size !== opened.size)
         )
           refuse("file size changed during read");
         return buffer.subarray(0, count);

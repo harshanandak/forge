@@ -2,6 +2,7 @@
 // through these handlers, so the transport holds no domain logic.
 import type { McpTool, ResultEnvelope } from "../generated/types.ts";
 import type { LifetimeProvider } from "./lifetime.ts";
+import type { SkillResourceProvider } from "./skill-resources.ts";
 
 export interface McpHandlers {
   listTools(): readonly McpTool[];
@@ -15,6 +16,7 @@ export interface McpHandlers {
 
 export interface McpServeOptions {
   readonly handlers: McpHandlers;
+  readonly skills?: SkillResourceProvider;
   readonly serverName: string;
   readonly serverVersion: string;
   readonly input: ReadableStream<Uint8Array>;

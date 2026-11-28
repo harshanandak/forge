@@ -186,8 +186,10 @@ export function renderTemplateSkill(
   name: string,
   source: string,
   values: unknown,
+  maxReplacementChars?: number,
 ): SkillFile | { readonly unknown: readonly string[] } {
   const unknown: string[] = [];
+  let replacementChars = 0;
   const text = source
     .replace(/\r\n/g, "\n")
     .replace(/\{\{\s*([^{}]*?)\s*\}\}/g, (whole, key: string) => {
@@ -196,10 +198,22 @@ export function renderTemplateSkill(
         : undefined;
       for (const part of key.split(".").slice(1)) value = record(value)?.[part];
       // a scalar or a list of scalars; an object has no one text form
-      if (scalar(value)) return String(value);
-      if (Array.isArray(value) && value.every(scalar)) return value.join(", ");
-      unknown.push(whole);
-      return whole;
+      const replacement = scalar(value)
+        ? String(value)
+        : Array.isArray(value) && value.every(scalar)
+          ? value.join(", ")
+          : undefined;
+      if (replacement === undefined) {
+        unknown.push(whole);
+        return whole;
+      }
+      replacementChars += replacement.length;
+      if (
+        maxReplacementChars !== undefined &&
+        replacementChars > maxReplacementChars
+      )
+        throw new Error("Template skill substitutions exceed the size limit");
+      return replacement;
     });
   if (unknown.length > 0) return { unknown };
   const front = /^---\n[\s\S]*?\n---\n/.exec(text)?.[0] ?? "";

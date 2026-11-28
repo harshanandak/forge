@@ -5,9 +5,11 @@ import {
 } from "../adapters/fs/index.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import type { ConfigFiles } from "../core/config/files.ts";
 import { refuse } from "../core/trust/index.ts";
 import {
   GENERATED_MARKER,
+  SKILL_MAX_BYTES,
   lintReference,
   lintSkill,
   renderSkills,
@@ -48,7 +50,7 @@ export interface TemplateSkills {
 
 /** A file's bytes, or undefined when it is missing or not a file (a stray entry in a skills dir). */
 function readFile(
-  files: ReturnType<typeof nodeConfigFiles>,
+  files: Pick<ConfigFiles, "read">,
   path: string,
 ): Uint8Array | undefined {
   try {
@@ -140,6 +142,11 @@ function companions(
 }
 
 type Copy = SkillFile & { readonly bytes?: Uint8Array };
+type SkillSourceFiles = Pick<ConfigFiles, "list" | "read">;
+type SkillCatalogBudget = { bytes: number; entries: number };
+
+export const SKILL_CATALOG_MAX_BYTES = 1_048_576;
+export const SKILL_CATALOG_MAX_ENTRIES = 512;
 
 export interface RenderedSkillFile {
   readonly noun: string;
@@ -162,27 +169,63 @@ function skillBytes(copy: Copy, adopted: readonly string[]): Uint8Array {
 }
 
 function tree(
-  files: ReturnType<typeof nodeConfigFiles>,
+  files: SkillSourceFiles,
   dir: string,
+  primary: string,
 ): { path: string; bytes: Uint8Array }[] {
   readFile(files, dir);
   return files.list(dir).flatMap((name) => {
     const path = `${dir}/${name}`;
+    if (key(path) === key(primary)) return [];
     const bytes = readFile(files, path);
-    return bytes === undefined ? tree(files, path) : [{ path, bytes }];
+    if (bytes === undefined) return tree(files, path, primary);
+    return [{ path, bytes }];
   });
 }
 
+function skillSourceFiles(
+  root: string,
+  budget?: SkillCatalogBudget,
+): SkillSourceFiles {
+  if (budget === undefined) return nodeConfigFiles(root);
+  const files = nodeConfigFiles(root, { strict: true });
+  return {
+    list(dir) {
+      const entries = files.list(dir, budget.entries);
+      budget.entries -= entries.length;
+      const privateName = /^(?:\.|id_(?:rsa|dsa|ecdsa|ed25519)$)|\.pem$/i;
+      if (entries.some((name) => privateName.test(name)))
+        refuse("INPUT_INVALID", "Private file name in template skill catalog");
+      return entries;
+    },
+    read(path) {
+      if (entryKind(root, path, true) === "directory") return undefined;
+      const bytes = files.read(path, budget.bytes);
+      if (bytes === undefined) return undefined;
+      budget.bytes -= bytes.byteLength;
+      return bytes;
+    },
+  };
+}
+
 /** Each template's `skills/<name>/SKILL.md`, read from next to the template file and rendered. */
-function templateSkills(templates: TemplateSkills): Copy[] {
+function templateSkills(
+  templates: TemplateSkills,
+  budget?: SkillCatalogBudget,
+): Copy[] {
   const skills: Copy[] = [];
   for (const source of templates.sources) {
-    const files = nodeConfigFiles(source.root);
+    if (budget !== undefined) {
+      if (budget.entries === 0)
+        refuse("LIMIT_EXCEEDED", "Skill catalog entry limit exceeded");
+      budget.entries--;
+    }
+    const files = skillSourceFiles(source.root, budget);
     const parent = source.file.split("/").slice(0, -1).join("/");
     const dir = parent === "" ? "skills" : `${parent}/skills`;
     for (const name of files.list(dir)) {
       const entry = `${dir}/${name}`;
-      const kind = entryKind(source.root, entry);
+      const kind = entryKind(source.root, entry, budget !== undefined);
       if (kind === "file") continue;
       if (kind !== "directory")
         refuse(
@@ -204,15 +247,14 @@ function templateSkills(templates: TemplateSkills): Copy[] {
         name,
         new TextDecoder().decode(bytes),
         templates.values,
+        budget === undefined ? undefined : SKILL_MAX_BYTES,
       );
       if ("unknown" in rendered)
         refuse(
           "INPUT_INVALID",
           `${dir}/${name}/SKILL.md uses unknown values: ${rendered.unknown.join(", ")}`,
         );
-      const extras = tree(files, `${dir}/${name}`).filter(
-        (file) => key(file.path) !== key(`${dir}/${name}/SKILL.md`),
-      );
+      const extras = tree(files, entry, path);
       skills.push(rendered);
       for (const file of extras)
         skills.push({
@@ -512,12 +554,13 @@ function collectSkills(
   candidates: readonly McpCandidate[],
   prefix: string | undefined,
   templates: TemplateSkills,
+  budget?: SkillCatalogBudget,
 ): Copy[] {
   let skills: Copy[];
   try {
     skills = [
       ...renderSkills(candidates, prefix),
-      ...templateSkills(templates),
+      ...templateSkills(templates, budget),
     ];
   } catch (error) {
     refuse(
@@ -559,7 +602,15 @@ export function renderSkillCatalog(
   prefix?: string,
   templates: TemplateSkills = EMPTY_TEMPLATES,
 ): readonly RenderedSkillFile[] {
-  const skills = collectSkills(candidates, prefix, templates);
+  const skills = collectSkills(candidates, prefix, templates, {
+    bytes: SKILL_CATALOG_MAX_BYTES,
+    entries: SKILL_CATALOG_MAX_ENTRIES,
+  });
+  if (skills.length > SKILL_CATALOG_MAX_ENTRIES)
+    refuse(
+      "LIMIT_EXCEEDED",
+      `Skill catalog exceeds ${SKILL_CATALOG_MAX_ENTRIES} files`,
+    );
   const pathsByNoun = new Map<string, string[]>();
   for (const copy of skills) {
     if (copy.bytes === undefined) continue;
@@ -569,9 +620,16 @@ export function renderSkillCatalog(
     paths.push(relative);
     pathsByNoun.set(copy.noun, paths);
   }
-  return skills.map((copy) => ({
+  const rendered = skills.map((copy) => ({
     noun: copy.noun,
     path: copy.path,
     bytes: skillBytes(copy, pathsByNoun.get(copy.noun) ?? []),
   }));
+  const size = rendered.reduce((sum, file) => sum + file.bytes.byteLength, 0);
+  if (size > SKILL_CATALOG_MAX_BYTES)
+    refuse(
+      "LIMIT_EXCEEDED",
+      `Skill catalog exceeds ${SKILL_CATALOG_MAX_BYTES} bytes`,
+    );
+  return rendered;
 }
