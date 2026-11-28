@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { renderAskCard } from "../../src/chat/cards.ts";
+import { renderTelegramAskCard } from "../../src/chat/telegram-cards.ts";
 import { WORK_REQUEST_CHOICES } from "../../src/contract/domain.ts";
 import { a, p1, p2, caller, seedItem, value } from "./fixture.ts";
 import { askFixture, button, refA, rows, slackA } from "./fakes.ts";
@@ -76,6 +78,45 @@ test(
       choices: WORK_REQUEST_CHOICES,
     });
     expect(f.chat.askCards[0]?.issueId).toBeUndefined();
+  },
+  timeout,
+);
+
+test(
+  "work-request cards redact the sender name from a legacy inbox item",
+  async () => {
+    const f = await askFixture();
+    const inboxItemId = "itm_legacy";
+    const legacyName = "xapp" + "-" + "fixture".repeat(3);
+    seedItem(f.db, inboxItemId, { delivered: f.sessionId });
+    f.db
+      .prepare("UPDATE inbox_items SET sender_name = ? WHERE item_id = ?")
+      .run(legacyName, inboxItemId);
+    const { askId, expiresAt } = value(await f.request({ inboxItemId }, false));
+    f.setTime(Date.parse(expiresAt));
+    expect(f.asks.sweepExpiry()).toBe(1);
+    for (const table of [
+      "asks",
+      "ask_deliveries",
+      "ask_edit_effects",
+    ] as const) {
+      const records = rows(f.db, table);
+      expect(records).toMatchObject([{ ask_id: askId }]);
+      expect(JSON.stringify(records).includes(legacyName)).toBe(false);
+    }
+    const cards = [
+      ...f.chat.askCards,
+      ...f.asks.pendingEdits(2).map(({ card }) => card),
+    ].map((card) => ({
+      state: card.state.kind,
+      redacted: card.requesterName === "[possible secret removed]",
+      slackSafe: !JSON.stringify(renderAskCard(card)).includes(legacyName),
+      telegramSafe: !renderTelegramAskCard(card).text.includes(legacyName),
+    }));
+    expect(cards).toEqual([
+      { state: "open", redacted: true, slackSafe: true, telegramSafe: true },
+      { state: "expired", redacted: true, slackSafe: true, telegramSafe: true },
+    ]);
   },
   timeout,
 );
