@@ -330,6 +330,10 @@ const matrix: CreationRecipe[] = [
   staged("no inheritance flags", "O:@D:P(A;;FA;;;@)"),
   staged("read-only mask", "O:@D:P(A;OICI;0x1200a9;;;@)"),
   {
+    ...staged("deny ACE, drive-relative staging", "O:@D:P(D;OICI;FA;;;@)"),
+    spelling: "drive-relative",
+  },
+  {
     row: "40",
     variant: "staging read failure",
     expected: false,
