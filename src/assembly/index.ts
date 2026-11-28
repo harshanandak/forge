@@ -86,10 +86,10 @@ import { checkResult } from "./check-result.ts";
 import { createMergeOutcome } from "./merge-outcome.ts";
 import { appendWorkMapWarnings, readWorkWarnings } from "./work-map.ts";
 import { advisoryLeaseReader, WORK_MAP_LIMITS } from "./work-map-read.ts";
+import { openAdvisoryGit } from "./advisory-git.ts";
 import {
   createProcessPort,
   immediateProcessAbort,
-  proveAdvisoryGit,
 } from "../adapters/process/index.ts";
 import {
   blockCapture,
@@ -161,8 +161,6 @@ import {
   assemblyProvides,
   createAssemblyProviders,
   advisorySupervision,
-  createGitScope,
-  gitCapability,
   createReceiptsService,
   processCleanupBudgetMs,
   idPrefixObservation,
@@ -731,19 +729,20 @@ export async function createAssembly(
       signal,
       remainingMs,
       advisoryProviders,
+      git,
     }: {
       signal: AbortSignal;
       remainingMs: () => number;
       advisoryProviders: ReturnType<typeof createAssemblyProviders>;
+      git: ReturnType<typeof openAdvisoryGit>;
     },
   ): ReturnType<typeof readWorkWarnings> {
     const scope = {
       op: "work-file-map",
       effects: ["environment:read", "external:process", "files:read"],
       signal,
-      get deadline() {
-        return Date.now() + Math.max(0, remainingMs());
-      },
+      deadline: Infinity,
+      remainingMs,
       processContainment: "supervised" as const,
     };
     const process = advisoryProviders.process(scope);
@@ -762,34 +761,48 @@ export async function createAssembly(
       "APPDATA",
       "LOCALAPPDATA",
     ]);
-    const git = gitCapability(process, env, createGitScope(stateRoot, root));
-    const gitExecutable = git.executable();
-    const { platform } = environment;
+    const gitExecutable = await git.read({
+      op: "initial",
+      project: stateRoot,
+      root,
+      env,
+    });
+    signal.throwIfAborted();
+    if (!gitExecutable)
+      return unavailableMap("advisory Git process cost unavailable");
     if (gitExecutable.kind !== "resolved")
       return unavailableMap("advisory Git executable unavailable");
-    const gitPin = await proveAdvisoryGit(gitExecutable, platform, signal);
-    signal.throwIfAborted();
-    if (!gitPin) return unavailableMap("advisory Git process cost unavailable");
     const run = { cwd: stateRoot, env, signal, timeoutMs: advisoryMs };
     let bytes: number = WORK_MAP_LIMITS.outputBytes;
     const charge = (size: number) => {
       bytes -= size;
       if (bytes < 0) throw new Error("Work map output limit reached");
     };
-    const read = async (op: string, input: object) => {
+    const checkAdvisoryTime = () => {
       signal.throwIfAborted();
       if (remainingMs() <= 0) throw new Error("Work map deadline exceeded");
+    };
+    const read = async (op: string, input: object) => {
+      checkAdvisoryTime();
       if (bytes <= 0) throw new Error("Work map output limit reached");
       const answer = await command(op, input, signal);
       charge(Buffer.byteLength(JSON.stringify(answer.result)));
       return answer;
     };
     const lanes = await advisoryProviders
-      .openFiles(scope, gitPin)
+      .openFiles(scope, {
+        executable: gitExecutable,
+        async resolve(env) {
+          const current = await git.read({ op: "discovery", env });
+          if (!current) throw new Error("Advisory Git changed");
+          return current;
+        },
+      })
       .then(async (files) => {
         try {
           const { boundLaneRegistry } =
             await import("../blocks/work/bound-lane.ts");
+          checkAdvisoryTime();
           return boundLaneRegistry(files.value).lanes;
         } finally {
           await files.close();
@@ -802,12 +815,15 @@ export async function createAssembly(
         now: Date.now,
         process: {
           ...process,
-          resolve() {
-            const current = git.executable();
-            if (current.kind !== "resolved") return current;
-            if (current.path !== gitExecutable.path || !gitPin.unchanged())
+          resolve: () => gitExecutable,
+          async run(executable, args, options) {
+            const current = await git.read({ op: "launch" });
+            if (
+              current?.kind !== "resolved" ||
+              current.path !== executable.path
+            )
               throw new Error("Advisory Git changed");
-            return gitPin.executable;
+            return process.run(current, args, options);
           },
         },
         gitProcessCost: 1,
@@ -2704,8 +2720,8 @@ export async function createAssembly(
             advisoryDeadline ?? 0,
             options.providers?.supervision,
           );
-          const scanDeadline =
-            (advisoryDeadline ?? 0) - processCleanupBudgetMs(supervision);
+          const cleanupMs = processCleanupBudgetMs(supervision);
+          const scanDeadline = (advisoryDeadline ?? 0) - cleanupMs;
           const remainingMs = () =>
             Math.floor(scanDeadline - performance.now());
           if (skip) call.workMap = unavailableMap(skip);
@@ -2720,6 +2736,7 @@ export async function createAssembly(
             const cancel = () => controller.abort(immediateProcessAbort);
             const port = createProcessPort({ supervision });
             let running: ReturnType<typeof port.run> | undefined;
+            let git: ReturnType<typeof openAdvisoryGit> | undefined;
             signal?.addEventListener("abort", cancel, { once: true });
             try {
               const advisoryProviders = createAssemblyProviders(
@@ -2777,6 +2794,9 @@ export async function createAssembly(
                 }
               };
               const timedOut = unavailableMap("read timed out");
+              if (remainingMs() <= 0)
+                throw new Error("Work map deadline exceeded");
+              git = openAdvisoryGit(controller.signal);
               const remaining = remainingMs();
               if (remaining <= 0) throw new Error("Work map deadline exceeded");
               const map = await Promise.race([
@@ -2787,6 +2807,7 @@ export async function createAssembly(
                   signal: controller.signal,
                   remainingMs,
                   advisoryProviders,
+                  git,
                 }),
               ]);
               call.workMap = remainingMs() <= 0 ? timedOut : map;
@@ -2797,7 +2818,16 @@ export async function createAssembly(
             } finally {
               cancel();
               signal?.removeEventListener("abort", cancel);
-              if (running) await Promise.allSettled([running]);
+              const closeBy =
+                Math.min(scanDeadline, performance.now()) + cleanupMs;
+              const [closed] = await Promise.allSettled([
+                git?.close(closeBy),
+                running,
+              ]);
+              if (closed.status === "fulfilled" && closed.value) {
+                call.workMap = unavailableMap("read timed out");
+                call.workMap.warnings.push(closed.value);
+              }
             }
           }
         }

@@ -158,6 +158,10 @@ export interface ProviderOptions {
   readonly maxFileBytes?: number;
   readonly env?: Readonly<Record<string, string>>;
 }
+type ProviderScope = ServiceScope & { remainingMs?: () => number };
+type ResolveAdvisoryGit = (
+  env: Readonly<Record<string, string>>,
+) => Promise<ReturnType<ProcessPort["resolve"]>>;
 export interface AssemblyProviders {
   deviceFiles?(scope: ServiceScope): DeviceFiles;
   cloudLogin?(scope: ServiceScope): CloudLogin;
@@ -169,7 +173,7 @@ export interface AssemblyProviders {
     scope: ServiceScope,
     discoveryOnly?: {
       executable: ResolvedExecutable;
-      unchanged(): boolean;
+      resolve: ResolveAdvisoryGit;
     },
   ): Promise<OwnedHandle<FilesService>>;
 }
@@ -177,6 +181,7 @@ interface InternalProviders extends AssemblyProviders {
   files(
     scope: ServiceScope,
     executor: ProcessPort,
+    resolveDiscovery?: ResolveAdvisoryGit,
   ): Promise<OwnedHandle<FilesService>>;
 }
 
@@ -241,10 +246,13 @@ export function assemblyProvides(required: string): boolean {
 function refuse(code: string, message: string): never {
   throw new ForgeFailure({ code, message, retry: "never" });
 }
+function invocationRemainingMs(scope: ProviderScope): number {
+  return scope.remainingMs?.() ?? scope.deadline - Date.now();
+}
 function active(scope: ServiceScope): void {
   if (scope.signal.aborted)
     refuse("SERVICE_EXPIRED", "Invocation was cancelled");
-  if (Date.now() >= scope.deadline)
+  if (invocationRemainingMs(scope) <= 0)
     refuse("INVOCATION_TIMEOUT", "Invocation deadline exceeded");
 }
 
@@ -286,7 +294,7 @@ export function createProcessService(
         signal,
         timeoutMs: Math.min(
           options.timeoutMs,
-          Math.max(1, scope.deadline - Date.now()),
+          Math.max(1, invocationRemainingMs(scope)),
         ),
         containment: scope.processContainment,
       });
@@ -561,6 +569,18 @@ export function projectStateRoot(
  */
 export function projectManifestRoot(root: string): string {
   return nearestCheckoutRoot(root) ?? root;
+}
+
+export function cloneGitCapability(
+  executor: ProcessPort,
+  root: string,
+  env: Readonly<Record<string, string>>,
+): ReturnType<typeof gitCapability> {
+  return gitCapability(
+    executor,
+    env,
+    createGitScope(projectManifestRoot(root), root),
+  );
 }
 
 /** The nearest checkout's shared root for device scope fallback; undefined outside git. */
@@ -966,8 +986,7 @@ export function createAssemblyProviders(
           if (discoveryOnly) {
             if (
               discoveryStarted ||
-              executable.path !== discoveryOnly.executable.path ||
-              !discoveryOnly.unchanged()
+              executable.path !== discoveryOnly.executable.path
             )
               refuse("UNAVAILABLE", "Advisory Git discovery is unavailable");
             discoveryStarted = true;
@@ -1018,6 +1037,7 @@ export function createAssemblyProviders(
             },
           },
           executor,
+          discoveryOnly?.resolve,
         );
         return { ownership: "owned", value: fileLease.value, close };
       } catch (error) {
@@ -1028,6 +1048,7 @@ export function createAssemblyProviders(
     async files(
       scope: ServiceScope,
       executor: ProcessPort,
+      resolveDiscovery,
     ): Promise<OwnedHandle<FilesService>> {
       active(scope);
       // Git, not caller input or a .git text file, resolves linked-worktree roots.
@@ -1036,12 +1057,11 @@ export function createAssemblyProviders(
           DISCOVERY_ENV.has(key.toUpperCase()),
         ),
       );
-      const pin = gitCapability(
-        executor,
-        scrubbed,
-        createGitScope(projectManifestRoot(root), root),
-      );
-      const git = pin.executable();
+      const pin = resolveDiscovery
+        ? { executable: () => resolveDiscovery(scrubbed) }
+        : cloneGitCapability(executor, root, scrubbed);
+      const git = await pin.executable();
+      active(scope);
       if (git.kind !== "resolved")
         refuse("UNAVAILABLE", `Clone files require Git on PATH: ${git.reason}`);
       const discoveryKey =
@@ -1068,7 +1088,7 @@ export function createAssemblyProviders(
           cwd: root,
           env: discoveryEnv,
           signal: scope.signal,
-          timeoutMs: Math.max(1, scope.deadline - Date.now()),
+          timeoutMs: Math.max(1, invocationRemainingMs(scope)),
           maxOutputBytes: 16384,
         },
       );
@@ -1136,7 +1156,7 @@ export function createAssemblyProviders(
                 "INVOCATION_TIMEOUT",
                 "Snapshot has no time left for Git and cleanup",
               );
-            const checked = pin.executable();
+            const checked = await pin.executable();
             if (checked.kind !== "resolved")
               refuse("UNAVAILABLE", checked.reason);
             const result = await executor.run(checked, ["-C", root, ...args], {

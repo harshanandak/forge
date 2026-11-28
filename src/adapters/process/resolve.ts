@@ -204,6 +204,15 @@ function searchExecutable(
 
 const gitPaths = new WeakMap<FileProbe, Map<Platform, ResolvedExecutable>>();
 
+export function processGitPin(): ResolvedExecutable | undefined {
+  return gitPaths.get(realFileProbe)?.get(process.platform);
+}
+
+export function restoreProcessGitPin(pin: ResolvedExecutable): void {
+  Object.freeze(pin);
+  gitPaths.set(realFileProbe, new Map([[process.platform, pin]]));
+}
+
 /** Filesystem-only admission, including lexical ancestors of links pointing outside a checkout. */
 function outsideRepository(
   directory: string,
