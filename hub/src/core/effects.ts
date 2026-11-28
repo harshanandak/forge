@@ -7,7 +7,7 @@ import type { Summary, SummaryLine } from "../contract/domain.ts";
 import { LIMITS, type ReportOutput } from "../contract/mcp.ts";
 import type { SqlRow, WorkerClaim } from "../contract/runtime.ts";
 import { AGENT_POST_JOURNAL_PREFIX } from "./agent-posts.ts";
-import { integer, oneOf, text } from "./askEffects.ts";
+import { createAskEditCompletion, integer, oneOf, text } from "./askEffects.ts";
 import type { CoreContext } from "./core.ts";
 import { readStoredDisplayName } from "./directory.ts";
 import { keepLoopGuardRows } from "./thread.ts";
@@ -78,6 +78,7 @@ export function createEffectWorker(
   }
   const chatPort = chat;
   const askStore = asks;
+  const askEditCompletion = createAskEditCompletion(db, now);
 
   const configuredRefs = JSON.stringify(
     config.projects.flatMap(({ projectId, summaryMessage }) =>
@@ -348,7 +349,7 @@ export function createEffectWorker(
           () =>
             tx(() => {
               if (writeAbandoned()) return false;
-              askStore.markEditDone(ask.askId, ask.personId);
+              askEditCompletion.done(ask.askId, ask.personId);
               return true;
             }),
           (deadline) =>
