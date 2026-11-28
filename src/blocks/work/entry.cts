@@ -7240,6 +7240,15 @@ for (const name of FROZEN_WRITES) {
     run({ ...call, services: refuseFrozen(call.services) }, ...rest);
 }
 Object.defineProperties(operations, {
+  localStop: {
+    value: (record: StateRecord | undefined, id: string, config: unknown) => {
+      const flags = globalValue(record);
+      return limitsOf(config).enabled &&
+        (flags.stopAll ?? flags.stopped[id] ?? flags.frozen) === undefined
+        ? "running"
+        : "stopped";
+    },
+  },
   limitsOf: { value: limitsOf },
   briefProblems: { value: briefProblems },
   laneRegistry: { value: laneRegistry },

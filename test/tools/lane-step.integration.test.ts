@@ -72,7 +72,7 @@ test("I1 valid", async () => {
   });
 });
 
-test("I2 brief edited", async () => {
+test("I2 / A2 brief edited", async () => {
   const f = inspectFixture();
   f.facts.bytes = new TextEncoder().encode("Approved brief\n");
   expect(await inspectUnchanged(f)).toMatchObject(
@@ -92,7 +92,7 @@ test("I4 wrong branch", async () => {
   expect(await inspectUnchanged(f)).toMatchObject(refusal("branch"));
 });
 
-test("I5 stale head", async () => {
+test("I5 / A3 stale head", async () => {
   const f = inspectFixture();
   f.facts.workspace.head = "b".repeat(40);
   expect(await inspectUnchanged(f)).toMatchObject(refusal("expectedHead"));
