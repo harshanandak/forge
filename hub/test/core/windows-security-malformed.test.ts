@@ -93,7 +93,7 @@ for (const { name, bytes, expected } of cases(systemSid)) {
     if (expected) expect(() => decodeWindowsDescriptor(bytes)).not.toThrow();
     else expect(() => decodeWindowsDescriptor(bytes)).toThrow();
     expect(isPrivate(systemSid, bytes)).toBe(expected);
-  });
+  }, 5_000);
 }
 
 test.skipIf(process.platform !== "win32")(

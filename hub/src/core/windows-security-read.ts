@@ -1,4 +1,9 @@
 const objectTypes = [5, 6, 7, 8, 11, 12, 15, 16];
+const maxSidSubAuthorities = 15;
+const maxSidLength = 8 + 4 * maxSidSubAuthorities;
+const maxCommonOpaque = 0xffff - 8 - maxSidLength;
+const maxObjectOpaque = maxCommonOpaque - 4 - 2 * 16;
+const saclPresent = 0x0010;
 
 export type WindowsAce = {
   type: number;
@@ -18,9 +23,15 @@ function invalid(): never {
 }
 
 export function readSid(bytes: Buffer, offset: number, end: number) {
+  if (offset < 0 || offset + 8 > end || end > bytes.length) invalid();
   const count = bytes.readUInt8(offset + 1);
   const next = offset + 8 + 4 * count;
-  if (bytes.readUInt8(offset) !== 1 || count > 15 || next > end) invalid();
+  if (
+    bytes.readUInt8(offset) !== 1 ||
+    count > maxSidSubAuthorities ||
+    next > end
+  )
+    invalid();
   let sid = `S-1-${bytes.readUIntBE(offset + 2, 6)}`;
   for (let pos = offset + 8; pos < next; pos += 4)
     sid += `-${bytes.readUInt32LE(pos)}`;
@@ -34,6 +45,7 @@ function readAcl(bytes: Buffer, offset: number): WindowsAce[] {
   if (offset < 20 || end < start || end > bytes.length) invalid();
   const aces = [];
   for (let i = 0; i < count; i++) {
+    if (start + 4 > end) invalid();
     const type = bytes.readUInt8(start);
     const flags = bytes.readUInt8(start + 1);
     const size = bytes.readUInt16LE(start + 2);
@@ -45,13 +57,18 @@ function readAcl(bytes: Buffer, offset: number): WindowsAce[] {
     } else {
       const mask = bytes.readUInt32LE(start + 4);
       let sidOffset = start + 8;
-      if (objectTypes.includes(type)) {
+      const objectAce = objectTypes.includes(type);
+      if (objectAce) {
         const objectFlags = bytes.readUInt32LE(sidOffset);
         sidOffset +=
           4 + (objectFlags & 1 ? 16 : 0) + (objectFlags & 2 ? 16 : 0);
       } else if (type === 4) sidOffset += 4;
       const { sid, next: sidEnd } = readSid(bytes, sidOffset, next);
-      aces.push({ type, flags, mask, sid, tail: bytes.subarray(sidEnd, next) });
+      const tail = bytes.subarray(sidEnd, next);
+      const maxOpaque = objectAce ? maxObjectOpaque : maxCommonOpaque;
+      if ((type === 4 && tail.length !== 0) || tail.length > maxOpaque)
+        invalid();
+      aces.push({ type, flags, mask, sid, tail });
     }
     start = next;
   }
@@ -60,7 +77,8 @@ function readAcl(bytes: Buffer, offset: number): WindowsAce[] {
 
 export function decodeWindowsDescriptor(bytes: Buffer): WindowsDescriptor {
   const flags = bytes.readUInt16LE(2);
-  if (bytes.readUInt8(0) !== 1 || !(flags & 0x8000)) invalid();
+  if (bytes.readUInt8(0) !== 1 || !(flags & 0x8000) || flags & saclPresent)
+    invalid();
   const sidAt = (position: number) => {
     const offset = bytes.readUInt32LE(position);
     if (offset === 0) return null;
