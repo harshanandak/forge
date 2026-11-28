@@ -16,6 +16,7 @@ import {
   creationFixtures,
   type CreationRecipe,
   type CreationSide,
+  spellingNames,
 } from "./protect-windows-native-fixture.ts";
 import { frozenDirectoryOutcome } from "./protect-windows-reference.ts";
 
@@ -366,10 +367,10 @@ const matrix: CreationRecipe[] = [
     expected: !/[\n|\0]/.test(name),
     name,
   })),
-  ...(["relative", "extended"] as const).map((spelling): CreationRecipe => ({
+  ...spellingNames.map((spelling, index): CreationRecipe => ({
     row: "86",
     variant: `${spelling} target spelling`,
-    expected: false,
+    ...(index < 2 ? { expected: false } : {}),
     spelling,
   })),
 ];
@@ -386,8 +387,9 @@ test.skipIf(process.platform !== "win32")(
       const run = await candidate();
       const results = [];
       for (const { recipe, reference, candidate: side } of fixture.cases) {
+        process.chdir(reference.cwd ?? home);
         const expected = fixture.reference(reference, recipe.fault);
-        process.chdir(recipe.spelling === "relative" ? side.parent : home);
+        process.chdir(side.cwd ?? home);
         const launched = run.launches();
         const started = performance.now();
         const actual = await run.create(
@@ -411,8 +413,8 @@ test.skipIf(process.platform !== "win32")(
         console.log(JSON.stringify({ referenceState, candidateState }));
         expect([recipe.variant, expected, actual, launches]).toEqual([
           recipe.variant,
-          recipe.expected,
-          recipe.expected,
+          recipe.expected ?? expected,
+          expected,
           0,
         ]);
         expect(candidateState).toBe(referenceState);
@@ -429,7 +431,7 @@ test.skipIf(process.platform !== "win32")(
         const left = entries(referenceState!).filter(
           (entry) => recipe.row === "40" && /^\.forge-private-\* /.test(entry),
         );
-        if (recipe.expected === false && recipe.row !== "42")
+        if (expected === false && recipe.row !== "42")
           expect(entries(candidateState!)).toEqual([...left, ...before]);
       }
       const rows = [...new Set(matrix.map(({ row }) => row))];
@@ -594,7 +596,13 @@ test(
   () => {
     const faults: Faults = { create: "fail" };
     const { run, calls } = fake(faults);
-    const roots = ["C:\\parent\\a\0b", "C:\\", "C:\\.", "C:\\parent\\.."];
+    const roots = [
+      "C:\\parent\\a\0b",
+      "C:\\",
+      "C:\\.",
+      "C:\\parent\\..",
+      "\\\\?\\C:\\.",
+    ];
     expect([...roots.map((root) => run(100, root)), calls]).toEqual([
       ...roots.map(() => "refused"),
       [],
