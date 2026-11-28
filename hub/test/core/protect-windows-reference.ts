@@ -62,9 +62,77 @@ function Test-Private($path, $isDir, $effectiveOnly = $false) {
 }
 `;
 
+const creation = `function New-PrivateAcl($isDir) {
+  $acl = if ($isDir) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
+  $acl.SetOwner($sid)
+  $acl.SetAccessRuleProtection($true, $false)
+  $flags = if ($isDir) { 3 } else { 0 }
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid,
+    [Security.AccessControl.FileSystemRights]::FullControl,
+    [Security.AccessControl.InheritanceFlags]$flags,
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow)
+  $acl.AddAccessRule($rule)
+  $acl
+}
+$published = $false
+try {
+  $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))
+  $request = ConvertFrom-Json -InputObject $json
+  $path = $request.path
+  $isDir = $request.kind -eq 'dir'
+  if ($request.operation -eq 'create-dir') {
+    $parent = [IO.Path]::GetDirectoryName($path)
+    if (![IO.Directory]::Exists($parent)) { exit 1 }
+    $staging = [IO.Path]::Combine($parent, '.forge-private-' + [Guid]::NewGuid().ToString('N'))
+    $null = [IO.Directory]::CreateDirectory($staging, (New-PrivateAcl $true))
+    try {
+      if (!(Test-Private $staging $true)) { exit 1 }
+      [IO.Directory]::Move($staging, $path)
+      $published = $true
+    } finally {
+      if (!$published -and [IO.Directory]::Exists($staging)) { [IO.Directory]::Delete($staging) }
+    }
+  } elseif ($request.operation -eq 'create-file') {
+    $file = [IO.FileStream]::new($path, [IO.FileMode]::CreateNew,
+      [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None,
+      4096, [IO.FileOptions]::None, (New-PrivateAcl $false))
+    $file.Dispose()
+  } elseif ($request.operation -eq 'harden-file') {
+    if (!(Test-Private ([IO.Path]::GetDirectoryName($path)) $true)) { exit 1 }
+    $acl = Read-Descriptor $path $false
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $sid) { exit 1 }
+    [IO.File]::SetAccessControl($path, (New-PrivateAcl $false))
+  }
+  $verifyChain = $request.operation -eq 'verify-chain'
+  if ($verifyChain -and !(Test-DirectoryChain $path)) { exit 1 }
+  if (!(Test-Private $path $isDir $verifyChain)) {
+    if ($verifyChain) { [Console]::Error.WriteLine('chain_private:0') }
+    throw 'private'
+  }
+  [Console]::WriteLine('private')
+} catch {
+  if (!$published) { exit 1 }
+  [Console]::WriteLine('published_unverified')
+}
+`;
+
 const baseline = "f081880b3913bae9534287431f85cae9d8c0dc67";
 const predicateHash =
   "f3d13c4752c5f4cbb6bcdb0bb1a9329b65f93ef594c54d1656b890d573d92377";
+const creationBaseline = "35bd606553181a52eacd4965038d2582ddb3ed89";
+const creationHash =
+  "ecd661ee7eecd9096617ee8237b173b26465af7e594ea9ca6547470658acd0e7";
+const creationHooks = [
+  [
+    "      if (!(Test-Private $staging $true)) { exit 1 }\n",
+    "      Invoke-Hook 'staged' $staging\n      if (!(Test-Private $staging $true)) { exit 1 }\n",
+  ],
+  [
+    "$published = $true\n",
+    "$published = $true\n      Invoke-Hook 'published' $path\n",
+  ],
+] as const;
 
 export type Request = {
   path: string;
@@ -154,4 +222,38 @@ ConvertTo-Json -InputObject @($results) -Compress
     requests,
     5_000,
   );
+}
+
+const sha256 = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+export function creationReference(hooks: string): string {
+  if (sha256(predicates) !== predicateHash || sha256(creation) !== creationHash)
+    throw new Error(`Frozen creation helper differs from ${creationBaseline}`);
+  return creationHooks.reduce(
+    (script, [point, hooked]) => {
+      if (script.split(point).length !== 2)
+        throw new Error(`Missing creation hook point: ${point}`);
+      return script.split(point).join(hooked);
+    },
+    predicates + hooks + creation,
+  );
+}
+
+export type FrozenRun = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error | undefined;
+};
+
+export function frozenDirectoryOutcome(
+  result: FrozenRun,
+): boolean | "unverified" {
+  const ok =
+    result.status === 0 && result.error === undefined && result.stderr === "";
+  const marker = ok ? result.stdout.trim() : undefined;
+  return marker === "published_unverified"
+    ? "unverified"
+    : marker === "private";
 }
