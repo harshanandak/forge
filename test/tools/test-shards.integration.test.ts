@@ -614,6 +614,14 @@ test.each(
       speed,
       expected: 1,
     })),
+    ...["failure", "cancelled", "skipped"].map((windowsAcl) => ({
+      scope: "full",
+      event: "pull_request",
+      pack: "success",
+      verify: "success",
+      windowsAcl,
+      expected: 1,
+    })),
     ...["success", "failure", "cancelled"].map((speed) => ({
       scope: "docs",
       event: "pull_request",
@@ -644,6 +652,7 @@ test.each(
         entry.event === "push" || guardChanged ? "success" : "skipped",
       guardChanged: String(guardChanged),
       node26: entry.event === "pull_request" ? "skipped" : "success",
+      windowsAcl: "success",
       ...entry,
     };
   }),
@@ -660,6 +669,7 @@ test.each(
     commentGuard,
     guardChanged,
     node26,
+    windowsAcl,
   }) => {
     const { jobs } = parse(
       readFileSync(resolve(".github/workflows/ci.yml"), "utf8"),
@@ -669,6 +679,7 @@ test.each(
     const gate = jobs["ci-gate"]!;
     expect(gate.needs).toContain("verify");
     expect(gate.needs).toContain("speed");
+    expect(gate.needs).toContain("hub-windows-acl");
     const mainOnly = event === "push" ? "success" : "skipped";
     const result = spawnSync("bash", ["-c", gate.steps[0]!.run], {
       env: {
@@ -687,6 +698,7 @@ test.each(
             ? "success"
             : "skipped",
         VERIFY_NODE26: node26,
+        HUB_WINDOWS_ACL: windowsAcl,
         GUARD_CHANGED: guardChanged,
         PACK: pack,
         SPEED: speed,

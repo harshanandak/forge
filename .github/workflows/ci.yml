@@ -553,7 +553,15 @@ jobs:
           }
           "Normal install: no build process, $($timer.ElapsedMilliseconds) ms. Audited: $trace"
       - name: Probe the installed Windows hub
-        run: node hub/test/koffi-package.fixture.ts
+        run: node hub/test/koffi-package.fixture.ts 2>&1 | tee "$RUNNER_TEMP/hub-acl-proof/probes.log"
+      - name: Publish worker deadline measurements
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/hub-acl-proof/probes.log"
+          if [ -f "$report" ]; then
+            echo '### Windows worker deadline measurements' >> "$GITHUB_STEP_SUMMARY"
+            awk '/^Feasibility summary$/{summary=1} summary && /^MEASURED /{print "- " $0}' "$report" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -563,6 +571,7 @@ jobs:
             ${{ runner.temp }}/hub-acl-proof/digest.txt
             ${{ runner.temp }}/hub-acl-proof/install.log
             ${{ runner.temp }}/hub-acl-proof/install-trace.txt
+            ${{ runner.temp }}/hub-acl-proof/probes.log
 
   ci-gate:
     name: CI Gate

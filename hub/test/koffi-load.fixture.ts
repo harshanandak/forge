@@ -26,17 +26,12 @@ export function load(): Koffi {
   return requireHub("koffi") as Koffi;
 }
 
-export function descriptor(
-  path: string,
-  advapi: Library,
-  kernel32: Library,
-  koffi: Koffi,
-): void {
+function descriptor(advapi: Library, kernel32: Library, koffi: Koffi): void {
   const get = advapi.func(
     "uint32_t GetNamedSecurityInfoW(str16 path, int type, uint32_t flags, void *owner, void *group, void *dacl, void *sacl, _Out_ void **descriptor)",
   );
   const pointer: unknown[] = [null];
-  equal(get(path, 1, 5, null, null, null, null, pointer), 0);
+  equal(get(target, 1, 5, null, null, null, null, pointer), 0);
   try {
     ok(pointer[0]);
     equal(koffi.decode(pointer[0], "uint8_t"), 1);
@@ -75,7 +70,7 @@ if (mode === "load" || mode === "cold") {
   const koffi = load();
   const kernel32 = koffi.load(systemDll("kernel32"));
   const advapi = koffi.load(systemDll("advapi32"));
-  descriptor(target, advapi, kernel32, koffi);
+  descriptor(advapi, kernel32, koffi);
   if (mode === "load") {
     equal(kernel32.func("uint32_t GetCurrentProcessId()")(), process.pid);
     tokenUser(advapi, kernel32, koffi);

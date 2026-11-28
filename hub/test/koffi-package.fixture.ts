@@ -1,13 +1,6 @@
-import { equal, match, ok } from "node:assert/strict";
+import { equal, match, ok, rejects } from "node:assert/strict";
 import { execFile } from "node:child_process";
-import {
-  cpSync,
-  existsSync,
-  globSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, globSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,12 +16,7 @@ const cwd = join(temp, "hub-acl-proof");
 const env: NodeJS.ProcessEnv = { ...process.env, KOFFI_ACL_FIXTURE: cwd };
 for (const key of ["NODE_PATH", "NODE_OPTIONS", "UV_THREADPOOL_SIZE"])
   delete env[key];
-const options = {
-  encoding: "utf8",
-  env,
-  timeout: 60_000,
-  maxBuffer: 4 * 1024 * 1024,
-} as const;
+const options = { encoding: "utf8", env, timeout: 20_000 } as const;
 const powershell = join(
   env.SystemRoot ?? "C:/Windows",
   "System32/WindowsPowerShell/v1.0/powershell.exe",
@@ -73,6 +61,7 @@ for (const consumer of [offline, normal]) {
 
 const node = [process.execPath, "--expose-gc"] as const;
 const bun = ["bun.exe"] as const;
+const runtimes = Object.entries({ Node: node, Bun: bun });
 const loadFixture = fileURLToPath(
   new URL("./koffi-load.fixture.ts", import.meta.url),
 );
@@ -80,110 +69,116 @@ const deadlineFixture = fileURLToPath(
   new URL("./koffi-deadline.fixture.ts", import.meta.url),
 );
 async function run(
-  [exe, ...args]: readonly string[],
-  script: string,
-  mode: string,
-  where: string,
-  path = cwd,
+  [exe, ...args]: readonly [string, ...string[]],
+  command: string[],
+  where = offline,
 ) {
   const start = Date.now();
-  const { stdout, stderr } = await exec(exe!, [...args, script, mode, path], {
+  const { stdout, stderr } = await exec(exe, [...args, ...command], {
     ...options,
     cwd: where,
-    timeout: 20_000,
   });
   equal(stderr, "");
-  return { stdout, elapsed: Date.now() - start, ended: Date.now() };
+  const ended = Date.now();
+  return { stdout, elapsed: ended - start, ended };
 }
 
-for (const [label, runtime] of Object.entries({ Node: node, Bun: bun })) {
-  for (const consumer of [offline, normal]) {
-    const result = await run(runtime, loadFixture, "load", consumer);
-    console.log(
-      `${label} ${basename(consumer)}: exit 0 in ${result.elapsed} ms\n${result.stdout}`,
-    );
-  }
+const failures: Error[] = [];
+const summary: string[] = [];
+function collect(label: string, probe: () => Promise<void>) {
+  return probe().catch((error: unknown) => {
+    failures.push(new Error(label, { cause: error }));
+  });
 }
+
 const broken = join(cwd, "missing-native");
 cpSync(offline, broken, { recursive: true });
 const [binary, ...extra] = globSync(`**/${binaryName}`, { cwd: broken });
-ok(binary && !extra.length && existsSync(join(broken, binary)));
+ok(binary && !extra.length);
 rmSync(join(broken, binary));
-for (const runtime of [node, bun]) {
-  const result = await exec(
-    runtime[0],
-    [...runtime.slice(1), loadFixture, "load", cwd],
-    { ...options, cwd: broken },
-  ).then(
-    () => undefined,
-    (error: unknown) => error as { code?: unknown; stderr?: string },
-  );
-  equal(result?.code, 1);
-  match(
-    result.stderr ?? "",
-    /Cannot find the native Koffi module|Cannot find module .*koffi\.node/,
-  );
-  console.log(`${basename(runtime[0])} missing .node: refused`);
+
+for (const [label, runtime] of runtimes) {
+  const command = [loadFixture, "load", cwd];
+  for (const consumer of [offline, normal]) {
+    const name = `${label} ${basename(consumer)}`;
+    await collect(name, async () => {
+      const { stdout, elapsed } = await run(runtime, command, consumer);
+      match(stdout, /^load, Win32 calls and GC \d+(?:\.\d+)? ms$/m);
+      console.log(`${name}: exit 0 in ${elapsed} ms\n${stdout}`);
+    });
+  }
+  await collect(`${label} missing .node`, async () => {
+    await rejects(run(runtime, command, broken), {
+      code: 1,
+      stderr:
+        /Cannot find the native Koffi module|Cannot find module .*koffi\.node/,
+    });
+    console.log(`${label} missing .node: refused`);
+  });
 }
 
-const runtimes = Object.entries({ Node: node, Bun: bun });
-const samples = Array.from({ length: 20 }, () => [
-  ...runtimes.map(([label, runtime]) => async () => {
-    const { elapsed } = await run(runtime, loadFixture, "cold", offline);
-    return [label, elapsed] as const;
-  }),
-  async () => {
-    const start = performance.now();
-    await exec(
-      powershell,
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "$ErrorActionPreference = 'Stop'; Get-Acl -LiteralPath $env:KOFFI_ACL_FIXTURE | Out-Null",
-      ],
-      options,
-    );
-    return ["PowerShell", Math.round(performance.now() - start)] as const;
-  },
-])
-  .flat()
-  .entries();
+const cold = [
+  ...runtimes.map(
+    ([label, runtime]) => [label, runtime, [loadFixture, "cold", cwd]] as const,
+  ),
+  [
+    "PowerShell",
+    [powershell, "-NoProfile", "-NonInteractive", "-Command"],
+    [
+      "$ErrorActionPreference = 'Stop'; Get-Acl -LiteralPath $env:KOFFI_ACL_FIXTURE | Out-Null",
+    ],
+  ] as const,
+];
+const trials = Array.from({ length: 20 * cold.length }).keys();
 console.log(`Cold start concurrency: ${availableParallelism()}`);
 await Promise.all([
   ...Array.from({ length: availableParallelism() }, async () => {
-    for (const [index, sample] of samples) {
-      const [label, elapsed] = await sample();
-      console.log(
-        `${label} cold sample ${Math.floor(index / 3) + 1}: ${elapsed} ms`,
-      );
+    for (const index of trials) {
+      const [label, runtime, command] = cold[index % cold.length]!;
+      const sample = `${label} cold sample ${Math.floor(index / cold.length) + 1}`;
+      await collect(sample, async () => {
+        const { elapsed } = await run(runtime, [...command]);
+        console.log(`${sample}: ${elapsed} ms`);
+      });
     }
   }),
   ...runtimes.flatMap(([label, runtime]) =>
-    ["pool", "worker", "unref"].map(async (probe) => {
-      try {
-        const { stdout, elapsed, ended } = await run(
-          runtime,
+    ["pool", "worker", "unref"].map((probe) =>
+      collect(`${label} ${probe}`, async () => {
+        const { stdout, elapsed, ended } = await run(runtime, [
           deadlineFixture,
           probe,
-          offline,
           fixture,
-        );
-        const unref = /\(c\) unref while blocked (\d+)/.exec(stdout);
+        ]);
         console.log(`${label} ${probe}: process exit ${elapsed} ms\n${stdout}`);
         if (probe === "unref") {
-          ok(unref?.[1]);
-          const shutdown = ended - Number(unref[1]);
-          console.log(
-            `${label} (c) ${shutdown < 5_000 ? "passed" : "failed"}: unref to exit ${shutdown} ms`,
+          const marker = /^UNREF (\d+) after (250) ms$/m.exec(stdout);
+          ok(marker, "Missing native-entry verdict");
+          const shutdown = ended - Number(marker[1]);
+          ok(shutdown >= 0 && shutdown <= elapsed);
+          summary.push(
+            `MEASURED (c) ${label}: exit ${shutdown} ms after unref, ${marker[2]} ms native-entry dwell, 5000 ms limit: ${shutdown <= 5_000 ? "FEASIBLE" : "NOT FEASIBLE"}`,
           );
-        }
-      } catch (error) {
-        const failure = error as { message: string; stdout?: string };
-        console.log(
-          `${label} ${probe}: failed\n${failure.stdout ?? ""}${failure.message}`,
-        );
-      }
-    }),
+        } else if (probe === "worker") {
+          const verdicts = [
+            ...stdout.matchAll(
+              /^MEASURED \(([abd])\) (\d+(?:\.\d+)? ms(?:, bound 5050 ms)?: PASSED)$/gm,
+            ),
+          ];
+          equal(
+            verdicts.map((v) => v[1]).join(""),
+            "abd",
+            "Missing worker verdicts",
+          );
+          ok(verdicts[1]?.[2]?.includes("bound 5050 ms"));
+          summary.push(
+            ...verdicts.map((v) => `MEASURED (${v[1]}) ${label}: ${v[2]}`),
+          );
+        } else match(stdout, /^MEASURED pool: PASSED$/m);
+      }),
+    ),
   ),
 ]);
+console.log(`Feasibility summary\n${summary.sort().join("\n")}`);
+if (failures.length)
+  throw new AggregateError(failures, "Windows ACL proof malfunction");

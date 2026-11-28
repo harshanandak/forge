@@ -304,9 +304,11 @@ test("reruns everything when needed jobs were never created", () => {
 test("reruns everything when a docs-only run lost its verify job", () => {
   const jobs = [
     ...created,
+    named("Hub Windows ACL proof"),
     { ...skipped, name: "Pack artifact" },
     { ...skipped, name: "Comment guard (windows-latest, Node 24)" },
     { ...skipped, name: "Speed (${{ matrix.os }}, Node 24)" },
+    { ...skipped, name: node26Name },
     gate,
   ];
   const decision = decide(jobs);
