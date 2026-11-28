@@ -52,7 +52,7 @@ type Ports = {
 };
 type Options = Pick<SpawnOptions, "cwd" | "env" | "signal" | "timeoutMs"> & {
   defaultRef: string;
-  deadline?: number;
+  remainingMs?: () => number;
   workInstance?: string;
   candidateId?: string;
   initialProcesses?: 1 | 2;
@@ -154,7 +154,7 @@ export async function readWorkMap(
   const { initialProcesses = 0, ...input } = options;
   const {
     defaultRef,
-    deadline,
+    remainingMs,
     workInstance = "work",
     candidateId,
     ...spawn
@@ -166,7 +166,7 @@ export async function readWorkMap(
   const gitSpawn = { ...spawn, env, maxOutputBytes: limits.outputBytes };
   const checkCancellation = () => {
     spawn.signal?.throwIfAborted();
-    if (deadline !== undefined && ports.now() >= deadline)
+    if ((remainingMs?.() ?? 1) <= 0)
       throw new Error("Work map deadline exceeded");
   };
   let processes = initialProcesses;

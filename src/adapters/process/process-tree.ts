@@ -4,7 +4,7 @@ import type { ProcessResult, SpawnOptions } from "../../ports/process.ts";
 import { captureStreams, type StreamCapture } from "./capture.ts";
 import { ProcessSpawnError } from "./errors.ts";
 import type { SpawnPlan } from "./plan.ts";
-import type { SupervisionOptions } from "./supervision.ts";
+import { cleanupRemaining, type SupervisionOptions } from "./supervision.ts";
 import { runBunProcessTree } from "./bun-process-tree.ts";
 
 const useBun =
@@ -39,14 +39,21 @@ const SIGKILL_RESEND_INTERVAL_MS = 25;
  */
 export async function endProcessGroup(
   pid: number,
-  timing: Pick<SupervisionOptions, "cleanupTimeoutMs" | "pollIntervalMs">,
+  timing: Pick<
+    SupervisionOptions,
+    "cleanupTimeoutMs" | "pollIntervalMs" | "cleanupDeadline"
+  >,
   kill: Kill = (target, signal) => process.kill(target, signal),
   reaped: Promise<unknown> = Promise.resolve(),
   clock: StopClock = realClock,
   immediateKill?: () => KillState | undefined,
 ): Promise<boolean> {
-  const deadline = clock.now() + timing.cleanupTimeoutMs;
-  const grace = deadline - timing.cleanupTimeoutMs / 2;
+  const now = clock.now();
+  const deadline = Math.min(
+    now + timing.cleanupTimeoutMs,
+    timing.cleanupDeadline ?? Infinity,
+  );
+  const grace = now + (deadline - now) / 2;
   let state = immediateKill?.() ?? signalGroup(kill, pid, "SIGTERM");
   while (state === "present" && !immediateKill?.() && clock.now() < grace) {
     await clock.sleep(Math.min(timing.pollIntervalMs, grace - clock.now()));
@@ -54,6 +61,8 @@ export async function endProcessGroup(
   }
   if (state === "gone") return true;
   state = immediateKill?.() ?? signalGroup(kill, pid, "SIGKILL");
+  const groupGone = () =>
+    immediateKill?.() === "present" && signalGroup(kill, pid, 0) === "gone";
   // A member forking while the first SIGKILL lands can publish a child that misses it, so the
   // group is sent SIGKILL again a few times; ESRCH means it is gone. These are safety repeats,
   // not policy, and they stay inside the cleanup budget.
@@ -62,13 +71,15 @@ export async function endProcessGroup(
     state === "refused" ||
     (state === "present" && resends < SIGKILL_RESENDS)
   ) {
+    if (groupGone()) return true;
     const left = deadline - clock.now();
     if (left <= 0) break;
     if (state === "refused") {
       await within(reaped, left);
-      await clock.sleep(
-        Math.min(timing.pollIntervalMs, Math.max(0, deadline - clock.now())),
-      );
+      if (groupGone()) return true;
+      const wait = Math.min(timing.pollIntervalMs, deadline - clock.now());
+      if (wait <= 0) break;
+      await clock.sleep(wait);
     } else {
       resends++;
       await clock.sleep(Math.min(SIGKILL_RESEND_INTERVAL_MS, left));
@@ -121,7 +132,11 @@ export function watchGroupAbort(
   };
 }
 
-async function within(pending: Promise<unknown>, ms: number): Promise<void> {
+export async function within(
+  pending: Promise<unknown>,
+  ms: number,
+): Promise<void> {
+  if (ms <= 0) return;
   let wait: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
     pending,
@@ -221,8 +236,15 @@ export function runProcessTree(
       groupAbort.dispose();
       if (pid !== undefined) {
         if (child.exitCode === null && child.signalCode === null)
-          await within(exited, supervision.cleanupTimeoutMs);
-        if (!pipesClosed) await within(closed, supervision.drainTimeoutMs);
+          await within(
+            exited,
+            cleanupRemaining(supervision, supervision.cleanupTimeoutMs),
+          );
+        if (!pipesClosed)
+          await within(
+            closed,
+            cleanupRemaining(supervision, supervision.drainTimeoutMs),
+          );
       }
       child.stdout?.destroy();
       child.stderr?.destroy();
