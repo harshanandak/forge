@@ -40,8 +40,9 @@ export function createPrivateWindowsDirectory(
 ): WindowsCreation {
   const expired = () => clock.now() >= clock.end;
   if (target.includes("\0") || expired()) return "refused";
-  const parent = win32.dirname(target);
-  if (parent === target || !native.isDirectory(parent)) return "refused";
+  const resolved = win32.resolve(target);
+  const parent = win32.dirname(resolved);
+  if (parent === resolved || !native.isDirectory(parent)) return "refused";
   const descriptor = privateDescriptor(native.user(), true);
   const name = `.forge-private-${randomUUID().replaceAll("-", "")}`;
   const staging = win32.join(parent, name);
@@ -51,12 +52,12 @@ export function createPrivateWindowsDirectory(
   try {
     if (!verifyWindowsDescriptor(native, staging, "dir", false) || expired())
       return "refused";
-    published = native.move(staging, target);
+    published = native.move(staging, resolved);
     if (!published) return "refused";
   } finally {
     if (!published) native.removeDirectory(staging);
   }
-  return verifyWindowsDescriptor(native, target, "dir", false)
+  return verifyWindowsDescriptor(native, resolved, "dir", false)
     ? "private"
     : "published_unverified";
 }
