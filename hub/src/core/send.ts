@@ -1,6 +1,7 @@
 import { ChatWriteFailure } from "../contract/chat.ts";
 import type { HubCore, HubResult } from "../contract/core.ts";
 import type { Person, Session } from "../contract/domain.ts";
+import { redactSecretText } from "../contract/errors.ts";
 import { LIMITS, type SendInput } from "../contract/mcp.ts";
 import { AgentPostOutcomeError, recoverAgentPosts } from "./agent-posts.ts";
 import type { CoreContext } from "./core.ts";
@@ -129,6 +130,8 @@ function createMessageSend(
         return refused("CONVERSATION_PAUSED");
       }
       const item = commitItem();
+      const senderName = redactSecretText(person.displayName);
+      const ownerName = redactSecretText(owner.displayName);
       let threadPost: "posted" | "failed" = "posted";
       try {
         const posted = await postAgentText(ctx, {
@@ -137,10 +140,10 @@ function createMessageSend(
           projectName:
             config.projects.find((entry) => entry.projectId === projectId)
               ?.name ?? projectId,
-          label: `Forge (${person.displayName}'s agent)`,
-          prefix: `${person.displayName}'s agent asked ${owner.displayName}'s agent:`,
+          label: `Forge (${senderName}'s agent)`,
+          prefix: `${senderName}'s agent asked ${ownerName}'s agent:`,
           text,
-          fallbackName: person.displayName,
+          fallbackName: senderName,
           conversation: chat,
           sessionId,
           personId: person.personId,

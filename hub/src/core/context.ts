@@ -7,6 +7,7 @@ import {
   type ThreadContextEntry,
 } from "../contract/mcp.ts";
 import type { CoreContext } from "./core.ts";
+import { readStoredDisplayName } from "./directory.ts";
 import { isUnconfirmedMessage, num, str } from "./thread.ts";
 
 export function deliveryContext(
@@ -59,7 +60,9 @@ export function deliveryContext(
     chars += text.length;
     if (chars > LIMITS.contextChars) break;
     const name =
-      kind === "outsider" ? "a person outside Forge" : str(row.display_name);
+      kind === "outsider"
+        ? "a person outside Forge"
+        : readStoredDisplayName(row.display_name);
     const suffix = isUnconfirmedMessage(row.chat_message_id)
       ? " (delivery unconfirmed)"
       : "";

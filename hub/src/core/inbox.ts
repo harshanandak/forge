@@ -1,6 +1,6 @@
 import type { Caller, HubResult } from "../contract/core.ts";
 import type { InboxItem, Session } from "../contract/domain.ts";
-import { redactSecretText, type HubErrorCode } from "../contract/errors.ts";
+import type { HubErrorCode } from "../contract/errors.ts";
 import {
   AGENT_MESSAGE_NOTICE,
   CLI_MESSAGE_NOTICE,
@@ -108,7 +108,7 @@ function itemView(
         : {
             kind: sender.kind,
             personId: sender.personId,
-            name: redactSecretText(sender.displayName),
+            name: sender.displayName,
             ...("sessionId" in sender ? { sessionId: sender.sessionId } : {}),
           },
     ...(item.projectId === undefined ? {} : { projectId: item.projectId }),

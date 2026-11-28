@@ -5,6 +5,7 @@ import type { SqlRow, WorkerClaim } from "../contract/runtime.ts";
 import { AGENT_POST_JOURNAL_PREFIX } from "./agent-posts.ts";
 import { integer, oneOf, text } from "./askEffects.ts";
 import type { CoreContext } from "./core.ts";
+import { readStoredDisplayName } from "./directory.ts";
 import { keepLoopGuardRows } from "./thread.ts";
 
 export interface EffectWorker {
@@ -34,7 +35,7 @@ function summaryLine(row: SqlRow): SummaryLine {
   const issueId = text(row.issue_key);
   return {
     personId: text(row.person_id),
-    personName: text(row.display_name),
+    personName: readStoredDisplayName(row.display_name),
     ...(issueId === "" ? {} : { issueId }),
     state: oneOf(row.state, ["working", "blocked", "done"]),
     text: text(row.text),

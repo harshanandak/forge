@@ -7,12 +7,13 @@ import type { HubCore } from "./contract/core.ts";
 import type { DoorbellPort } from "./contract/hooks.ts";
 import { ID_PREFIX } from "./contract/ids.ts";
 import { LIMITS } from "./contract/mcp.ts";
-import type {
-  ChatDeps,
-  HubConfig,
-  HubDb,
-  HubLog,
-  ReadSecret,
+import {
+  HubConfigError,
+  type ChatDeps,
+  type HubConfig,
+  type HubDb,
+  type HubLog,
+  type ReadSecret,
 } from "./contract/runtime.ts";
 import {
   createPeopleDirectory,
@@ -49,8 +50,8 @@ const failureMessages = {
 class EntryFailure extends Error {
   readonly kind: keyof typeof failureMessages;
 
-  constructor(kind: keyof typeof failureMessages) {
-    super(failureMessages[kind]);
+  constructor(kind: keyof typeof failureMessages, location?: string) {
+    super(failureMessages[kind] + (location ? " at " + location : ""));
     this.kind = kind;
   }
 }
@@ -376,8 +377,15 @@ export async function mainWithServices(
     const loadConfig: MainServices["loadConfig"] = (path) => {
       try {
         return services.loadConfig(path);
-      } catch {
-        throw new EntryFailure("config");
+      } catch (error) {
+        const slot =
+          error instanceof HubConfigError
+            ? /^\/people\/(\d+)\/displayName$/.exec(error.pointer)?.[1]
+            : undefined;
+        throw new EntryFailure(
+          "config",
+          slot === undefined ? undefined : `/people/${slot}/displayName`,
+        );
       }
     };
     if (command === "init" || command === "doctor") {
@@ -408,8 +416,7 @@ export async function mainWithServices(
       }),
     );
   } catch (error) {
-    if (error instanceof EntryFailure)
-      return fail(services, failureMessages[error.kind]);
+    if (error instanceof EntryFailure) return fail(services, error.message);
     if (error instanceof InvalidInvocation) return usage(services);
     return fail(services, "hub command failed");
   }

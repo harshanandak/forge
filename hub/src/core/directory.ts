@@ -1,10 +1,16 @@
 import type { Person } from "../contract/domain.ts";
+import { redactSecretText } from "../contract/errors.ts";
 import { ID_PATTERN, ID_PREFIX } from "../contract/ids.ts";
 import type {
   CreatePeopleDirectory,
   HubConfig,
   HubDb,
 } from "../contract/runtime.ts";
+
+export function readStoredDisplayName(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Invalid hub display name.");
+  return redactSecretText(value);
+}
 
 export function isTelegramId(value: unknown, signed = false): value is string {
   return (

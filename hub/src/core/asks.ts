@@ -9,8 +9,9 @@ import { WORK_REQUEST_CHOICES } from "../contract/domain.ts";
 import type { HubErrorCode } from "../contract/errors.ts";
 import { ISSUE_ID_PATTERN } from "../contract/ids.ts";
 import { LIMITS } from "../contract/mcp.ts";
-import { expire, queueEdits, text } from "./askEffects.ts";
+import { expire, queueEdits } from "./askEffects.ts";
 import { newStoreId } from "./credentials.ts";
+import { readStoredDisplayName } from "./directory.ts";
 import { fail } from "./errors.ts";
 import { validateAskAuthority } from "./guards.ts";
 import type { AskStore, Guards, SessionStore, StoreDeps } from "./store.ts";
@@ -169,7 +170,7 @@ export function createAsk(
         question: guards.storedText(question),
         choices,
         ...(item
-          ? { requesterName: text(item.sender_name) }
+          ? { requesterName: readStoredDisplayName(item.sender_name) }
           : work && issueId !== undefined
             ? { issueId }
             : {}),
