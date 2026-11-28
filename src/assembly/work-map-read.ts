@@ -52,6 +52,7 @@ type Ports = {
 };
 type Options = Pick<SpawnOptions, "cwd" | "env" | "signal" | "timeoutMs"> & {
   defaultRef: string;
+  remainingMs?: () => number;
   workInstance?: string;
   candidateId?: string;
   initialProcesses?: 1 | 2;
@@ -151,12 +152,23 @@ export async function readWorkMap(
   const note = (kind: Reason["kind"], detail?: Omit<Reason, "kind">) =>
     snapshot.reasons.push({ kind, ...detail });
   const { initialProcesses = 0, ...input } = options;
-  const { defaultRef, workInstance = "work", candidateId, ...spawn } = input;
+  const {
+    defaultRef,
+    remainingMs,
+    workInstance = "work",
+    candidateId,
+    ...spawn
+  } = input;
   const limits = WORK_MAP_LIMITS;
   const env = Object.fromEntries(
     Object.entries(spawn.env).filter(([name]) => !/^GIT_/i.test(name)),
   );
   const gitSpawn = { ...spawn, env, maxOutputBytes: limits.outputBytes };
+  const checkCancellation = () => {
+    spawn.signal?.throwIfAborted();
+    if ((remainingMs?.() ?? 1) <= 0)
+      throw new Error("Work map deadline exceeded");
+  };
   let processes = initialProcesses;
   let authorityBytes: number = limits.outputBytes;
   function reserveProcesses(cost: number): boolean {
@@ -180,6 +192,7 @@ export async function readWorkMap(
     read: (input: ReadLimits) => Read<Page<T>>,
     issue?: string,
   ): Promise<readonly T[]> {
+    checkCancellation();
     const detail = issue === undefined ? {} : { issue };
     if (authorityBytes <= 0) {
       note("output-budget", { source, ...detail });
@@ -187,6 +200,7 @@ export async function readWorkMap(
     }
     try {
       const page = await read({ ...budget(), limit });
+      checkCancellation();
       if (page.truncated || page.items.length > limit)
         note(`${source}-truncated`, detail);
       if (source === "issues" && page.leaseUnavailable)
@@ -194,6 +208,7 @@ export async function readWorkMap(
       const { leaseUnavailable: _advisory, ...data } = page;
       if (withinBytes(data, source)) return page.items.slice(0, limit);
     } catch {
+      checkCancellation();
       note(`${source}-unavailable`, detail);
     }
     return [];
@@ -202,6 +217,7 @@ export async function readWorkMap(
     source: string,
     args: readonly string[],
   ): Promise<string | undefined> {
+    checkCancellation();
     if (!reserveProcesses(ports.gitProcessCost)) {
       note("process-budget", { source });
       return undefined;
@@ -211,6 +227,7 @@ export async function readWorkMap(
       if (git.kind !== "resolved") throw new Error("Git unavailable");
       const command = ["--no-replace-objects", "--no-lazy-fetch", ...args];
       const result = await ports.process.run(git, command, gitSpawn);
+      checkCancellation();
       const bytes = Buffer.byteLength(result.stdout + result.stderr);
       if (result.truncated || bytes > limits.outputBytes) {
         note("output-budget", { source });
@@ -224,6 +241,7 @@ export async function readWorkMap(
         throw new Error("Git output unavailable");
       return result.stdout;
     } catch {
+      checkCancellation();
       const kind =
         source === "generated-policy" ? "policy-unreadable" : "git-unavailable";
       note(kind, { source });
@@ -288,6 +306,7 @@ export async function readWorkMap(
   ): Promise<Pull | undefined> {
     try {
       const pull = await ports.pull?.(url, budget());
+      checkCancellation();
       if (
         !pull ||
         (pull.state !== "OPEN" &&
@@ -297,6 +316,7 @@ export async function readWorkMap(
         throw new Error("Unknown pull state");
       if (withinBytes(pull, "pull")) return pull;
     } catch {
+      checkCancellation();
       note("pull-unavailable", { issue });
     }
     return undefined;
@@ -304,6 +324,7 @@ export async function readWorkMap(
   const literalPaths = new Set<string>();
   const wildcard = /[*?]/u;
   for (const issue of issues) {
+    checkCancellation();
     if (issue.status === "closed") continue;
     if (issue.id === candidateId) snapshot.candidate = issue;
     const declaration = normalizeFileDeclarations(issue);
@@ -376,6 +397,7 @@ export async function readWorkMap(
   if (snapshot.candidate && !activeIssues.includes(snapshot.candidate))
     activeIssues.push(snapshot.candidate);
   for (const issue of activeIssues) {
+    checkCancellation();
     const declaration = normalizeFileDeclarations(issue);
     if (!declaration.ok) {
       note("invalid-declarations", { issue: issue.id });

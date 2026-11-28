@@ -19,6 +19,7 @@ import { runProcess } from "./run.ts";
 export { type ProcessErrorCode, ProcessSpawnError } from "./errors.ts";
 export type { FileProbe } from "./resolve.ts";
 export { processStartTime, proveAdvisoryGit } from "./resolve.ts";
+export { immediateProcessAbort } from "./process-tree.ts";
 
 export interface ProcessAdapterOptions extends ContainmentOptions {
   /** Defaults to the running platform; tests pass another to exercise its rules. */

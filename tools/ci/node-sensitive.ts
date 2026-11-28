@@ -91,6 +91,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for autopilot guard coverage.",
   "test/blocks/l7-work/autopilot-restart.integration.test.ts":
     "Launches selected Node for autopilot restart coverage.",
+  "test/blocks/l7-work/claim-advisory.integration.test.ts":
+    "Launches the built CLI to check claim replies against an injected advisory deadline.",
   "test/blocks/l7-work/file-overlap.integration.test.ts":
     "Uses the built CLI and real Git for local claim and lane overlap coverage.",
   "test/blocks/l7-work/lane-attempt-close.integration.test.ts":

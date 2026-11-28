@@ -195,6 +195,22 @@ export function processCleanupBudgetMs(options?: SupervisionOptions): number {
   const timing = options ?? CLEANUP;
   return 2 * timing.cleanupTimeoutMs + timing.drainTimeoutMs;
 }
+export function advisorySupervision(
+  cleanupDeadline: number,
+  options: SupervisionOptions = CLEANUP,
+): SupervisionOptions {
+  const cleanupTimeoutMs = Math.min(
+    options.cleanupTimeoutMs,
+    CLEANUP.drainTimeoutMs,
+  );
+  return {
+    ...options,
+    cleanupDeadline,
+    cleanupTimeoutMs,
+    pollIntervalMs: Math.min(options.pollIntervalMs, cleanupTimeoutMs),
+    drainTimeoutMs: Math.min(options.drainTimeoutMs, CLEANUP.drainTimeoutMs),
+  };
+}
 // Windows load exceeded the old 4.75 s Git window. Each of two HEAD lookups
 // needs a 10 s startup window plus the process service's cleanup bound.
 const SNAPSHOT_HEAD_MS = 10000;

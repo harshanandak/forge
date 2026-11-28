@@ -180,7 +180,9 @@ export async function readWorkWarnings(
   branchFor?: Branch,
 ): Promise<Scan> {
   try {
-    return scanWarnings(await readWorkMap(ports, options), branchFor);
+    const snapshot = await readWorkMap(ports, options);
+    options.signal?.throwIfAborted();
+    return scanWarnings(snapshot, branchFor);
   } catch {
     return { warnings: [incomplete("read unavailable")], omitted: 0 };
   }

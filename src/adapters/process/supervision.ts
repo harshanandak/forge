@@ -5,6 +5,19 @@ export interface SupervisionOptions {
   readonly pollIntervalMs: number;
   readonly drainTimeoutMs: number;
   readonly maxConcurrent: number;
+  readonly cleanupDeadline?: number;
+}
+
+export function cleanupRemaining(
+  timing: SupervisionOptions,
+  limit: number,
+): number {
+  return Math.max(
+    0,
+    Math.floor(
+      Math.min(limit, (timing.cleanupDeadline ?? Infinity) - performance.now()),
+    ),
+  );
 }
 
 /** Safety ceilings bound concurrent commands and cleanup even for malformed host config. */
@@ -21,7 +34,9 @@ export function validateSupervision(
     !bounded(value.pollIntervalMs, 1000) ||
     value.pollIntervalMs > value.cleanupTimeoutMs ||
     !bounded(value.drainTimeoutMs, 60_000, 0) ||
-    !bounded(value.maxConcurrent, MAX_SUPERVISORS, 0)
+    !bounded(value.maxConcurrent, MAX_SUPERVISORS, 0) ||
+    (value.cleanupDeadline !== undefined &&
+      !Number.isFinite(value.cleanupDeadline))
   )
     throw new ProcessSpawnError(
       "INVALID_OPTIONS",

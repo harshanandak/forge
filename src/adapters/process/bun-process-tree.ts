@@ -3,17 +3,8 @@ import { constants } from "node:os";
 import { captureStreams } from "./capture.ts";
 import { ProcessSpawnError } from "./errors.ts";
 import type { SpawnPlan } from "./plan.ts";
-import { endProcessGroup } from "./process-tree.ts";
-import type { SupervisionOptions } from "./supervision.ts";
-
-async function within(pending: Promise<unknown>, ms: number): Promise<void> {
-  let wait: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    pending,
-    new Promise<void>((resolve) => (wait = setTimeout(resolve, ms))),
-  ]);
-  clearTimeout(wait);
-}
+import { endProcessGroup, watchGroupAbort, within } from "./process-tree.ts";
+import { cleanupRemaining, type SupervisionOptions } from "./supervision.ts";
 
 /** Native completion and readers avoid Bun's lost child_process events (forge-828). */
 export async function runBunProcessTree(
@@ -49,6 +40,7 @@ export async function runBunProcessTree(
     );
   }
   timeline.spawn = now();
+  const groupAbort = watchGroupAbort(child.pid, options.signal);
   const bytes = { stdout: 0, stderr: 0 };
   const ended = { stdout: false, stderr: false };
   let failure: Error | undefined;
@@ -129,10 +121,19 @@ export async function runBunProcessTree(
     supervision,
     undefined,
     reaped,
+    undefined,
+    groupAbort.state,
   );
+  groupAbort.dispose();
   if (child.exitCode === null && child.signalCode === null)
-    await within(reaped, supervision.cleanupTimeoutMs);
-  await within(drained, supervision.drainTimeoutMs);
+    await within(
+      reaped,
+      cleanupRemaining(supervision, supervision.cleanupTimeoutMs),
+    );
+  await within(
+    drained,
+    cleanupRemaining(supervision, supervision.drainTimeoutMs),
+  );
   const pipesClosed = ended.stdout && ended.stderr;
   reading = false;
   for (const name of ["stdout", "stderr"] as const)
