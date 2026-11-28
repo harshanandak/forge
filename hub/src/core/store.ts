@@ -145,11 +145,7 @@ export interface AskStore {
     requestAskId: string,
   ): Permit | undefined;
   pendingEdits(limit: number): readonly AskEditJob[];
-  markEditDone(
-    askId: string,
-    personId: string,
-    writeAbandoned?: () => boolean,
-  ): boolean;
+  markEditDone(askId: string, personId: string): void;
   markEditFailed(askId: string, personId: string, nextAttemptAt: number): void;
   sweepExpiry(): number;
   reconcileEdits(): void;

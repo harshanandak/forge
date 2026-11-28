@@ -177,18 +177,12 @@ export function createAskEffects({
         };
       });
     },
-    markEditDone(askId, personId, writeAbandoned) {
-      return db.transaction(() => {
-        if (writeAbandoned?.()) return false;
-        const at = now();
-        if (
-          Number(
-            transition.run("done", null, null, at, askId, personId).changes,
-          )
-        )
-          edited.run(at, askId, personId);
-        return true;
-      });
+    markEditDone(askId, personId) {
+      const at = now();
+      if (
+        Number(transition.run("done", null, null, at, askId, personId).changes)
+      )
+        edited.run(at, askId, personId);
     },
     markEditFailed(askId, personId, nextAttemptAt) {
       transition.run(

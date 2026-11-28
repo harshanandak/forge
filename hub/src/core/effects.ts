@@ -345,7 +345,12 @@ export function createEffectWorker(
         const sent = await attempt(
           ask.attempts,
           () => chatPort.editAskDm(ask.ref, ask.card),
-          () => askStore.markEditDone(ask.askId, ask.personId, writeAbandoned),
+          () =>
+            tx(() => {
+              if (writeAbandoned()) return false;
+              askStore.markEditDone(ask.askId, ask.personId);
+              return true;
+            }),
           (deadline) =>
             askStore.markEditFailed(ask.askId, ask.personId, deadline),
         );
