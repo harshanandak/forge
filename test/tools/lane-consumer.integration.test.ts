@@ -169,6 +169,23 @@ function consumerFixture() {
   return { ...f, reads, input: request(expectedContext(f.request)) };
 }
 
+consumerTest("refuses when HEAD moves during the stop check", async () => {
+  const { input, reads, facts, calls } = consumerFixture();
+  const movedHead = "b".repeat(40);
+  let headReadBeforeMove = false;
+  const result = await consume!(input, {
+    ...reads,
+    control: () => {
+      headReadBeforeMove = calls.includes("workspace");
+      facts.workspace.head = movedHead;
+      return Promise.resolve("running");
+    },
+  });
+  expect(headReadBeforeMove).toBe(true);
+  expect(facts.workspace.head).toBe(movedHead);
+  expect(result).toEqual(refused("head", "CONTEXT_MISMATCH"));
+});
+
 consumerTest("A1 and A12 reject complete input before any read", async () => {
   const { input, calls, reads } = consumerFixture();
   const { head: _head, ...missingHead } = input.context;
