@@ -4,6 +4,7 @@ import {
   type SchemaObject,
   type JsonSchema,
 } from "../contract/schema.ts";
+import { bundleSchema } from "../contract/schema-bundle.ts";
 import { SCHEMA_DOCUMENTS } from "../generated/schemas.ts";
 import type { McpCandidate } from "../contract/mcp.ts";
 import type {
@@ -95,6 +96,8 @@ function buildCandidates(): readonly McpCandidate[] {
     admitted: true,
     declaration,
     docs: coreDocs[op]!,
+    projectSchema: (side) =>
+      bundleSchema(configRegistry(), `${BASE}${declaration[side]}`),
     inputSchema: inline(
       configRegistry().lookup(`${BASE}${declaration.input}`),
       `${BASE}${declaration.input}`,

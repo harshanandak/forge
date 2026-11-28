@@ -111,6 +111,8 @@ export class BlockCatalog {
         docs: this.#docs(block)[operation.declaredOp]!,
         inputSchema: entry.inputSchema as McpCandidate["inputSchema"],
         outputSchema: entry.outputSchema as McpCandidate["inputSchema"],
+        projectSchema: (side: "input" | "output") =>
+          block.mcpSchema(operation.declaration[side]),
       };
     });
   }

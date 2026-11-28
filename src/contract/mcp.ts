@@ -27,6 +27,7 @@ export interface McpCandidate {
   /** Resolved top-level fields for CLI arguments and skill summaries; the full schema stays raw. */
   readonly argumentSchema?: SchemaObject;
   readonly outputSchema?: SchemaObject;
+  readonly projectSchema?: (side: "input" | "output") => SchemaObject;
   /** The instance's local noun renames; a deprecation's replacement is projected through them. */
   readonly rename?: Readonly<Record<string, string>>;
 }
