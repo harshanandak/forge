@@ -78,19 +78,13 @@ export type DiskRequest = Omit<Request, "descriptors"> & {
   bytes?: string;
 };
 
-export function powershellCommand(script: string) {
+export function powershellCommand(...scriptArgs: string[]) {
   return [
     join(
       process.env.SystemRoot ?? "C:/Windows",
       "System32/WindowsPowerShell/v1.0/powershell.exe",
     ),
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-NoLogo",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
+    ["-NoProfile", "-NonInteractive", "-NoLogo", ...scriptArgs],
   ] as const;
 }
 
@@ -99,7 +93,10 @@ export function powershell<T>(
   input: unknown,
   timeout: number,
 ): T {
-  const [file, args] = powershellCommand(script);
+  const [file, args] = powershellCommand(
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64"),
+  );
   const result = spawnSync(file, args, {
     encoding: "utf8",
     timeout,

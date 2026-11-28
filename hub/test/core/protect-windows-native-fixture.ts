@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { rawDescriptorHelpers, recipes } from "./protect-windows-fixture.ts";
@@ -349,7 +349,9 @@ export async function nativeFixtures(): Promise<{
   if (!runner)
     throw new Error("Hosted Windows ACL comparison requires RUNNER_TEMP");
   const base = mkdtempSync(join(runner, "forge-acl-"));
-  const [file, args] = powershellCommand(setup);
+  const script = join(base, "setup.ps1");
+  writeFileSync(script, "\uFEFF" + setup, { flag: "wx" });
+  const [file, args] = powershellCommand("-File", script);
   const child = spawn(file, args, { windowsHide: true, timeout: 55_000 });
   let errors = "";
   child.on("error", (error) => {
