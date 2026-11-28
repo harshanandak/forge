@@ -32,9 +32,9 @@ function withReadFault(
 function readsEmptyAncestor(probe: HandleProbe, owner: string): boolean {
   if (probe.OpenError || probe.AclError || !probe.Descriptor) return false;
   const directory =
-    probe.AttributeError === 0
-      ? (probe.Attributes & 0x410) === 0x10
-      : probe.KindError === 0 && probe.Directory && probe.ReparseError === 4390;
+    (probe.AttributeError === 0 && (probe.Attributes & 0x410) === 0x10) ||
+    (probe.StatStatus === 0 && (probe.StatAttributes & 0x410) === 0x10) ||
+    (probe.KindError === 0 && probe.Directory && probe.ReparseError === 4390);
   const descriptor = decodeWindowsDescriptor(
     Buffer.from(probe.Descriptor, "base64"),
   );
@@ -88,17 +88,29 @@ test.skipIf(process.platform !== "win32")(
         emptyAncestor.withAttributes,
         emptyAncestor.owner,
       );
+      const overlapped = readsEmptyAncestor(
+        emptyAncestor.overlapped,
+        emptyAncestor.owner,
+      );
+      const nativeOpen = readsEmptyAncestor(
+        emptyAncestor.nativeOpen,
+        emptyAncestor.owner,
+      );
       console.log(
         JSON.stringify({
           row: "26",
           handleProbe: emptyAncestor,
           readControl,
           withAttributes,
+          overlapped,
+          nativeOpen,
         }),
       );
-      expect(readControl || withAttributes).toBe(true);
       expect(observations.map(({ reference }) => reference)).toEqual(
         observations.map(({ expected }) => expected),
+      );
+      expect(readControl || withAttributes || overlapped || nativeOpen).toBe(
+        true,
       );
       expect(observations.map(({ native }) => native)).toEqual(
         observations.map(({ reference }) => reference),
