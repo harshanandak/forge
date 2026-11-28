@@ -233,3 +233,139 @@ test("every shipped schema document and definition bundles within the budget", (
       expect(bundleSchema(registry, reference).$schema).toBe(SCHEMA_DIALECT);
     }
 });
+
+const doubling = (levels: number) => ({
+  $defs: Object.fromEntries(
+    Array.from({ length: levels + 1 }, (_, n) => [
+      `D${n}`,
+      n === 0
+        ? { const: 0 }
+        : {
+            allOf: [
+              { $ref: `#/$defs/D${n - 1}` },
+              { $ref: `#/$defs/D${n - 1}` },
+            ],
+          },
+    ]),
+  ),
+  $ref: `#/$defs/D${levels}`,
+});
+const refs = (count: number, name: string) => ({
+  allOf: Array.from({ length: count }, () => ({ $ref: `#/$defs/${name}` })),
+});
+const items = (levels: number): object =>
+  levels === 1 ? { items: true } : { items: items(levels - 1) };
+const wrap = (levels: number): unknown =>
+  levels === 0 ? 0 : { a: wrap(levels - 1) };
+const documents = (count: number, path: (n: number) => string) =>
+  Array.from({ length: count }, (_, n) => ({
+    $id: `https://example.org/${path(n)}`,
+  }));
+
+test("repeated references and composition siblings count as expanded work", () => {
+  const visits = "Schema work budget exceeded (4096 visits)";
+  expect(() => bundle(doubling(30))).toThrow(visits);
+  expect(() =>
+    bundle({ type: "object", properties: { v: doubling(30) } }),
+  ).toThrow(visits);
+  const compounding = (count: number) => ({
+    $defs: {
+      S: { properties: { x: refs(count, "T") } },
+      T: { type: "object" },
+    },
+    ...refs(count, "S"),
+  });
+  expect(() => bundle(compounding(70))).toThrow(visits);
+  const out = bundle(compounding(10));
+  expect(accepts(out, { x: {} })).toBe(true);
+  expect(accepts(out, { x: 1 })).toBe(false);
+  expect(accepts(bundle(doubling(4)), 0)).toBe(true);
+});
+
+test("the assembled bundle stays within registration depth after relocation into $defs", () => {
+  const relocated = (levels: number) =>
+    bundleSchema(
+      new SchemaRegistry([
+        { $id: ID, $ref: "https://example.org/b.json" },
+        { $id: "https://example.org/b.json", ...items(levels) },
+      ]),
+      ID,
+    );
+  expect(() => relocated(64)).toThrow("Schema depth limit exceeded (64)");
+  expect(() => new SchemaRegistry([relocated(63)])).not.toThrow();
+});
+
+test("colliding labels are allocated with charged, linear probes", () => {
+  const colliding = (count: number) =>
+    bundleSchema(
+      new SchemaRegistry([
+        {
+          $id: ID,
+          type: "object",
+          properties: Object.fromEntries(
+            Array.from({ length: count }, (_, n) => [
+              `p${n}`,
+              { $ref: `https://example.org/d${n}/X` },
+            ]),
+          ),
+        },
+        ...documents(count, (n) => `d${n}/X`),
+      ]),
+      ID,
+    );
+  expect(() => colliding(6_000)).toThrow(
+    "Schema work budget exceeded (20000 nodes)",
+  );
+  expect(Object.keys(colliding(500).$defs as object)).toHaveLength(500);
+  const natural = bundleSchema(
+    new SchemaRegistry([
+      {
+        $id: ID,
+        type: "object",
+        properties: Object.fromEntries(
+          ["d0/X", "e/X-1", "d1/X", "d2/X"].map((path, n) => [
+            `p${n}`,
+            { $ref: `https://example.org/${path}` },
+          ]),
+        ),
+      },
+      ...documents(4, (n) => ["d0/X", "e/X-1", "d1/X", "d2/X"][n]!),
+    ]),
+    ID,
+  );
+  expect(Object.keys(natural.$defs as object).sort()).toEqual([
+    "X",
+    "X-1",
+    "X-2",
+    "X-3",
+  ]);
+});
+
+test("reference, name and key text is charged before it is processed", () => {
+  const long = "a".repeat(200_000);
+  const work = "Schema work budget exceeded (20000 nodes)";
+  expect(() =>
+    bundle({ $defs: { [long]: true }, $ref: `#/$defs/${long}` }),
+  ).toThrow(work);
+  expect(() =>
+    bundle({ type: "object", properties: { [long]: true } }),
+  ).toThrow(work);
+  expect(() => bundle({ type: "object", "x-note": { [long]: 0 } })).toThrow(
+    work,
+  );
+});
+
+test("literal walks carry real depth and charge width before expanding", () => {
+  expect(() => bundle({ type: "object", "x-note": wrap(100) })).toThrow(
+    "Schema depth limit exceeded (64)",
+  );
+  expect(bundle({ type: "object", "x-note": wrap(40) })["x-note"]).toEqual(
+    wrap(40),
+  );
+  const wide = (count: number) =>
+    Object.fromEntries(Array.from({ length: count }, (_, n) => [`k${n}`, 0]));
+  const work = "Schema work budget exceeded (20000 nodes)";
+  expect(() => bundle({ type: "object", "x-note": wide(100_000) })).toThrow(
+    work,
+  );
+});
