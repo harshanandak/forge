@@ -395,6 +395,7 @@ export type CreationRecipe = {
   parentSddl?: string;
   shape?: "file" | "dir" | "full" | "junction" | "symlink";
   name?: string;
+  spelling?: "relative" | "extended";
   fault?: CreationFault;
 };
 
@@ -508,7 +509,13 @@ export function creationFixtures(recipes: CreationRecipe[]) {
     const side = (name: string): CreationSide => {
       const root = join(base, `case-${index}`, name);
       const parent = join(root, "parent");
-      const target = join(parent, recipe.name ?? "target");
+      const leaf = recipe.name ?? "target";
+      const target =
+        recipe.spelling === "relative"
+          ? leaf
+          : recipe.spelling === "extended"
+            ? `\\\\?\\${parent}\\..\\${leaf}`
+            : join(parent, leaf);
       return { root, parent, target, log: join(root, "barriers.log") };
     };
     return {

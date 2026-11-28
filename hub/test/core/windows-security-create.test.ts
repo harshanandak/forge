@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { win32 } from "node:path";
 import type { WindowsSecurityReader } from "../../src/contract/windows-security.ts";
 import {
@@ -235,6 +236,31 @@ test.skipIf(process.platform !== "win32")(
   60_000,
 );
 
+test.skipIf(process.platform !== "win32")(
+  "the native launch counter sees a process started during creation",
+  async () => {
+    const run = await candidate();
+    const parent = mkdtempSync(win32.join(tmpdir(), "forge-launch-"));
+    try {
+      const before = run.launches();
+      const actual = await run.create(win32.join(parent, "target"), (made) => ({
+        ...made,
+        isDirectory(path) {
+          spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", "exit 0"], {
+            windowsHide: true,
+          });
+          return made.isDirectory(path);
+        },
+      }));
+      expect(actual).toBe(true);
+      expect(run.launches() - before).toBeGreaterThan(0);
+    } finally {
+      rmSync(parent, { recursive: true });
+    }
+  },
+  60_000,
+);
+
 const staged = (variant: string, sddl: string): CreationRecipe => ({
   row: "40",
   variant,
@@ -304,6 +330,12 @@ const matrix: CreationRecipe[] = [
     expected: !/[\n|\0]/.test(name),
     name,
   })),
+  ...(["relative", "extended"] as const).map((spelling): CreationRecipe => ({
+    row: "86",
+    variant: `${spelling} target spelling`,
+    expected: false,
+    spelling,
+  })),
 ];
 
 test.skipIf(process.platform !== "win32")(
@@ -311,6 +343,7 @@ test.skipIf(process.platform !== "win32")(
   async () => {
     let restore: (() => void) | undefined;
     let fixture: ReturnType<typeof creationFixtures> | undefined;
+    const home = process.cwd();
     try {
       restore = await dropBackupPrivileges();
       fixture = creationFixtures(matrix);
@@ -318,6 +351,7 @@ test.skipIf(process.platform !== "win32")(
       const results = [];
       for (const { recipe, reference, candidate: side } of fixture.cases) {
         const expected = fixture.reference(reference, recipe.fault);
+        process.chdir(recipe.spelling === "relative" ? side.parent : home);
         const launched = run.launches();
         const started = performance.now();
         const actual = await run.create(
@@ -367,6 +401,7 @@ test.skipIf(process.platform !== "win32")(
       for (const row of rows.slice(0, -1)) covered.add(row);
       console.log(`HOSTED ROWS 38-43 AND 86: ${matrix.length} cases`);
     } finally {
+      process.chdir(home);
       restore?.();
       fixture?.close();
     }
