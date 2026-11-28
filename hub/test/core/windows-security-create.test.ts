@@ -330,10 +330,6 @@ const matrix: CreationRecipe[] = [
   staged("no inheritance flags", "O:@D:P(A;;FA;;;@)"),
   staged("read-only mask", "O:@D:P(A;OICI;0x1200a9;;;@)"),
   {
-    ...staged("deny ACE, drive-relative staging", "O:@D:P(D;OICI;FA;;;@)"),
-    spelling: "drive-relative",
-  },
-  {
     row: "40",
     variant: "staging read failure",
     expected: false,
@@ -371,10 +367,10 @@ const matrix: CreationRecipe[] = [
     expected: !/[\n|\0]/.test(name),
     name,
   })),
-  ...spellingNames.map((spelling, index): CreationRecipe => ({
+  ...spellingNames.map((spelling): CreationRecipe => ({
     row: "86",
     variant: `${spelling} target spelling`,
-    ...(index < 2 ? { expected: false } : {}),
+    expected: false,
     spelling,
   })),
 ];
@@ -384,16 +380,13 @@ test.skipIf(process.platform !== "win32")(
   async () => {
     let restore: (() => void) | undefined;
     let fixture: ReturnType<typeof creationFixtures> | undefined;
-    const home = process.cwd();
     try {
       restore = await dropBackupPrivileges();
       fixture = creationFixtures(matrix);
       const run = await candidate();
       const results = [];
       for (const { recipe, reference, candidate: side } of fixture.cases) {
-        process.chdir(reference.cwd ?? home);
         const expected = fixture.reference(reference, recipe.fault);
-        process.chdir(side.cwd ?? home);
         const launched = run.launches();
         const started = performance.now();
         const actual = await run.create(
@@ -417,7 +410,7 @@ test.skipIf(process.platform !== "win32")(
         console.log(JSON.stringify({ referenceState, candidateState }));
         expect([recipe.variant, expected, actual, launches]).toEqual([
           recipe.variant,
-          recipe.expected ?? expected,
+          recipe.expected,
           expected,
           0,
         ]);
@@ -443,7 +436,6 @@ test.skipIf(process.platform !== "win32")(
       for (const row of rows.slice(0, -1)) covered.add(row);
       console.log(`HOSTED ROWS 38-43 AND 86: ${matrix.length} cases`);
     } finally {
-      process.chdir(home);
       restore?.();
       fixture?.close();
     }
@@ -595,25 +587,47 @@ test(
   timeout,
 );
 
+const nonCanonical = [
+  ["NUL", "C:\\parent\\a\0b"],
+  ["root", "C:\\"],
+  ["root dot", "C:\\."],
+  ["root dot space", "C:\\. "],
+  ["root parent", "C:\\parent\\.."],
+  ["extended root", "\\\\?\\C:\\."],
+  ["bare relative", "target"],
+  ["relative trailing separator", "target\\"],
+  ["absolute trailing separator", "C:\\parent\\target\\"],
+  ["sub\\target", "parent\\target"],
+  ["drive-relative", "C:target"],
+  ["extended", "\\\\?\\C:\\parent\\..\\target"],
+  ["extended forward slashes", "\\\\?\\C:/parent/target"],
+  ["device", "\\\\.\\C:\\parent\\target"],
+  ["NT prefix", "\\??\\C:\\parent\\target"],
+  ["trailing dot", "C:\\parent\\target."],
+  ["trailing space", "C:\\parent\\target "],
+  ["256-character leaf", `C:\\parent\\${"a".repeat(256)}`],
+  ["256-character component under 260", `C:\\${"a".repeat(256)}`],
+  ["forward slashes", "C:/parent/target"],
+  ["ADS colon", "C:\\parent\\target:ads"],
+] as const;
+
 test(
-  "NUL and root targets refuse before native calls; a failure does not poison the next request",
+  "non-canonical targets refuse before native calls; a failure does not poison the next request",
   () => {
     const faults: Faults = { create: "fail" };
     const { run, calls } = fake(faults);
-    const roots = [
-      "C:\\parent\\a\0b",
-      "C:\\",
-      "C:\\.",
-      "C:\\parent\\..",
-      "\\\\?\\C:\\.",
-    ];
-    expect([...roots.map((root) => run(100, root)), calls]).toEqual([
-      ...roots.map(() => "refused"),
-      [],
-    ]);
+    const results = nonCanonical.map(([name, target]) => {
+      const before = calls.length;
+      return [name, run(100, target), calls.length - before];
+    });
+    console.log(JSON.stringify(results));
+    expect(results).toEqual(nonCanonical.map(([name]) => [name, "refused", 0]));
     expect(run()).toBe("refused");
     delete faults.create;
-    expect(run()).toBe("private");
+    expect([run(), run(100, "\\\\server\\share\\target")]).toEqual([
+      "private",
+      "private",
+    ]);
   },
   timeout,
 );

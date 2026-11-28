@@ -390,7 +390,7 @@ export type CreationFault = {
 export type CreationRecipe = {
   row: string;
   variant: string;
-  expected?: boolean | "unverified";
+  expected: boolean | "unverified";
   parent?: "missing" | "file";
   parentSddl?: string;
   shape?: "file" | "dir" | "full" | "junction" | "symlink";
@@ -400,31 +400,16 @@ export type CreationRecipe = {
 };
 
 const spellings = {
-  relative: (_: string, leaf: string) => leaf,
-  extended: (parent: string, leaf: string) => `\\\\?\\${parent}\\..\\${leaf}`,
   "absolute trailing separator": (parent: string, leaf: string) =>
     `${parent}\\${leaf}\\`,
-  "relative trailing separator": (_: string, leaf: string) => `${leaf}\\`,
-  "sub\\target": (_: string, leaf: string) => `parent\\${leaf}`,
-  "drive-relative": (parent: string, leaf: string) =>
-    `${parent.slice(0, 2)}${leaf}`,
   "extended forward slashes": (parent: string, leaf: string) =>
     `\\\\?\\${parent.replaceAll("\\", "/")}/${leaf}`,
   "extended drive root": (parent: string) => `\\\\?\\${parent.slice(0, 2)}\\.`,
-  device: (parent: string, leaf: string) => `\\\\.\\${parent}\\${leaf}`,
-  "trailing dot": (parent: string, leaf: string) => `${parent}\\${leaf}.`,
-  "trailing space": (parent: string, leaf: string) => `${parent}\\${leaf} `,
 };
 export type Spelling = keyof typeof spellings;
 export const spellingNames = Object.keys(spellings) as Spelling[];
-const inParent = new Set<Spelling | undefined>([
-  "relative",
-  "relative trailing separator",
-  "drive-relative",
-]);
 
 export type CreationSide = {
-  cwd?: string | undefined;
   root: string;
   parent: string;
   target: string;
@@ -538,12 +523,7 @@ export function creationFixtures(recipes: CreationRecipe[]) {
       const target = recipe.spelling
         ? spellings[recipe.spelling](parent, leaf)
         : join(parent, leaf);
-      const cwd = inParent.has(recipe.spelling)
-        ? parent
-        : recipe.spelling === "sub\\target"
-          ? root
-          : undefined;
-      return { cwd, root, parent, target, log: join(root, "barriers.log") };
+      return { root, parent, target, log: join(root, "barriers.log") };
     };
     return {
       recipe,
