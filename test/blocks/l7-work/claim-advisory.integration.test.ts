@@ -22,6 +22,39 @@ function claimPreload(mode: string, report: string) {
         return { executable, unchanged: () => true };
     }
   `);
+  const phase =
+    mode === "blocks the first lookup"
+      ? "initial"
+      : mode === "blocks discovery revalidation"
+        ? "discovery"
+        : mode === "blocks before Git launch"
+          ? "launch"
+          : undefined;
+  const readerPreload = dataModule(`
+    import fs from "node:fs";
+    import { registerHooks } from "node:module";
+    let phase;
+    const emit = process.emit;
+    process.emit = function(event, ...args) {
+      if (event === "message") phase = args[0].op;
+      return emit.call(this, event, ...args);
+    };
+    const realpath = fs.realpathSync.native;
+    fs.realpathSync.native = function(path, ...args) {
+      if (${resolutionStall} && phase === ${JSON.stringify(phase)} &&
+          new Error().stack.includes(phase === "launch" ? "at valid (" : "at createGitScope (")) {
+        process.send({ resolutionStalled: true });
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+      }
+      return realpath(path, ...args);
+    };
+    const shim = ${JSON.stringify(proof)};
+    registerHooks({ resolve(specifier, context, next) {
+      const found = next(specifier, context);
+      return found.url === ${JSON.stringify(resolver)} && context.parentURL !== shim
+        ? { ...found, url: shim } : found;
+    } });
+  `);
   const spawn = dataModule(`
     import { spawn as realSpawn } from "node:child_process";
     import { EventEmitter } from "node:events";
@@ -50,6 +83,7 @@ function claimPreload(mode: string, report: string) {
   `);
   return dataModule(`
     import { registerHooks, syncBuiltinESMExports } from "node:module";
+    import childProcess from "node:child_process";
     import fs from "node:fs";
     import timers from "node:timers/promises";
     const mode = ${JSON.stringify(mode)};
@@ -60,16 +94,33 @@ function claimPreload(mode: string, report: string) {
     let wallOffset = 0;
     let stepped = false;
     let resolutionStalled = false;
+    let resolutionTerminated = false;
     const wallNow = Date.now;
     Date.now = () => {
       const sampled = wallNow() + wallOffset;
       if (mode === "finishes with overlap after a backward clock step" &&
           globalThis.claimed && !stepped &&
-          new Error().stack.includes("at Object.select (")) {
+          /at (Object.select|readWorkMap) /.test(new Error().stack)) {
         stepped = true;
         wallOffset = -30_000;
       }
       return sampled;
+    };
+    const fork = childProcess.fork;
+    childProcess.fork = (file, args, options) => {
+      if (!file.endsWith("advisory-git.js")) return fork(file, args, options);
+      const child = fork(file, args, { ...options, execArgv: ["--import", ${JSON.stringify(readerPreload)}] });
+      const emit = child.emit;
+      child.emit = function(event, ...args) {
+        if (event === "message" && args[0]?.resolutionStalled) {
+          resolutionStalled = true;
+          globalThis.expireAdvisory();
+          return true;
+        }
+        return emit.call(this, event, ...args);
+      };
+      child.once("close", (_code, signal) => { resolutionTerminated = signal === "SIGKILL"; });
+      return child;
     };
     const realpath = fs.realpathSync.native;
     fs.realpathSync.native = function(path, ...args) {
@@ -79,8 +130,8 @@ function claimPreload(mode: string, report: string) {
             (mode === "blocks discovery revalidation" && stack.includes("at Object.files (")) ||
             (mode === "blocks before Git launch" && stack.includes("at gitText ("))) {
           resolutionStalled = true;
-          globalThis.expireAdvisory();
-          elapsed = 5500;
+          queueMicrotask(() => globalThis.expireAdvisory());
+          elapsed += 1500;
         }
       }
       return realpath(path, ...args);
@@ -98,9 +149,10 @@ function claimPreload(mode: string, report: string) {
       if (!${stalls || resolutionStall} || value?.warnings?.[0]?.code !== "WORK_FILE_MAP_INCOMPLETE")
         return timeout(ms, value, options);
       remaining = ms;
+      const deadline = elapsed + ms;
       return new Promise((resolve) => {
         globalThis.expireAdvisory = () => {
-          elapsed += ms;
+          elapsed = Math.max(elapsed, deadline);
           resolve(value);
         };
       });
@@ -129,7 +181,7 @@ function claimPreload(mode: string, report: string) {
     process.stdout.write = function(...args) {
       writeFileSync(${JSON.stringify(report)}, JSON.stringify({
         remaining, elapsed, started: Boolean(globalThis.advisoryChild), stopped,
-        resolutionStalled, stepped,
+        resolutionStalled, resolutionTerminated, stepped,
       }));
       return write.apply(this, args);
     };
@@ -260,9 +312,16 @@ for (const [mode, reason] of [
           const response = JSON.parse(readFileSync(report, "utf8")) as {
             elapsed: number;
             resolutionStalled: boolean;
+            resolutionTerminated: boolean;
           };
           expect(response.resolutionStalled).toBe(true);
           expect(response.elapsed).toBeLessThanOrEqual(5000);
+          expect(response.resolutionTerminated).toBe(true);
+        }
+        if (mode === "finishes with overlap after a backward clock step") {
+          expect(JSON.parse(readFileSync(report, "utf8"))).toMatchObject({
+            stepped: true,
+          });
         }
       },
     );
