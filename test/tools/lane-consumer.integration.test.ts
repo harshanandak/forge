@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -229,17 +230,28 @@ consumerTest("A4 rechecks workspace and current lease", async () => {
   }
 });
 
-consumerTest("A5 CLI honors a local stop", () =>
+consumerTest("A5 CLI honors the config switch and a local stop", () =>
   withLane(async (f) => {
     const input = await inspected(f);
-    f.forge(["lane", "stop", f.request.issue]);
-    const before = f.snapshot();
-    const stopped = await f.run(input, [], ["consume"]);
-    expect(stopped.exitCode).toBe(2);
-    expect(JSON.parse(stopped.stdout)).toEqual(
-      refused("control", "LANE_STOPPED"),
+    const configPath = join(f.repo, ".forge/config.yaml");
+    const config = readFileSync(configPath, "utf8");
+    const refusesStop = async () => {
+      const before = f.snapshot();
+      const stopped = await f.run(input, [], ["consume"]);
+      expect(stopped.exitCode).toBe(2);
+      expect(JSON.parse(stopped.stdout)).toEqual(
+        refused("control", "LANE_STOPPED"),
+      );
+      expect(f.snapshot()).toEqual(before);
+    };
+    writeFileSync(
+      configPath,
+      config.replace("lanes: {", 'lanes: {"autopilot":{"enabled":false},'),
     );
-    expect(f.snapshot()).toEqual(before);
+    await refusesStop();
+    writeFileSync(configPath, config);
+    f.forge(["lane", "stop", f.request.issue]);
+    await refusesStop();
   }),
 );
 

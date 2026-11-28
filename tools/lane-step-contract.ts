@@ -22,6 +22,14 @@ export type InspectResult =
   | { readonly status: "context"; readonly context: LaneStepContext }
   | InspectRefusal;
 
+export interface ConsumeRequest {
+  readonly context: LaneStepContext;
+  readonly step: Readonly<{ kind: "verify-brief" }>;
+}
+
+export type ConsumeResult =
+  { readonly status: "verified"; readonly brief: Uint8Array } | InspectRefusal;
+
 export function refuse(field: string, code: string): InspectRefusal {
   return { status: "refused", field, code };
 }
@@ -43,6 +51,13 @@ function text(input: unknown): input is string {
   return /^[^\p{Cc}]+$/u.test(input);
 }
 
+const issueId = (input: unknown): input is string =>
+  text(input) && /^[a-z0-9]+(?:-[a-z0-9]+)*-[1-9][0-9]*$/i.test(input);
+const digestId = (input: unknown): input is string =>
+  text(input) && /^sha256:[0-9a-f]{64}$/.test(input);
+const revision = (input: unknown): input is string =>
+  text(input) && /^[a-f0-9]{40}$/i.test(input);
+
 export function parseInspectRequest(input: unknown) {
   if (!object(input)) return invalid("request");
   const field = unexpected(input, requestFields);
@@ -52,14 +67,44 @@ export function parseInspectRequest(input: unknown) {
   const nested = unexpected(brief, ["path", "digest"]);
   if (nested !== undefined) return invalid(`brief.${nested}`);
   const { path, digest } = brief;
-  if (!text(issue) || !/^[a-z0-9]+(?:-[a-z0-9]+)*-[1-9][0-9]*$/i.test(issue))
-    return invalid("issue");
+  if (!issueId(issue)) return invalid("issue");
   if (!text(workspace) || !isAbsolute(workspace)) return invalid("workspace");
   if (!text(branch)) return invalid("branch");
   if (!text(path) || !isAbsolute(path)) return invalid("brief.path");
-  if (!text(digest) || !/^sha256:[0-9a-f]{64}$/.test(digest))
-    return invalid("brief.digest");
-  if (!text(expectedHead) || !/^[a-f0-9]{40}$/i.test(expectedHead))
-    return invalid("expectedHead");
+  if (!digestId(digest)) return invalid("brief.digest");
+  if (!revision(expectedHead)) return invalid("expectedHead");
   return { issue, brief: { path, digest }, workspace, branch, expectedHead };
+}
+
+export function parseConsumeRequest(
+  input: unknown,
+): ConsumeRequest | InspectRefusal {
+  if (!object(input)) return invalid("request");
+  const field = unexpected(input, ["context", "step"]);
+  if (field !== undefined) return invalid(field);
+  const { context, step } = input;
+  if (!object(context)) return invalid("context");
+  const nested = unexpected(context, [
+    "issue",
+    "workspace",
+    "branch",
+    "head",
+    "digest",
+  ]);
+  if (nested !== undefined) return invalid(`context.${nested}`);
+  const { issue, workspace, branch, head, digest } = context;
+  if (!issueId(issue)) return invalid("context.issue");
+  if (!text(workspace) || !isAbsolute(workspace))
+    return invalid("context.workspace");
+  if (!text(branch)) return invalid("context.branch");
+  if (!revision(head)) return invalid("context.head");
+  if (!digestId(digest)) return invalid("context.digest");
+  if (!object(step)) return invalid("step");
+  const stepField = unexpected(step, ["kind"]);
+  if (stepField !== undefined) return invalid(`step.${stepField}`);
+  if (step.kind !== "verify-brief") return invalid("step.kind");
+  return {
+    context: { issue, workspace, branch, head, digest },
+    step: { kind: step.kind },
+  };
 }
