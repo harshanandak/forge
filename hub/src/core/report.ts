@@ -10,11 +10,12 @@ export function createReport(
   worker: EffectWorker,
 ): HubCore["report"] {
   const { asks, guards, sessions } = store;
+  const adapter = config.chat?.adapter ?? "slack";
   if (
     !chat ||
     !asks ||
-    config.slack.mode === "off" ||
-    (config.chat?.adapter ?? "slack") !== "slack"
+    adapter === "off" ||
+    (adapter === "slack" && config.slack.mode === "off")
   )
     return () => Promise.resolve(refused("BLOCK_DISABLED"));
 

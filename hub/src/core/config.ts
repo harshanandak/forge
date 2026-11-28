@@ -12,6 +12,9 @@ import { isTelegramId } from "./directory.ts";
 export { createPeopleDirectory } from "./directory.ts";
 export { inspectStorage } from "./storage.ts";
 
+export const TELEGRAM_PEOPLE_REQUIRED =
+  "Telegram requires at least one mapped person";
+
 function refuse(pointer: string, rule: string): never {
   throw new HubConfigError(pointer, rule);
 }
@@ -128,11 +131,16 @@ function readSwitch(value: unknown, at: string) {
   };
 }
 
-function summaryRef(value: unknown, at: string, channel: string | undefined) {
+function summaryRef(
+  value: unknown,
+  at: string,
+  channel: string | undefined,
+  legacyChannel?: string,
+) {
   if (value === undefined) return undefined;
   const row = object(value, at, "channelId chatThreadId chatMessageId");
   const channelId = string(row.channelId, at + "/channelId");
-  if (channelId !== channel)
+  if (channelId !== channel && channelId !== legacyChannel)
     refuse(at + "/channelId", "Summary message must use the summary channel.");
   return {
     channelId,
@@ -236,7 +244,9 @@ export function loadConfig(path: string): HubConfig {
   const personIds = new Map<string, string>();
   const slackIds = new Map<string, string>();
   const telegramIds = new Map<string, string>();
-  const people = items(root.people, "/people", (value, at) => {
+  const rawPeople =
+    adapter === "telegram" && root.people === undefined ? [] : root.people;
+  const people = items(rawPeople, "/people", (value, at) => {
     const row = object(
       value,
       at,
@@ -268,8 +278,11 @@ export function loadConfig(path: string): HubConfig {
       ...(slackUserId === undefined ? {} : { slackUserId }),
     };
   });
+  if (adapter === "telegram" && telegramIds.size === 0)
+    refuse("/people", TELEGRAM_PEOPLE_REQUIRED);
   const projectIds = new Map<string, string>();
   const channels = new Map<string, Channel[]>();
+  const telegramSummaries = new Map<string, string>();
   const projects = items(root.projects, "/projects", (value, at) => {
     const row = object(
       value,
@@ -310,11 +323,22 @@ export function loadConfig(path: string): HubConfig {
     if (slackChannelId === undefined && explicitSummary !== undefined)
       refuse(at + "/summaryChannelId", "Project channel required.");
     const summaryChannelId = explicitSummary ?? slackChannelId;
-    const summaryMessage = summaryRef(
+    const configuredSummary = summaryRef(
       row.summaryMessage,
       at + "/summaryMessage",
-      summaryChannelId,
+      adapter === "telegram" ? telegramChatId : summaryChannelId,
+      adapter === "telegram" ? summaryChannelId : undefined,
     );
+    const summaryMessage =
+      adapter === "telegram" && configuredSummary?.channelId !== telegramChatId
+        ? undefined
+        : configuredSummary;
+    if (adapter === "telegram" && summaryMessage)
+      unique(
+        telegramSummaries,
+        summaryMessage.channelId + "/" + summaryMessage.chatMessageId,
+        at + "/summaryMessage",
+      );
     const purpose = row.purpose;
     if (
       purpose !== undefined &&

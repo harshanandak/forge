@@ -268,7 +268,6 @@ export function createEffectWorker(
   }
 
   function nextSummary(): SummaryEdit | undefined {
-    if (!isSlack) return;
     return tx(() => {
       const row = pendingSummary.get(configuredRefs, now());
       if (!row) return;
@@ -448,10 +447,8 @@ export function createEffectWorker(
         const hadOwnership = ownership !== undefined;
         prepare();
         claimedByStart = !hadOwnership;
-        if (isSlack) {
-          reconcile();
-          scheduleSweep();
-        }
+        reconcile();
+        scheduleSweep();
         started = true;
       })
       .catch((error: unknown) => {
@@ -462,7 +459,7 @@ export function createEffectWorker(
       .finally(() => {
         starting = undefined;
       });
-    return isSlack ? starting.then(kick) : starting;
+    return starting.then(kick);
   }
 
   function close(): Promise<void> {
