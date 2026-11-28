@@ -9,6 +9,7 @@ import { createStop } from "./stop.ts";
 export const createHubCore: CreateHubCore = (deps) => {
   const ctx = createCoreContext(deps, false);
   const { chat } = ctx;
+  const telegram = deps.config.chat?.adapter === "telegram";
   const worker = createEffectWorker(ctx);
   let running = false;
   let closed = false;
@@ -30,13 +31,19 @@ export const createHubCore: CreateHubCore = (deps) => {
   });
 
   function stopResources(): Promise<void> {
-    return (cleanup ??= Promise.resolve().then(async () => {
+    if (cleanup) return cleanup;
+    const dispose = async () => {
       try {
         if (chatAttempted) await chat?.stop();
       } finally {
         await worker.close();
       }
-    }));
+    };
+    if (!telegram) return (cleanup = Promise.resolve().then(dispose));
+    const stopped = Promise.withResolvers<void>();
+    cleanup = stopped.promise;
+    void dispose().then(stopped.resolve, stopped.reject);
+    return cleanup;
   }
 
   function start(): Promise<void> {
@@ -46,7 +53,7 @@ export const createHubCore: CreateHubCore = (deps) => {
         if (closed) return;
         worker.prepare();
         if (chat) {
-          if (deps.config.chat?.adapter !== "telegram") recoverAgentPosts(ctx);
+          if (!telegram) recoverAgentPosts(ctx);
           chatStartup = Promise.resolve().then(() => {
             if (closed) return;
             chatAttempted = true;
@@ -76,6 +83,7 @@ export const createHubCore: CreateHubCore = (deps) => {
   function close(): Promise<void> {
     closed = true;
     stopStarting.resolve();
+    if (telegram) return (closing ??= stopResources());
     return (closing ??= Promise.resolve(chatStartup)
       .catch(() => undefined)
       .then(stopResources));

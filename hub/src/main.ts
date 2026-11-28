@@ -291,6 +291,20 @@ async function withCore(
   }
 }
 
+async function startTelegramCore(core: HubCore, stop: AbortSignal) {
+  if (stop.aborted) return;
+  const cancel = () => void core.close().catch(ignore);
+  stop.addEventListener("abort", cancel, { once: true });
+  try {
+    await core.start();
+  } catch (error) {
+    if (!stop.aborted) throw error;
+    await core.close();
+  } finally {
+    stop.removeEventListener("abort", cancel);
+  }
+}
+
 export async function runService(
   config: HubConfig,
   secret: ReadSecret,
@@ -300,8 +314,9 @@ export async function runService(
   const onSignal = () => stop.abort();
   for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
   try {
+    const adapter = selectedChatAdapter(config);
     if (
-      selectedChatAdapter(config) === "telegram" &&
+      adapter === "telegram" &&
       !config.people?.some(({ telegramUserId }) => telegramUserId !== undefined)
     )
       throw new EntryFailure("telegramPeople");
@@ -316,7 +331,10 @@ export async function runService(
         try {
           await serveHub({
             config,
-            core,
+            core:
+              adapter === "telegram"
+                ? { start: () => startTelegramCore(core, stop.signal) }
+                : core,
             log,
             stop: stop.signal,
             ...(chat === undefined ? {} : { chat }),

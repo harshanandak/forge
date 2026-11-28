@@ -282,6 +282,7 @@ export function loadConfig(path: string): HubConfig {
     refuse("/people", TELEGRAM_PEOPLE_REQUIRED);
   const projectIds = new Map<string, string>();
   const channels = new Map<string, Channel[]>();
+  const telegramSummaries = new Map<string, string>();
   const projects = items(root.projects, "/projects", (value, at) => {
     const row = object(
       value,
@@ -332,6 +333,12 @@ export function loadConfig(path: string): HubConfig {
       adapter === "telegram" && configuredSummary?.channelId !== telegramChatId
         ? undefined
         : configuredSummary;
+    if (adapter === "telegram" && summaryMessage)
+      unique(
+        telegramSummaries,
+        summaryMessage.channelId + "/" + summaryMessage.chatMessageId,
+        at + "/summaryMessage",
+      );
     const purpose = row.purpose;
     if (
       purpose !== undefined &&
