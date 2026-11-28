@@ -44,11 +44,9 @@ export const createHubCore: CreateHubCore = (deps) => {
     return (startup ??= Promise.resolve()
       .then(async () => {
         if (closed) return;
-        if (deps.config.chat?.adapter === "telegram")
-          throw new Error("Telegram is unavailable for the hub service");
         worker.prepare();
         if (chat) {
-          recoverAgentPosts(ctx);
+          if (deps.config.chat?.adapter !== "telegram") recoverAgentPosts(ctx);
           chatStartup = Promise.resolve().then(() => {
             if (closed) return;
             chatAttempted = true;

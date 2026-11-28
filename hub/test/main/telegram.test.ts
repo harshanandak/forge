@@ -113,6 +113,9 @@ test(
         Promise.resolve(createTelegramChatPort(deps, { fetch: fake.fetch })),
     });
     const listeners = process.listenerCount("SIGTERM");
+    const timers = spyOn(globalThis, "setTimeout");
+    const cleared = spyOn(globalThis, "clearTimeout");
+    let pollTimer: unknown;
     const run = entry.run(["serve"], tokenEnv);
     try {
       const result = await Promise.race([run, started.promise]);
@@ -168,10 +171,20 @@ test(
       expect(fake.only("getMe")).toHaveLength(1);
       expect(fake.maxActivePolls).toBe(1);
       expect(fake.activePolls).toBe(1);
+      const poll = timers.mock.calls.findLastIndex(([, ms]) => ms === 40_000);
+      pollTimer = timers.mock.results[poll]?.value;
+      expect(pollTimer).toBeDefined();
     } finally {
       process.emit("SIGTERM");
       process.emit("SIGINT");
-      await run;
+      try {
+        await run;
+        if (pollTimer !== undefined)
+          expect(cleared).toHaveBeenCalledWith(pollTimer);
+      } finally {
+        timers.mockRestore();
+        cleared.mockRestore();
+      }
     }
     expect(await run).toBe(0);
     expect(entry.stderr).toEqual([]);

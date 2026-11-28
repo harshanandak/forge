@@ -16,6 +16,7 @@ import {
   type ReadSecret,
 } from "./contract/runtime.ts";
 import {
+  TELEGRAM_PEOPLE_REQUIRED,
   createPeopleDirectory,
   inspectStorage,
   loadConfig,
@@ -30,6 +31,7 @@ import { serveHub } from "./service/serve.ts";
 import { runSetupCommand } from "./setup/index.ts";
 
 const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const;
+const TELEGRAM_TOKEN = "TELEGRAM_BOT_TOKEN";
 const ignore = (): void => undefined;
 const log: HubLog = { info: ignore, warn: ignore, error: ignore };
 const noDoorbell: DoorbellPort = {
@@ -44,7 +46,8 @@ const failureMessages = {
   stdinLimit: "stdin exceeds " + LIMITS.bodyBytes + " bytes",
   unavailable: "not_built",
   service: "could not run hub service",
-  telegram: "Telegram is unavailable for the hub service",
+  telegramPeople: TELEGRAM_PEOPLE_REQUIRED,
+  telegramToken: "Missing " + TELEGRAM_TOKEN,
 };
 
 class EntryFailure extends Error {
@@ -135,6 +138,18 @@ function option(argv: readonly string[], name: string): string | undefined {
   return value;
 }
 
+function selectedChatAdapter(config: HubConfig) {
+  const adapter = config.chat?.adapter ?? "slack";
+  return adapter === "slack" && config.slack.mode === "off" ? "off" : adapter;
+}
+
+function chatSecretFor(config: HubConfig, secret: ReadSecret): ReadSecret {
+  if (selectedChatAdapter(config) !== "telegram") return secret;
+  const token = secret(TELEGRAM_TOKEN);
+  if (!token?.trim()) throw new EntryFailure("telegramToken");
+  return (name) => (name === TELEGRAM_TOKEN ? token : secret(name));
+}
+
 function chatFor(
   services: MainServices,
   config: HubConfig,
@@ -158,12 +173,20 @@ async function postSummary(
   secret: ReadSecret,
   id: string,
 ): Promise<number> {
-  if (config.slack.mode === "off")
-    return fail(services, "BLOCK_DISABLED: slack");
+  const adapter = selectedChatAdapter(config);
+  if (adapter === "off") return fail(services, "BLOCK_DISABLED: slack");
   const project = config.projects.find((row) => row.projectId === id);
-  const channel = project?.summaryChannelId ?? project?.slackChannelId;
+  const channel =
+    adapter === "telegram"
+      ? project?.telegramChatId
+      : (project?.summaryChannelId ?? project?.slackChannelId);
   if (!project || !channel) return usage(services);
-  const chat = await chatFor(services, config, secret, noDb);
+  const chat = await chatFor(
+    services,
+    config,
+    chatSecretFor(config, secret),
+    noDb,
+  );
   try {
     const ref = await chat.postSummary(
       channel,
@@ -241,7 +264,7 @@ async function withCore(
   try {
     const people = createPeopleDirectory(config.people);
     const chat =
-      secret && config.slack.mode !== "off"
+      secret && selectedChatAdapter(config) !== "off"
         ? await chatFor(services, config, secret, db, people)
         : undefined;
     const doorbell =
@@ -273,11 +296,15 @@ export async function runService(
   secret: ReadSecret,
   services: MainServices,
 ): Promise<number> {
-  if (config.chat?.adapter === "telegram") throw new EntryFailure("telegram");
   const stop = new AbortController();
   const onSignal = () => stop.abort();
   for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
   try {
+    if (
+      selectedChatAdapter(config) === "telegram" &&
+      !config.people?.some(({ telegramUserId }) => telegramUserId !== undefined)
+    )
+      throw new EntryFailure("telegramPeople");
     return await withCore(
       services,
       config,
@@ -300,7 +327,7 @@ export async function runService(
           await remote?.close();
         }
       },
-      secret,
+      chatSecretFor(config, secret),
     );
   } catch (error) {
     if (error instanceof EntryFailure) throw error;
@@ -335,8 +362,11 @@ export function main(
       };
     },
     async createChatPort(deps) {
-      const { createSlackChatPort } = await import("./chat/index.ts");
-      return createSlackChatPort(deps);
+      const { createSlackChatPort, createTelegramChatPort } =
+        await import("./chat/index.ts");
+      return selectedChatAdapter(deps.config) === "telegram"
+        ? createTelegramChatPort(deps)
+        : createSlackChatPort(deps);
     },
     createDoorbell: (deps) => callShippedFactory(() => createDoorbell(deps)),
     createRemoteHandler: (deps) =>
@@ -378,6 +408,12 @@ export async function mainWithServices(
       try {
         return services.loadConfig(path);
       } catch (error) {
+        if (
+          error instanceof HubConfigError &&
+          error.pointer === "/people" &&
+          error.message === TELEGRAM_PEOPLE_REQUIRED
+        )
+          throw new EntryFailure("telegramPeople");
         const slot =
           error instanceof HubConfigError
             ? /^\/people\/(\d+)\/displayName$/.exec(error.pointer)?.[1]
@@ -392,7 +428,7 @@ export async function mainWithServices(
       const deps = { loadConfig, inspectStorage, protectPath };
       if (command === "doctor" && argv.includes("--network")) {
         const config = loadConfig(path);
-        if (config.slack.mode !== "off")
+        if (selectedChatAdapter(config) === "slack")
           return await services.runSetupCommand(argv, {
             ...deps,
             chat: await chatFor(services, config, secret, noDb),

@@ -12,6 +12,9 @@ import { isTelegramId } from "./directory.ts";
 export { createPeopleDirectory } from "./directory.ts";
 export { inspectStorage } from "./storage.ts";
 
+export const TELEGRAM_PEOPLE_REQUIRED =
+  "Telegram requires at least one mapped person";
+
 function refuse(pointer: string, rule: string): never {
   throw new HubConfigError(pointer, rule);
 }
@@ -236,7 +239,9 @@ export function loadConfig(path: string): HubConfig {
   const personIds = new Map<string, string>();
   const slackIds = new Map<string, string>();
   const telegramIds = new Map<string, string>();
-  const people = items(root.people, "/people", (value, at) => {
+  const rawPeople =
+    adapter === "telegram" && root.people === undefined ? [] : root.people;
+  const people = items(rawPeople, "/people", (value, at) => {
     const row = object(
       value,
       at,
@@ -268,6 +273,8 @@ export function loadConfig(path: string): HubConfig {
       ...(slackUserId === undefined ? {} : { slackUserId }),
     };
   });
+  if (adapter === "telegram" && telegramIds.size === 0)
+    refuse("/people", TELEGRAM_PEOPLE_REQUIRED);
   const projectIds = new Map<string, string>();
   const channels = new Map<string, Channel[]>();
   const projects = items(root.projects, "/projects", (value, at) => {
@@ -313,7 +320,7 @@ export function loadConfig(path: string): HubConfig {
     const summaryMessage = summaryRef(
       row.summaryMessage,
       at + "/summaryMessage",
-      summaryChannelId,
+      adapter === "telegram" ? telegramChatId : summaryChannelId,
     );
     const purpose = row.purpose;
     if (

@@ -38,10 +38,14 @@ export type CreateCoreBase = (
 export const createCoreContext = (deps: CoreDeps, recoverPosts = true) => {
   const store = createCoreStore(deps);
   store.syncDirectory();
+  const adapter = deps.config.chat?.adapter ?? "slack";
+  const chatEnabled =
+    adapter === "telegram" ||
+    (adapter === "slack" && deps.config.slack.mode !== "off");
   const ctx: CoreContext = {
     deps,
     store,
-    chat: deps.config.slack.mode === "off" ? undefined : deps.chat,
+    chat: chatEnabled ? deps.chat : undefined,
     waiters: createWaiters(),
     threadGates: new Map(),
     pendingAgentPosts: new Map(),
@@ -56,6 +60,10 @@ export const createCoreContext = (deps: CoreDeps, recoverPosts = true) => {
 
 export const createCoreBase: CreateCoreBase = (ctx, extras) => {
   const { chat, deps, store } = ctx;
+  const slackContext =
+    deps.config.chat?.adapter === "telegram"
+      ? { ...ctx, chat: undefined }
+      : ctx;
   const { sessions, credentials, asks } = store;
   function afterCommit(after: AnswerAfter | undefined) {
     if (!after) return;
@@ -100,12 +108,12 @@ export const createCoreBase: CreateCoreBase = (ctx, extras) => {
         await bestEffort(ctx, () =>
           chat.postEphemeral(event, event.slackUserId, text),
         );
-      } else {
+      } else if (slackContext.chat) {
         await route(ctx, event);
       }
     },
     onMessageChange(event) {
-      if (chat) changed(ctx, event);
+      if (slackContext.chat) changed(ctx, event);
       return Promise.resolve();
     },
   };
@@ -120,9 +128,9 @@ export const createCoreBase: CreateCoreBase = (ctx, extras) => {
       chat && asks
         ? asks.ask(caller, input)
         : Promise.resolve(refused("BLOCK_DISABLED")),
-    reply: createReply(ctx),
+    reply: createReply(slackContext),
     inbox: (caller, input) => delivery(ctx, caller, input),
     wait: createWait(ctx),
-    send: createSend(ctx),
+    send: createSend(slackContext),
   };
 };
