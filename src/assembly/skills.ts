@@ -221,72 +221,6 @@ function templateSkills(templates: TemplateSkills): Copy[] {
   return skills;
 }
 
-function collectSkills(
-  candidates: readonly McpCandidate[],
-  prefix: string | undefined,
-  templates: TemplateSkills,
-): Copy[] {
-  let skills: Copy[];
-  try {
-    skills = [
-      ...renderSkills(candidates, prefix),
-      ...templateSkills(templates),
-    ];
-  } catch (error) {
-    refuse(
-      "INPUT_INVALID",
-      error instanceof Error ? error.message : "Cannot read template skills",
-    );
-  }
-  const problems = skills.flatMap((skill) => {
-    const issues =
-      skill.bytes === undefined
-        ? (skill.path.endsWith("/SKILL.md") ? lintSkill : lintReference)(
-            skill.text,
-            candidates,
-            prefix,
-          )
-        : /\.md$/i.test(skill.path)
-          ? lintReference(
-              new TextDecoder().decode(skill.bytes),
-              candidates,
-              prefix,
-            )
-          : [];
-    return issues.map((problem) => `${skill.path}: ${problem}`);
-  });
-  const paths = skills.map((skill) => skill.path);
-  for (const [index, path] of paths.entries())
-    if (paths.findIndex((other) => key(other) === key(path)) !== index)
-      problems.push(`${path}: produced by more than one source`);
-  if (problems.length > 0)
-    refuse(
-      "OUTPUT_INVALID",
-      `Generated skills fail the lint: ${problems.join("; ")}`,
-    );
-  return skills;
-}
-
-export function renderSkillCatalog(
-  candidates: readonly McpCandidate[],
-  prefix?: string,
-  templates: TemplateSkills = EMPTY_TEMPLATES,
-): readonly RenderedSkillFile[] {
-  const skills = collectSkills(candidates, prefix, templates);
-  const pathsByNoun = new Map<string, string[]>();
-  for (const copy of skills) {
-    if (copy.bytes === undefined) continue;
-    const paths = pathsByNoun.get(copy.noun) ?? [];
-    paths.push(copy.path.slice(copy.noun.length + 1));
-    pathsByNoun.set(copy.noun, paths);
-  }
-  return skills.map((copy) => ({
-    noun: copy.noun,
-    path: copy.path,
-    bytes: skillBytes(copy, pathsByNoun.get(copy.noun) ?? []),
-  }));
-}
-
 /**
  * `skills.sync`: write each enabled block noun's skill and each imported template's skill under
  * the project root. Readable marked files are replaced, or deleted once no longer produced.
@@ -567,4 +501,70 @@ export function syncSkills(
     differences,
     errors,
   };
+}
+
+function collectSkills(
+  candidates: readonly McpCandidate[],
+  prefix: string | undefined,
+  templates: TemplateSkills,
+): Copy[] {
+  let skills: Copy[];
+  try {
+    skills = [
+      ...renderSkills(candidates, prefix),
+      ...templateSkills(templates),
+    ];
+  } catch (error) {
+    refuse(
+      "INPUT_INVALID",
+      error instanceof Error ? error.message : "Cannot read template skills",
+    );
+  }
+  const problems = skills.flatMap((skill) => {
+    const issues =
+      skill.bytes === undefined
+        ? (skill.path.endsWith("/SKILL.md") ? lintSkill : lintReference)(
+            skill.text,
+            candidates,
+            prefix,
+          )
+        : /\.md$/i.test(skill.path)
+          ? lintReference(
+              new TextDecoder().decode(skill.bytes),
+              candidates,
+              prefix,
+            )
+          : [];
+    return issues.map((problem) => `${skill.path}: ${problem}`);
+  });
+  const paths = skills.map((skill) => skill.path);
+  for (const [index, path] of paths.entries())
+    if (paths.findIndex((other) => key(other) === key(path)) !== index)
+      problems.push(`${path}: produced by more than one source`);
+  if (problems.length > 0)
+    refuse(
+      "OUTPUT_INVALID",
+      `Generated skills fail the lint: ${problems.join("; ")}`,
+    );
+  return skills;
+}
+
+export function renderSkillCatalog(
+  candidates: readonly McpCandidate[],
+  prefix?: string,
+  templates: TemplateSkills = EMPTY_TEMPLATES,
+): readonly RenderedSkillFile[] {
+  const skills = collectSkills(candidates, prefix, templates);
+  const pathsByNoun = new Map<string, string[]>();
+  for (const copy of skills) {
+    if (copy.bytes === undefined) continue;
+    const paths = pathsByNoun.get(copy.noun) ?? [];
+    paths.push(copy.path.slice(copy.noun.length + 1));
+    pathsByNoun.set(copy.noun, paths);
+  }
+  return skills.map((copy) => ({
+    noun: copy.noun,
+    path: copy.path,
+    bytes: skillBytes(copy, pathsByNoun.get(copy.noun) ?? []),
+  }));
 }
