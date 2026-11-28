@@ -9,7 +9,16 @@ import { createPeopleDirectory } from "../../src/core/directory.ts";
 import { createCoreStore } from "../../src/core/store-impl.ts";
 import { FakeChatPort } from "../fakes/fake-chat.ts";
 import { configFixture } from "./config-fixture.ts";
-import { a, b, caller, closeDb, openDb, p1, value } from "./fixture.ts";
+import {
+  a,
+  b,
+  caller,
+  closeDb,
+  openDb,
+  p1,
+  seedRemovedMemberName,
+  value,
+} from "./fixture.ts";
 import {
   askFixture,
   asksOf,
@@ -95,6 +104,28 @@ test(
     expect(rows(f.db, "ask_answers")).toMatchObject([
       { ask_id: id, choice_id: "second", source: "button" },
     ]);
+  },
+  timeout,
+);
+
+test(
+  "stored answers redact a removed member's name in inbox and card edits",
+  async () => {
+    const f = await askFixture();
+    const { askId } = value(await f.choice({ to: [b.personId] }));
+    expect(
+      f.asks.answerAction(button(askId, "legacy-answer", slackB)).after?.askId,
+    ).toBe(askId);
+    seedRemovedMemberName(f.db, b.personId);
+    const answeredNames = f.asks
+      .answerRows(f.sessionId, 1)
+      .map(({ view }) => view.answeredBy.name);
+    for (const { card } of f.asks.pendingEdits(1))
+      if (card.state.kind === "answered")
+        answeredNames.push(card.state.answeredByName);
+    expect(
+      answeredNames.map((name) => name === "[possible secret removed]"),
+    ).toEqual([true, true]);
   },
   timeout,
 );

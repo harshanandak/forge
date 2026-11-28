@@ -272,6 +272,43 @@ test(
 );
 
 test(
+  "channel send redacts the sender name before journaling and posting",
+  async () => {
+    const f = await baseFixture();
+    const { sessionId } = f.bind();
+    await f.emit("root");
+    const conversationId = f.read(sessionId).items[0]!.conversationId!;
+    const sender = { ...a, displayName: "xapp" + "-" + "fixture".repeat(3) };
+    const post = f.chat.postText.bind(f.chat);
+    let journalSafe = false;
+    const safe = (value: unknown) => {
+      const json = JSON.stringify(value);
+      return (
+        json.includes("[possible secret removed]") &&
+        !json.includes(sender.displayName)
+      );
+    };
+    f.chat.postText = (...args) => {
+      journalSafe = safe(f.col("meta WHERE key GLOB 'agent-post:*'", "value"));
+      return post(...args);
+    };
+    const sent = value(
+      await f.core.send(f.caller(sender), {
+        ...draft(sessionId),
+        conversationId,
+      }),
+    );
+    expect(sent.threadPost).toBe("posted");
+    expect({
+      journal: journalSafe,
+      post: safe(f.writes("postText")),
+      projection: safe(f.col("thread_messages WHERE kind = 'agent'", "text")),
+    }).toEqual({ journal: true, post: true, projection: true });
+  },
+  timeout,
+);
+
+test(
   "SD1 visible send posts only in project channel conversations and never answers owed rows",
   async () => {
     const f = await baseFixture();

@@ -1,6 +1,7 @@
 import { expect, mock, test } from "bun:test";
 import { ok } from "node:assert/strict";
 import { LIMITS } from "../../src/contract/mcp.ts";
+import { HubConfigError } from "../../src/contract/runtime.ts";
 import type { MainServices } from "../../src/main.ts";
 import { mainFixture, stdinFixture, timeout } from "./main-fixture.ts";
 
@@ -80,6 +81,22 @@ for (const command of ["init", "doctor"]) {
 }
 
 const privateDetail = "fixture-private-detail";
+
+test(
+  "serve identifies the refused member name field without echoing config data",
+  async () => {
+    const f = mainFixture({
+      loadConfig() {
+        throw new HubConfigError("/people/1/displayName", privateDetail);
+      },
+    });
+    expect(await f.run(["serve"])).toBe(1);
+    expect(f.stderr).toEqual([
+      "could not load hub configuration at /people/1/displayName\n",
+    ]);
+  },
+  timeout,
+);
 
 function refuseFixture(): never {
   throw new Error(privateDetail);

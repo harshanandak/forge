@@ -84,6 +84,14 @@ export function seedHost(db: HubDb, id = "hst_a"): void {
   ).run(id, "hash_" + id);
 }
 
+export function seedRemovedMemberName(db: HubDb, personId: string): void {
+  db.prepare("UPDATE people SET display_name = ? WHERE person_id = ?").run(
+    "xapp" + "-" + "fixture".repeat(3),
+    personId,
+  );
+  db.prepare("DELETE FROM project_members WHERE person_id = ?").run(personId);
+}
+
 export function seedItem(
   db: HubDb,
   itemId: string,

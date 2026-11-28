@@ -1,11 +1,34 @@
 import { expect, test } from "bun:test";
 import { LIMITS, type ReportInput } from "../../src/contract/mcp.ts";
 import { refusal, until } from "./base-fakes.ts";
-import { a, b, p1, value } from "./fixture.ts";
+import { a, b, p1, seedRemovedMemberName, value } from "./fixture.ts";
 import { holdFirstSummaryEdit } from "./life-fakes.ts";
 import { lifeFixture } from "./life-fixture.ts";
 
 const timeout = 30_000;
+
+test(
+  "summary publication redacts a removed member's stored name",
+  async () => {
+    const f = await lifeFixture();
+    const db = f.openPeer();
+    db.prepare(
+      "INSERT INTO summary_lines VALUES (?, ?, 'demo-12', 'working', 'Earlier work', 't3', ?)",
+    ).run(p1, b.personId, f.now());
+    seedRemovedMemberName(db, b.personId);
+    f.queueSummary();
+    await f.worker.drain();
+    const edits = f.chat.writes.filter(({ name }) => name === "editSummary");
+    expect(
+      edits.map(({ args }) =>
+        JSON.stringify(args).includes(
+          '"personName":"[possible secret removed]"',
+        ),
+      ),
+    ).toEqual([true]);
+  },
+  timeout,
+);
 
 test(
   "E3 keeps an uncertain and then missing summary pending without posting",
