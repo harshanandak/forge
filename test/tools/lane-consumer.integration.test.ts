@@ -186,6 +186,43 @@ consumerTest("refuses when HEAD moves during the stop check", async () => {
   expect(result).toEqual(refused("head", "CONTEXT_MISMATCH"));
 });
 
+consumerTest(
+  "refuses a branch switch at the same HEAD during the caller check",
+  async () => {
+    const { input, reads, facts, calls } = consumerFixture();
+    let workspaceReadBeforeSwitch = false;
+    const result = await consume!(input, {
+      ...reads,
+      caller: async () => {
+        const caller = await reads.caller();
+        workspaceReadBeforeSwitch = calls.includes("workspace");
+        facts.workspace.branch = "feat/switched";
+        return caller;
+      },
+    });
+    expect(workspaceReadBeforeSwitch).toBe(true);
+    expect(facts.workspace.head).toBe(input.context.head);
+    expect(result).toEqual(refused("branch", "CONTEXT_MISMATCH"));
+  },
+);
+
+consumerTest(
+  "refuses a worktree dirtied during the final lane read",
+  async () => {
+    const { input, reads, facts, calls } = consumerFixture();
+    const result = await consume!(input, {
+      ...reads,
+      lane: async (issue) => {
+        const lane = await reads.lane(issue);
+        if (calls.includes("caller")) facts.workspace.status = "?? later";
+        return lane;
+      },
+    });
+    expect(facts.workspace.status).toBe("?? later");
+    expect(result).toEqual(refused("workspace", "WORKTREE_DIRTY"));
+  },
+);
+
 consumerTest("A1 and A12 reject complete input before any read", async () => {
   const { input, calls, reads } = consumerFixture();
   const { head: _head, ...missingHead } = input.context;
